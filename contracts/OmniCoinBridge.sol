@@ -1,38 +1,30 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
-import "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
-import "@openzeppelin/contracts-upgradeable/security/ReentrancyGuardUpgradeable.sol";
-import "@layerzerolabs/solidity-examples/contracts/lzApp/NonblockingLzAppUpgradeable.sol";
+import "@openzeppelin/contracts/access/Ownable.sol";
+import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import "@layerzerolabs/solidity-examples/contracts/lzApp/NonblockingLzApp.sol";
 import "./omnicoin-erc20-coti.sol";
 
 /**
  * @title OmniCoinBridge
  * @dev Handles cross-chain token transfers using LayerZero
  */
-contract OmniCoinBridge is Initializable, NonblockingLzAppUpgradeable, ReentrancyGuardUpgradeable {
-    OmniCoin public omniCoin;
+contract OmniCoinBridge is NonblockingLzApp, ReentrancyGuard {
+    OmniCoin public immutable omniCoin;
     
     // Mapping of chain IDs to trusted remote addresses
-    mapping(uint16 => bytes) public trustedRemoteLookup;
+    mapping(uint16 => bytes) public override trustedRemoteLookup;
     
     // Events
     event BridgeInitiated(address indexed from, uint16 indexed dstChainId, uint256 amount);
     event BridgeReceived(address indexed to, uint16 indexed srcChainId, uint256 amount);
     event TrustedRemoteSet(uint16 indexed chainId, bytes remoteAddress);
     
-    /// @custom:oz-upgrades-unsafe-allow constructor
-    constructor() {
-        _disableInitializers();
-    }
-    
-    function initialize(
+    constructor(
         address _endpoint,
         address _omniCoin
-    ) public initializer {
-        __NonblockingLzApp_init(_endpoint);
-        __ReentrancyGuard_init();
+    ) NonblockingLzApp(_endpoint) {
         omniCoin = OmniCoin(_omniCoin);
     }
     
@@ -98,7 +90,7 @@ contract OmniCoinBridge is Initializable, NonblockingLzAppUpgradeable, Reentranc
      * @param _chainId The chain ID
      * @param _remoteAddress The remote address
      */
-    function setTrustedRemote(uint16 _chainId, bytes calldata _remoteAddress) external onlyOwner {
+    function setTrustedRemote(uint16 _chainId, bytes calldata _remoteAddress) external override onlyOwner {
         trustedRemoteLookup[_chainId] = _remoteAddress;
         emit TrustedRemoteSet(_chainId, _remoteAddress);
     }
