@@ -4,57 +4,62 @@ pragma solidity ^0.8.20;
 import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
-import "@openzeppelin/contracts-upgradeable/token/ERC20/IERC20Upgradeable.sol";
-import "./OmniCoinMultisig.sol";
+import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "./omnicoin-erc20-coti.sol";
+import "./OmniCoinAccount.sol";
+import "./OmniCoinEscrow.sol";
 
 /**
  * @title OmniCoinArbitration
- * @dev Arbitration contract for handling escrow disputes
+ * @dev Implements arbitration system with COTI reputation integration
  */
 contract OmniCoinArbitration is Initializable, OwnableUpgradeable, ReentrancyGuardUpgradeable {
     // Structs
-    struct Escrow {
-        address buyer;
-        address seller;
-        address token;
-        uint256 amount;
-        uint256 deadline;
-        bool released;
-        bool disputed;
-        bool resolved;
-        address arbitrator;
-        string metadata;
+    struct Arbitrator {
+        address account;
+        uint256 reputation;
+        uint256 participationIndex;
+        uint256 totalCases;
+        uint256 successfulCases;
+        bool isActive;
+        uint256 lastActiveTimestamp;
     }
 
     struct Dispute {
-        uint256 escrowId;
-        address claimant;
-        string reason;
+        bytes32 escrowId;
+        address arbitrator;
         uint256 timestamp;
-        bool resolved;
-        address winner;
+        bool isResolved;
+        string resolution;
+        uint256 buyerRating;
+        uint256 sellerRating;
+        uint256 arbitratorRating;
     }
 
     // State variables
-    mapping(uint256 => Escrow) public escrows;
-    mapping(uint256 => Dispute) public disputes;
-    mapping(address => bool) public arbitrators;
-    mapping(address => uint256) public arbitratorStakes;
-    mapping(address => uint256) public arbitratorReputation;
-    uint256 public minStakeAmount;
-    uint256 public disputeFee;
-    uint256 public nextEscrowId;
-    OmniCoinMultisig public multisig;
+    mapping(address => Arbitrator) public arbitrators;
+    mapping(bytes32 => Dispute) public disputes;
+    mapping(address => bytes32[]) public arbitratorDisputes;
+    mapping(address => bytes32[]) public userDisputes;
+    
+    OmniCoin public omniCoin;
+    OmniCoinAccount public omniCoinAccount;
+    OmniCoinEscrow public omniCoinEscrow;
+    
+    uint256 public minReputation;
+    uint256 public minParticipationIndex;
+    uint256 public maxActiveDisputes;
+    uint256 public disputeTimeout;
+    uint256 public ratingWeight;
 
     // Events
-    event EscrowCreated(uint256 indexed escrowId, address indexed buyer, address indexed seller, uint256 amount);
-    event EscrowReleased(uint256 indexed escrowId, address indexed releaser);
-    event DisputeRaised(uint256 indexed escrowId, address indexed claimant, string reason);
-    event DisputeResolved(uint256 indexed escrowId, address indexed winner);
-    event ArbitratorAdded(address indexed arbitrator);
+    event ArbitratorRegistered(address indexed arbitrator);
     event ArbitratorRemoved(address indexed arbitrator);
-    event StakeDeposited(address indexed arbitrator, uint256 amount);
-    event StakeWithdrawn(address indexed arbitrator, uint256 amount);
+    event DisputeCreated(bytes32 indexed escrowId, address indexed arbitrator);
+    event DisputeResolved(bytes32 indexed escrowId, string resolution);
+    event RatingSubmitted(bytes32 indexed escrowId, address indexed rater, uint256 rating);
+    event ReputationUpdated(address indexed arbitrator, uint256 newReputation);
+    event ParticipationIndexUpdated(address indexed arbitrator, uint256 newIndex);
 
     /// @custom:oz-upgrades-unsafe-allow constructor
     constructor() {
@@ -65,228 +70,269 @@ contract OmniCoinArbitration is Initializable, OwnableUpgradeable, ReentrancyGua
      * @dev Initializes the contract
      */
     function initialize(
-        address _multisig,
-        uint256 _minStakeAmount,
-        uint256 _disputeFee
+        address _omniCoin,
+        address _omniCoinAccount,
+        address _omniCoinEscrow,
+        uint256 _minReputation,
+        uint256 _minParticipationIndex,
+        uint256 _maxActiveDisputes,
+        uint256 _disputeTimeout,
+        uint256 _ratingWeight
     ) public initializer {
         __Ownable_init(msg.sender);
         __ReentrancyGuard_init();
-
-        multisig = OmniCoinMultisig(_multisig);
-        minStakeAmount = _minStakeAmount;
-        disputeFee = _disputeFee;
+        omniCoin = OmniCoin(_omniCoin);
+        omniCoinAccount = OmniCoinAccount(_omniCoinAccount);
+        omniCoinEscrow = OmniCoinEscrow(_omniCoinEscrow);
+        minReputation = _minReputation;
+        minParticipationIndex = _minParticipationIndex;
+        maxActiveDisputes = _maxActiveDisputes;
+        disputeTimeout = _disputeTimeout;
+        ratingWeight = _ratingWeight;
     }
 
     /**
-     * @dev Creates a new escrow
+     * @dev Registers a new arbitrator
      */
-    function createEscrow(
-        address _seller,
-        address _token,
-        uint256 _amount,
-        uint256 _deadline,
-        string calldata _metadata
-    ) external nonReentrant returns (uint256 escrowId) {
-        require(_seller != address(0), "Invalid seller address");
-        require(_amount > 0, "Amount must be greater than 0");
-        require(_deadline > block.timestamp, "Invalid deadline");
+    function registerArbitrator() external {
+        require(!arbitrators[msg.sender].isActive, "Already registered");
+        
+        uint256 reputation = omniCoinAccount.reputationScore(msg.sender);
+        uint256 participationIndex = _calculateParticipationIndex(msg.sender);
+        
+        require(reputation >= minReputation, "Insufficient reputation");
+        require(participationIndex >= minParticipationIndex, "Insufficient participation");
 
-        escrowId = nextEscrowId++;
-        escrows[escrowId] = Escrow({
-            buyer: msg.sender,
-            seller: _seller,
-            token: _token,
-            amount: _amount,
-            deadline: _deadline,
-            released: false,
-            disputed: false,
-            resolved: false,
-            arbitrator: address(0),
-            metadata: _metadata
+        arbitrators[msg.sender] = Arbitrator({
+            account: msg.sender,
+            reputation: reputation,
+            participationIndex: participationIndex,
+            totalCases: 0,
+            successfulCases: 0,
+            isActive: true,
+            lastActiveTimestamp: block.timestamp
         });
 
-        IERC20Upgradeable(_token).transferFrom(msg.sender, address(this), _amount);
-
-        emit EscrowCreated(escrowId, msg.sender, _seller, _amount);
-    }
-
-    /**
-     * @dev Releases funds to the seller
-     */
-    function releaseEscrow(uint256 _escrowId) external nonReentrant {
-        Escrow storage escrow = escrows[_escrowId];
-        require(msg.sender == escrow.buyer, "Only buyer can release");
-        require(!escrow.released, "Already released");
-        require(!escrow.disputed, "Escrow is disputed");
-
-        escrow.released = true;
-        IERC20Upgradeable(escrow.token).transfer(escrow.seller, escrow.amount);
-
-        emit EscrowReleased(_escrowId, msg.sender);
-    }
-
-    /**
-     * @dev Raises a dispute
-     */
-    function raiseDispute(uint256 _escrowId, string calldata _reason) external nonReentrant {
-        Escrow storage escrow = escrows[_escrowId];
-        require(msg.sender == escrow.buyer || msg.sender == escrow.seller, "Not a party to escrow");
-        require(!escrow.released, "Escrow already released");
-        require(!escrow.disputed, "Dispute already raised");
-        require(block.timestamp <= escrow.deadline, "Escrow expired");
-
-        escrow.disputed = true;
-        disputes[_escrowId] = Dispute({
-            escrowId: _escrowId,
-            claimant: msg.sender,
-            reason: _reason,
-            timestamp: block.timestamp,
-            resolved: false,
-            winner: address(0)
-        });
-
-        emit DisputeRaised(_escrowId, msg.sender, _reason);
-    }
-
-    /**
-     * @dev Resolves a dispute
-     */
-    function resolveDispute(uint256 _escrowId, address _winner) external {
-        require(arbitrators[msg.sender], "Not an arbitrator");
-        require(arbitratorStakes[msg.sender] >= minStakeAmount, "Insufficient stake");
-
-        Escrow storage escrow = escrows[_escrowId];
-        Dispute storage dispute = disputes[_escrowId];
-        require(escrow.disputed, "No dispute");
-        require(!dispute.resolved, "Already resolved");
-        require(_winner == escrow.buyer || _winner == escrow.seller, "Invalid winner");
-
-        dispute.resolved = true;
-        dispute.winner = _winner;
-        escrow.resolved = true;
-
-        // Transfer funds to winner
-        IERC20Upgradeable(escrow.token).transfer(_winner, escrow.amount);
-
-        // Update arbitrator reputation
-        arbitratorReputation[msg.sender] += 1;
-
-        emit DisputeResolved(_escrowId, _winner);
-    }
-
-    /**
-     * @dev Adds an arbitrator
-     */
-    function addArbitrator(address _arbitrator) external onlyOwner {
-        require(!arbitrators[_arbitrator], "Already an arbitrator");
-        arbitrators[_arbitrator] = true;
-        emit ArbitratorAdded(_arbitrator);
+        emit ArbitratorRegistered(msg.sender);
     }
 
     /**
      * @dev Removes an arbitrator
      */
     function removeArbitrator(address _arbitrator) external onlyOwner {
-        require(arbitrators[_arbitrator], "Not an arbitrator");
-        arbitrators[_arbitrator] = false;
+        require(arbitrators[_arbitrator].isActive, "Not an active arbitrator");
+        arbitrators[_arbitrator].isActive = false;
         emit ArbitratorRemoved(_arbitrator);
     }
 
     /**
-     * @dev Deposits stake for arbitration
+     * @dev Creates a new dispute
      */
-    function depositStake() external payable nonReentrant {
-        require(arbitrators[msg.sender], "Not an arbitrator");
-        arbitratorStakes[msg.sender] += msg.value;
-        emit StakeDeposited(msg.sender, msg.value);
+    function createDispute(bytes32 _escrowId) external {
+        require(omniCoinEscrow.getEscrow(_escrowId).isDisputed, "Escrow not disputed");
+        
+        address arbitrator = _selectArbitrator();
+        require(arbitrator != address(0), "No suitable arbitrator found");
+
+        disputes[_escrowId] = Dispute({
+            escrowId: _escrowId,
+            arbitrator: arbitrator,
+            timestamp: block.timestamp,
+            isResolved: false,
+            resolution: "",
+            buyerRating: 0,
+            sellerRating: 0,
+            arbitratorRating: 0
+        });
+
+        arbitratorDisputes[arbitrator].push(_escrowId);
+        userDisputes[omniCoinEscrow.getEscrow(_escrowId).buyer].push(_escrowId);
+        userDisputes[omniCoinEscrow.getEscrow(_escrowId).seller].push(_escrowId);
+
+        arbitrators[arbitrator].totalCases++;
+        arbitrators[arbitrator].lastActiveTimestamp = block.timestamp;
+
+        emit DisputeCreated(_escrowId, arbitrator);
     }
 
     /**
-     * @dev Withdraws stake
+     * @dev Resolves a dispute
      */
-    function withdrawStake(uint256 _amount) external nonReentrant {
-        require(arbitratorStakes[msg.sender] >= _amount, "Insufficient stake");
-        arbitratorStakes[msg.sender] -= _amount;
-        payable(msg.sender).transfer(_amount);
-        emit StakeWithdrawn(msg.sender, _amount);
+    function resolveDispute(bytes32 _escrowId, string calldata _resolution) external {
+        Dispute storage dispute = disputes[_escrowId];
+        require(!dispute.isResolved, "Already resolved");
+        require(msg.sender == dispute.arbitrator, "Not the arbitrator");
+        require(block.timestamp <= dispute.timestamp + disputeTimeout, "Dispute timeout");
+
+        dispute.isResolved = true;
+        dispute.resolution = _resolution;
+
+        // Update arbitrator stats
+        arbitrators[dispute.arbitrator].successfulCases++;
+
+        emit DisputeResolved(_escrowId, _resolution);
     }
 
     /**
-     * @dev Updates minimum stake amount
+     * @dev Submits a rating for a resolved dispute
      */
-    function updateMinStakeAmount(uint256 _newAmount) external onlyOwner {
-        minStakeAmount = _newAmount;
+    function submitRating(bytes32 _escrowId, uint256 _rating) external {
+        Dispute storage dispute = disputes[_escrowId];
+        require(dispute.isResolved, "Dispute not resolved");
+        require(_rating > 0 && _rating <= 5, "Invalid rating");
+
+        if (msg.sender == omniCoinEscrow.getEscrow(_escrowId).buyer) {
+            dispute.buyerRating = _rating;
+        } else if (msg.sender == omniCoinEscrow.getEscrow(_escrowId).seller) {
+            dispute.sellerRating = _rating;
+        } else {
+            revert("Not authorized");
+        }
+
+        _updateArbitratorReputation(dispute.arbitrator, _rating);
+        emit RatingSubmitted(_escrowId, msg.sender, _rating);
     }
 
     /**
-     * @dev Updates dispute fee
+     * @dev Internal function to select an arbitrator
      */
-    function updateDisputeFee(uint256 _newFee) external onlyOwner {
-        disputeFee = _newFee;
+    function _selectArbitrator() internal view returns (address) {
+        address selectedArbitrator;
+        uint256 highestScore;
+
+        for (uint256 i = 0; i < arbitratorDisputes[msg.sender].length; i++) {
+            address arbitrator = arbitrators[msg.sender].account;
+            if (!arbitrators[arbitrator].isActive) continue;
+
+            uint256 activeDisputes = _getActiveDisputes(arbitrator);
+            if (activeDisputes >= maxActiveDisputes) continue;
+
+            uint256 score = _calculateArbitratorScore(arbitrator);
+            if (score > highestScore) {
+                highestScore = score;
+                selectedArbitrator = arbitrator;
+            }
+        }
+
+        return selectedArbitrator;
     }
 
     /**
-     * @dev Returns arbitrator statistics
+     * @dev Internal function to calculate arbitrator score
      */
-    function getArbitratorStats(address _arbitrator) external view returns (
-        bool isArbitrator,
-        uint256 stake,
-        uint256 reputation
+    function _calculateArbitratorScore(address _arbitrator) internal view returns (uint256) {
+        Arbitrator storage arbitrator = arbitrators[_arbitrator];
+        if (arbitrator.totalCases == 0) return 0;
+
+        uint256 successRate = (arbitrator.successfulCases * 100) / arbitrator.totalCases;
+        return (arbitrator.reputation * successRate * arbitrator.participationIndex) / 100;
+    }
+
+    /**
+     * @dev Internal function to calculate participation index
+     */
+    function _calculateParticipationIndex(address _user) internal view returns (uint256) {
+        // Implementation would integrate with COTI's participation index
+        return omniCoinAccount.getAccountStatus(_user).reputation;
+    }
+
+    /**
+     * @dev Internal function to get active disputes for an arbitrator
+     */
+    function _getActiveDisputes(address _arbitrator) internal view returns (uint256) {
+        uint256 count;
+        for (uint256 i = 0; i < arbitratorDisputes[_arbitrator].length; i++) {
+            if (!disputes[arbitratorDisputes[_arbitrator][i]].isResolved) {
+                count++;
+            }
+        }
+        return count;
+    }
+
+    /**
+     * @dev Internal function to update arbitrator reputation
+     */
+    function _updateArbitratorReputation(address _arbitrator, uint256 _rating) internal {
+        Arbitrator storage arbitrator = arbitrators[_arbitrator];
+        uint256 newReputation = (arbitrator.reputation * (100 - ratingWeight) + _rating * ratingWeight) / 100;
+        arbitrator.reputation = newReputation;
+        emit ReputationUpdated(_arbitrator, newReputation);
+    }
+
+    /**
+     * @dev Updates minimum requirements
+     */
+    function updateRequirements(
+        uint256 _minReputation,
+        uint256 _minParticipationIndex,
+        uint256 _maxActiveDisputes,
+        uint256 _disputeTimeout,
+        uint256 _ratingWeight
+    ) external onlyOwner {
+        minReputation = _minReputation;
+        minParticipationIndex = _minParticipationIndex;
+        maxActiveDisputes = _maxActiveDisputes;
+        disputeTimeout = _disputeTimeout;
+        ratingWeight = _ratingWeight;
+    }
+
+    /**
+     * @dev Gets arbitrator details
+     */
+    function getArbitrator(address _arbitrator) external view returns (
+        uint256 reputation,
+        uint256 participationIndex,
+        uint256 totalCases,
+        uint256 successfulCases,
+        bool isActive,
+        uint256 lastActiveTimestamp
     ) {
+        Arbitrator storage arbitrator = arbitrators[_arbitrator];
         return (
-            arbitrators[_arbitrator],
-            arbitratorStakes[_arbitrator],
-            arbitratorReputation[_arbitrator]
+            arbitrator.reputation,
+            arbitrator.participationIndex,
+            arbitrator.totalCases,
+            arbitrator.successfulCases,
+            arbitrator.isActive,
+            arbitrator.lastActiveTimestamp
         );
     }
 
     /**
-     * @dev Returns escrow details
+     * @dev Gets dispute details
      */
-    function getEscrow(uint256 _escrowId) external view returns (
-        address buyer,
-        address seller,
-        address token,
-        uint256 amount,
-        uint256 deadline,
-        bool released,
-        bool disputed,
-        bool resolved,
+    function getDispute(bytes32 _escrowId) external view returns (
         address arbitrator,
-        string memory metadata
-    ) {
-        Escrow storage escrow = escrows[_escrowId];
-        return (
-            escrow.buyer,
-            escrow.seller,
-            escrow.token,
-            escrow.amount,
-            escrow.deadline,
-            escrow.released,
-            escrow.disputed,
-            escrow.resolved,
-            escrow.arbitrator,
-            escrow.metadata
-        );
-    }
-
-    /**
-     * @dev Returns dispute details
-     */
-    function getDispute(uint256 _escrowId) external view returns (
-        address claimant,
-        string memory reason,
         uint256 timestamp,
-        bool resolved,
-        address winner
+        bool isResolved,
+        string memory resolution,
+        uint256 buyerRating,
+        uint256 sellerRating,
+        uint256 arbitratorRating
     ) {
         Dispute storage dispute = disputes[_escrowId];
         return (
-            dispute.claimant,
-            dispute.reason,
+            dispute.arbitrator,
             dispute.timestamp,
-            dispute.resolved,
-            dispute.winner
+            dispute.isResolved,
+            dispute.resolution,
+            dispute.buyerRating,
+            dispute.sellerRating,
+            dispute.arbitratorRating
         );
+    }
+
+    /**
+     * @dev Gets user's dispute history
+     */
+    function getUserDisputes(address _user) external view returns (bytes32[] memory) {
+        return userDisputes[_user];
+    }
+
+    /**
+     * @dev Gets arbitrator's dispute history
+     */
+    function getArbitratorDisputes(address _arbitrator) external view returns (bytes32[] memory) {
+        return arbitratorDisputes[_arbitrator];
     }
 } 

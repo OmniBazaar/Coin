@@ -164,7 +164,7 @@ contract OmniCoinReputation is Initializable, OwnableUpgradeable, ReentrancyGuar
     /**
      * @dev Calculate overall reputation score
      */
-    function calculateOverallScore(ReputationScore memory score) public view returns (uint256) {
+    function calculateOverallScore(ReputationScore memory score) public pure returns (uint256) {
         return (score.marketplaceScore * 40 + 
                 score.validatorScore * 30 + 
                 score.referralScore * 30) / 100;
