@@ -78,11 +78,11 @@ npx hardhat test
 The contracts are designed to work together seamlessly:
 
 1. Users can stake tokens to become validators
-1. Validators earn rewards for maintaining the network
-1. Privacy features allow for private transactions
-1. Reputation system tracks user behavior
-1. Bridge enables cross-chain transfers
-1. Arbitration system handles disputes
+2. Validators earn rewards for maintaining the network
+3. Privacy features allow for private transactions
+4. Reputation system tracks user behavior
+5. Bridge enables cross-chain transfers
+6. Arbitration system handles disputes
 
 ## Security
 
@@ -124,13 +124,22 @@ npx hardhat run scripts/deploy.js --network mainnet
 
 This project is licensed under the MIT License - see the LICENSE file for details.
 
+## Getting Started
+
+1. Clone the repository
+2. Install dependencies
+3. Configure environment variables
+4. Deploy contracts
+5. Run tests
+6. Start development server
+
 ## Contributing
 
 1. Fork the repository
-1. Create your feature branch
-1. Commit your changes
-1. Push to the branch
-1. Create a new Pull Request
+2. Create your feature branch (`git checkout -b feature/AmazingFeature`)
+3. Commit your changes (`git commit -m 'Add some AmazingFeature'`)
+4. Push to the branch (`git push origin feature/AmazingFeature`)
+5. Open a Pull Request
 
 ## Support
 

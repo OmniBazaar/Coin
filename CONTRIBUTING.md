@@ -2,13 +2,21 @@
 
 Thank you for your interest in contributing to the OmniCoin smart contracts!
 
+## Contributing
+
+1. Fork the repository
+2. Create your feature branch (`git checkout -b feature/AmazingFeature`)
+3. Commit your changes (`git commit -m 'Add some AmazingFeature'`)
+4. Push to the branch (`git push origin feature/AmazingFeature`)
+5. Open a Pull Request
+
 ## How to Contribute
 
 1. Fork the repository and create your branch from `main`.
-1. Write clear, concise commit messages.
-1. Add tests for new features and bug fixes.
-1. Ensure all tests pass and code is linted before submitting a pull request.
-1. Update documentation as needed.
+2. Write clear, concise commit messages.
+3. Add tests for new features and bug fixes.
+4. Ensure all tests pass and code is linted before submitting a pull request.
+5. Update documentation as needed.
 
 ## Code Style
 
