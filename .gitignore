@@ -1,18 +1,58 @@
-node_modules
+# Dependencies
+node_modules/
+package-lock.json
+yarn.lock
+
+# Environment variables
 .env
+.env.local
+.env.*.local
 
 # Hardhat files
-/cache
-/artifacts
-/ignition/deployments
+cache/
+artifacts/
+ignition/deployments/
+typechain/
+typechain-types/
 
-# TypeChain files
-/typechain
-/typechain-types
+# Coverage
+coverage/
+coverage.json
 
-# solidity-coverage files
-/coverage
-/coverage.json
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
 
-# Hardhat Ignition default folder for deployments against a local node
-ignition/deployments/chain-31337
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Build output
+dist/
+build/
+
+# Hardhat Ignition deployments
+ignition/deployments/chain-31337/
+
+# Local Hardhat node
+hardhat-node/
+
+# Gas reporter files
+gas-report.txt
+
+# Solidity coverage
+coverage/
+coverage.json
+
+# Temporary files
+*.tmp
+*.temp 
