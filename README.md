@@ -35,7 +35,7 @@ npm install
 
 1. Create a `.env` file in the root directory with the following variables:
 
-```env
+```bash
 PRIVATE_KEY=your_private_key
 INFURA_API_KEY=your_infura_api_key
 ETHERSCAN_API_KEY=your_etherscan_api_key
