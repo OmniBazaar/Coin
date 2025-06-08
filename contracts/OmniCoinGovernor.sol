@@ -1,187 +1,243 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import "@openzeppelin/contracts-upgradeable/governance/GovernorUpgradeable.sol";
-import "@openzeppelin/contracts-upgradeable/governance/extensions/GovernorSettingsUpgradeable.sol";
-import "@openzeppelin/contracts-upgradeable/governance/extensions/GovernorCountingSimpleUpgradeable.sol";
-import "@openzeppelin/contracts-upgradeable/governance/extensions/GovernorVotesUpgradeable.sol";
-import "@openzeppelin/contracts-upgradeable/governance/extensions/GovernorVotesQuorumFractionUpgradeable.sol";
-import "@openzeppelin/contracts-upgradeable/governance/extensions/GovernorTimelockControlUpgradeable.sol";
-import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
-import "./omnicoin-erc20-coti.sol";
-import "./OmniCoinBridge.sol";
+import "@openzeppelin/contracts/access/Ownable.sol";
+import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
+import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
-/**
- * @title OmniCoinGovernor
- * @dev Governance contract for OmniCoin protocol
- */
-contract OmniCoinGovernor is
-    Initializable,
-    GovernorUpgradeable,
-    GovernorSettingsUpgradeable,
-    GovernorCountingSimpleUpgradeable,
-    GovernorVotesUpgradeable,
-    GovernorVotesQuorumFractionUpgradeable,
-    GovernorTimelockControlUpgradeable
-{
-    OmniCoin public omniCoin;
-    OmniCoinBridge public bridge;
-
-    // Proposal types
-    enum ProposalType {
-        BRIDGE_CONFIG,    // Change bridge parameters
-        TOKEN_CONFIG,     // Change token parameters
-        PROTOCOL_CONFIG,  // Change protocol parameters
-        EMERGENCY        // Emergency actions
+contract OmniCoinGovernor is Ownable, ReentrancyGuard {
+    struct Proposal {
+        uint256 id;
+        address proposer;
+        string description;
+        uint256 startTime;
+        uint256 endTime;
+        uint256 forVotes;
+        uint256 againstVotes;
+        uint256 abstainVotes;
+        bool executed;
+        bool canceled;
+        mapping(address => bool) hasVoted;
+        mapping(address => uint256) votes;
     }
-
-    // Events
-    event ProposalTypeSet(uint256 proposalId, ProposalType proposalType);
-    event BridgeUpdated(address indexed newBridge);
-    event EmergencyActionExecuted(address indexed executor, bytes32 indexed actionId);
-
-    /// @custom:oz-upgrades-unsafe-allow constructor
-    constructor() {
-        _disableInitializers();
+    
+    struct ProposalAction {
+        address target;
+        bytes data;
+        uint256 value;
     }
-
-    function initialize(
-        address _token,
-        address _bridge,
-        address _timelock,
-        uint256 _votingDelay,
-        uint256 _votingPeriod,
-        uint256 _proposalThreshold,
-        uint256 _quorumNumerator
-    ) public initializer {
-        __Governor_init("OmniCoin Governor");
-        __GovernorSettings_init(_votingDelay, _votingPeriod, _proposalThreshold);
-        __GovernorCountingSimple_init();
-        __GovernorVotes_init(IVotesUpgradeable(_token));
-        __GovernorVotesQuorumFraction_init(_quorumNumerator);
-        __GovernorTimelockControl_init(ITimelockControllerUpgradeable(_timelock));
-
-        omniCoin = OmniCoin(_token);
-        bridge = OmniCoinBridge(_bridge);
+    
+    IERC20 public token;
+    uint256 public proposalCount;
+    uint256 public votingPeriod;
+    uint256 public proposalThreshold;
+    uint256 public quorum;
+    
+    mapping(uint256 => Proposal) public proposals;
+    mapping(uint256 => ProposalAction[]) public proposalActions;
+    
+    event ProposalCreated(
+        uint256 indexed proposalId,
+        address proposer,
+        string description,
+        uint256 startTime,
+        uint256 endTime
+    );
+    event ProposalCanceled(uint256 indexed proposalId);
+    event ProposalExecuted(uint256 indexed proposalId);
+    event VoteCast(
+        uint256 indexed proposalId,
+        address voter,
+        uint256 support,
+        uint256 weight
+    );
+    event VotingPeriodUpdated(uint256 oldPeriod, uint256 newPeriod);
+    event ProposalThresholdUpdated(uint256 oldThreshold, uint256 newThreshold);
+    event QuorumUpdated(uint256 oldQuorum, uint256 newQuorum);
+    
+    enum VoteType {
+        Against,
+        For,
+        Abstain
     }
-
-    // The following functions are overrides required by Solidity
-    function votingDelay()
-        public
-        view
-        override(IGovernorUpgradeable, GovernorSettingsUpgradeable)
-        returns (uint256)
-    {
-        return super.votingDelay();
+    
+    constructor(address _token) {
+        token = IERC20(_token);
+        votingPeriod = 3 days;
+        proposalThreshold = 1000 * 10**18; // 1000 tokens
+        quorum = 10000 * 10**18; // 10000 tokens
     }
-
-    function votingPeriod()
-        public
-        view
-        override(IGovernorUpgradeable, GovernorSettingsUpgradeable)
-        returns (uint256)
-    {
-        return super.votingPeriod();
-    }
-
-    function quorum(uint256 blockNumber)
-        public
-        view
-        override(IGovernorUpgradeable, GovernorVotesQuorumFractionUpgradeable)
-        returns (uint256)
-    {
-        return super.quorum(blockNumber);
-    }
-
-    function state(uint256 proposalId)
-        public
-        view
-        override(GovernorUpgradeable, GovernorTimelockControlUpgradeable)
-        returns (ProposalState)
-    {
-        return super.state(proposalId);
-    }
-
+    
     function propose(
-        address[] memory targets,
-        uint256[] memory values,
-        bytes[] memory calldatas,
         string memory description,
-        ProposalType proposalType
-    ) public override returns (uint256) {
-        uint256 proposalId = super.propose(targets, values, calldatas, description);
-        emit ProposalTypeSet(proposalId, proposalType);
+        ProposalAction[] memory actions
+    ) external nonReentrant returns (uint256) {
+        require(
+            token.balanceOf(msg.sender) >= proposalThreshold,
+            "OmniCoinGovernor: insufficient balance"
+        );
+        
+        uint256 proposalId = proposalCount++;
+        uint256 startTime = block.timestamp;
+        uint256 endTime = startTime + votingPeriod;
+        
+        Proposal storage proposal = proposals[proposalId];
+        proposal.id = proposalId;
+        proposal.proposer = msg.sender;
+        proposal.description = description;
+        proposal.startTime = startTime;
+        proposal.endTime = endTime;
+        
+        for (uint256 i = 0; i < actions.length; i++) {
+            proposalActions[proposalId].push(actions[i]);
+        }
+        
+        emit ProposalCreated(
+            proposalId,
+            msg.sender,
+            description,
+            startTime,
+            endTime
+        );
+        
         return proposalId;
     }
-
-    function _execute(
-        uint256 proposalId,
-        address[] memory targets,
-        uint256[] memory values,
-        bytes[] memory calldatas,
-        bytes32 descriptionHash
-    ) internal override(GovernorUpgradeable, GovernorTimelockControlUpgradeable) {
-        super._execute(proposalId, targets, values, calldatas, descriptionHash);
+    
+    function cancel(uint256 proposalId) external nonReentrant {
+        Proposal storage proposal = proposals[proposalId];
+        require(
+            msg.sender == proposal.proposer,
+            "OmniCoinGovernor: not proposer"
+        );
+        require(!proposal.executed, "OmniCoinGovernor: already executed");
+        require(!proposal.canceled, "OmniCoinGovernor: already canceled");
+        
+        proposal.canceled = true;
+        
+        emit ProposalCanceled(proposalId);
     }
-
-    function _cancel(
-        address[] memory targets,
-        uint256[] memory values,
-        bytes[] memory calldatas,
-        bytes32 descriptionHash
-    ) internal override(GovernorUpgradeable, GovernorTimelockControlUpgradeable) returns (uint256) {
-        return super._cancel(targets, values, calldatas, descriptionHash);
+    
+    function execute(uint256 proposalId) external nonReentrant {
+        Proposal storage proposal = proposals[proposalId];
+        require(!proposal.executed, "OmniCoinGovernor: already executed");
+        require(!proposal.canceled, "OmniCoinGovernor: canceled");
+        require(
+            block.timestamp >= proposal.endTime,
+            "OmniCoinGovernor: voting not ended"
+        );
+        require(
+            proposal.forVotes > proposal.againstVotes,
+            "OmniCoinGovernor: proposal failed"
+        );
+        require(
+            proposal.forVotes + proposal.againstVotes + proposal.abstainVotes >= quorum,
+            "OmniCoinGovernor: quorum not met"
+        );
+        
+        proposal.executed = true;
+        
+        ProposalAction[] storage actions = proposalActions[proposalId];
+        for (uint256 i = 0; i < actions.length; i++) {
+            (bool success, ) = actions[i].target.call{value: actions[i].value}(
+                actions[i].data
+            );
+            require(success, "OmniCoinGovernor: action failed");
+        }
+        
+        emit ProposalExecuted(proposalId);
     }
-
-    function _executor()
-        internal
-        view
-        override(GovernorUpgradeable, GovernorTimelockControlUpgradeable)
-        returns (address)
-    {
-        return super._executor();
+    
+    function castVote(uint256 proposalId, VoteType support) external nonReentrant {
+        Proposal storage proposal = proposals[proposalId];
+        require(!proposal.executed, "OmniCoinGovernor: already executed");
+        require(!proposal.canceled, "OmniCoinGovernor: canceled");
+        require(
+            block.timestamp >= proposal.startTime,
+            "OmniCoinGovernor: voting not started"
+        );
+        require(
+            block.timestamp <= proposal.endTime,
+            "OmniCoinGovernor: voting ended"
+        );
+        require(!proposal.hasVoted[msg.sender], "OmniCoinGovernor: already voted");
+        
+        uint256 weight = token.balanceOf(msg.sender);
+        require(weight > 0, "OmniCoinGovernor: no voting power");
+        
+        proposal.hasVoted[msg.sender] = true;
+        proposal.votes[msg.sender] = weight;
+        
+        if (support == VoteType.For) {
+            proposal.forVotes += weight;
+        } else if (support == VoteType.Against) {
+            proposal.againstVotes += weight;
+        } else if (support == VoteType.Abstain) {
+            proposal.abstainVotes += weight;
+        }
+        
+        emit VoteCast(proposalId, msg.sender, uint256(support), weight);
     }
-
-    function supportsInterface(bytes4 interfaceId)
-        public
-        view
-        override(GovernorUpgradeable, GovernorTimelockControlUpgradeable)
-        returns (bool)
-    {
-        return super.supportsInterface(interfaceId);
+    
+    function setVotingPeriod(uint256 _period) external onlyOwner {
+        emit VotingPeriodUpdated(votingPeriod, _period);
+        votingPeriod = _period;
     }
-
-    /**
-     * @dev Emergency function to pause the protocol
-     * Can only be called by the governor
-     */
-    function emergencyPause() external onlyGovernance {
-        omniCoin.pause();
+    
+    function setProposalThreshold(uint256 _threshold) external onlyOwner {
+        emit ProposalThresholdUpdated(proposalThreshold, _threshold);
+        proposalThreshold = _threshold;
     }
-
-    /**
-     * @dev Emergency function to unpause the protocol
-     * Can only be called by the governor
-     */
-    function emergencyUnpause() external onlyGovernance {
-        omniCoin.unpause();
+    
+    function setQuorum(uint256 _quorum) external onlyOwner {
+        emit QuorumUpdated(quorum, _quorum);
+        quorum = _quorum;
     }
-
-    /**
-     * @dev Update the bridge contract address
-     * Can only be called by the governor
-     */
-    function updateBridge(address newBridge) external onlyGovernance {
-        require(newBridge != address(0), "Invalid bridge address");
-        bridge = OmniCoinBridge(newBridge);
-        emit BridgeUpdated(newBridge);
+    
+    function getProposal(uint256 proposalId) external view returns (
+        uint256 id,
+        address proposer,
+        string memory description,
+        uint256 startTime,
+        uint256 endTime,
+        uint256 forVotes,
+        uint256 againstVotes,
+        uint256 abstainVotes,
+        bool executed,
+        bool canceled
+    ) {
+        Proposal storage proposal = proposals[proposalId];
+        return (
+            proposal.id,
+            proposal.proposer,
+            proposal.description,
+            proposal.startTime,
+            proposal.endTime,
+            proposal.forVotes,
+            proposal.againstVotes,
+            proposal.abstainVotes,
+            proposal.executed,
+            proposal.canceled
+        );
     }
-
-    /**
-     * @dev Get the proposal type for a given proposal ID
-     */
-    function getProposalType(uint256 proposalId) external view returns (ProposalType) {
-        // This would need to be implemented with a mapping to store proposal types
-        revert("Not implemented");
+    
+    function getProposalAction(uint256 proposalId, uint256 index) external view returns (
+        address target,
+        bytes memory data,
+        uint256 value
+    ) {
+        ProposalAction storage action = proposalActions[proposalId][index];
+        return (action.target, action.data, action.value);
+    }
+    
+    function getProposalActionCount(uint256 proposalId) external view returns (uint256) {
+        return proposalActions[proposalId].length;
+    }
+    
+    function hasVoted(uint256 proposalId, address voter) external view returns (bool) {
+        return proposals[proposalId].hasVoted[voter];
+    }
+    
+    function getVotes(uint256 proposalId, address voter) external view returns (uint256) {
+        return proposals[proposalId].votes[voter];
     }
 } 

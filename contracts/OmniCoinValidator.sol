@@ -1,314 +1,255 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
-import "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
-import "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
-import "./omnicoin-erc20-coti.sol";
-import "./OmniCoinReputation.sol";
-import "./OmniCoinStaking.sol";
+import "@openzeppelin/contracts/access/Ownable.sol";
+import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
+import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
-/**
- * @title OmniCoinValidator
- * @dev Manages validator selection and rewards based on staking and reputation
- */
-contract OmniCoinValidator is Initializable, OwnableUpgradeable, ReentrancyGuardUpgradeable {
-    // Structs
-    struct ValidatorInfo {
-        bool isActive;
-        uint256 totalStaked;
+contract OmniCoinValidator is Ownable, ReentrancyGuard {
+    struct Validator {
+        address account;
+        uint256 stake;
+        uint256 reputation;
         uint256 lastRewardTime;
-        uint256 totalRewards;
-        uint256 performanceScore;
-        uint256 uptime;
-        uint256 lastHeartbeat;
+        uint256 accumulatedRewards;
+        bool isActive;
     }
-
-    struct ValidatorMetrics {
-        uint256 blocksProposed;
-        uint256 blocksValidated;
-        uint256 transactionsProcessed;
-        uint256 slashingEvents;
-        uint256 lastUpdate;
+    
+    struct ValidatorSet {
+        address[] validators;
+        uint256 totalStake;
+        uint256 minStake;
+        uint256 maxValidators;
     }
-
-    // State variables
-    mapping(address => ValidatorInfo) public validators;
-    mapping(address => ValidatorMetrics) public validatorMetrics;
-    address[] public activeValidators;
     
-    OmniCoin public omniCoin;
-    OmniCoinReputation public reputation;
-    OmniCoinStaking public staking;
-    
-    uint256 public minStakeAmount;
+    IERC20 public token;
+    uint256 public rewardRate;
+    uint256 public rewardPeriod;
+    uint256 public minStake;
     uint256 public maxValidators;
-    uint256 public rewardInterval;
-    uint256 public heartbeatInterval;
-    uint256 public slashingPenalty;
-    uint256 public totalRewardsDistributed;
-
-    // Events
-    event ValidatorRegistered(address indexed validator);
-    event ValidatorDeregistered(address indexed validator);
-    event ValidatorRewarded(address indexed validator, uint256 amount);
-    event ValidatorSlashed(address indexed validator, uint256 amount, string reason);
-    event HeartbeatReceived(address indexed validator);
-    event ValidatorMetricsUpdated(
-        address indexed validator,
-        uint256 blocksProposed,
-        uint256 blocksValidated,
-        uint256 transactionsProcessed
-    );
-
-    /// @custom:oz-upgrades-unsafe-allow constructor
-    constructor() {
-        _disableInitializers();
+    
+    mapping(address => Validator) public validators;
+    ValidatorSet public activeSet;
+    
+    event ValidatorRegistered(address indexed validator, uint256 stake);
+    event ValidatorUnregistered(address indexed validator);
+    event ValidatorStaked(address indexed validator, uint256 amount);
+    event ValidatorUnstaked(address indexed validator, uint256 amount);
+    event RewardsClaimed(address indexed validator, uint256 amount);
+    event RewardRateUpdated(uint256 oldRate, uint256 newRate);
+    event RewardPeriodUpdated(uint256 oldPeriod, uint256 newPeriod);
+    event MinStakeUpdated(uint256 oldStake, uint256 newStake);
+    event MaxValidatorsUpdated(uint256 oldMax, uint256 newMax);
+    
+    constructor(address _token) {
+        token = IERC20(_token);
+        rewardRate = 100; // 1% per period
+        rewardPeriod = 1 days;
+        minStake = 1000 * 10**18; // 1000 tokens
+        maxValidators = 100;
+        
+        activeSet.minStake = minStake;
+        activeSet.maxValidators = maxValidators;
     }
-
-    /**
-     * @dev Initializes the contract
-     */
-    function initialize(
-        address _omniCoin,
-        address _reputation,
-        address _staking,
-        uint256 _minStakeAmount,
-        uint256 _maxValidators,
-        uint256 _rewardInterval,
-        uint256 _heartbeatInterval,
-        uint256 _slashingPenalty
-    ) public initializer {
-        __Ownable_init(msg.sender);
-        __ReentrancyGuard_init();
-        omniCoin = OmniCoin(_omniCoin);
-        reputation = OmniCoinReputation(_reputation);
-        staking = OmniCoinStaking(_staking);
-        minStakeAmount = _minStakeAmount;
-        maxValidators = _maxValidators;
-        rewardInterval = _rewardInterval;
-        heartbeatInterval = _heartbeatInterval;
-        slashingPenalty = _slashingPenalty;
-    }
-
-    /**
-     * @dev Register as a validator
-     */
+    
     function registerValidator() external nonReentrant {
-        require(!validators[msg.sender].isActive, "Already registered");
-        require(reputation.qualifiesAsValidator(msg.sender), "Insufficient reputation");
-        require(staking.getStakeAmount(msg.sender) >= minStakeAmount, "Insufficient stake");
-        require(activeValidators.length < maxValidators, "Max validators reached");
-
-        validators[msg.sender] = ValidatorInfo({
-            isActive: true,
-            totalStaked: staking.getStakeAmount(msg.sender),
+        require(!validators[msg.sender].isActive, "OmniCoinValidator: already registered");
+        require(
+            token.balanceOf(msg.sender) >= minStake,
+            "OmniCoinValidator: insufficient balance"
+        );
+        
+        validators[msg.sender] = Validator({
+            account: msg.sender,
+            stake: 0,
+            reputation: 0,
             lastRewardTime: block.timestamp,
-            totalRewards: 0,
-            performanceScore: 100,
-            uptime: 100,
-            lastHeartbeat: block.timestamp
+            accumulatedRewards: 0,
+            isActive: true
         });
-
-        validatorMetrics[msg.sender] = ValidatorMetrics({
-            blocksProposed: 0,
-            blocksValidated: 0,
-            transactionsProcessed: 0,
-            slashingEvents: 0,
-            lastUpdate: block.timestamp
-        });
-
-        activeValidators.push(msg.sender);
-        emit ValidatorRegistered(msg.sender);
+        
+        emit ValidatorRegistered(msg.sender, 0);
     }
-
-    /**
-     * @dev Deregister as a validator
-     */
-    function deregisterValidator() external nonReentrant {
-        require(validators[msg.sender].isActive, "Not registered");
+    
+    function unregisterValidator() external nonReentrant {
+        Validator storage validator = validators[msg.sender];
+        require(validator.isActive, "OmniCoinValidator: not registered");
+        require(validator.stake == 0, "OmniCoinValidator: has stake");
         
-        validators[msg.sender].isActive = false;
+        validator.isActive = false;
         
-        // Remove from active validators
-        for (uint i = 0; i < activeValidators.length; i++) {
-            if (activeValidators[i] == msg.sender) {
-                activeValidators[i] = activeValidators[activeValidators.length - 1];
-                activeValidators.pop();
+        emit ValidatorUnregistered(msg.sender);
+    }
+    
+    function stake(uint256 amount) external nonReentrant {
+        Validator storage validator = validators[msg.sender];
+        require(validator.isActive, "OmniCoinValidator: not registered");
+        require(amount > 0, "OmniCoinValidator: zero amount");
+        require(
+            token.balanceOf(msg.sender) >= amount,
+            "OmniCoinValidator: insufficient balance"
+        );
+        
+        // Claim pending rewards
+        uint256 pendingRewards = calculateRewards(msg.sender);
+        if (pendingRewards > 0) {
+            validator.accumulatedRewards += pendingRewards;
+        }
+        
+        // Update stake
+        validator.stake += amount;
+        activeSet.totalStake += amount;
+        
+        // Update validator set
+        if (validator.stake >= minStake && !isInActiveSet(msg.sender)) {
+            if (activeSet.validators.length < maxValidators) {
+                activeSet.validators.push(msg.sender);
+            }
+        }
+        
+        require(
+            token.transferFrom(msg.sender, address(this), amount),
+            "OmniCoinValidator: transfer failed"
+        );
+        
+        emit ValidatorStaked(msg.sender, amount);
+    }
+    
+    function unstake(uint256 amount) external nonReentrant {
+        Validator storage validator = validators[msg.sender];
+        require(validator.isActive, "OmniCoinValidator: not registered");
+        require(amount > 0, "OmniCoinValidator: zero amount");
+        require(amount <= validator.stake, "OmniCoinValidator: insufficient stake");
+        
+        // Claim pending rewards
+        uint256 pendingRewards = calculateRewards(msg.sender);
+        if (pendingRewards > 0) {
+            validator.accumulatedRewards += pendingRewards;
+        }
+        
+        // Update stake
+        validator.stake -= amount;
+        activeSet.totalStake -= amount;
+        
+        // Update validator set
+        if (validator.stake < minStake && isInActiveSet(msg.sender)) {
+            removeFromActiveSet(msg.sender);
+        }
+        
+        require(
+            token.transfer(msg.sender, amount),
+            "OmniCoinValidator: transfer failed"
+        );
+        
+        emit ValidatorUnstaked(msg.sender, amount);
+    }
+    
+    function claimRewards() external nonReentrant {
+        Validator storage validator = validators[msg.sender];
+        require(validator.isActive, "OmniCoinValidator: not registered");
+        
+        uint256 pendingRewards = calculateRewards(msg.sender);
+        uint256 totalRewards = validator.accumulatedRewards + pendingRewards;
+        require(totalRewards > 0, "OmniCoinValidator: no rewards");
+        
+        validator.accumulatedRewards = 0;
+        validator.lastRewardTime = block.timestamp;
+        
+        require(
+            token.transfer(msg.sender, totalRewards),
+            "OmniCoinValidator: transfer failed"
+        );
+        
+        emit RewardsClaimed(msg.sender, totalRewards);
+    }
+    
+    function setRewardRate(uint256 _rate) external onlyOwner {
+        emit RewardRateUpdated(rewardRate, _rate);
+        rewardRate = _rate;
+    }
+    
+    function setRewardPeriod(uint256 _period) external onlyOwner {
+        emit RewardPeriodUpdated(rewardPeriod, _period);
+        rewardPeriod = _period;
+    }
+    
+    function setMinStake(uint256 _stake) external onlyOwner {
+        emit MinStakeUpdated(minStake, _stake);
+        minStake = _stake;
+        activeSet.minStake = _stake;
+    }
+    
+    function setMaxValidators(uint256 _max) external onlyOwner {
+        emit MaxValidatorsUpdated(maxValidators, _max);
+        maxValidators = _max;
+        activeSet.maxValidators = _max;
+    }
+    
+    function calculateRewards(address validator) public view returns (uint256) {
+        Validator storage v = validators[validator];
+        if (!v.isActive || v.stake == 0) {
+            return 0;
+        }
+        
+        uint256 timeElapsed = block.timestamp - v.lastRewardTime;
+        uint256 periods = timeElapsed / rewardPeriod;
+        if (periods == 0) {
+            return 0;
+        }
+        
+        uint256 rewardPerPeriod = (v.stake * rewardRate) / 10000;
+        return rewardPerPeriod * periods;
+    }
+    
+    function isInActiveSet(address validator) public view returns (bool) {
+        for (uint256 i = 0; i < activeSet.validators.length; i++) {
+            if (activeSet.validators[i] == validator) {
+                return true;
+            }
+        }
+        return false;
+    }
+    
+    function removeFromActiveSet(address validator) internal {
+        for (uint256 i = 0; i < activeSet.validators.length; i++) {
+            if (activeSet.validators[i] == validator) {
+                activeSet.validators[i] = activeSet.validators[activeSet.validators.length - 1];
+                activeSet.validators.pop();
                 break;
             }
         }
-        
-        emit ValidatorDeregistered(msg.sender);
     }
-
-    /**
-     * @dev Submit validator heartbeat
-     */
-    function submitHeartbeat() external {
-        require(validators[msg.sender].isActive, "Not registered");
-        require(
-            block.timestamp >= validators[msg.sender].lastHeartbeat + heartbeatInterval,
-            "Too early for heartbeat"
-        );
-
-        validators[msg.sender].lastHeartbeat = block.timestamp;
-        validators[msg.sender].uptime = 100; // Reset uptime on successful heartbeat
-        
-        emit HeartbeatReceived(msg.sender);
-    }
-
-    /**
-     * @dev Update validator metrics
-     */
-    function updateMetrics(
-        uint256 _blocksProposed,
-        uint256 _blocksValidated,
-        uint256 _transactionsProcessed
-    ) external {
-        require(validators[msg.sender].isActive, "Not registered");
-        
-        ValidatorMetrics storage metrics = validatorMetrics[msg.sender];
-        metrics.blocksProposed += _blocksProposed;
-        metrics.blocksValidated += _blocksValidated;
-        metrics.transactionsProcessed += _transactionsProcessed;
-        metrics.lastUpdate = block.timestamp;
-        
-        // Update performance score
-        uint256 newScore = calculatePerformanceScore(metrics);
-        validators[msg.sender].performanceScore = newScore;
-        
-        emit ValidatorMetricsUpdated(
-            msg.sender,
-            metrics.blocksProposed,
-            metrics.blocksValidated,
-            metrics.transactionsProcessed
-        );
-    }
-
-    /**
-     * @dev Calculate validator performance score
-     */
-    function calculatePerformanceScore(ValidatorMetrics memory metrics) public pure returns (uint256) {
-        if (metrics.blocksProposed == 0) return 0;
-        
-        uint256 validationRate = (metrics.blocksValidated * 100) / metrics.blocksProposed;
-        uint256 transactionRate = metrics.transactionsProcessed / metrics.blocksValidated;
-        
-        return (validationRate * 60 + transactionRate * 40) / 100;
-    }
-
-    /**
-     * @dev Distribute rewards to validators
-     */
-    function distributeRewards() external onlyOwner {
-        uint256 totalReward = omniCoin.balanceOf(address(this));
-        require(totalReward > 0, "No rewards to distribute");
-        
-        uint256 totalScore = 0;
-        for (uint i = 0; i < activeValidators.length; i++) {
-            ValidatorInfo storage validator = validators[activeValidators[i]];
-            if (validator.isActive) {
-                totalScore += validator.performanceScore * validator.uptime;
-            }
-        }
-        
-        for (uint i = 0; i < activeValidators.length; i++) {
-            ValidatorInfo storage validator = validators[activeValidators[i]];
-            if (validator.isActive) {
-                uint256 reward = (totalReward * validator.performanceScore * validator.uptime) / totalScore;
-                if (reward > 0) {
-                    require(omniCoin.transfer(activeValidators[i], reward), "Reward transfer failed");
-                    validator.totalRewards += reward;
-                    validator.lastRewardTime = block.timestamp;
-                    totalRewardsDistributed += reward;
-                    
-                    emit ValidatorRewarded(activeValidators[i], reward);
-                }
-            }
-        }
-    }
-
-    /**
-     * @dev Slash a validator for misbehavior
-     */
-    function slashValidator(address _validator, string calldata _reason) external onlyOwner {
-        require(validators[_validator].isActive, "Not an active validator");
-        
-        uint256 slashAmount = (validators[_validator].totalStaked * slashingPenalty) / 100;
-        require(omniCoin.transferFrom(_validator, address(this), slashAmount), "Slashing transfer failed");
-        
-        validatorMetrics[_validator].slashingEvents++;
-        validators[_validator].performanceScore = 0;
-        
-        emit ValidatorSlashed(_validator, slashAmount, _reason);
-    }
-
-    /**
-     * @dev Get active validators
-     */
-    function getActiveValidators() external view returns (address[] memory) {
-        return activeValidators;
-    }
-
-    /**
-     * @dev Get validator info
-     */
-    function getValidatorInfo(address _validator) external view returns (
-        bool isActive,
-        uint256 totalStaked,
+    
+    function getValidator(address account) external view returns (
+        address validator,
+        uint256 stake,
+        uint256 reputation,
         uint256 lastRewardTime,
-        uint256 totalRewards,
-        uint256 performanceScore,
-        uint256 uptime,
-        uint256 lastHeartbeat
+        uint256 accumulatedRewards,
+        bool isActive
     ) {
-        ValidatorInfo storage info = validators[_validator];
+        Validator storage v = validators[account];
         return (
-            info.isActive,
-            info.totalStaked,
-            info.lastRewardTime,
-            info.totalRewards,
-            info.performanceScore,
-            info.uptime,
-            info.lastHeartbeat
+            v.account,
+            v.stake,
+            v.reputation,
+            v.lastRewardTime,
+            v.accumulatedRewards,
+            v.isActive
         );
     }
-
-    /**
-     * @dev Get validator metrics
-     */
-    function getValidatorMetrics(address _validator) external view returns (
-        uint256 blocksProposed,
-        uint256 blocksValidated,
-        uint256 transactionsProcessed,
-        uint256 slashingEvents,
-        uint256 lastUpdate
+    
+    function getActiveSet() external view returns (
+        address[] memory validators,
+        uint256 totalStake,
+        uint256 minStake,
+        uint256 maxValidators
     ) {
-        ValidatorMetrics storage metrics = validatorMetrics[_validator];
         return (
-            metrics.blocksProposed,
-            metrics.blocksValidated,
-            metrics.transactionsProcessed,
-            metrics.slashingEvents,
-            metrics.lastUpdate
+            activeSet.validators,
+            activeSet.totalStake,
+            activeSet.minStake,
+            activeSet.maxValidators
         );
-    }
-
-    /**
-     * @dev Update contract parameters
-     */
-    function updateParameters(
-        uint256 _minStakeAmount,
-        uint256 _maxValidators,
-        uint256 _rewardInterval,
-        uint256 _heartbeatInterval,
-        uint256 _slashingPenalty
-    ) external onlyOwner {
-        minStakeAmount = _minStakeAmount;
-        maxValidators = _maxValidators;
-        rewardInterval = _rewardInterval;
-        heartbeatInterval = _heartbeatInterval;
-        slashingPenalty = _slashingPenalty;
     }
 } 
