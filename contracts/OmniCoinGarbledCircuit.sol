@@ -1,265 +1,140 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
-import "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
-import "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
-import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "@openzeppelin/contracts/access/Ownable.sol";
+import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
 
-/**
- * @title OmniCoinGarbledCircuit
- * @dev Implements garbled circuits for enhanced privacy in transactions
- */
-contract OmniCoinGarbledCircuit is Initializable, OwnableUpgradeable, ReentrancyGuardUpgradeable {
-    // Structs
+contract OmniCoinGarbledCircuit is Ownable, ReentrancyGuard {
     struct Circuit {
-        bytes32 circuitId;
-        address creator;
+        bytes circuit;
+        bytes inputLabels;
+        bytes outputLabels;
+        uint256 inputSize;
+        uint256 outputSize;
+        bool isActive;
+    }
+    
+    struct Evaluation {
+        bytes input;
+        bytes output;
         uint256 timestamp;
-        bool active;
-        uint256[] inputLabels;
-        uint256[] outputLabels;
-        bytes32[] gates;
-        mapping(uint256 => bytes32) wireValues;
     }
-
-    struct Transaction {
-        uint256 circuitId;
-        bytes32[] inputs;
-        bytes32[] outputs;
-        bool verified;
-    }
-
-    // State variables
-    mapping(bytes32 => Circuit) public circuits;
-    mapping(bytes32 => Transaction) public transactions;
-    mapping(address => bytes32[]) public userCircuits;
-    uint256 public nextCircuitId;
-    uint256 public verificationFee;
-
-    // Events
-    event CircuitCreated(bytes32 indexed circuitId, address indexed creator);
-    event CircuitDeactivated(bytes32 indexed circuitId);
-    event TransactionVerified(bytes32 indexed txHash, bytes32 indexed circuitId);
-    event VerificationFeeUpdated(uint256 newFee);
-
-    /// @custom:oz-upgrades-unsafe-allow constructor
+    
+    mapping(uint256 => Circuit) public circuits;
+    mapping(uint256 => Evaluation[]) public evaluations;
+    
+    uint256 public circuitCount;
+    uint256 public maxCircuitSize;
+    uint256 public maxInputSize;
+    uint256 public maxOutputSize;
+    
+    event CircuitCreated(uint256 indexed circuitId, uint256 inputSize, uint256 outputSize);
+    event CircuitDeactivated(uint256 indexed circuitId);
+    event CircuitEvaluated(uint256 indexed circuitId, bytes input, bytes output);
+    event MaxCircuitSizeUpdated(uint256 oldSize, uint256 newSize);
+    event MaxInputSizeUpdated(uint256 oldSize, uint256 newSize);
+    event MaxOutputSizeUpdated(uint256 oldSize, uint256 newSize);
+    
     constructor() {
-        _disableInitializers();
+        maxCircuitSize = 1024 * 1024; // 1MB
+        maxInputSize = 1024; // 1KB
+        maxOutputSize = 1024; // 1KB
     }
-
-    /**
-     * @dev Initializes the contract
-     */
-    function initialize(uint256 _verificationFee) public initializer {
-        __Ownable_init(msg.sender);
-        __ReentrancyGuard_init();
-        verificationFee = _verificationFee;
+    
+    function createCircuit(address owner, bytes memory circuit) external onlyOwner nonReentrant returns (uint256) {
+        require(circuit.length <= maxCircuitSize, "OmniCoinGarbledCircuit: circuit too large");
+        
+        uint256 circuitId = circuitCount++;
+        
+        // Parse circuit metadata (to be implemented)
+        uint256 inputSize = 0;
+        uint256 outputSize = 0;
+        bytes memory inputLabels;
+        bytes memory outputLabels;
+        
+        circuits[circuitId] = Circuit({
+            circuit: circuit,
+            inputLabels: inputLabels,
+            outputLabels: outputLabels,
+            inputSize: inputSize,
+            outputSize: outputSize,
+            isActive: true
+        });
+        
+        emit CircuitCreated(circuitId, inputSize, outputSize);
+        
+        return circuitId;
     }
-
-    /**
-     * @dev Creates a new garbled circuit
-     */
-    function createCircuit(
-        uint256[] calldata _inputLabels,
-        uint256[] calldata _outputLabels,
-        bytes32[] calldata _gates
-    ) external nonReentrant returns (bytes32 circuitId) {
-        require(_inputLabels.length > 0, "No input labels");
-        require(_outputLabels.length > 0, "No output labels");
-        require(_gates.length > 0, "No gates");
-
-        circuitId = keccak256(abi.encodePacked(
-            block.timestamp,
-            msg.sender,
-            nextCircuitId++
-        ));
-
-        Circuit storage circuit = circuits[circuitId];
-        circuit.circuitId = circuitId;
-        circuit.creator = msg.sender;
-        circuit.timestamp = block.timestamp;
-        circuit.active = true;
-        circuit.inputLabels = _inputLabels;
-        circuit.outputLabels = _outputLabels;
-        circuit.gates = _gates;
-
-        userCircuits[msg.sender].push(circuitId);
-
-        emit CircuitCreated(circuitId, msg.sender);
+    
+    function deactivateCircuit(uint256 circuitId) external onlyOwner {
+        require(circuits[circuitId].isActive, "OmniCoinGarbledCircuit: circuit not active");
+        
+        circuits[circuitId].isActive = false;
+        
+        emit CircuitDeactivated(circuitId);
     }
-
-    /**
-     * @dev Evaluates a garbled circuit
-     */
-    function evaluateCircuit(
-        bytes32 _circuitId,
-        bytes32[] calldata _inputs
-    ) public nonReentrant returns (bytes32[] memory outputs) {
-        Circuit storage circuit = circuits[_circuitId];
-        require(circuit.active, "Circuit not active");
-        require(_inputs.length == circuit.inputLabels.length, "Invalid input length");
-
-        // Store input values
-        for (uint256 i = 0; i < _inputs.length; i++) {
-            circuit.wireValues[circuit.inputLabels[i]] = _inputs[i];
-        }
-
-        // Evaluate gates
-        for (uint256 i = 0; i < circuit.gates.length; i++) {
-            bytes32 gate = circuit.gates[i];
-            
-            // Extract gate components using bitwise operations
-            // First 8 bytes: gate type (1 = AND, 2 = OR, 3 = XOR)
-            // Next 8 bytes: input wire 1 index
-            // Next 8 bytes: input wire 2 index
-            // Last 8 bytes: output wire index
-            uint256 gateType = uint256(uint64(uint256(gate) >> 192));
-            uint256 input1Index = uint256(uint64(uint256(gate) >> 128));
-            uint256 input2Index = uint256(uint64(uint256(gate) >> 64));
-            uint256 outputIndex = uint256(uint64(uint256(gate)));
-            
-            // Get input wire values
-            bytes32 input1 = circuit.wireValues[input1Index];
-            bytes32 input2 = circuit.wireValues[input2Index];
-            
-            // Perform gate operation based on type
-            bytes32 output;
-            if (gateType == 1) { // AND
-                output = bytes32(uint256(input1) & uint256(input2));
-            } else if (gateType == 2) { // OR
-                output = bytes32(uint256(input1) | uint256(input2));
-            } else if (gateType == 3) { // XOR
-                output = bytes32(uint256(input1) ^ uint256(input2));
-            } else {
-                revert("Invalid gate type");
-            }
-            
-            // Store output wire value
-            circuit.wireValues[outputIndex] = output;
-        }
-
-        // Collect output values
-        outputs = new bytes32[](circuit.outputLabels.length);
-        for (uint256 i = 0; i < circuit.outputLabels.length; i++) {
-            outputs[i] = circuit.wireValues[circuit.outputLabels[i]];
-        }
+    
+    function evaluateCircuit(uint256 circuitId, bytes memory input) external nonReentrant {
+        require(circuits[circuitId].isActive, "OmniCoinGarbledCircuit: circuit not active");
+        require(input.length <= maxInputSize, "OmniCoinGarbledCircuit: input too large");
+        require(input.length == circuits[circuitId].inputSize, "OmniCoinGarbledCircuit: invalid input size");
+        
+        // Evaluate circuit (to be implemented)
+        bytes memory output;
+        
+        evaluations[circuitId].push(Evaluation({
+            input: input,
+            output: output,
+            timestamp: block.timestamp
+        }));
+        
+        emit CircuitEvaluated(circuitId, input, output);
     }
-
-    /**
-     * @dev Verifies a transaction using a garbled circuit
-     */
-    function verifyTransaction(
-        bytes32 _circuitId,
-        bytes32[] calldata _inputs,
-        bytes32[] calldata _outputs
-    ) external payable nonReentrant returns (bool) {
-        require(msg.value >= verificationFee, "Insufficient verification fee");
-        require(circuits[_circuitId].active, "Circuit not active");
-
-        bytes32 txHash = keccak256(abi.encodePacked(
-            _circuitId,
-            _inputs,
-            _outputs,
-            block.timestamp
-        ));
-
-        Transaction storage transaction = transactions[txHash];
-        require(!transaction.verified, "Transaction already verified");
-
-        // Evaluate circuit
-        bytes32[] memory computedOutputs = evaluateCircuit(_circuitId, _inputs);
-
-        // Verify outputs match
-        bool valid = true;
-        for (uint256 i = 0; i < _outputs.length; i++) {
-            if (computedOutputs[i] != _outputs[i]) {
-                valid = false;
-                break;
-            }
-        }
-
-        if (valid) {
-            transaction.circuitId = uint256(_circuitId);
-            transaction.inputs = _inputs;
-            transaction.outputs = _outputs;
-            transaction.verified = true;
-
-            emit TransactionVerified(txHash, _circuitId);
-        }
-
-        // Refund excess fee
-        if (msg.value > verificationFee) {
-            payable(msg.sender).transfer(msg.value - verificationFee);
-        }
-
-        return valid;
+    
+    function setMaxCircuitSize(uint256 _size) external onlyOwner {
+        emit MaxCircuitSizeUpdated(maxCircuitSize, _size);
+        maxCircuitSize = _size;
     }
-
-    /**
-     * @dev Deactivates a circuit
-     */
-    function deactivateCircuit(bytes32 _circuitId) external {
-        Circuit storage circuit = circuits[_circuitId];
-        require(circuit.creator == msg.sender || msg.sender == owner(), "Not authorized");
-        require(circuit.active, "Circuit already inactive");
-
-        circuit.active = false;
-        emit CircuitDeactivated(_circuitId);
+    
+    function setMaxInputSize(uint256 _size) external onlyOwner {
+        emit MaxInputSizeUpdated(maxInputSize, _size);
+        maxInputSize = _size;
     }
-
-    /**
-     * @dev Updates verification fee
-     */
-    function updateVerificationFee(uint256 _newFee) external onlyOwner {
-        verificationFee = _newFee;
-        emit VerificationFeeUpdated(_newFee);
+    
+    function setMaxOutputSize(uint256 _size) external onlyOwner {
+        emit MaxOutputSizeUpdated(maxOutputSize, _size);
+        maxOutputSize = _size;
     }
-
-    /**
-     * @dev Returns circuit details
-     */
-    function getCircuit(bytes32 _circuitId) external view returns (
-        address creator,
-        uint256 timestamp,
-        bool active,
-        uint256[] memory inputLabels,
-        uint256[] memory outputLabels,
-        bytes32[] memory gates
+    
+    function getCircuit(uint256 circuitId) external view returns (
+        bytes memory circuit,
+        bytes memory inputLabels,
+        bytes memory outputLabels,
+        uint256 inputSize,
+        uint256 outputSize,
+        bool isActive
     ) {
-        Circuit storage circuit = circuits[_circuitId];
+        Circuit storage c = circuits[circuitId];
         return (
-            circuit.creator,
-            circuit.timestamp,
-            circuit.active,
-            circuit.inputLabels,
-            circuit.outputLabels,
-            circuit.gates
+            c.circuit,
+            c.inputLabels,
+            c.outputLabels,
+            c.inputSize,
+            c.outputSize,
+            c.isActive
         );
     }
-
-    /**
-     * @dev Returns user's circuits
-     */
-    function getUserCircuits(address _user) external view returns (bytes32[] memory) {
-        return userCircuits[_user];
-    }
-
-    /**
-     * @dev Returns transaction details
-     */
-    function getTransaction(bytes32 _txHash) external view returns (
-        uint256 circuitId,
-        bytes32[] memory inputs,
-        bytes32[] memory outputs,
-        bool verified
+    
+    function getEvaluation(uint256 circuitId, uint256 index) external view returns (
+        bytes memory input,
+        bytes memory output,
+        uint256 timestamp
     ) {
-        Transaction storage transaction = transactions[_txHash];
-        return (
-            transaction.circuitId,
-            transaction.inputs,
-            transaction.outputs,
-            transaction.verified
-        );
+        Evaluation storage e = evaluations[circuitId][index];
+        return (e.input, e.output, e.timestamp);
+    }
+    
+    function getEvaluationCount(uint256 circuitId) external view returns (uint256) {
+        return evaluations[circuitId].length;
     }
 } 

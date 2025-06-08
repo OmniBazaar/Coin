@@ -1,211 +1,101 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
-import "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
-import "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
-import "./omnicoin-erc20-coti.sol";
+import "@openzeppelin/contracts/access/Ownable.sol";
+import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
 
-/**
- * @title OmniCoinReputation
- * @dev Handles reputation tracking for marketplace participants
- */
-contract OmniCoinReputation is Initializable, OwnableUpgradeable, ReentrancyGuardUpgradeable {
-    // Structs
+contract OmniCoinReputation is Ownable, ReentrancyGuard {
     struct ReputationScore {
-        uint256 overallScore;
-        uint256 marketplaceScore;
-        uint256 validatorScore;
-        uint256 referralScore;
-        uint256 lastUpdate;
-        uint256 totalTransactions;
-        uint256 successfulTransactions;
-    }
-
-    struct ReputationHistory {
-        uint256 timestamp;
         uint256 score;
-        string reason;
-        address actor;
+        uint256 positiveInteractions;
+        uint256 negativeInteractions;
+        uint256 lastUpdate;
     }
-
-    // State variables
-    mapping(address => ReputationScore) public reputationScores;
-    mapping(address => ReputationHistory[]) public reputationHistory;
-    mapping(address => uint256) public referralCount;
-    mapping(address => address[]) public referrals;
     
-    OmniCoin public omniCoin;
-    uint256 public minReputationForValidator;
+    mapping(address => ReputationScore) public reputationScores;
+    
+    uint256 public minValidatorReputation;
     uint256 public reputationDecayPeriod;
-    uint256 public reputationDecayFactor;
-
-    // Events
-    event ReputationUpdated(
-        address indexed user,
-        uint256 newOverallScore,
-        uint256 newMarketplaceScore,
-        uint256 newValidatorScore,
-        uint256 newReferralScore
-    );
-    event ReferralAdded(address indexed referrer, address indexed referred);
-    event MinReputationForValidatorUpdated(uint256 newMinReputation);
-    event ReputationDecayUpdated(uint256 newPeriod, uint256 newFactor);
-
-    /// @custom:oz-upgrades-unsafe-allow constructor
-    constructor() {
-        _disableInitializers();
+    uint256 public reputationDecayRate;
+    
+    event ReputationUpdated(address indexed user, uint256 oldScore, uint256 newScore);
+    event MinValidatorReputationUpdated(uint256 oldValue, uint256 newValue);
+    event ReputationDecayPeriodUpdated(uint256 oldPeriod, uint256 newPeriod);
+    event ReputationDecayRateUpdated(uint256 oldRate, uint256 newRate);
+    
+    constructor(address _config) {
+        minValidatorReputation = 1000;
+        reputationDecayPeriod = 30 days;
+        reputationDecayRate = 1; // 1% decay per period
     }
-
-    /**
-     * @dev Initializes the contract
-     */
-    function initialize(
-        address _omniCoin,
-        uint256 _minReputationForValidator,
-        uint256 _reputationDecayPeriod,
-        uint256 _reputationDecayFactor
-    ) public initializer {
-        __Ownable_init(msg.sender);
-        __ReentrancyGuard_init();
-        omniCoin = OmniCoin(_omniCoin);
-        minReputationForValidator = _minReputationForValidator;
-        reputationDecayPeriod = _reputationDecayPeriod;
-        reputationDecayFactor = _reputationDecayFactor;
-    }
-
-    /**
-     * @dev Update reputation scores for a user
-     */
-    function updateReputation(
-        address _user,
-        uint256 _marketplaceDelta,
-        uint256 _validatorDelta,
-        uint256 _referralDelta,
-        string memory _reason
-    ) internal {
-        ReputationScore storage score = reputationScores[_user];
+    
+    function updateReputation(address user, int256 change) external onlyOwner nonReentrant {
+        ReputationScore storage score = reputationScores[user];
+        uint256 oldScore = score.score;
         
-        // Apply decay if needed
-        if (block.timestamp >= score.lastUpdate + reputationDecayPeriod) {
-            uint256 decay = (block.timestamp - score.lastUpdate) / reputationDecayPeriod;
-            score.marketplaceScore = score.marketplaceScore * (100 - (decay * reputationDecayFactor)) / 100;
-            score.validatorScore = score.validatorScore * (100 - (decay * reputationDecayFactor)) / 100;
+        // Apply decay if applicable
+        if (score.lastUpdate > 0) {
+            uint256 periods = (block.timestamp - score.lastUpdate) / reputationDecayPeriod;
+            if (periods > 0) {
+                uint256 decay = (score.score * reputationDecayRate * periods) / 100;
+                if (decay > score.score) {
+                    score.score = 0;
+                } else {
+                    score.score -= decay;
+                }
+            }
         }
-
-        // Update scores
-        score.marketplaceScore += _marketplaceDelta;
-        score.validatorScore += _validatorDelta;
-        score.referralScore += _referralDelta;
-        score.overallScore = calculateOverallScore(score);
+        
+        // Update score
+        if (change > 0) {
+            score.score += uint256(change);
+            score.positiveInteractions++;
+        } else if (change < 0) {
+            uint256 absChange = uint256(-change);
+            if (absChange > score.score) {
+                score.score = 0;
+            } else {
+                score.score -= absChange;
+            }
+            score.negativeInteractions++;
+        }
+        
         score.lastUpdate = block.timestamp;
-
-        // Add to history
-        reputationHistory[_user].push(ReputationHistory({
-            timestamp: block.timestamp,
-            score: score.overallScore,
-            reason: _reason,
-            actor: msg.sender
-        }));
-
-        emit ReputationUpdated(
-            _user,
-            score.overallScore,
-            score.marketplaceScore,
-            score.validatorScore,
-            score.referralScore
+        
+        emit ReputationUpdated(user, oldScore, score.score);
+    }
+    
+    function setMinValidatorReputation(uint256 _minReputation) external onlyOwner {
+        emit MinValidatorReputationUpdated(minValidatorReputation, _minReputation);
+        minValidatorReputation = _minReputation;
+    }
+    
+    function setReputationDecayPeriod(uint256 _period) external onlyOwner {
+        emit ReputationDecayPeriodUpdated(reputationDecayPeriod, _period);
+        reputationDecayPeriod = _period;
+    }
+    
+    function setReputationDecayRate(uint256 _rate) external onlyOwner {
+        emit ReputationDecayRateUpdated(reputationDecayRate, _rate);
+        reputationDecayRate = _rate;
+    }
+    
+    function getReputation(address user) external view returns (
+        uint256 score,
+        uint256 positiveInteractions,
+        uint256 negativeInteractions,
+        uint256 lastUpdate
+    ) {
+        ReputationScore storage reputation = reputationScores[user];
+        return (
+            reputation.score,
+            reputation.positiveInteractions,
+            reputation.negativeInteractions,
+            reputation.lastUpdate
         );
     }
-
-    /**
-     * @dev Record a successful transaction
-     */
-    function recordSuccessfulTransaction(address _user) external onlyOwner {
-        ReputationScore storage score = reputationScores[_user];
-        score.totalTransactions++;
-        score.successfulTransactions++;
-        
-        // Small reputation boost for successful transactions
-        string memory reason = "Successful transaction";
-        updateReputation(_user, 1, 0, 0, reason);
-    }
-
-    /**
-     * @dev Record a failed transaction
-     */
-    function recordFailedTransaction(address _user) external onlyOwner {
-        ReputationScore storage score = reputationScores[_user];
-        score.totalTransactions++;
-        
-        // Small reputation penalty for failed transactions
-        unchecked {
-            string memory reason = "Failed transaction";
-            updateReputation(_user, 1, 0, 0, reason);
-        }
-    }
-
-    /**
-     * @dev Add a referral
-     */
-    function addReferral(address _referrer, address _referred) external onlyOwner {
-        require(_referrer != _referred, "Cannot refer self");
-        require(referrals[_referrer].length < 100, "Too many referrals");
-        
-        referrals[_referrer].push(_referred);
-        referralCount[_referrer]++;
-        
-        // Reputation boost for successful referral
-        string memory reason = "New referral";
-        updateReputation(_referrer, 0, 0, 5, reason);
-        
-        emit ReferralAdded(_referrer, _referred);
-    }
-
-    /**
-     * @dev Calculate overall reputation score
-     */
-    function calculateOverallScore(ReputationScore memory score) public pure returns (uint256) {
-        return (score.marketplaceScore * 40 + 
-                score.validatorScore * 30 + 
-                score.referralScore * 30) / 100;
-    }
-
-    /**
-     * @dev Check if user qualifies as validator
-     */
-    function qualifiesAsValidator(address _user) external view returns (bool) {
-        return reputationScores[_user].overallScore >= minReputationForValidator;
-    }
-
-    /**
-     * @dev Get reputation history
-     */
-    function getReputationHistory(address _user) external view returns (ReputationHistory[] memory) {
-        return reputationHistory[_user];
-    }
-
-    /**
-     * @dev Get referrals
-     */
-    function getReferrals(address _user) external view returns (address[] memory) {
-        return referrals[_user];
-    }
-
-    /**
-     * @dev Update minimum reputation for validator
-     */
-    function updateMinReputationForValidator(uint256 _newMinReputation) external onlyOwner {
-        minReputationForValidator = _newMinReputation;
-        emit MinReputationForValidatorUpdated(_newMinReputation);
-    }
-
-    /**
-     * @dev Update reputation decay parameters
-     */
-    function updateReputationDecay(uint256 _newPeriod, uint256 _newFactor) external onlyOwner {
-        require(_newFactor <= 100, "Decay factor too high");
-        reputationDecayPeriod = _newPeriod;
-        reputationDecayFactor = _newFactor;
-        emit ReputationDecayUpdated(_newPeriod, _newFactor);
+    
+    function isEligibleValidator(address user) external view returns (bool) {
+        return reputationScores[user].score >= minValidatorReputation;
     }
 } 

@@ -1,176 +1,224 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
-import "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
-import "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
+import "@openzeppelin/contracts/access/Ownable.sol";
+import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
 
-/**
- * @title OmniCoinMultisig
- * @dev 2-of-3 multisig contract for critical protocol operations
- */
-contract OmniCoinMultisig is Initializable, OwnableUpgradeable, ReentrancyGuardUpgradeable {
-    // Structs
+contract OmniCoinMultisig is Ownable, ReentrancyGuard {
     struct Transaction {
+        uint256 id;
         address target;
-        uint256 value;
         bytes data;
+        uint256 value;
+        uint256 requiredSignatures;
+        uint256 signatureCount;
         bool executed;
-        uint256 confirmations;
+        bool canceled;
+        mapping(address => bool) signed;
     }
-
-    // State variables
-    mapping(address => bool) public isOwner;
-    address[] public owners;
-    uint256 public requiredConfirmations;
-    Transaction[] public transactions;
-    mapping(uint256 => mapping(address => bool)) public confirmations;
-
-    // Events
-    event TransactionSubmitted(uint256 indexed txId, address indexed target, uint256 value, bytes data);
-    event TransactionConfirmed(uint256 indexed txId, address indexed owner);
-    event TransactionRevoked(uint256 indexed txId, address indexed owner);
-    event TransactionExecuted(uint256 indexed txId, address indexed executor);
-    event OwnerAdded(address indexed owner);
-    event OwnerRemoved(address indexed owner);
-    event RequiredConfirmationsChanged(uint256 requiredConfirmations);
-
-    /// @custom:oz-upgrades-unsafe-allow constructor
-    constructor() {
-        _disableInitializers();
+    
+    struct Signer {
+        address account;
+        bool isActive;
+        uint256 lastActive;
     }
-
-    /**
-     * @dev Initializes the contract with initial owners
-     */
-    function initialize(address[] calldata _owners) public initializer {
-        require(_owners.length == 3, "Must have exactly 3 owners");
-        require(_owners[0] != address(0) && _owners[1] != address(0) && _owners[2] != address(0), "Invalid owner address");
-
-        __Ownable_init(msg.sender);
-        __ReentrancyGuard_init();
-
-        for (uint256 i = 0; i < _owners.length; i++) {
-            address owner = _owners[i];
-            require(!isOwner[owner], "Duplicate owner");
-            isOwner[owner] = true;
-            owners.push(owner);
-        }
-
-        requiredConfirmations = 2;
-    }
-
-    /**
-     * @dev Submits a new transaction
-     */
-    function submitTransaction(
-        address _target,
-        uint256 _value,
-        bytes calldata _data
-    ) external onlyOwner returns (uint256 txId) {
-        txId = transactions.length;
-        transactions.push(
-            Transaction({
-                target: _target,
-                value: _value,
-                data: _data,
-                executed: false,
-                confirmations: 0
-            })
-        );
-        emit TransactionSubmitted(txId, _target, _value, _data);
-    }
-
-    /**
-     * @dev Confirms a transaction
-     */
-    function confirmTransaction(uint256 _txId) external onlyOwner {
-        Transaction storage transaction = transactions[_txId];
-        require(!transaction.executed, "Transaction already executed");
-        require(!confirmations[_txId][msg.sender], "Transaction already confirmed");
-
-        transaction.confirmations += 1;
-        confirmations[_txId][msg.sender] = true;
-
-        emit TransactionConfirmed(_txId, msg.sender);
-    }
-
-    /**
-     * @dev Revokes a confirmation
-     */
-    function revokeConfirmation(uint256 _txId) external onlyOwner {
-        Transaction storage transaction = transactions[_txId];
-        require(!transaction.executed, "Transaction already executed");
-        require(confirmations[_txId][msg.sender], "Transaction not confirmed");
-
-        transaction.confirmations -= 1;
-        confirmations[_txId][msg.sender] = false;
-
-        emit TransactionRevoked(_txId, msg.sender);
-    }
-
-    /**
-     * @dev Executes a confirmed transaction
-     */
-    function executeTransaction(uint256 _txId) external nonReentrant {
-        Transaction storage transaction = transactions[_txId];
-        require(!transaction.executed, "Transaction already executed");
-        require(transaction.confirmations >= requiredConfirmations, "Not enough confirmations");
-
-        transaction.executed = true;
-
-        (bool success, ) = transaction.target.call{value: transaction.value}(transaction.data);
-        require(success, "Transaction execution failed");
-
-        emit TransactionExecuted(_txId, msg.sender);
-    }
-
-    /**
-     * @dev Returns the number of transactions
-     */
-    function getTransactionCount() external view returns (uint256) {
-        return transactions.length;
-    }
-
-    /**
-     * @dev Returns transaction details
-     */
-    function getTransaction(uint256 _txId) external view returns (
+    
+    mapping(uint256 => Transaction) public transactions;
+    mapping(address => Signer) public signers;
+    address[] public activeSigners;
+    
+    uint256 public transactionCount;
+    uint256 public minSignatures;
+    uint256 public signerTimeout;
+    
+    event TransactionCreated(
+        uint256 indexed transactionId,
         address target,
+        bytes data,
         uint256 value,
+        uint256 requiredSignatures
+    );
+    event TransactionSigned(uint256 indexed transactionId, address signer);
+    event TransactionExecuted(uint256 indexed transactionId);
+    event TransactionCanceled(uint256 indexed transactionId);
+    event SignerAdded(address indexed signer);
+    event SignerRemoved(address indexed signer);
+    event MinSignaturesUpdated(uint256 oldCount, uint256 newCount);
+    event SignerTimeoutUpdated(uint256 oldTimeout, uint256 newTimeout);
+    
+    constructor() {
+        minSignatures = 2;
+        signerTimeout = 1 days;
+    }
+    
+    function createTransaction(
+        address target,
         bytes memory data,
+        uint256 value,
+        uint256 requiredSignatures
+    ) external onlyOwner nonReentrant returns (uint256) {
+        require(target != address(0), "OmniCoinMultisig: zero target");
+        require(requiredSignatures >= minSignatures, "OmniCoinMultisig: insufficient signatures");
+        require(requiredSignatures <= activeSigners.length, "OmniCoinMultisig: too many signatures");
+        
+        uint256 transactionId = transactionCount++;
+        
+        Transaction storage transaction = transactions[transactionId];
+        transaction.id = transactionId;
+        transaction.target = target;
+        transaction.data = data;
+        transaction.value = value;
+        transaction.requiredSignatures = requiredSignatures;
+        
+        emit TransactionCreated(
+            transactionId,
+            target,
+            data,
+            value,
+            requiredSignatures
+        );
+        
+        return transactionId;
+    }
+    
+    function signTransaction(uint256 transactionId) external nonReentrant {
+        Transaction storage transaction = transactions[transactionId];
+        require(!transaction.executed, "OmniCoinMultisig: already executed");
+        require(!transaction.canceled, "OmniCoinMultisig: canceled");
+        require(!transaction.signed[msg.sender], "OmniCoinMultisig: already signed");
+        require(signers[msg.sender].isActive, "OmniCoinMultisig: not signer");
+        
+        transaction.signed[msg.sender] = true;
+        transaction.signatureCount++;
+        
+        emit TransactionSigned(transactionId, msg.sender);
+    }
+    
+    function executeTransaction(uint256 transactionId) external nonReentrant {
+        Transaction storage transaction = transactions[transactionId];
+        require(!transaction.executed, "OmniCoinMultisig: already executed");
+        require(!transaction.canceled, "OmniCoinMultisig: canceled");
+        require(
+            transaction.signatureCount >= transaction.requiredSignatures,
+            "OmniCoinMultisig: insufficient signatures"
+        );
+        
+        transaction.executed = true;
+        
+        (bool success, ) = transaction.target.call{value: transaction.value}(
+            transaction.data
+        );
+        require(success, "OmniCoinMultisig: execution failed");
+        
+        emit TransactionExecuted(transactionId);
+    }
+    
+    function cancelTransaction(uint256 transactionId) external onlyOwner nonReentrant {
+        Transaction storage transaction = transactions[transactionId];
+        require(!transaction.executed, "OmniCoinMultisig: already executed");
+        require(!transaction.canceled, "OmniCoinMultisig: already canceled");
+        
+        transaction.canceled = true;
+        
+        emit TransactionCanceled(transactionId);
+    }
+    
+    function addSigner(address signer) external onlyOwner nonReentrant {
+        require(signer != address(0), "OmniCoinMultisig: zero signer");
+        require(!signers[signer].isActive, "OmniCoinMultisig: already signer");
+        
+        signers[signer] = Signer({
+            account: signer,
+            isActive: true,
+            lastActive: block.timestamp
+        });
+        
+        activeSigners.push(signer);
+        
+        emit SignerAdded(signer);
+    }
+    
+    function removeSigner(address signer) external onlyOwner nonReentrant {
+        require(signers[signer].isActive, "OmniCoinMultisig: not signer");
+        
+        signers[signer].isActive = false;
+        
+        for (uint256 i = 0; i < activeSigners.length; i++) {
+            if (activeSigners[i] == signer) {
+                activeSigners[i] = activeSigners[activeSigners.length - 1];
+                activeSigners.pop();
+                break;
+            }
+        }
+        
+        emit SignerRemoved(signer);
+    }
+    
+    function updateSignerActivity(address signer) external {
+        require(signers[signer].isActive, "OmniCoinMultisig: not signer");
+        
+        signers[signer].lastActive = block.timestamp;
+        
+        // Check for timeout
+        if (block.timestamp > signers[signer].lastActive + signerTimeout) {
+            removeSigner(signer);
+        }
+    }
+    
+    function setMinSignatures(uint256 _count) external onlyOwner {
+        require(_count > 0, "OmniCoinMultisig: zero count");
+        require(_count <= activeSigners.length, "OmniCoinMultisig: too many signatures");
+        
+        emit MinSignaturesUpdated(minSignatures, _count);
+        minSignatures = _count;
+    }
+    
+    function setSignerTimeout(uint256 _timeout) external onlyOwner {
+        emit SignerTimeoutUpdated(signerTimeout, _timeout);
+        signerTimeout = _timeout;
+    }
+    
+    function getTransaction(uint256 transactionId) external view returns (
+        uint256 id,
+        address target,
+        bytes memory data,
+        uint256 value,
+        uint256 requiredSignatures,
+        uint256 signatureCount,
         bool executed,
-        uint256 confirmations
+        bool canceled
     ) {
-        Transaction storage transaction = transactions[_txId];
+        Transaction storage transaction = transactions[transactionId];
         return (
+            transaction.id,
             transaction.target,
-            transaction.value,
             transaction.data,
+            transaction.value,
+            transaction.requiredSignatures,
+            transaction.signatureCount,
             transaction.executed,
-            transaction.confirmations
+            transaction.canceled
         );
     }
-
-    /**
-     * @dev Returns whether an owner has confirmed a transaction
-     */
-    function isConfirmed(uint256 _txId, address _owner) external view returns (bool) {
-        return confirmations[_txId][_owner];
+    
+    function hasSigned(uint256 transactionId, address signer) external view returns (bool) {
+        return transactions[transactionId].signed[signer];
     }
-
-    /**
-     * @dev Returns the list of owners
-     */
-    function getOwners() external view returns (address[] memory) {
-        return owners;
+    
+    function getSigner(address account) external view returns (
+        address signer,
+        bool isActive,
+        uint256 lastActive
+    ) {
+        Signer storage s = signers[account];
+        return (s.account, s.isActive, s.lastActive);
     }
-
-    /**
-     * @dev Modifier to restrict function access to owners
-     */
-    modifier onlyOwner() {
-        require(isOwner[msg.sender], "Not an owner");
-        _;
+    
+    function getActiveSigners() external view returns (address[] memory) {
+        return activeSigners;
+    }
+    
+    function isActiveSigner(address signer) external view returns (bool) {
+        return signers[signer].isActive;
     }
 } 

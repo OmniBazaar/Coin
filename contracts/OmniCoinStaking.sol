@@ -1,288 +1,146 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
-import "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
-import "@openzeppelin/contracts-upgradeable/security/ReentrancyGuardUpgradeable.sol";
+import "@openzeppelin/contracts/access/Ownable.sol";
+import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import "./omnicoin-erc20-coti.sol";
-import "./OmniCoinAccount.sol";
+import "./OmniCoinConfig.sol";
 
-/**
- * @title OmniCoinStaking
- * @dev Handles staking features for OmniCoin
- */
-contract OmniCoinStaking is Initializable, OwnableUpgradeable, ReentrancyGuardUpgradeable {
-    // Structs
+contract OmniCoinStaking is Ownable, ReentrancyGuard {
     struct Stake {
         uint256 amount;
+        uint256 tier;
         uint256 startTime;
-        uint256 lockPeriod;
-        uint256 rewardRate;
         uint256 lastRewardTime;
-        bool isActive;
+        uint256 accumulatedRewards;
     }
-
-    struct StakingTier {
-        uint256 minAmount;
-        uint256 maxAmount;
-        uint256 rewardRate;
-        uint256 lockPeriod;
-    }
-
-    // State variables
-    mapping(address => Stake) public stakes;
-    mapping(address => uint256) public totalStaked;
-    mapping(address => uint256) public totalRewards;
-    StakingTier[] public stakingTiers;
     
-    OmniCoin public omniCoin;
-    OmniCoinAccount public omniCoinAccount;
-    uint256 public totalStakedAmount;
-    uint256 public totalRewardsDistributed;
-    uint256 public minStakeAmount;
-    uint256 public maxStakeAmount;
-
-    // Events
-    event Staked(
-        address indexed user,
-        uint256 amount,
-        uint256 lockPeriod,
-        uint256 rewardRate
-    );
-    event Unstaked(
-        address indexed user,
-        uint256 amount,
-        uint256 rewards
-    );
-    event RewardsClaimed(
-        address indexed user,
-        uint256 amount
-    );
-    event StakingTierAdded(
-        uint256 minAmount,
-        uint256 maxAmount,
-        uint256 rewardRate,
-        uint256 lockPeriod
-    );
-    event StakingTierUpdated(
-        uint256 tierIndex,
-        uint256 minAmount,
-        uint256 maxAmount,
-        uint256 rewardRate,
-        uint256 lockPeriod
-    );
-
-    /// @custom:oz-upgrades-unsafe-allow constructor
-    constructor() {
-        _disableInitializers();
+    OmniCoinConfig public config;
+    IERC20 public token;
+    
+    mapping(address => Stake) public stakes;
+    mapping(address => uint256) public participationScores;
+    
+    event Staked(address indexed user, uint256 amount, uint256 tier);
+    event Unstaked(address indexed user, uint256 amount, uint256 penalty);
+    event RewardsClaimed(address indexed user, uint256 amount);
+    event ParticipationScoreUpdated(address indexed user, uint256 oldScore, uint256 newScore);
+    
+    constructor(address _config) {
+        config = OmniCoinConfig(_config);
+        token = IERC20(msg.sender);
     }
-
-    /**
-     * @dev Initializes the contract
-     */
-    function initialize(
-        address _omniCoin,
-        address _omniCoinAccount,
-        uint256 _minStakeAmount,
-        uint256 _maxStakeAmount
-    ) public initializer {
-        __Ownable_init(msg.sender);
-        __ReentrancyGuard_init();
-        omniCoin = OmniCoin(_omniCoin);
-        omniCoinAccount = OmniCoinAccount(_omniCoinAccount);
-        minStakeAmount = _minStakeAmount;
-        maxStakeAmount = _maxStakeAmount;
-    }
-
-    /**
-     * @dev Add a new staking tier
-     */
-    function addStakingTier(
-        uint256 _minAmount,
-        uint256 _maxAmount,
-        uint256 _rewardRate,
-        uint256 _lockPeriod
-    ) external onlyOwner {
-        require(_minAmount < _maxAmount, "Invalid tier range");
-        require(_rewardRate > 0, "Invalid reward rate");
-        require(_lockPeriod > 0, "Invalid lock period");
-
-        stakingTiers.push(StakingTier({
-            minAmount: _minAmount,
-            maxAmount: _maxAmount,
-            rewardRate: _rewardRate,
-            lockPeriod: _lockPeriod
-        }));
-
-        emit StakingTierAdded(_minAmount, _maxAmount, _rewardRate, _lockPeriod);
-    }
-
-    /**
-     * @dev Update an existing staking tier
-     */
-    function updateStakingTier(
-        uint256 _tierIndex,
-        uint256 _minAmount,
-        uint256 _maxAmount,
-        uint256 _rewardRate,
-        uint256 _lockPeriod
-    ) external onlyOwner {
-        require(_tierIndex < stakingTiers.length, "Invalid tier index");
-        require(_minAmount < _maxAmount, "Invalid tier range");
-        require(_rewardRate > 0, "Invalid reward rate");
-        require(_lockPeriod > 0, "Invalid lock period");
-
-        stakingTiers[_tierIndex] = StakingTier({
-            minAmount: _minAmount,
-            maxAmount: _maxAmount,
-            rewardRate: _rewardRate,
-            lockPeriod: _lockPeriod
-        });
-
-        emit StakingTierUpdated(_tierIndex, _minAmount, _maxAmount, _rewardRate, _lockPeriod);
-    }
-
-    /**
-     * @dev Stake tokens
-     */
-    function stake(uint256 _amount) external nonReentrant {
-        require(_amount >= minStakeAmount, "Amount below minimum");
-        require(_amount <= maxStakeAmount, "Amount above maximum");
-        require(stakes[msg.sender].amount == 0, "Already staked");
-
-        StakingTier memory tier = getStakingTier(_amount);
-        require(tier.minAmount > 0, "No suitable tier found");
-
-        require(
-            omniCoin.transferFrom(msg.sender, address(this), _amount),
-            "Stake transfer failed"
-        );
-
-        stakes[msg.sender] = Stake({
-            amount: _amount,
-            startTime: block.timestamp,
-            lockPeriod: tier.lockPeriod,
-            rewardRate: tier.rewardRate,
-            lastRewardTime: block.timestamp,
-            isActive: true
-        });
-
-        totalStaked[msg.sender] = _amount;
-        totalStakedAmount += _amount;
-
-        emit Staked(msg.sender, _amount, tier.lockPeriod, tier.rewardRate);
-    }
-
-    /**
-     * @dev Unstake tokens
-     */
-    function unstake() external nonReentrant {
-        Stake storage userStake = stakes[msg.sender];
-        require(userStake.isActive, "No active stake");
-        require(
-            block.timestamp >= userStake.startTime + userStake.lockPeriod,
-            "Lock period not elapsed"
-        );
-
-        uint256 rewards = calculateRewards(msg.sender);
-        uint256 totalAmount = userStake.amount + rewards;
-
-        require(
-            omniCoin.transfer(msg.sender, totalAmount),
-            "Unstake transfer failed"
-        );
-
-        totalStaked[msg.sender] = 0;
-        totalRewards[msg.sender] += rewards;
-        totalStakedAmount -= userStake.amount;
-        totalRewardsDistributed += rewards;
-        userStake.isActive = false;
-
-        emit Unstaked(msg.sender, userStake.amount, rewards);
-    }
-
-    /**
-     * @dev Claim rewards
-     */
-    function claimRewards() external nonReentrant {
-        Stake storage userStake = stakes[msg.sender];
-        require(userStake.isActive, "No active stake");
-
-        uint256 rewards = calculateRewards(msg.sender);
-        require(rewards > 0, "No rewards to claim");
-
-        require(
-            omniCoin.transfer(msg.sender, rewards),
-            "Reward transfer failed"
-        );
-
-        userStake.lastRewardTime = block.timestamp;
-        totalRewards[msg.sender] += rewards;
-        totalRewardsDistributed += rewards;
-
-        emit RewardsClaimed(msg.sender, rewards);
-    }
-
-    /**
-     * @dev Calculate rewards for a user
-     */
-    function calculateRewards(address _user) public view returns (uint256) {
-        Stake storage userStake = stakes[_user];
-        if (!userStake.isActive) return 0;
-
-        uint256 timeStaked = block.timestamp - userStake.lastRewardTime;
-        return (userStake.amount * userStake.rewardRate * timeStaked) / (365 days * 100);
-    }
-
-    /**
-     * @dev Get staking tier for an amount
-     */
-    function getStakingTier(uint256 _amount) public view returns (StakingTier memory) {
-        for (uint256 i = 0; i < stakingTiers.length; i++) {
-            if (_amount >= stakingTiers[i].minAmount && _amount <= stakingTiers[i].maxAmount) {
-                return stakingTiers[i];
-            }
+    
+    function stake(address user, uint256 amount) external onlyOwner nonReentrant {
+        require(amount > 0, "OmniCoinStaking: invalid amount");
+        
+        // Get staking tier
+        (uint256 tier, uint256 rewardRate, uint256 lockPeriod, uint256 penaltyRate) = config.getStakingTier(amount);
+        require(tier > 0, "OmniCoinStaking: invalid staking tier");
+        
+        // Update existing stake if any
+        Stake storage userStake = stakes[user];
+        if (userStake.amount > 0) {
+            // Claim existing rewards
+            uint256 rewards = calculateRewards(user);
+            userStake.accumulatedRewards += rewards;
+            userStake.lastRewardTime = block.timestamp;
+            
+            // Update stake
+            userStake.amount += amount;
+            userStake.tier = tier;
+        } else {
+            // Create new stake
+            userStake.amount = amount;
+            userStake.tier = tier;
+            userStake.startTime = block.timestamp;
+            userStake.lastRewardTime = block.timestamp;
         }
-        return StakingTier(0, 0, 0, 0);
+        
+        emit Staked(user, amount, tier);
     }
-
-    /**
-     * @dev Get user's staking information
-     */
-    function getUserStake(address _user) external view returns (
+    
+    function unstake(address user, uint256 amount) external onlyOwner nonReentrant {
+        Stake storage userStake = stakes[user];
+        require(userStake.amount >= amount, "OmniCoinStaking: insufficient stake");
+        
+        // Calculate rewards
+        uint256 rewards = calculateRewards(user);
+        userStake.accumulatedRewards += rewards;
+        
+        // Get staking tier
+        (uint256 tier, uint256 rewardRate, uint256 lockPeriod, uint256 penaltyRate) = config.getStakingTier(userStake.amount);
+        
+        // Calculate penalty if applicable
+        uint256 penalty = 0;
+        if (block.timestamp < userStake.startTime + lockPeriod) {
+            penalty = (amount * penaltyRate) / 100;
+        }
+        
+        // Update stake
+        userStake.amount -= amount;
+        userStake.lastRewardTime = block.timestamp;
+        
+        // Transfer tokens
+        if (penalty > 0) {
+            require(token.transfer(owner(), penalty), "OmniCoinStaking: penalty transfer failed");
+            amount -= penalty;
+        }
+        require(token.transfer(user, amount), "OmniCoinStaking: stake transfer failed");
+        
+        emit Unstaked(user, amount, penalty);
+    }
+    
+    function claimRewards(address user) external onlyOwner nonReentrant {
+        Stake storage userStake = stakes[user];
+        require(userStake.amount > 0, "OmniCoinStaking: no active stake");
+        
+        uint256 rewards = calculateRewards(user);
+        userStake.accumulatedRewards += rewards;
+        userStake.lastRewardTime = block.timestamp;
+        
+        require(token.transfer(user, rewards), "OmniCoinStaking: reward transfer failed");
+        
+        emit RewardsClaimed(user, rewards);
+    }
+    
+    function updateParticipationScore(address user, uint256 score) external onlyOwner {
+        uint256 oldScore = participationScores[user];
+        participationScores[user] = score;
+        
+        emit ParticipationScoreUpdated(user, oldScore, score);
+    }
+    
+    function calculateRewards(address user) public view returns (uint256) {
+        Stake storage userStake = stakes[user];
+        if (userStake.amount == 0) return 0;
+        
+        (uint256 tier, uint256 rewardRate, uint256 lockPeriod, uint256 penaltyRate) = config.getStakingTier(userStake.amount);
+        
+        uint256 timeStaked = block.timestamp - userStake.lastRewardTime;
+        uint256 rewards = (userStake.amount * rewardRate * timeStaked) / (365 days * 100);
+        
+        if (config.useParticipationScore()) {
+            rewards = (rewards * participationScores[user]) / 100;
+        }
+        
+        return rewards;
+    }
+    
+    function getStake(address user) external view returns (
         uint256 amount,
+        uint256 tier,
         uint256 startTime,
-        uint256 lockPeriod,
-        uint256 rewardRate,
         uint256 lastRewardTime,
-        bool isActive,
-        uint256 pendingRewards
+        uint256 accumulatedRewards
     ) {
-        Stake storage userStake = stakes[_user];
+        Stake storage userStake = stakes[user];
         return (
             userStake.amount,
+            userStake.tier,
             userStake.startTime,
-            userStake.lockPeriod,
-            userStake.rewardRate,
             userStake.lastRewardTime,
-            userStake.isActive,
-            calculateRewards(_user)
-        );
-    }
-
-    /**
-     * @dev Get total staking statistics
-     */
-    function getStakingStats() external view returns (
-        uint256 totalStaked,
-        uint256 totalRewards,
-        uint256 stakingTiersCount
-    ) {
-        return (
-            totalStakedAmount,
-            totalRewardsDistributed,
-            stakingTiers.length
+            userStake.accumulatedRewards
         );
     }
 } 

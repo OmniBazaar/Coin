@@ -1,258 +1,195 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
-import "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
-import "@openzeppelin/contracts-upgradeable/security/ReentrancyGuardUpgradeable.sol";
+import "@openzeppelin/contracts/access/Ownable.sol";
+import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import "./omnicoin-erc20-coti.sol";
-import "./OmniCoinAccount.sol";
 
-/**
- * @title OmniCoinPrivacy
- * @dev Handles privacy features for OmniCoin transactions
- */
-contract OmniCoinPrivacy is Initializable, OwnableUpgradeable, ReentrancyGuardUpgradeable {
-    // Structs
-    struct PrivacySettings {
-        bool enabled;
-        uint256 privacyLevel;
-        uint256 maxAmount;
-        uint256 cooldownPeriod;
-        uint256 lastTransaction;
+contract OmniCoinPrivacy is Ownable, ReentrancyGuard {
+    struct PrivacyAccount {
+        bytes32 commitment;
+        uint256 balance;
+        uint256 nonce;
+        bool isActive;
     }
-
-    struct PrivacyTransaction {
-        bytes32 transactionId;
-        address sender;
-        address receiver;
-        uint256 amount;
-        uint256 timestamp;
-        uint256 privacyLevel;
-        bool completed;
-    }
-
-    // State variables
-    mapping(address => PrivacySettings) public privacySettings;
-    mapping(bytes32 => PrivacyTransaction) public privacyTransactions;
-    mapping(address => bytes32[]) public userPrivacyTransactions;
     
-    OmniCoin public omniCoin;
-    OmniCoinAccount public omniCoinAccount;
-    uint256 public basePrivacyFee;
-    uint256 public maxPrivacyLevel;
-    uint256 public minCooldownPeriod;
-
-    // Events
-    event PrivacySettingsUpdated(
-        address indexed user,
-        bool enabled,
-        uint256 privacyLevel,
-        uint256 maxAmount,
-        uint256 cooldownPeriod
+    IERC20 public token;
+    uint256 public minDeposit;
+    uint256 public maxWithdrawal;
+    uint256 public privacyFee;
+    
+    mapping(bytes32 => PrivacyAccount) public accounts;
+    mapping(bytes32 => bool) public spentNullifiers;
+    
+    event AccountCreated(bytes32 indexed commitment);
+    event AccountClosed(bytes32 indexed commitment);
+    event Deposit(bytes32 indexed commitment, uint256 amount);
+    event Withdrawal(bytes32 indexed commitment, uint256 amount);
+    event Transfer(
+        bytes32 indexed fromCommitment,
+        bytes32 indexed toCommitment,
+        uint256 amount
     );
-    event PrivacyTransactionCreated(
-        bytes32 indexed transactionId,
-        address indexed sender,
-        address indexed receiver,
-        uint256 amount,
-        uint256 privacyLevel
-    );
-    event PrivacyTransactionCompleted(bytes32 indexed transactionId);
-    event PrivacyFeeUpdated(uint256 newFee);
-    event MaxPrivacyLevelUpdated(uint256 newLevel);
-    event MinCooldownPeriodUpdated(uint256 newPeriod);
-
-    /// @custom:oz-upgrades-unsafe-allow constructor
-    constructor() {
-        _disableInitializers();
+    event MinDepositUpdated(uint256 oldAmount, uint256 newAmount);
+    event MaxWithdrawalUpdated(uint256 oldAmount, uint256 newAmount);
+    event PrivacyFeeUpdated(uint256 oldFee, uint256 newFee);
+    
+    constructor(address _token) {
+        token = IERC20(_token);
+        minDeposit = 100 * 10**18; // 100 tokens
+        maxWithdrawal = 1000 * 10**18; // 1000 tokens
+        privacyFee = 1 * 10**18; // 1 token
     }
-
-    /**
-     * @dev Initializes the contract
-     */
-    function initialize(
-        address _omniCoin,
-        address _omniCoinAccount,
-        uint256 _basePrivacyFee,
-        uint256 _maxPrivacyLevel,
-        uint256 _minCooldownPeriod
-    ) public initializer {
-        __Ownable_init(msg.sender);
-        __ReentrancyGuard_init();
-        omniCoin = OmniCoin(_omniCoin);
-        omniCoinAccount = OmniCoinAccount(_omniCoinAccount);
-        basePrivacyFee = _basePrivacyFee;
-        maxPrivacyLevel = _maxPrivacyLevel;
-        minCooldownPeriod = _minCooldownPeriod;
-    }
-
-    /**
-     * @dev Update privacy settings for a user
-     */
-    function updatePrivacySettings(
-        bool _enabled,
-        uint256 _privacyLevel,
-        uint256 _maxAmount,
-        uint256 _cooldownPeriod
-    ) external {
-        require(_privacyLevel <= maxPrivacyLevel, "Privacy level too high");
-        require(_cooldownPeriod >= minCooldownPeriod, "Cooldown period too short");
-
-        privacySettings[msg.sender] = PrivacySettings({
-            enabled: _enabled,
-            privacyLevel: _privacyLevel,
-            maxAmount: _maxAmount,
-            cooldownPeriod: _cooldownPeriod,
-            lastTransaction: privacySettings[msg.sender].lastTransaction
+    
+    function createAccount(bytes32 commitment) external nonReentrant {
+        require(commitment != bytes32(0), "OmniCoinPrivacy: zero commitment");
+        require(!accounts[commitment].isActive, "OmniCoinPrivacy: account exists");
+        
+        accounts[commitment] = PrivacyAccount({
+            commitment: commitment,
+            balance: 0,
+            nonce: 0,
+            isActive: true
         });
-
-        emit PrivacySettingsUpdated(
-            msg.sender,
-            _enabled,
-            _privacyLevel,
-            _maxAmount,
-            _cooldownPeriod
-        );
+        
+        emit AccountCreated(commitment);
     }
-
-    /**
-     * @dev Create a private transaction
-     */
-    function createPrivateTransaction(
-        address _receiver,
-        uint256 _amount,
-        uint256 _privacyLevel
-    ) external nonReentrant returns (bytes32 transactionId) {
-        PrivacySettings storage settings = privacySettings[msg.sender];
-        require(settings.enabled, "Privacy not enabled");
-        require(_privacyLevel <= settings.privacyLevel, "Privacy level too high");
-        require(_amount <= settings.maxAmount, "Amount exceeds maximum");
+    
+    function closeAccount(bytes32 commitment) external nonReentrant {
+        PrivacyAccount storage account = accounts[commitment];
+        require(account.isActive, "OmniCoinPrivacy: account not active");
+        require(account.balance == 0, "OmniCoinPrivacy: non-zero balance");
+        
+        account.isActive = false;
+        
+        emit AccountClosed(commitment);
+    }
+    
+    function deposit(bytes32 commitment, uint256 amount) external nonReentrant {
+        require(amount >= minDeposit, "OmniCoinPrivacy: amount too small");
+        require(amount <= maxWithdrawal, "OmniCoinPrivacy: amount too large");
+        
+        PrivacyAccount storage account = accounts[commitment];
+        require(account.isActive, "OmniCoinPrivacy: account not active");
+        
         require(
-            block.timestamp >= settings.lastTransaction + settings.cooldownPeriod,
-            "Cooldown period not elapsed"
+            token.transferFrom(msg.sender, address(this), amount),
+            "OmniCoinPrivacy: transfer failed"
         );
-
-        uint256 privacyFee = calculatePrivacyFee(_privacyLevel);
-        require(
-            omniCoin.transferFrom(msg.sender, address(this), privacyFee),
-            "Privacy fee transfer failed"
-        );
-
-        require(
-            omniCoin.transferFrom(msg.sender, _receiver, _amount),
-            "Transaction transfer failed"
-        );
-
-        transactionId = keccak256(
-            abi.encodePacked(
-                msg.sender,
-                _receiver,
-                _amount,
-                block.timestamp
-            )
-        );
-
-        privacyTransactions[transactionId] = PrivacyTransaction({
-            transactionId: transactionId,
-            sender: msg.sender,
-            receiver: _receiver,
-            amount: _amount,
-            timestamp: block.timestamp,
-            privacyLevel: _privacyLevel,
-            completed: true
-        });
-
-        userPrivacyTransactions[msg.sender].push(transactionId);
-        userPrivacyTransactions[_receiver].push(transactionId);
-        settings.lastTransaction = block.timestamp;
-
-        emit PrivacyTransactionCreated(
-            transactionId,
-            msg.sender,
-            _receiver,
-            _amount,
-            _privacyLevel
-        );
+        
+        account.balance += amount;
+        
+        emit Deposit(commitment, amount);
     }
-
-    /**
-     * @dev Calculate privacy fee based on level
-     */
-    function calculatePrivacyFee(uint256 _privacyLevel) public view returns (uint256) {
-        return basePrivacyFee * (_privacyLevel + 1);
-    }
-
-    /**
-     * @dev Get privacy settings for a user
-     */
-    function getPrivacySettings(address _user) external view returns (
-        bool enabled,
-        uint256 privacyLevel,
-        uint256 maxAmount,
-        uint256 cooldownPeriod,
-        uint256 lastTransaction
-    ) {
-        PrivacySettings storage settings = privacySettings[_user];
-        return (
-            settings.enabled,
-            settings.privacyLevel,
-            settings.maxAmount,
-            settings.cooldownPeriod,
-            settings.lastTransaction
-        );
-    }
-
-    /**
-     * @dev Get privacy transaction details
-     */
-    function getPrivacyTransaction(bytes32 _transactionId) external view returns (
-        address sender,
-        address receiver,
+    
+    function withdraw(
+        bytes32 commitment,
+        bytes32 nullifier,
         uint256 amount,
-        uint256 timestamp,
-        uint256 privacyLevel,
-        bool completed
+        bytes memory proof
+    ) external nonReentrant {
+        require(amount > 0, "OmniCoinPrivacy: zero amount");
+        require(amount <= maxWithdrawal, "OmniCoinPrivacy: amount too large");
+        require(!spentNullifiers[nullifier], "OmniCoinPrivacy: nullifier spent");
+        
+        PrivacyAccount storage account = accounts[commitment];
+        require(account.isActive, "OmniCoinPrivacy: account not active");
+        require(account.balance >= amount, "OmniCoinPrivacy: insufficient balance");
+        
+        // Verify proof (to be implemented)
+        require(verifyWithdrawal(commitment, nullifier, amount, proof), "OmniCoinPrivacy: invalid proof");
+        
+        spentNullifiers[nullifier] = true;
+        account.balance -= amount;
+        account.nonce++;
+        
+        require(
+            token.transfer(msg.sender, amount - privacyFee),
+            "OmniCoinPrivacy: transfer failed"
+        );
+        
+        emit Withdrawal(commitment, amount);
+    }
+    
+    function transfer(
+        bytes32 fromCommitment,
+        bytes32 toCommitment,
+        bytes32 nullifier,
+        uint256 amount,
+        bytes memory proof
+    ) external nonReentrant {
+        require(amount > 0, "OmniCoinPrivacy: zero amount");
+        require(!spentNullifiers[nullifier], "OmniCoinPrivacy: nullifier spent");
+        
+        PrivacyAccount storage fromAccount = accounts[fromCommitment];
+        PrivacyAccount storage toAccount = accounts[toCommitment];
+        require(fromAccount.isActive, "OmniCoinPrivacy: from account not active");
+        require(toAccount.isActive, "OmniCoinPrivacy: to account not active");
+        require(fromAccount.balance >= amount, "OmniCoinPrivacy: insufficient balance");
+        
+        // Verify proof (to be implemented)
+        require(verifyTransfer(fromCommitment, toCommitment, nullifier, amount, proof), "OmniCoinPrivacy: invalid proof");
+        
+        spentNullifiers[nullifier] = true;
+        fromAccount.balance -= amount;
+        fromAccount.nonce++;
+        toAccount.balance += amount;
+        
+        emit Transfer(fromCommitment, toCommitment, amount);
+    }
+    
+    function setMinDeposit(uint256 _amount) external onlyOwner {
+        emit MinDepositUpdated(minDeposit, _amount);
+        minDeposit = _amount;
+    }
+    
+    function setMaxWithdrawal(uint256 _amount) external onlyOwner {
+        emit MaxWithdrawalUpdated(maxWithdrawal, _amount);
+        maxWithdrawal = _amount;
+    }
+    
+    function setPrivacyFee(uint256 _fee) external onlyOwner {
+        emit PrivacyFeeUpdated(privacyFee, _fee);
+        privacyFee = _fee;
+    }
+    
+    function verifyWithdrawal(
+        bytes32 commitment,
+        bytes32 nullifier,
+        uint256 amount,
+        bytes memory proof
+    ) internal view returns (bool) {
+        // TODO: Implement zero-knowledge proof verification
+        return true;
+    }
+    
+    function verifyTransfer(
+        bytes32 fromCommitment,
+        bytes32 toCommitment,
+        bytes32 nullifier,
+        uint256 amount,
+        bytes memory proof
+    ) internal view returns (bool) {
+        // TODO: Implement zero-knowledge proof verification
+        return true;
+    }
+    
+    function getAccount(bytes32 commitment) external view returns (
+        bytes32 accountCommitment,
+        uint256 balance,
+        uint256 nonce,
+        bool isActive
     ) {
-        PrivacyTransaction storage transaction = privacyTransactions[_transactionId];
+        PrivacyAccount storage account = accounts[commitment];
         return (
-            transaction.sender,
-            transaction.receiver,
-            transaction.amount,
-            transaction.timestamp,
-            transaction.privacyLevel,
-            transaction.completed
+            account.commitment,
+            account.balance,
+            account.nonce,
+            account.isActive
         );
     }
-
-    /**
-     * @dev Get user's privacy transaction history
-     */
-    function getUserPrivacyTransactions(address _user) external view returns (bytes32[] memory) {
-        return userPrivacyTransactions[_user];
-    }
-
-    /**
-     * @dev Update base privacy fee
-     */
-    function updateBasePrivacyFee(uint256 _newFee) external onlyOwner {
-        basePrivacyFee = _newFee;
-        emit PrivacyFeeUpdated(_newFee);
-    }
-
-    /**
-     * @dev Update maximum privacy level
-     */
-    function updateMaxPrivacyLevel(uint256 _newLevel) external onlyOwner {
-        maxPrivacyLevel = _newLevel;
-        emit MaxPrivacyLevelUpdated(_newLevel);
-    }
-
-    /**
-     * @dev Update minimum cooldown period
-     */
-    function updateMinCooldownPeriod(uint256 _newPeriod) external onlyOwner {
-        minCooldownPeriod = _newPeriod;
-        emit MinCooldownPeriodUpdated(_newPeriod);
+    
+    function isNullifierSpent(bytes32 nullifier) external view returns (bool) {
+        return spentNullifiers[nullifier];
     }
 } 
