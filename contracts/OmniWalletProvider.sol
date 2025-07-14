@@ -3,7 +3,7 @@ pragma solidity ^0.8.20;
 
 import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
-import "@openzeppelin/contracts-upgradeable/security/ReentrancyGuardUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
 import "./omnicoin-erc20-coti.sol";
 import "./OmniCoinAccount.sol";
 import "./OmniCoinPayment.sol";
@@ -192,7 +192,7 @@ contract OmniWalletProvider is
     ) external view {
         require(target != address(0), "Invalid target");
         // This function is used for simulation only
-        (bool success, ) = target.staticcall{value: value}(data);
+        (bool success, ) = target.staticcall(data);
         require(success, "Simulation failed");
     }
 

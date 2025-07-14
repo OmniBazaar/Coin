@@ -1,0 +1,1739 @@
+{
+  "summary": {
+    "total": 216,
+    "high": 0,
+    "medium": 41,
+    "low": 175
+  },
+  "vulnerabilities": [
+    {
+      "contract": "DEXSettlement",
+      "severity": "MEDIUM",
+      "category": "Gas Limit",
+      "description": "Potential gas limit issue at line 221: for (uint256 i = 0; i < trades.length; i++) {",
+      "recommendation": "Limit loop iterations or use pagination",
+      "timestamp": "2025-07-13T15:11:11.757Z"
+    },
+    {
+      "contract": "DEXSettlement",
+      "severity": "MEDIUM",
+      "category": "Gas Limit",
+      "description": "Potential gas limit issue at line 275: for (uint256 i = 0; i < validatorAddresses.length; i++) {",
+      "recommendation": "Limit loop iterations or use pagination",
+      "timestamp": "2025-07-13T15:11:11.757Z"
+    },
+    {
+      "contract": "DEXSettlement",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 135: function settleTrade(",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.758Z"
+    },
+    {
+      "contract": "DEXSettlement",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 216: function batchSettleTrades(",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.758Z"
+    },
+    {
+      "contract": "DEXSettlement",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 235: function registerValidator(",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.758Z"
+    },
+    {
+      "contract": "DEXSettlement",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 259: function updateValidatorScore(",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.758Z"
+    },
+    {
+      "contract": "DEXSettlement",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 272: function distributeValidatorFees(",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.758Z"
+    },
+    {
+      "contract": "DEXSettlement",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 298: function emergencyStopTrading(",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.758Z"
+    },
+    {
+      "contract": "DEXSettlement",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 316: function updateTradingLimits(",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.758Z"
+    },
+    {
+      "contract": "DEXSettlement",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 329: function updateFeeDistribution(",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.758Z"
+    },
+    {
+      "contract": "DEXSettlement",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 354: // Internal functions",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.758Z"
+    },
+    {
+      "contract": "DEXSettlement",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 387: function _distributeTradingFees(",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.758Z"
+    },
+    {
+      "contract": "DEXSettlement",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 413: function _verifyValidatorSignature(",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.758Z"
+    },
+    {
+      "contract": "DEXSettlement",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 421: function _checkSlippageProtection(",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.758Z"
+    },
+    {
+      "contract": "DEXSettlement",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 428: // View functions",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.758Z"
+    },
+    {
+      "contract": "DEXSettlement",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 429: function getValidatorInfo(",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.758Z"
+    },
+    {
+      "contract": "DEXSettlement",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 439: function getValidatorPendingFees(",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.758Z"
+    },
+    {
+      "contract": "DEXSettlement",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 445: function getTradingStats()",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.758Z"
+    },
+    {
+      "contract": "DEXSettlement",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 463: function getFeeDistribution()",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.758Z"
+    },
+    {
+      "contract": "DEXSettlement",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 471: // Pause functions",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.758Z"
+    },
+    {
+      "contract": "FeeDistribution",
+      "severity": "MEDIUM",
+      "category": "Gas Limit",
+      "description": "Potential gas limit issue at line 249: for (uint256 i = 0; i < tokens.length; i++) {",
+      "recommendation": "Limit loop iterations or use pagination",
+      "timestamp": "2025-07-13T15:11:11.761Z"
+    },
+    {
+      "contract": "FeeDistribution",
+      "severity": "MEDIUM",
+      "category": "Gas Limit",
+      "description": "Potential gas limit issue at line 335: for (uint256 i = 0; i < participationScores.length; i++) {",
+      "recommendation": "Limit loop iterations or use pagination",
+      "timestamp": "2025-07-13T15:11:11.761Z"
+    },
+    {
+      "contract": "FeeDistribution",
+      "severity": "MEDIUM",
+      "category": "Gas Limit",
+      "description": "Potential gas limit issue at line 340: for (uint256 i = 0; i < validatorAddresses.length; i++) {",
+      "recommendation": "Limit loop iterations or use pagination",
+      "timestamp": "2025-07-13T15:11:11.761Z"
+    },
+    {
+      "contract": "FeeDistribution",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 206: function collectFees(",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.762Z"
+    },
+    {
+      "contract": "FeeDistribution",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 239: function batchCollectFees(",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.762Z"
+    },
+    {
+      "contract": "FeeDistribution",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 288: function distributeFees(",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.762Z"
+    },
+    {
+      "contract": "FeeDistribution",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 426: function withdrawCompanyFees(",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.762Z"
+    },
+    {
+      "contract": "FeeDistribution",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 445: function withdrawDevelopmentFees(",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.762Z"
+    },
+    {
+      "contract": "FeeDistribution",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 464: function updateDistributionRatios(",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.762Z"
+    },
+    {
+      "contract": "FeeDistribution",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 494: function updateDistributionParameters(",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.762Z"
+    },
+    {
+      "contract": "FeeDistribution",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 511: function updateTreasuryAddresses(",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.762Z"
+    },
+    {
+      "contract": "FeeDistribution",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 525: function setFeeSourceEnabled(",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.762Z"
+    },
+    {
+      "contract": "FeeDistribution",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 535: function setFeeSourceWeight(",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.762Z"
+    },
+    {
+      "contract": "FeeDistribution",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 543: // Internal functions",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.762Z"
+    },
+    {
+      "contract": "FeeDistribution",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 568: // View functions",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.762Z"
+    },
+    {
+      "contract": "FeeDistribution",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 569: function getValidatorInfo(",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.762Z"
+    },
+    {
+      "contract": "FeeDistribution",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 575: function getDistribution(",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.762Z"
+    },
+    {
+      "contract": "FeeDistribution",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 604: function getValidatorDistribution(",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.762Z"
+    },
+    {
+      "contract": "FeeDistribution",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 617: function getValidatorPendingRewards(",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.762Z"
+    },
+    {
+      "contract": "FeeDistribution",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 624: function getCompanyPendingWithdrawals(",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.762Z"
+    },
+    {
+      "contract": "FeeDistribution",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 630: function getDevelopmentPendingWithdrawals(",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.762Z"
+    },
+    {
+      "contract": "FeeDistribution",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 640: function getFeeSourceTotal(",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.762Z"
+    },
+    {
+      "contract": "FeeDistribution",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 650: function getDistributionRatio()",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.762Z"
+    },
+    {
+      "contract": "FeeDistribution",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 662: function getFeeCollection(",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.762Z"
+    },
+    {
+      "contract": "FeeDistribution",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 683: // Pause functions",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.762Z"
+    },
+    {
+      "contract": "ListingNFT",
+      "severity": "MEDIUM",
+      "category": "Access Control",
+      "description": "Public function without access control at line 51: function mint(address to, string memory tokenURI) public returns (uint256) {",
+      "recommendation": "Add proper access control modifiers",
+      "timestamp": "2025-07-13T15:11:11.764Z"
+    },
+    {
+      "contract": "ListingNFT",
+      "severity": "MEDIUM",
+      "category": "Access Control",
+      "description": "Public function without access control at line 114: function setEscrowId(uint256 tokenId, string memory escrowId) public {",
+      "recommendation": "Add proper access control modifiers",
+      "timestamp": "2025-07-13T15:11:11.764Z"
+    },
+    {
+      "contract": "ListingNFT",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 63: function createTransaction(",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.765Z"
+    },
+    {
+      "contract": "ListingNFT",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 92: function updateTransactionStatus(",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.765Z"
+    },
+    {
+      "contract": "ListingNFT",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 126: function getUserListings(",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.765Z"
+    },
+    {
+      "contract": "ListingNFT",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 132: function getUserTransactions(",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.765Z"
+    },
+    {
+      "contract": "ListingNFT",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 138: function getTransaction(",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.765Z"
+    },
+    {
+      "contract": "ListingNFT",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 145: function _beforeTokenTransfer(",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.765Z"
+    },
+    {
+      "contract": "OmniBatchTransactions",
+      "severity": "MEDIUM",
+      "category": "Gas Limit",
+      "description": "Potential gas limit issue at line 147: for (uint256 i = 0; i < operations.length; i++) {",
+      "recommendation": "Limit loop iterations or use pagination",
+      "timestamp": "2025-07-13T15:11:11.768Z"
+    },
+    {
+      "contract": "OmniBatchTransactions",
+      "severity": "MEDIUM",
+      "category": "Gas Limit",
+      "description": "Potential gas limit issue at line 300: for (uint256 i = 0; i < recipients.length; i++) {",
+      "recommendation": "Limit loop iterations or use pagination",
+      "timestamp": "2025-07-13T15:11:11.768Z"
+    },
+    {
+      "contract": "OmniBatchTransactions",
+      "severity": "MEDIUM",
+      "category": "Gas Limit",
+      "description": "Potential gas limit issue at line 324: for (uint256 i = 0; i < recipients.length; i++) {",
+      "recommendation": "Limit loop iterations or use pagination",
+      "timestamp": "2025-07-13T15:11:11.768Z"
+    },
+    {
+      "contract": "OmniBatchTransactions",
+      "severity": "MEDIUM",
+      "category": "Gas Limit",
+      "description": "Potential gas limit issue at line 365: for (uint256 i = 0; i < operations.length; i++) {",
+      "recommendation": "Limit loop iterations or use pagination",
+      "timestamp": "2025-07-13T15:11:11.768Z"
+    },
+    {
+      "contract": "OmniBatchTransactions",
+      "severity": "MEDIUM",
+      "category": "Access Control",
+      "description": "Public function without access control at line 101: function initialize(address _omniCoin) public initializer {",
+      "recommendation": "Add proper access control modifiers",
+      "timestamp": "2025-07-13T15:11:11.768Z"
+    },
+    {
+      "contract": "OmniBatchTransactions",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 13: * Essential for wallet functionality to reduce gas costs and improve UX",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.768Z"
+    },
+    {
+      "contract": "OmniBatchTransactions",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 115: function executeBatch(",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.768Z"
+    },
+    {
+      "contract": "OmniBatchTransactions",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 187: function _executeOperation(",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.768Z"
+    },
+    {
+      "contract": "OmniBatchTransactions",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 213: function _performOperation(",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.768Z"
+    },
+    {
+      "contract": "OmniBatchTransactions",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 239: function _executeTransfer(",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.768Z"
+    },
+    {
+      "contract": "OmniBatchTransactions",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 253: function _executeApprove(",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.768Z"
+    },
+    {
+      "contract": "OmniBatchTransactions",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 267: function _executeStake(",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.768Z"
+    },
+    {
+      "contract": "OmniBatchTransactions",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 281: function _executeUnstake(",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.768Z"
+    },
+    {
+      "contract": "OmniBatchTransactions",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 291: function createTransferBatch(",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.768Z"
+    },
+    {
+      "contract": "OmniBatchTransactions",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 314: function createNFTBatch(",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.768Z"
+    },
+    {
+      "contract": "OmniBatchTransactions",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 342: function getBatchExecution(",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.768Z"
+    },
+    {
+      "contract": "OmniBatchTransactions",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 351: function getUserBatches(",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.768Z"
+    },
+    {
+      "contract": "OmniBatchTransactions",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 360: function estimateBatchGas(",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.768Z"
+    },
+    {
+      "contract": "OmniCoin",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 93: function setMultisigThreshold(",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.770Z"
+    },
+    {
+      "contract": "OmniCoin",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 105: function transfer(",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.770Z"
+    },
+    {
+      "contract": "OmniCoin",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 118: function transferFrom(",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.770Z"
+    },
+    {
+      "contract": "OmniCoin",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 148: function createEscrow(",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.770Z"
+    },
+    {
+      "contract": "OmniCoin",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 159: function releaseEscrow(",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.770Z"
+    },
+    {
+      "contract": "OmniCoin",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 165: function refundEscrow(",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.770Z"
+    },
+    {
+      "contract": "OmniCoin",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 171: function initiateBridgeTransfer(",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.770Z"
+    },
+    {
+      "contract": "OmniCoin",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 183: function completeBridgeTransfer(",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.770Z"
+    },
+    {
+      "contract": "OmniCoin",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 194: function transferPrivate(",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.770Z"
+    },
+    {
+      "contract": "OmniCoin",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 202: function createCircuit(",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.770Z"
+    },
+    {
+      "contract": "OmniCoin",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 208: function evaluateCircuit(",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.770Z"
+    },
+    {
+      "contract": "OmniCoin",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 215: function createProposal(",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.770Z"
+    },
+    {
+      "contract": "OmniCoin",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 221: function vote(",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.770Z"
+    },
+    {
+      "contract": "OmniCoin",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 228: function executeProposal(",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.770Z"
+    },
+    {
+      "contract": "OmniCoin",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 234: function _beforeTokenTransfer(",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.770Z"
+    },
+    {
+      "contract": "OmniCoinAccount",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 76: function initialize(",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.773Z"
+    },
+    {
+      "contract": "OmniCoinAccount",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 90: function validateUserOp(",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.773Z"
+    },
+    {
+      "contract": "OmniCoinAccount",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 128: function executeUserOp(",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.773Z"
+    },
+    {
+      "contract": "OmniCoinAccount",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 207: function getAccountStatus(",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.773Z"
+    },
+    {
+      "contract": "OmniCoinArbitration",
+      "severity": "MEDIUM",
+      "category": "Gas Limit",
+      "description": "Potential gas limit issue at line 203: for (uint256 i = 0; i < arbitratorDisputes[msg.sender].length; i++) {",
+      "recommendation": "Limit loop iterations or use pagination",
+      "timestamp": "2025-07-13T15:11:11.775Z"
+    },
+    {
+      "contract": "OmniCoinArbitration",
+      "severity": "MEDIUM",
+      "category": "Gas Limit",
+      "description": "Potential gas limit issue at line 244: for (uint256 i = 0; i < arbitratorDisputes[_arbitrator].length; i++) {",
+      "recommendation": "Limit loop iterations or use pagination",
+      "timestamp": "2025-07-13T15:11:11.776Z"
+    },
+    {
+      "contract": "OmniCoinArbitration",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 72: function initialize(",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.776Z"
+    },
+    {
+      "contract": "OmniCoinArbitration",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 197: * @dev Internal function to select an arbitrator",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.776Z"
+    },
+    {
+      "contract": "OmniCoinArbitration",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 221: * @dev Internal function to calculate arbitrator score",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.776Z"
+    },
+    {
+      "contract": "OmniCoinArbitration",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 232: * @dev Internal function to calculate participation index",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.776Z"
+    },
+    {
+      "contract": "OmniCoinArbitration",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 240: * @dev Internal function to get active disputes for an arbitrator",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.776Z"
+    },
+    {
+      "contract": "OmniCoinArbitration",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 253: * @dev Internal function to update arbitrator reputation",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.776Z"
+    },
+    {
+      "contract": "OmniCoinArbitration",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 265: function updateRequirements(",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.776Z"
+    },
+    {
+      "contract": "OmniCoinBridge",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 85: function configureBridge(",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.779Z"
+    },
+    {
+      "contract": "OmniCoinBridge",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 115: function initiateTransfer(",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.779Z"
+    },
+    {
+      "contract": "OmniCoinBridge",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 160: function completeTransfer(",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.779Z"
+    },
+    {
+      "contract": "OmniCoinBridge",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 248: function getTransfer(uint256 _transferId)",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.779Z"
+    },
+    {
+      "contract": "OmniCoinBridge",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 279: function getBridgeConfig(uint256 _chainId)",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.779Z"
+    },
+    {
+      "contract": "OmniCoinBridge",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 300: function verifyMessage(bytes32 _messageHash, bytes memory _signature)",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.779Z"
+    },
+    {
+      "contract": "OmniCoinBridge",
+      "severity": "LOW",
+      "category": "Code Quality",
+      "description": "Unresolved TODO/FIXME at line 305: // TODO: Implement message verification",
+      "recommendation": "Complete or remove TODO/FIXME comments",
+      "timestamp": "2025-07-13T15:11:11.779Z"
+    },
+    {
+      "contract": "OmniCoinConfig",
+      "severity": "MEDIUM",
+      "category": "Gas Limit",
+      "description": "Potential gas limit issue at line 111: for (uint256 i = 0; i < bridgeConfigs.length; i++) {",
+      "recommendation": "Limit loop iterations or use pagination",
+      "timestamp": "2025-07-13T15:11:11.781Z"
+    },
+    {
+      "contract": "OmniCoinConfig",
+      "severity": "MEDIUM",
+      "category": "Gas Limit",
+      "description": "Potential gas limit issue at line 121: for (uint256 i = 0; i < bridgeConfigs.length; i++) {",
+      "recommendation": "Limit loop iterations or use pagination",
+      "timestamp": "2025-07-13T15:11:11.781Z"
+    },
+    {
+      "contract": "OmniCoinConfig",
+      "severity": "MEDIUM",
+      "category": "Gas Limit",
+      "description": "Potential gas limit issue at line 130: for (uint256 i = 0; i < bridgeConfigs.length; i++) {",
+      "recommendation": "Limit loop iterations or use pagination",
+      "timestamp": "2025-07-13T15:11:11.781Z"
+    },
+    {
+      "contract": "OmniCoinConfig",
+      "severity": "MEDIUM",
+      "category": "Gas Limit",
+      "description": "Potential gas limit issue at line 161: for (uint256 i = 0; i < stakingTiers.length; i++) {",
+      "recommendation": "Limit loop iterations or use pagination",
+      "timestamp": "2025-07-13T15:11:11.781Z"
+    },
+    {
+      "contract": "OmniCoinConfig",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 86: // Bridge functions",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.781Z"
+    },
+    {
+      "contract": "OmniCoinConfig",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 87: function addBridgeConfig(",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.781Z"
+    },
+    {
+      "contract": "OmniCoinConfig",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 138: // Staking functions",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.781Z"
+    },
+    {
+      "contract": "OmniCoinConfig",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 139: function updateStakingTier(",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.781Z"
+    },
+    {
+      "contract": "OmniCoinConfig",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 169: // Configuration update functions",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.781Z"
+    },
+    {
+      "contract": "OmniCoinEscrow",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 75: function createEscrow(",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.784Z"
+    },
+    {
+      "contract": "OmniCoinEscrow",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 152: function createDispute(",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.784Z"
+    },
+    {
+      "contract": "OmniCoinEscrow",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 182: function resolveDispute(",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.784Z"
+    },
+    {
+      "contract": "OmniCoinEscrow",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 231: function getEscrow(uint256 _escrowId)",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.784Z"
+    },
+    {
+      "contract": "OmniCoinEscrow",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 258: function getDispute(uint256 _disputeId)",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.784Z"
+    },
+    {
+      "contract": "OmniCoinEscrow",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 283: function getUserEscrows(address _user)",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.784Z"
+    },
+    {
+      "contract": "OmniCoinFactory",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 132: function getDeployment(uint256 _deploymentId)",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.786Z"
+    },
+    {
+      "contract": "OmniCoinGovernor",
+      "severity": "MEDIUM",
+      "category": "Gas Limit",
+      "description": "Potential gas limit issue at line 91: for (uint256 i = 0; i < actions.length; i++) {",
+      "recommendation": "Limit loop iterations or use pagination",
+      "timestamp": "2025-07-13T15:11:11.792Z"
+    },
+    {
+      "contract": "OmniCoinGovernor",
+      "severity": "MEDIUM",
+      "category": "Gas Limit",
+      "description": "Potential gas limit issue at line 140: for (uint256 i = 0; i < actions.length; i++) {",
+      "recommendation": "Limit loop iterations or use pagination",
+      "timestamp": "2025-07-13T15:11:11.792Z"
+    },
+    {
+      "contract": "OmniCoinGovernor",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 71: function propose(",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.792Z"
+    },
+    {
+      "contract": "OmniCoinMultisig",
+      "severity": "MEDIUM",
+      "category": "Gas Limit",
+      "description": "Potential gas limit issue at line 157: for (uint256 i = 0; i < activeSigners.length; i++) {",
+      "recommendation": "Limit loop iterations or use pagination",
+      "timestamp": "2025-07-13T15:11:11.795Z"
+    },
+    {
+      "contract": "OmniCoinMultisig",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 54: function createTransaction(",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.795Z"
+    },
+    {
+      "contract": "OmniCoinMultisig",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 125: function cancelTransaction(",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.795Z"
+    },
+    {
+      "contract": "OmniCoinMultisig",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 195: function getTransaction(",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.795Z"
+    },
+    {
+      "contract": "OmniCoinMultisig",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 224: function hasSigned(",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.795Z"
+    },
+    {
+      "contract": "OmniCoinMultisig",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 231: function getSigner(",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.795Z"
+    },
+    {
+      "contract": "OmniCoinPayment",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 71: function initialize(",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.798Z"
+    },
+    {
+      "contract": "OmniCoinPayment",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 88: function processPayment(",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.798Z"
+    },
+    {
+      "contract": "OmniCoinPayment",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 229: function getPayment(",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.798Z"
+    },
+    {
+      "contract": "OmniCoinPayment",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 261: function getUserPayments(",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.798Z"
+    },
+    {
+      "contract": "OmniCoinPayment",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 270: function getPaymentStats(",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.798Z"
+    },
+    {
+      "contract": "OmniCoinPrivacy",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 88: function withdraw(",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.801Z"
+    },
+    {
+      "contract": "OmniCoinPrivacy",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 126: function transfer(",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.801Z"
+    },
+    {
+      "contract": "OmniCoinPrivacy",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 186: function verifyWithdrawal(",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.801Z"
+    },
+    {
+      "contract": "OmniCoinPrivacy",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 196: function verifyTransfer(",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.801Z"
+    },
+    {
+      "contract": "OmniCoinPrivacy",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 207: function getAccount(",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.801Z"
+    },
+    {
+      "contract": "OmniCoinPrivacy",
+      "severity": "LOW",
+      "category": "Code Quality",
+      "description": "Unresolved TODO/FIXME at line 192: // TODO: Implement garbled circuit verification",
+      "recommendation": "Complete or remove TODO/FIXME comments",
+      "timestamp": "2025-07-13T15:11:11.801Z"
+    },
+    {
+      "contract": "OmniCoinPrivacy",
+      "severity": "LOW",
+      "category": "Code Quality",
+      "description": "Unresolved TODO/FIXME at line 203: // TODO: Implement garbled circuit verification",
+      "recommendation": "Complete or remove TODO/FIXME comments",
+      "timestamp": "2025-07-13T15:11:11.801Z"
+    },
+    {
+      "contract": "OmniCoinValidator",
+      "severity": "MEDIUM",
+      "category": "Gas Limit",
+      "description": "Potential gas limit issue at line 205: for (uint256 i = 0; i < activeSet.validators.length; i++) {",
+      "recommendation": "Limit loop iterations or use pagination",
+      "timestamp": "2025-07-13T15:11:11.809Z"
+    },
+    {
+      "contract": "OmniCoinValidator",
+      "severity": "MEDIUM",
+      "category": "Gas Limit",
+      "description": "Potential gas limit issue at line 214: for (uint256 i = 0; i < activeSet.validators.length; i++) {",
+      "recommendation": "Limit loop iterations or use pagination",
+      "timestamp": "2025-07-13T15:11:11.809Z"
+    },
+    {
+      "contract": "OmniNFTMarketplace",
+      "severity": "MEDIUM",
+      "category": "Gas Limit",
+      "description": "Potential gas limit issue at line 345: for (uint256 i = 0; i < auction.bidders.length; i++) {",
+      "recommendation": "Limit loop iterations or use pagination",
+      "timestamp": "2025-07-13T15:11:11.811Z"
+    },
+    {
+      "contract": "OmniNFTMarketplace",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 15: * @dev Enhanced NFT marketplace with comprehensive functionality for wallet integration",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.811Z"
+    },
+    {
+      "contract": "OmniNFTMarketplace",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 166: function initialize(",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.811Z"
+    },
+    {
+      "contract": "OmniNFTMarketplace",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 192: function createListing(",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.811Z"
+    },
+    {
+      "contract": "OmniNFTMarketplace",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 308: function placeBid(",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.811Z"
+    },
+    {
+      "contract": "OmniNFTMarketplace",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 422: function makeOffer(",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.811Z"
+    },
+    {
+      "contract": "OmniNFTMarketplace",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 530: function getMarketplaceStats()",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.811Z"
+    },
+    {
+      "contract": "OmniNFTMarketplace",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 541: function getListingsByCategory(",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.811Z"
+    },
+    {
+      "contract": "OmniNFTMarketplace",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 550: function getUserListings(",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.811Z"
+    },
+    {
+      "contract": "OmniNFTMarketplace",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 559: function getUserOffers(",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.811Z"
+    },
+    {
+      "contract": "OmniNFTMarketplace",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 592: function onERC721Received(",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.811Z"
+    },
+    {
+      "contract": "OmniWalletProvider",
+      "severity": "MEDIUM",
+      "category": "Gas Limit",
+      "description": "Potential gas limit issue at line 350: for (uint256 i = 0; i < listings.length; i++) {",
+      "recommendation": "Limit loop iterations or use pagination",
+      "timestamp": "2025-07-13T15:11:11.813Z"
+    },
+    {
+      "contract": "OmniWalletProvider",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 17: * @dev Unified interface for wallet operations, providing simplified access to all OmniCoin functionality",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.813Z"
+    },
+    {
+      "contract": "OmniWalletProvider",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 93: function initialize(",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.813Z"
+    },
+    {
+      "contract": "OmniWalletProvider",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 120: function getWalletInfo(",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.813Z"
+    },
+    {
+      "contract": "OmniWalletProvider",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 139: function createSession(",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.813Z"
+    },
+    {
+      "contract": "OmniWalletProvider",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 159: function estimateGas(",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.813Z"
+    },
+    {
+      "contract": "OmniWalletProvider",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 188: function simulateTransaction(",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.813Z"
+    },
+    {
+      "contract": "OmniWalletProvider",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 194: // This function is used for simulation only",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.813Z"
+    },
+    {
+      "contract": "OmniWalletProvider",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 202: function quickSend(",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.813Z"
+    },
+    {
+      "contract": "OmniWalletProvider",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 242: function createNFTListing(",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.813Z"
+    },
+    {
+      "contract": "OmniWalletProvider",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 260: function createMarketplaceEscrow(",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.813Z"
+    },
+    {
+      "contract": "OmniWalletProvider",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 278: function initiateCrossChainTransfer(",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.813Z"
+    },
+    {
+      "contract": "OmniWalletProvider",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 301: function getCrossChainHistory(",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.813Z"
+    },
+    {
+      "contract": "OmniWalletProvider",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 333: function getNFTPortfolio(",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.813Z"
+    },
+    {
+      "contract": "OmniWalletRecovery",
+      "severity": "MEDIUM",
+      "category": "Gas Limit",
+      "description": "Potential gas limit issue at line 175: for (uint256 i = 0; i < _guardians.length; i++) {",
+      "recommendation": "Limit loop iterations or use pagination",
+      "timestamp": "2025-07-13T15:11:11.816Z"
+    },
+    {
+      "contract": "OmniWalletRecovery",
+      "severity": "MEDIUM",
+      "category": "Gas Limit",
+      "description": "Potential gas limit issue at line 201: for (uint256 i = 0; i < _guardians.length; i++) {",
+      "recommendation": "Limit loop iterations or use pagination",
+      "timestamp": "2025-07-13T15:11:11.816Z"
+    },
+    {
+      "contract": "OmniWalletRecovery",
+      "severity": "MEDIUM",
+      "category": "Gas Limit",
+      "description": "Potential gas limit issue at line 236: for (uint256 i = 0; i < config.guardians.length; i++) {",
+      "recommendation": "Limit loop iterations or use pagination",
+      "timestamp": "2025-07-13T15:11:11.816Z"
+    },
+    {
+      "contract": "OmniWalletRecovery",
+      "severity": "MEDIUM",
+      "category": "Gas Limit",
+      "description": "Potential gas limit issue at line 291: for (uint256 i = 0; i < config.guardians.length; i++) {",
+      "recommendation": "Limit loop iterations or use pagination",
+      "timestamp": "2025-07-13T15:11:11.816Z"
+    },
+    {
+      "contract": "OmniWalletRecovery",
+      "severity": "MEDIUM",
+      "category": "Gas Limit",
+      "description": "Potential gas limit issue at line 343: for (uint256 i = 0; i < request.approvers.length; i++) {",
+      "recommendation": "Limit loop iterations or use pagination",
+      "timestamp": "2025-07-13T15:11:11.816Z"
+    },
+    {
+      "contract": "OmniWalletRecovery",
+      "severity": "MEDIUM",
+      "category": "Gas Limit",
+      "description": "Potential gas limit issue at line 414: for (uint256 i = 0; i < backup.authorizedRecoverers.length; i++) {",
+      "recommendation": "Limit loop iterations or use pagination",
+      "timestamp": "2025-07-13T15:11:11.816Z"
+    },
+    {
+      "contract": "OmniWalletRecovery",
+      "severity": "MEDIUM",
+      "category": "Gas Limit",
+      "description": "Potential gas limit issue at line 422: for (uint256 i = 0; i < config.guardians.length; i++) {",
+      "recommendation": "Limit loop iterations or use pagination",
+      "timestamp": "2025-07-13T15:11:11.816Z"
+    },
+    {
+      "contract": "OmniWalletRecovery",
+      "severity": "MEDIUM",
+      "category": "Gas Limit",
+      "description": "Potential gas limit issue at line 447: for (uint256 i = 0; i < config.guardians.length; i++) {",
+      "recommendation": "Limit loop iterations or use pagination",
+      "timestamp": "2025-07-13T15:11:11.816Z"
+    },
+    {
+      "contract": "OmniWalletRecovery",
+      "severity": "MEDIUM",
+      "category": "Gas Limit",
+      "description": "Potential gas limit issue at line 480: for (uint256 i = 0; i < config.guardians.length; i++) {",
+      "recommendation": "Limit loop iterations or use pagination",
+      "timestamp": "2025-07-13T15:11:11.816Z"
+    },
+    {
+      "contract": "OmniWalletRecovery",
+      "severity": "MEDIUM",
+      "category": "Access Control",
+      "description": "Public function without access control at line 137: function initialize(address _omniCoin) public initializer {",
+      "recommendation": "Add proper access control modifiers",
+      "timestamp": "2025-07-13T15:11:11.816Z"
+    },
+    {
+      "contract": "OmniWalletRecovery",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 153: function configureRecovery(",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.816Z"
+    },
+    {
+      "contract": "OmniWalletRecovery",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 222: function initiateRecovery(",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.816Z"
+    },
+    {
+      "contract": "OmniWalletRecovery",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 303: * @dev Internal function to approve recovery",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.816Z"
+    },
+    {
+      "contract": "OmniWalletRecovery",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 382: function createBackup(",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.816Z"
+    },
+    {
+      "contract": "OmniWalletRecovery",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 405: function accessBackup(",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.816Z"
+    },
+    {
+      "contract": "OmniWalletRecovery",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 501: function _getRequiredApprovals(",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.816Z"
+    },
+    {
+      "contract": "OmniWalletRecovery",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 518: function getWalletConfig(",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.816Z"
+    },
+    {
+      "contract": "OmniWalletRecovery",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 544: function getWalletRequests(",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.816Z"
+    },
+    {
+      "contract": "OmniWalletRecovery",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 553: function getGuardedWallets(",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.816Z"
+    },
+    {
+      "contract": "OmniWalletRecovery",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 562: function updateRecoveryParameters(",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.816Z"
+    },
+    {
+      "contract": "SecureSend",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 50: function createEscrow(",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.819Z"
+    },
+    {
+      "contract": "SecureSend",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 175: function extendExpirationTime(bytes32 _escrowId, uint256 _newExpirationTime)",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.819Z"
+    },
+    {
+      "contract": "SecureSend",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 192: function getEscrowDetails(bytes32 _escrowId)",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.819Z"
+    },
+    {
+      "contract": "ValidatorRegistry",
+      "severity": "MEDIUM",
+      "category": "Gas Limit",
+      "description": "Potential gas limit issue at line 468: for (uint256 i = 0; i < validatorAddresses.length; i++) {",
+      "recommendation": "Limit loop iterations or use pagination",
+      "timestamp": "2025-07-13T15:11:11.822Z"
+    },
+    {
+      "contract": "ValidatorRegistry",
+      "severity": "MEDIUM",
+      "category": "Gas Limit",
+      "description": "Potential gas limit issue at line 503: for (uint256 i = 0; i < validatorList.length; i++) {",
+      "recommendation": "Limit loop iterations or use pagination",
+      "timestamp": "2025-07-13T15:11:11.822Z"
+    },
+    {
+      "contract": "ValidatorRegistry",
+      "severity": "MEDIUM",
+      "category": "Gas Limit",
+      "description": "Potential gas limit issue at line 542: for (uint256 i = 0; i < validatorList.length; i++) {",
+      "recommendation": "Limit loop iterations or use pagination",
+      "timestamp": "2025-07-13T15:11:11.822Z"
+    },
+    {
+      "contract": "ValidatorRegistry",
+      "severity": "MEDIUM",
+      "category": "Gas Limit",
+      "description": "Potential gas limit issue at line 632: for (uint256 i = 0; i < validatorList.length; i++) {",
+      "recommendation": "Limit loop iterations or use pagination",
+      "timestamp": "2025-07-13T15:11:11.822Z"
+    },
+    {
+      "contract": "ValidatorRegistry",
+      "severity": "MEDIUM",
+      "category": "Gas Limit",
+      "description": "Potential gas limit issue at line 662: for (uint256 i = 0; i < validatorList.length; i++) {",
+      "recommendation": "Limit loop iterations or use pagination",
+      "timestamp": "2025-07-13T15:11:11.822Z"
+    },
+    {
+      "contract": "ValidatorRegistry",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 194: function registerValidator(",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.822Z"
+    },
+    {
+      "contract": "ValidatorRegistry",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 360: function updatePerformanceMetrics(",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.822Z"
+    },
+    {
+      "contract": "ValidatorRegistry",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 414: function slashValidator(",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.822Z"
+    },
+    {
+      "contract": "ValidatorRegistry",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 459: function distributeRewards(",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.822Z"
+    },
+    {
+      "contract": "ValidatorRegistry",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 530: function getValidatorSelection(",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.822Z"
+    },
+    {
+      "contract": "ValidatorRegistry",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 579: // Internal functions",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.822Z"
+    },
+    {
+      "contract": "ValidatorRegistry",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 580: function _verifyHardwareSpecs(",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.822Z"
+    },
+    {
+      "contract": "ValidatorRegistry",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 590: function _calculateParticipationScore(",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.822Z"
+    },
+    {
+      "contract": "ValidatorRegistry",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 641: // View functions",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.822Z"
+    },
+    {
+      "contract": "ValidatorRegistry",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 642: function getValidatorInfo(",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.822Z"
+    },
+    {
+      "contract": "ValidatorRegistry",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 648: function getValidatorByNodeId(",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.822Z"
+    },
+    {
+      "contract": "ValidatorRegistry",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 680: function getValidatorCount()",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.822Z"
+    },
+    {
+      "contract": "ValidatorRegistry",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 688: // Admin functions",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.822Z"
+    },
+    {
+      "contract": "ValidatorRegistry",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 689: function updateStakingConfig(",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.822Z"
+    },
+    {
+      "contract": "ValidatorRegistry",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 695: function updateEpochDuration(",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.822Z"
+    },
+    {
+      "contract": "omnicoin-erc20-coti",
+      "severity": "MEDIUM",
+      "category": "Access Control",
+      "description": "Public function without access control at line 78: function initialize() public initializer {",
+      "recommendation": "Add proper access control modifiers",
+      "timestamp": "2025-07-13T15:11:11.825Z"
+    },
+    {
+      "contract": "omnicoin-erc20-coti",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 17: * - Pausable functionality",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.825Z"
+    },
+    {
+      "contract": "omnicoin-erc20-coti",
+      "severity": "LOW",
+      "category": "Visibility",
+      "description": "Function without explicit visibility at line 199: function _update(",
+      "recommendation": "Always specify function visibility",
+      "timestamp": "2025-07-13T15:11:11.825Z"
+    }
+  ],
+  "timestamp": "2025-07-13T15:11:11.826Z"
+}

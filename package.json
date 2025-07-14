@@ -1,22 +1,46 @@
 {
-  "name": "coti-hardhat-template",
-  "version": "1.0.0",
-  "license": "Apache 2.0",
-  "description": "A simple template to get started with smart contract development on COTI.",
-  "author": "COTI Development",
+  "name": "omnicoin-contracts",
+  "version": "2.0.0",
+  "license": "MIT",
+  "description": "OmniCoin Smart Contract Ecosystem with COTI V2 Integration",
+  "author": "OmniBazaar Team",
   "repository": {
     "type": "git",
-     "url": "git://github.com/coti-io/coti-hardhat-template.git"
+    "url": "git://github.com/omnibazaar/omnicoin.git"
   },
-  "homepage": "https://docs.coti.io/coti-v2-documentation/build-on-coti/tools/hardhat",
-  "keywords": ["coti", "privacy", "ethereum", "blockchain", "web3", "garbled-circuits", "l2", "on-chain-compute"],
+  "homepage": "https://docs.omnicoin.io",
+  "keywords": ["omnicoin", "omnibazaar", "coti", "privacy", "ethereum", "blockchain", "web3", "defi", "marketplace"],
+  "scripts": {
+    "compile": "hardhat compile",
+    "test": "hardhat test",
+    "test:security": "hardhat test test/security/",
+    "test:integration": "hardhat test test/integration/", 
+    "test:gas": "hardhat test --gas-reporter",
+    "deploy:local": "hardhat run scripts/deploy.js --network localhost",
+    "deploy:coti-testnet": "hardhat run scripts/deploy.js --network cotiTestnet",
+    "deploy:mainnet": "hardhat run scripts/deploy.js --network mainnet",
+    "verify": "hardhat verify --network",
+    "lint": "solhint contracts/*.sol",
+    "format": "prettier --write contracts/*.sol",
+    "coverage": "hardhat coverage",
+    "setup-validators": "hardhat run scripts/setup-validators.js --network localhost",
+    "health-check": "hardhat run scripts/health-check.js --network localhost"
+  },
   "devDependencies": {
     "@nomicfoundation/hardhat-toolbox": "^5.0.0",
-    "hardhat": "^2.22.15"
+    "@openzeppelin/hardhat-upgrades": "^3.0.0",
+    "hardhat": "^2.22.15",
+    "hardhat-gas-reporter": "^1.0.9",
+    "solidity-coverage": "^0.8.5",
+    "solhint": "^4.0.0",
+    "prettier": "^3.0.0",
+    "prettier-plugin-solidity": "^1.2.0"
   },
   "dependencies": {
     "@coti-io/coti-contracts": "^1.0.9",
     "@coti-io/coti-ethers": "^1.0.5",
+    "@openzeppelin/contracts": "^5.0.0",
+    "@openzeppelin/contracts-upgradeable": "^5.0.0",
     "dotenv": "^16.4.5"
   }
 }

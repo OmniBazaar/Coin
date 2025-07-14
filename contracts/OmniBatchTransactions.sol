@@ -3,7 +3,8 @@ pragma solidity ^0.8.20;
 
 import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
-import "@openzeppelin/contracts-upgradeable/security/ReentrancyGuardUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol";
 import "./omnicoin-erc20-coti.sol";
 
 /**
@@ -14,7 +15,8 @@ import "./omnicoin-erc20-coti.sol";
 contract OmniBatchTransactions is
     Initializable,
     OwnableUpgradeable,
-    ReentrancyGuardUpgradeable
+    ReentrancyGuardUpgradeable,
+    PausableUpgradeable
 {
     // Transaction types
     enum TransactionType {
@@ -99,6 +101,7 @@ contract OmniBatchTransactions is
     function initialize(address _omniCoin) public initializer {
         __Ownable_init(msg.sender);
         __ReentrancyGuard_init();
+        __Pausable_init();
 
         omniCoin = OmniCoin(_omniCoin);
         maxBatchSize = 50; // Maximum 50 operations per batch

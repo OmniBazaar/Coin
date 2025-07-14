@@ -3,7 +3,7 @@ pragma solidity ^0.8.20;
 
 import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
-import "@openzeppelin/contracts-upgradeable/security/ReentrancyGuardUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "./omnicoin-erc20-coti.sol";
 import "./OmniCoinAccount.sol";
@@ -12,7 +12,11 @@ import "./OmniCoinAccount.sol";
  * @title OmniCoinPayment
  * @dev Handles payment processing for OmniCoin with privacy and staking features
  */
-contract OmniCoinPayment is Initializable, OwnableUpgradeable, ReentrancyGuardUpgradeable {
+contract OmniCoinPayment is
+    Initializable,
+    OwnableUpgradeable,
+    ReentrancyGuardUpgradeable
+{
     // Structs
     struct Payment {
         address sender;
@@ -30,7 +34,7 @@ contract OmniCoinPayment is Initializable, OwnableUpgradeable, ReentrancyGuardUp
     mapping(address => bytes32[]) public userPayments;
     mapping(address => uint256) public totalPayments;
     mapping(address => uint256) public totalReceived;
-    
+
     OmniCoin public omniCoin;
     OmniCoinAccount public omniCoinAccount;
     uint256 public minStakeAmount;
@@ -48,7 +52,11 @@ contract OmniCoinPayment is Initializable, OwnableUpgradeable, ReentrancyGuardUp
     );
     event PaymentCancelled(bytes32 indexed paymentId);
     event PrivacyToggled(bytes32 indexed paymentId, bool enabled);
-    event StakingToggled(bytes32 indexed paymentId, bool enabled, uint256 amount);
+    event StakingToggled(
+        bytes32 indexed paymentId,
+        bool enabled,
+        uint256 amount
+    );
     event MinStakeAmountUpdated(uint256 newAmount);
     event MaxPrivacyFeeUpdated(uint256 newFee);
 
@@ -109,12 +117,7 @@ contract OmniCoinPayment is Initializable, OwnableUpgradeable, ReentrancyGuardUp
         );
 
         paymentId = keccak256(
-            abi.encodePacked(
-                msg.sender,
-                _receiver,
-                _amount,
-                block.timestamp
-            )
+            abi.encodePacked(msg.sender, _receiver, _amount, block.timestamp)
         );
 
         payments[paymentId] = Payment({
@@ -223,16 +226,22 @@ contract OmniCoinPayment is Initializable, OwnableUpgradeable, ReentrancyGuardUp
     /**
      * @dev Get payment details
      */
-    function getPayment(bytes32 _paymentId) external view returns (
-        address sender,
-        address receiver,
-        uint256 amount,
-        bool privacyEnabled,
-        uint256 timestamp,
-        bool stakingEnabled,
-        uint256 stakeAmount,
-        bool completed
-    ) {
+    function getPayment(
+        bytes32 _paymentId
+    )
+        external
+        view
+        returns (
+            address sender,
+            address receiver,
+            uint256 amount,
+            bool privacyEnabled,
+            uint256 timestamp,
+            bool stakingEnabled,
+            uint256 stakeAmount,
+            bool completed
+        )
+    {
         Payment storage payment = payments[_paymentId];
         return (
             payment.sender,
@@ -249,17 +258,18 @@ contract OmniCoinPayment is Initializable, OwnableUpgradeable, ReentrancyGuardUp
     /**
      * @dev Get user's payment history
      */
-    function getUserPayments(address _user) external view returns (bytes32[] memory) {
+    function getUserPayments(
+        address _user
+    ) external view returns (bytes32[] memory) {
         return userPayments[_user];
     }
 
     /**
      * @dev Get total payments and received amounts for an address
      */
-    function getPaymentStats(address _user) external view returns (
-        uint256 totalSent,
-        uint256 totalReceived
-    ) {
+    function getPaymentStats(
+        address _user
+    ) external view returns (uint256 totalSent, uint256 totalReceivedAmount) {
         return (totalPayments[_user], totalReceived[_user]);
     }
 
@@ -278,4 +288,4 @@ contract OmniCoinPayment is Initializable, OwnableUpgradeable, ReentrancyGuardUp
         maxPrivacyFee = _newFee;
         emit MaxPrivacyFeeUpdated(_newFee);
     }
-} 
+}

@@ -2,7 +2,7 @@
 pragma solidity ^0.8.20;
 
 import "@openzeppelin/contracts/access/Ownable.sol";
-import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
+import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import "./OmniCoin.sol";
 import "./OmniCoinConfig.sol";
 import "./OmniCoinReputation.sol";
@@ -30,10 +30,10 @@ contract OmniCoinFactory is Ownable, ReentrancyGuard {
         address token;
         uint256 timestamp;
     }
-    
+
     mapping(uint256 => Deployment) public deployments;
     uint256 public deploymentCount;
-    
+
     event OmniCoinDeployed(
         uint256 indexed deploymentId,
         address indexed token,
@@ -48,24 +48,26 @@ contract OmniCoinFactory is Ownable, ReentrancyGuard {
         address escrow,
         address bridge
     );
-    
-    constructor() {}
-    
+
+    constructor(address initialOwner) Ownable(initialOwner) {}
+
     function deployOmniCoin() external nonReentrant returns (uint256) {
         uint256 deploymentId = deploymentCount++;
-        
+
         // Deploy components
-        OmniCoinConfig config = new OmniCoinConfig();
+        OmniCoinConfig config = new OmniCoinConfig(msg.sender);
         OmniCoinReputation reputation = new OmniCoinReputation(address(config));
         OmniCoinStaking staking = new OmniCoinStaking(address(config));
         OmniCoinValidator validator = new OmniCoinValidator(address(config));
-        OmniCoinMultisig multisig = new OmniCoinMultisig();
+        OmniCoinMultisig multisig = new OmniCoinMultisig(msg.sender);
         OmniCoinPrivacy privacy = new OmniCoinPrivacy(address(this));
-        OmniCoinGarbledCircuit garbledCircuit = new OmniCoinGarbledCircuit();
-        OmniCoinGovernor governor = new OmniCoinGovernor();
+        OmniCoinGarbledCircuit garbledCircuit = new OmniCoinGarbledCircuit(
+            msg.sender
+        );
+        OmniCoinGovernor governor = new OmniCoinGovernor(address(this));
         OmniCoinEscrow escrow = new OmniCoinEscrow(address(this));
         OmniCoinBridge bridge = new OmniCoinBridge(address(this));
-        
+
         // Deploy main token
         OmniCoin token = new OmniCoin(
             address(config),
@@ -79,7 +81,7 @@ contract OmniCoinFactory is Ownable, ReentrancyGuard {
             address(escrow),
             address(bridge)
         );
-        
+
         // Store deployment
         deployments[deploymentId] = Deployment({
             config: address(config),
@@ -95,7 +97,7 @@ contract OmniCoinFactory is Ownable, ReentrancyGuard {
             token: address(token),
             timestamp: block.timestamp
         });
-        
+
         // Initialize systems
         config.transferOwnership(address(token));
         reputation.transferOwnership(address(token));
@@ -107,10 +109,10 @@ contract OmniCoinFactory is Ownable, ReentrancyGuard {
         governor.transferOwnership(address(token));
         escrow.transferOwnership(address(token));
         bridge.transferOwnership(address(token));
-        
+
         // Mint initial supply
-        token.mint(msg.sender, 1000000 * 10**6); // 1M tokens
-        
+        token.mint(msg.sender, 1000000 * 10 ** 6); // 1M tokens
+
         emit OmniCoinDeployed(
             deploymentId,
             address(token),
@@ -125,11 +127,13 @@ contract OmniCoinFactory is Ownable, ReentrancyGuard {
             address(escrow),
             address(bridge)
         );
-        
+
         return deploymentId;
     }
-    
-    function getDeployment(uint256 _deploymentId)
+
+    function getDeployment(
+        uint256 _deploymentId
+    )
         external
         view
         returns (
@@ -163,4 +167,4 @@ contract OmniCoinFactory is Ownable, ReentrancyGuard {
             deployment.timestamp
         );
     }
-} 
+}

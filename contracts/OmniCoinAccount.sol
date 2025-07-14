@@ -3,7 +3,7 @@ pragma solidity ^0.8.20;
 
 import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
-import "@openzeppelin/contracts-upgradeable/security/ReentrancyGuardUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 import "@openzeppelin/contracts/utils/cryptography/MessageHashUtils.sol";
@@ -13,7 +13,11 @@ import "./omnicoin-erc20-coti.sol";
  * @title OmniCoinAccount
  * @dev ERC-4337 compliant account abstraction implementation with payment integration
  */
-contract OmniCoinAccount is Initializable, OwnableUpgradeable, ReentrancyGuardUpgradeable {
+contract OmniCoinAccount is
+    Initializable,
+    OwnableUpgradeable,
+    ReentrancyGuardUpgradeable
+{
     using ECDSA for bytes32;
     using MessageHashUtils for bytes32;
 
@@ -50,7 +54,11 @@ contract OmniCoinAccount is Initializable, OwnableUpgradeable, ReentrancyGuardUp
 
     // Events
     event AccountDeployed(address indexed account, bytes initCode);
-    event OperationExecuted(address indexed account, uint256 indexed nonce, bool success);
+    event OperationExecuted(
+        address indexed account,
+        uint256 indexed nonce,
+        bool success
+    );
     event EntryPointUpdated(address indexed newEntryPoint);
     event GasLimitUpdated(uint256 newGasLimit);
     event PrivacyToggled(address indexed account, bool enabled);
@@ -65,7 +73,10 @@ contract OmniCoinAccount is Initializable, OwnableUpgradeable, ReentrancyGuardUp
     /**
      * @dev Initializes the contract
      */
-    function initialize(address _entryPoint, address _omniCoin) public initializer {
+    function initialize(
+        address _entryPoint,
+        address _omniCoin
+    ) public initializer {
         __Ownable_init(msg.sender);
         __ReentrancyGuard_init();
         entryPoint = _entryPoint;
@@ -82,7 +93,10 @@ contract OmniCoinAccount is Initializable, OwnableUpgradeable, ReentrancyGuardUp
         uint256 missingAccountFunds
     ) external returns (uint256 validationData) {
         require(msg.sender == entryPoint, "Not entry point");
-        require(!isDeployed[userOp.sender] || userOp.initCode.length == 0, "Account already deployed");
+        require(
+            !isDeployed[userOp.sender] || userOp.initCode.length == 0,
+            "Account already deployed"
+        );
 
         // Validate signature
         bytes32 hash = userOpHash.toEthSignedMessageHash();
@@ -143,7 +157,11 @@ contract OmniCoinAccount is Initializable, OwnableUpgradeable, ReentrancyGuardUp
         if (amount > stakingAmount[msg.sender]) {
             uint256 additionalStake = amount - stakingAmount[msg.sender];
             require(
-                omniCoin.transferFrom(msg.sender, address(this), additionalStake),
+                omniCoin.transferFrom(
+                    msg.sender,
+                    address(this),
+                    additionalStake
+                ),
                 "Stake transfer failed"
             );
         } else if (amount < stakingAmount[msg.sender]) {
@@ -186,14 +204,20 @@ contract OmniCoinAccount is Initializable, OwnableUpgradeable, ReentrancyGuardUp
     /**
      * @dev Returns account status and settings
      */
-    function getAccountStatus(address _account) external view returns (
-        bool deployed,
-        uint256 nonce,
-        bytes memory init,
-        bool privacy,
-        uint256 stake,
-        uint256 reputation
-    ) {
+    function getAccountStatus(
+        address _account
+    )
+        external
+        view
+        returns (
+            bool deployed,
+            uint256 nonce,
+            bytes memory init,
+            bool privacy,
+            uint256 stake,
+            uint256 reputation
+        )
+    {
         return (
             isDeployed[_account],
             nonces[_account],
@@ -217,4 +241,4 @@ contract OmniCoinAccount is Initializable, OwnableUpgradeable, ReentrancyGuardUp
     function isAccountDeployed(address _account) external view returns (bool) {
         return isDeployed[_account];
     }
-} 
+}

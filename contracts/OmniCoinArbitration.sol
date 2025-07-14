@@ -13,7 +13,11 @@ import "./OmniCoinEscrow.sol";
  * @title OmniCoinArbitration
  * @dev Implements arbitration system with COTI reputation integration
  */
-contract OmniCoinArbitration is Initializable, OwnableUpgradeable, ReentrancyGuardUpgradeable {
+contract OmniCoinArbitration is
+    Initializable,
+    OwnableUpgradeable,
+    ReentrancyGuardUpgradeable
+{
     // Structs
     struct Arbitrator {
         address account;
@@ -41,11 +45,11 @@ contract OmniCoinArbitration is Initializable, OwnableUpgradeable, ReentrancyGua
     mapping(bytes32 => Dispute) public disputes;
     mapping(address => bytes32[]) public arbitratorDisputes;
     mapping(address => bytes32[]) public userDisputes;
-    
+
     OmniCoin public omniCoin;
     OmniCoinAccount public omniCoinAccount;
     OmniCoinEscrow public omniCoinEscrow;
-    
+
     uint256 public minReputation;
     uint256 public minParticipationIndex;
     uint256 public maxActiveDisputes;
@@ -57,9 +61,16 @@ contract OmniCoinArbitration is Initializable, OwnableUpgradeable, ReentrancyGua
     event ArbitratorRemoved(address indexed arbitrator);
     event DisputeCreated(bytes32 indexed escrowId, address indexed arbitrator);
     event DisputeResolved(bytes32 indexed escrowId, string resolution);
-    event RatingSubmitted(bytes32 indexed escrowId, address indexed rater, uint256 rating);
+    event RatingSubmitted(
+        bytes32 indexed escrowId,
+        address indexed rater,
+        uint256 rating
+    );
     event ReputationUpdated(address indexed arbitrator, uint256 newReputation);
-    event ParticipationIndexUpdated(address indexed arbitrator, uint256 newIndex);
+    event ParticipationIndexUpdated(
+        address indexed arbitrator,
+        uint256 newIndex
+    );
 
     /// @custom:oz-upgrades-unsafe-allow constructor
     constructor() {
@@ -96,12 +107,15 @@ contract OmniCoinArbitration is Initializable, OwnableUpgradeable, ReentrancyGua
      */
     function registerArbitrator() external {
         require(!arbitrators[msg.sender].isActive, "Already registered");
-        
+
         uint256 reputation = omniCoinAccount.reputationScore(msg.sender);
         uint256 participationIndex = _calculateParticipationIndex(msg.sender);
-        
+
         require(reputation >= minReputation, "Insufficient reputation");
-        require(participationIndex >= minParticipationIndex, "Insufficient participation");
+        require(
+            participationIndex >= minParticipationIndex,
+            "Insufficient participation"
+        );
 
         arbitrators[msg.sender] = Arbitrator({
             account: msg.sender,
@@ -129,8 +143,10 @@ contract OmniCoinArbitration is Initializable, OwnableUpgradeable, ReentrancyGua
      * @dev Creates a new dispute
      */
     function createDispute(bytes32 _escrowId) external {
-        require(omniCoinEscrow.getEscrow(_escrowId).isDisputed, "Escrow not disputed");
-        
+        uint256 escrowId = uint256(_escrowId);
+        (, , , , , , bool disputed, ) = omniCoinEscrow.getEscrow(escrowId);
+        require(disputed, "Escrow not disputed");
+
         address arbitrator = _selectArbitrator();
         require(arbitrator != address(0), "No suitable arbitrator found");
 
@@ -146,8 +162,13 @@ contract OmniCoinArbitration is Initializable, OwnableUpgradeable, ReentrancyGua
         });
 
         arbitratorDisputes[arbitrator].push(_escrowId);
-        userDisputes[omniCoinEscrow.getEscrow(_escrowId).buyer].push(_escrowId);
-        userDisputes[omniCoinEscrow.getEscrow(_escrowId).seller].push(_escrowId);
+
+        // Get buyer and seller addresses from escrow
+        (address seller, address buyer, , , , , , ) = omniCoinEscrow.getEscrow(
+            escrowId
+        );
+        userDisputes[buyer].push(_escrowId);
+        userDisputes[seller].push(_escrowId);
 
         arbitrators[arbitrator].totalCases++;
         arbitrators[arbitrator].lastActiveTimestamp = block.timestamp;
@@ -158,11 +179,17 @@ contract OmniCoinArbitration is Initializable, OwnableUpgradeable, ReentrancyGua
     /**
      * @dev Resolves a dispute
      */
-    function resolveDispute(bytes32 _escrowId, string calldata _resolution) external {
+    function resolveDispute(
+        bytes32 _escrowId,
+        string calldata _resolution
+    ) external {
         Dispute storage dispute = disputes[_escrowId];
         require(!dispute.isResolved, "Already resolved");
         require(msg.sender == dispute.arbitrator, "Not the arbitrator");
-        require(block.timestamp <= dispute.timestamp + disputeTimeout, "Dispute timeout");
+        require(
+            block.timestamp <= dispute.timestamp + disputeTimeout,
+            "Dispute timeout"
+        );
 
         dispute.isResolved = true;
         dispute.resolution = _resolution;
@@ -181,9 +208,15 @@ contract OmniCoinArbitration is Initializable, OwnableUpgradeable, ReentrancyGua
         require(dispute.isResolved, "Dispute not resolved");
         require(_rating > 0 && _rating <= 5, "Invalid rating");
 
-        if (msg.sender == omniCoinEscrow.getEscrow(_escrowId).buyer) {
+        // Get buyer and seller addresses from escrow
+        uint256 escrowId = uint256(_escrowId);
+        (address seller, address buyer, , , , , , ) = omniCoinEscrow.getEscrow(
+            escrowId
+        );
+
+        if (msg.sender == buyer) {
             dispute.buyerRating = _rating;
-        } else if (msg.sender == omniCoinEscrow.getEscrow(_escrowId).seller) {
+        } else if (msg.sender == seller) {
             dispute.sellerRating = _rating;
         } else {
             revert("Not authorized");
@@ -220,26 +253,39 @@ contract OmniCoinArbitration is Initializable, OwnableUpgradeable, ReentrancyGua
     /**
      * @dev Internal function to calculate arbitrator score
      */
-    function _calculateArbitratorScore(address _arbitrator) internal view returns (uint256) {
+    function _calculateArbitratorScore(
+        address _arbitrator
+    ) internal view returns (uint256) {
         Arbitrator storage arbitrator = arbitrators[_arbitrator];
         if (arbitrator.totalCases == 0) return 0;
 
-        uint256 successRate = (arbitrator.successfulCases * 100) / arbitrator.totalCases;
-        return (arbitrator.reputation * successRate * arbitrator.participationIndex) / 100;
+        uint256 successRate = (arbitrator.successfulCases * 100) /
+            arbitrator.totalCases;
+        return
+            (arbitrator.reputation *
+                successRate *
+                arbitrator.participationIndex) / 100;
     }
 
     /**
      * @dev Internal function to calculate participation index
      */
-    function _calculateParticipationIndex(address _user) internal view returns (uint256) {
+    function _calculateParticipationIndex(
+        address _user
+    ) internal view returns (uint256) {
         // Implementation would integrate with COTI's participation index
-        return omniCoinAccount.getAccountStatus(_user).reputation;
+        (, , , , , uint256 reputation) = omniCoinAccount.getAccountStatus(
+            _user
+        );
+        return reputation;
     }
 
     /**
      * @dev Internal function to get active disputes for an arbitrator
      */
-    function _getActiveDisputes(address _arbitrator) internal view returns (uint256) {
+    function _getActiveDisputes(
+        address _arbitrator
+    ) internal view returns (uint256) {
         uint256 count;
         for (uint256 i = 0; i < arbitratorDisputes[_arbitrator].length; i++) {
             if (!disputes[arbitratorDisputes[_arbitrator][i]].isResolved) {
@@ -252,9 +298,15 @@ contract OmniCoinArbitration is Initializable, OwnableUpgradeable, ReentrancyGua
     /**
      * @dev Internal function to update arbitrator reputation
      */
-    function _updateArbitratorReputation(address _arbitrator, uint256 _rating) internal {
+    function _updateArbitratorReputation(
+        address _arbitrator,
+        uint256 _rating
+    ) internal {
         Arbitrator storage arbitrator = arbitrators[_arbitrator];
-        uint256 newReputation = (arbitrator.reputation * (100 - ratingWeight) + _rating * ratingWeight) / 100;
+        uint256 newReputation = (arbitrator.reputation *
+            (100 - ratingWeight) +
+            _rating *
+            ratingWeight) / 100;
         arbitrator.reputation = newReputation;
         emit ReputationUpdated(_arbitrator, newReputation);
     }
@@ -279,14 +331,20 @@ contract OmniCoinArbitration is Initializable, OwnableUpgradeable, ReentrancyGua
     /**
      * @dev Gets arbitrator details
      */
-    function getArbitrator(address _arbitrator) external view returns (
-        uint256 reputation,
-        uint256 participationIndex,
-        uint256 totalCases,
-        uint256 successfulCases,
-        bool isActive,
-        uint256 lastActiveTimestamp
-    ) {
+    function getArbitrator(
+        address _arbitrator
+    )
+        external
+        view
+        returns (
+            uint256 reputation,
+            uint256 participationIndex,
+            uint256 totalCases,
+            uint256 successfulCases,
+            bool isActive,
+            uint256 lastActiveTimestamp
+        )
+    {
         Arbitrator storage arbitrator = arbitrators[_arbitrator];
         return (
             arbitrator.reputation,
@@ -301,15 +359,21 @@ contract OmniCoinArbitration is Initializable, OwnableUpgradeable, ReentrancyGua
     /**
      * @dev Gets dispute details
      */
-    function getDispute(bytes32 _escrowId) external view returns (
-        address arbitrator,
-        uint256 timestamp,
-        bool isResolved,
-        string memory resolution,
-        uint256 buyerRating,
-        uint256 sellerRating,
-        uint256 arbitratorRating
-    ) {
+    function getDispute(
+        bytes32 _escrowId
+    )
+        external
+        view
+        returns (
+            address arbitrator,
+            uint256 timestamp,
+            bool isResolved,
+            string memory resolution,
+            uint256 buyerRating,
+            uint256 sellerRating,
+            uint256 arbitratorRating
+        )
+    {
         Dispute storage dispute = disputes[_escrowId];
         return (
             dispute.arbitrator,
@@ -325,14 +389,18 @@ contract OmniCoinArbitration is Initializable, OwnableUpgradeable, ReentrancyGua
     /**
      * @dev Gets user's dispute history
      */
-    function getUserDisputes(address _user) external view returns (bytes32[] memory) {
+    function getUserDisputes(
+        address _user
+    ) external view returns (bytes32[] memory) {
         return userDisputes[_user];
     }
 
     /**
      * @dev Gets arbitrator's dispute history
      */
-    function getArbitratorDisputes(address _arbitrator) external view returns (bytes32[] memory) {
+    function getArbitratorDisputes(
+        address _arbitrator
+    ) external view returns (bytes32[] memory) {
         return arbitratorDisputes[_arbitrator];
     }
-} 
+}

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.0;
 
-import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
+import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
@@ -40,9 +40,16 @@ contract SecureSend is ReentrancyGuard, Ownable {
     );
     event EscrowReleased(bytes32 indexed escrowId, address indexed releasedBy);
     event EscrowRefunded(bytes32 indexed escrowId, address indexed refundedBy);
-    event VoteCast(bytes32 indexed escrowId, address indexed voter, bool isPositive);
+    event VoteCast(
+        bytes32 indexed escrowId,
+        address indexed voter,
+        bool isPositive
+    );
 
-    constructor(address _paymentToken, address _feeCollector) {
+    constructor(
+        address _paymentToken,
+        address _feeCollector
+    ) Ownable(msg.sender) {
         paymentToken = IERC20(_paymentToken);
         feeCollector = _feeCollector;
     }
@@ -108,7 +115,10 @@ contract SecureSend is ReentrancyGuard, Ownable {
             "Not authorized to vote"
         );
         require(!escrow.hasVoted[msg.sender], "Already voted");
-        require(!escrow.isReleased && !escrow.isRefunded, "Escrow already resolved");
+        require(
+            !escrow.isReleased && !escrow.isRefunded,
+            "Escrow already resolved"
+        );
         require(block.timestamp <= escrow.expirationTime, "Escrow expired");
 
         escrow.hasVoted[msg.sender] = true;
@@ -130,7 +140,10 @@ contract SecureSend is ReentrancyGuard, Ownable {
 
     function _releaseEscrow(bytes32 _escrowId) internal {
         Escrow storage escrow = escrows[_escrowId];
-        require(!escrow.isReleased && !escrow.isRefunded, "Escrow already resolved");
+        require(
+            !escrow.isReleased && !escrow.isRefunded,
+            "Escrow already resolved"
+        );
 
         escrow.isReleased = true;
 
@@ -152,7 +165,10 @@ contract SecureSend is ReentrancyGuard, Ownable {
 
     function _refundEscrow(bytes32 _escrowId) internal {
         Escrow storage escrow = escrows[_escrowId];
-        require(!escrow.isReleased && !escrow.isRefunded, "Escrow already resolved");
+        require(
+            !escrow.isReleased && !escrow.isRefunded,
+            "Escrow already resolved"
+        );
 
         escrow.isRefunded = true;
 
@@ -172,9 +188,10 @@ contract SecureSend is ReentrancyGuard, Ownable {
         emit EscrowRefunded(_escrowId, msg.sender);
     }
 
-    function extendExpirationTime(bytes32 _escrowId, uint256 _newExpirationTime)
-        external
-    {
+    function extendExpirationTime(
+        bytes32 _escrowId,
+        uint256 _newExpirationTime
+    ) external {
         Escrow storage escrow = escrows[_escrowId];
         require(
             msg.sender == escrow.buyer ||
@@ -182,14 +199,22 @@ contract SecureSend is ReentrancyGuard, Ownable {
                 msg.sender == escrow.escrowAgent,
             "Not authorized"
         );
-        require(!escrow.isReleased && !escrow.isRefunded, "Escrow already resolved");
-        require(_newExpirationTime > block.timestamp, "Invalid expiration time");
+        require(
+            !escrow.isReleased && !escrow.isRefunded,
+            "Escrow already resolved"
+        );
+        require(
+            _newExpirationTime > block.timestamp,
+            "Invalid expiration time"
+        );
         require(_newExpirationTime > escrow.expirationTime, "Must extend time");
 
         escrow.expirationTime = _newExpirationTime;
     }
 
-    function getEscrowDetails(bytes32 _escrowId)
+    function getEscrowDetails(
+        bytes32 _escrowId
+    )
         external
         view
         returns (
@@ -218,7 +243,10 @@ contract SecureSend is ReentrancyGuard, Ownable {
         );
     }
 
-    function hasVoted(bytes32 _escrowId, address _voter) external view returns (bool) {
+    function hasVoted(
+        bytes32 _escrowId,
+        address _voter
+    ) external view returns (bool) {
         return escrows[_escrowId].hasVoted[_voter];
     }
-} 
+}
