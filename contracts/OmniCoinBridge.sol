@@ -74,7 +74,7 @@ contract OmniCoinBridge is Ownable, ReentrancyGuard {
     event BaseFeeUpdated(uint256 newFee);
     event MessageTimeoutUpdated(uint256 newTimeout);
 
-    constructor(address _token) Ownable(msg.sender) {
+    constructor(address _token, address initialOwner) Ownable(initialOwner) {
         token = IERC20(_token);
         minTransferAmount = 100 * 10 ** 6; // 100 tokens
         maxTransferAmount = 1000000 * 10 ** 6; // 1M tokens

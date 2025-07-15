@@ -34,7 +34,7 @@ contract OmniCoinPrivacy is Ownable, ReentrancyGuard {
     event MaxWithdrawalUpdated(uint256 oldAmount, uint256 newAmount);
     event PrivacyFeeUpdated(uint256 oldFee, uint256 newFee);
 
-    constructor(address _token) Ownable(msg.sender) {
+    constructor(address _token, address initialOwner) Ownable(initialOwner) {
         token = IERC20(_token);
         minDeposit = 100 * 10 ** 18; // 100 tokens
         maxWithdrawal = 1000 * 10 ** 18; // 1000 tokens

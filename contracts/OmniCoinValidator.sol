@@ -41,7 +41,7 @@ contract OmniCoinValidator is Ownable, ReentrancyGuard {
     event MinStakeUpdated(uint256 oldStake, uint256 newStake);
     event MaxValidatorsUpdated(uint256 oldMax, uint256 newMax);
 
-    constructor(address _token) Ownable(msg.sender) {
+    constructor(address _token, address initialOwner) Ownable(initialOwner) {
         token = IERC20(_token);
         rewardRate = 100; // 1% per period
         rewardPeriod = 1 days;

@@ -43,6 +43,7 @@ contract OmniCoin is ERC20, AccessControl, Pausable, ReentrancyGuard {
     event PrivacyToggled(bool enabled);
 
     constructor(
+        address _owner,
         address _config,
         address _reputation,
         address _staking,
@@ -65,10 +66,10 @@ contract OmniCoin is ERC20, AccessControl, Pausable, ReentrancyGuard {
         escrow = OmniCoinEscrow(_escrow);
         bridge = OmniCoinBridge(_bridge);
 
-        _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
-        _grantRole(MINTER_ROLE, msg.sender);
-        _grantRole(BURNER_ROLE, msg.sender);
-        _grantRole(PAUSER_ROLE, msg.sender);
+        _grantRole(DEFAULT_ADMIN_ROLE, _owner);
+        _grantRole(MINTER_ROLE, _owner);
+        _grantRole(BURNER_ROLE, _owner);
+        _grantRole(PAUSER_ROLE, _owner);
 
         multisigThreshold = 1000 * 10 ** 6; // 1000 tokens
         privacyEnabled = true;

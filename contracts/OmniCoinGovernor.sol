@@ -61,7 +61,7 @@ contract OmniCoinGovernor is Ownable, ReentrancyGuard {
         Abstain
     }
 
-    constructor(address _token) Ownable(msg.sender) {
+    constructor(address _token, address initialOwner) Ownable(initialOwner) {
         token = IERC20(_token);
         votingPeriod = 3 days;
         proposalThreshold = 1000 * 10 ** 18; // 1000 tokens

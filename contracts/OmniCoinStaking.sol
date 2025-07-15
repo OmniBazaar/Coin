@@ -30,7 +30,7 @@ contract OmniCoinStaking is Ownable, ReentrancyGuard {
         uint256 newScore
     );
 
-    constructor(address _config) Ownable(_config) {
+    constructor(address _config, address initialOwner) Ownable(initialOwner) {
         config = OmniCoinConfig(_config);
         token = IERC20(msg.sender);
     }

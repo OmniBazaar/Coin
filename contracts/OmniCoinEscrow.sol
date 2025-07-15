@@ -65,7 +65,7 @@ contract OmniCoinEscrow is Ownable, ReentrancyGuard {
     event MaxEscrowDurationUpdated(uint256 newDuration);
     event ArbitrationFeeUpdated(uint256 newFee);
 
-    constructor(address _token) Ownable(msg.sender) {
+    constructor(address _token, address initialOwner) Ownable(initialOwner) {
         token = IERC20(_token);
         minEscrowAmount = 100 * 10 ** 6; // 100 tokens
         maxEscrowDuration = 30 days;

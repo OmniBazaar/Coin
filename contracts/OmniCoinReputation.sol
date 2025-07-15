@@ -27,7 +27,7 @@ contract OmniCoinReputation is Ownable, ReentrancyGuard {
     event ReputationDecayPeriodUpdated(uint256 oldPeriod, uint256 newPeriod);
     event ReputationDecayRateUpdated(uint256 oldRate, uint256 newRate);
 
-    constructor(address _config) Ownable(_config) {
+    constructor(address _config, address initialOwner) Ownable(initialOwner) {
         minValidatorReputation = 1000;
         reputationDecayPeriod = 30 days;
         reputationDecayRate = 1; // 1% decay per period

@@ -3,18 +3,16 @@ pragma solidity ^0.8.20;
 
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
-import "./OmniCoin.sol";
-import "./OmniCoinConfig.sol";
-import "./OmniCoinReputation.sol";
-import "./OmniCoinStaking.sol";
-import "./OmniCoinValidator.sol";
-import "./OmniCoinMultisig.sol";
-import "./OmniCoinPrivacy.sol";
-import "./OmniCoinGarbledCircuit.sol";
-import "./OmniCoinGovernor.sol";
-import "./OmniCoinEscrow.sol";
-import "./OmniCoinBridge.sol";
+import "./OmniCoinCoreFactory.sol";
+import "./OmniCoinSecurityFactory.sol";
+import "./OmniCoinDefiFactory.sol";
+import "./OmniCoinBridgeFactory.sol";
 
+/**
+ * @title OmniCoinFactory
+ * @dev Master coordinator factory that orchestrates deployment across specialized factories
+ * This approach resolves the EIP-170 contract size limit by splitting deployment logic
+ */
 contract OmniCoinFactory is Ownable, ReentrancyGuard {
     struct Deployment {
         address config;
@@ -30,6 +28,12 @@ contract OmniCoinFactory is Ownable, ReentrancyGuard {
         address token;
         uint256 timestamp;
     }
+
+    // Factory contracts
+    OmniCoinCoreFactory public coreFactory;
+    OmniCoinSecurityFactory public securityFactory;
+    OmniCoinDefiFactory public defiFactory;
+    OmniCoinBridgeFactory public bridgeFactory;
 
     mapping(uint256 => Deployment) public deployments;
     uint256 public deploymentCount;
@@ -49,83 +53,124 @@ contract OmniCoinFactory is Ownable, ReentrancyGuard {
         address bridge
     );
 
+    event FactoriesInitialized(
+        address coreFactory,
+        address securityFactory,
+        address defiFactory,
+        address bridgeFactory
+    );
+
     constructor(address initialOwner) Ownable(initialOwner) {}
 
+    /**
+     * @dev Initialize specialized factory contracts
+     * Must be called before deployments can begin
+     */
+    function initializeFactories(
+        address _coreFactory,
+        address _securityFactory,
+        address _defiFactory,
+        address _bridgeFactory
+    ) external onlyOwner {
+        require(
+            address(coreFactory) == address(0),
+            "Factories already initialized"
+        );
+
+        coreFactory = OmniCoinCoreFactory(_coreFactory);
+        securityFactory = OmniCoinSecurityFactory(_securityFactory);
+        defiFactory = OmniCoinDefiFactory(_defiFactory);
+        bridgeFactory = OmniCoinBridgeFactory(_bridgeFactory);
+
+        emit FactoriesInitialized(
+            _coreFactory,
+            _securityFactory,
+            _defiFactory,
+            _bridgeFactory
+        );
+    }
+
+    /**
+     * @dev Deploy complete OmniCoin ecosystem using specialized factories
+     */
     function deployOmniCoin() external nonReentrant returns (uint256) {
+        require(
+            address(coreFactory) != address(0),
+            "Factories not initialized"
+        );
+
         uint256 deploymentId = deploymentCount++;
 
-        // Deploy components
-        OmniCoinConfig config = new OmniCoinConfig(msg.sender);
-        OmniCoinReputation reputation = new OmniCoinReputation(address(config));
-        OmniCoinStaking staking = new OmniCoinStaking(address(config));
-        OmniCoinValidator validator = new OmniCoinValidator(address(config));
-        OmniCoinMultisig multisig = new OmniCoinMultisig(msg.sender);
-        OmniCoinPrivacy privacy = new OmniCoinPrivacy(address(this));
-        OmniCoinGarbledCircuit garbledCircuit = new OmniCoinGarbledCircuit(
-            msg.sender
-        );
-        OmniCoinGovernor governor = new OmniCoinGovernor(address(this));
-        OmniCoinEscrow escrow = new OmniCoinEscrow(address(this));
-        OmniCoinBridge bridge = new OmniCoinBridge(address(this));
+        // Step 1: Deploy security components first (privacy needs token address)
+        (, address multisig, address privacy, address garbledCircuit) = securityFactory
+            .deploySecurityComponents(
+                msg.sender,
+                address(0) // Will be updated after token deployment
+            );
 
-        // Deploy main token
-        OmniCoin token = new OmniCoin(
-            address(config),
-            address(reputation),
-            address(staking),
-            address(validator),
-            address(multisig),
-            address(privacy),
-            address(garbledCircuit),
-            address(governor),
-            address(escrow),
-            address(bridge)
-        );
+        // Step 2: Deploy DeFi components
+        (, address staking, address validator, address governor) = defiFactory
+            .deployDefiComponents(
+                msg.sender,
+                address(0), // Will be updated after config deployment
+                address(0) // Will be updated after token deployment
+            );
 
-        // Store deployment
+        // Step 3: Deploy bridge components
+        (, address escrow, address bridge) = bridgeFactory
+            .deployBridgeComponents(
+                msg.sender,
+                address(0) // Will be updated after token deployment
+            );
+
+        // Step 4: Deploy core components (includes token)
+        address[8] memory components = [
+            staking,
+            validator,
+            multisig,
+            privacy,
+            garbledCircuit,
+            governor,
+            escrow,
+            bridge
+        ];
+        (, address config, address reputation, address token) = coreFactory
+            .deployCoreComponents(msg.sender, components);
+
+        // Step 5: Store deployment
         deployments[deploymentId] = Deployment({
-            config: address(config),
-            reputation: address(reputation),
-            staking: address(staking),
-            validator: address(validator),
-            multisig: address(multisig),
-            privacy: address(privacy),
-            garbledCircuit: address(garbledCircuit),
-            governor: address(governor),
-            escrow: address(escrow),
-            bridge: address(bridge),
-            token: address(token),
+            config: config,
+            reputation: reputation,
+            staking: staking,
+            validator: validator,
+            multisig: multisig,
+            privacy: privacy,
+            garbledCircuit: garbledCircuit,
+            governor: governor,
+            escrow: escrow,
+            bridge: bridge,
+            token: token,
             timestamp: block.timestamp
         });
 
-        // Initialize systems
-        config.transferOwnership(address(token));
-        reputation.transferOwnership(address(token));
-        staking.transferOwnership(address(token));
-        validator.transferOwnership(address(token));
-        multisig.transferOwnership(address(token));
-        privacy.transferOwnership(address(token));
-        garbledCircuit.transferOwnership(address(token));
-        governor.transferOwnership(address(token));
-        escrow.transferOwnership(address(token));
-        bridge.transferOwnership(address(token));
-
-        // Mint initial supply
-        token.mint(msg.sender, 1000000 * 10 ** 6); // 1M tokens
+        // Step 6: Transfer ownership to token contract
+        securityFactory.transferOwnership(0, token);
+        defiFactory.transferOwnership(0, token);
+        bridgeFactory.transferOwnership(0, token);
 
         emit OmniCoinDeployed(
             deploymentId,
-            address(token),
-            address(config),
-            address(reputation),
-            address(staking),
-            address(validator),
-            address(multisig),
-            address(privacy),
-            address(garbledCircuit),
-            address(governor),
-            address(escrow),
-            address(bridge)
+            token,
+            config,
+            reputation,
+            staking,
+            validator,
+            multisig,
+            privacy,
+            garbledCircuit,
+            governor,
+            escrow,
+            bridge
         );
 
         return deploymentId;
