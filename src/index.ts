@@ -25,3 +25,17 @@ export {JsonRpcSigner} from './providers/JsonRpcSigner'
 export {BrowserProvider} from './providers/BrowserProvider'
 export * from './types'
 export {itBool, itUint, itString, ctBool, ctUint, ctString} from '@coti-io/coti-sdk-typescript'
+
+// Validator Integration Services
+export {
+    OmniCoinValidatorClient,
+    omniCoinValidatorClient
+} from './utils/ValidatorClient'
+export {
+    ValidatorBlockchainService,
+    validatorBlockchainService
+} from './services/ValidatorBlockchain'
+export {
+    ValidatorStakingService,
+    validatorStakingService
+} from './services/ValidatorStaking'

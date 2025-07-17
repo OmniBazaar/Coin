@@ -48,13 +48,13 @@ git clone https://github.com/your-org/omnicoin.git
 cd omnicoin
 ```
 
-2. Install dependencies:
+1. Install dependencies:
 
 ```bash
 npm install
 ```
 
-3. Create a `.env` file in the root directory with the following variables:
+1. Create a `.env` file in the root directory with the following variables:
 
 ```bash
 PRIVATE_KEY=your_private_key
@@ -70,25 +70,25 @@ ETHERSCAN_API_KEY=your_etherscan_api_key
 npx hardhat node
 ```
 
-2. In a new terminal, deploy the contracts to the local network:
+1. In a new terminal, deploy the contracts to the local network:
 
 ```bash
 npx hardhat run scripts/deploy.js --network localhost
 ```
 
-3. Run tests:
+1. Run tests:
 
 ```bash
 npm test
 ```
 
-4. Run security tests:
+1. Run security tests:
 
 ```bash
 npm run test:security
 ```
 
-5. Run security monitoring:
+1. Run security monitoring:
 
 ```bash
 npm run security:monitor
