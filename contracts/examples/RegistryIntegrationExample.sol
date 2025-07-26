@@ -3,8 +3,8 @@ pragma solidity ^0.8.19;
 
 import "../base/RegistryAware.sol";
 import "../OmniCoinCore.sol";
-import "../reputation/OmniCoinReputationCore.sol";
-import "../OmniCoinEscrowV2.sol";
+import "../OmniCoinReputationCore.sol";
+import "../OmniCoinEscrow.sol";
 
 /**
  * @title RegistryIntegrationExample
@@ -21,7 +21,7 @@ contract RegistryIntegrationExample is RegistryAware {
     // Instead of storing addresses:
     // OmniCoinCore public token;           // 20,000 gas to store
     // OmniCoinReputationCore public reputation;  // 20,000 gas to store
-    // OmniCoinEscrowV2 public escrow;      // 20,000 gas to store
+    // OmniCoinEscrow public escrow;      // 20,000 gas to store
     
     // We just use the registry (one-time cost)
     
@@ -72,7 +72,7 @@ contract RegistryIntegrationExample is RegistryAware {
         
         OmniCoinCore token = OmniCoinCore(contracts[0]);
         OmniCoinReputationCore reputation = OmniCoinReputationCore(contracts[1]);
-        OmniCoinEscrowV2 escrow = OmniCoinEscrowV2(contracts[2]);
+        OmniCoinEscrow escrow = OmniCoinEscrow(contracts[2]);
         
         // Check reputations
         require(

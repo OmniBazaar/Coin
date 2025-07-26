@@ -4,9 +4,9 @@ pragma solidity ^0.8.19;
 import "@openzeppelin/contracts/access/AccessControl.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/utils/Pausable.sol";
-import "../../coti-contracts/contracts/utils/mpc/MpcCore.sol";
-import "../interfaces/IReputationSystem.sol";
-import "../OmniCoinConfig.sol";
+import "../coti-contracts/contracts/utils/mpc/MpcCore.sol";
+import "./interfaces/IReputationSystem.sol";
+import "./OmniCoinConfig.sol";
 
 /**
  * @title OmniCoinReputationCore

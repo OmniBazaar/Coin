@@ -6,6 +6,7 @@ import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/utils/Pausable.sol";
 import "../coti-contracts/contracts/utils/mpc/MpcCore.sol";
 import "./OmniCoinCore.sol";
+import "./PrivacyFeeManager.sol";
 
 /**
  * @title OmniCoinEscrowV2
@@ -79,6 +80,10 @@ contract OmniCoinEscrowV2 is AccessControl, ReentrancyGuard, Pausable {
     uint256 public constant FEE_RATE = 50; // 0.5%
     uint256 public constant BASIS_POINTS = 10000;
     
+    /// @dev Privacy fee configuration
+    uint256 public constant PRIVACY_MULTIPLIER = 10; // 10x fee for privacy
+    address public privacyFeeManager;
+    
     /// @dev MPC availability flag (true on COTI testnet/mainnet, false in Hardhat)
     bool public isMpcAvailable;
     
@@ -135,11 +140,12 @@ contract OmniCoinEscrowV2 is AccessControl, ReentrancyGuard, Pausable {
     // CONSTRUCTOR
     // =============================================================================
     
-    constructor(address _token, address _admin) {
+    constructor(address _token, address _admin, address _privacyFeeManager) {
         require(_token != address(0), "OmniCoinEscrowV2: Invalid token");
         require(_admin != address(0), "OmniCoinEscrowV2: Invalid admin");
         
         token = OmniCoinCore(_token);
+        privacyFeeManager = _privacyFeeManager;
         
         // Setup roles
         _grantRole(DEFAULT_ADMIN_ROLE, _admin);
@@ -178,55 +184,104 @@ contract OmniCoinEscrowV2 is AccessControl, ReentrancyGuard, Pausable {
     // =============================================================================
     
     /**
-     * @dev Create escrow with encrypted amount
+     * @dev Create standard public escrow (default, no privacy fees)
      * @param _buyer Buyer address
      * @param _arbitrator Arbitrator address
-     * @param amount Encrypted amount
+     * @param _amount Escrow amount
      * @param _duration Escrow duration in seconds
      */
-    function createPrivateEscrow(
+    function createEscrow(
         address _buyer,
         address _arbitrator,
-        itUint64 calldata amount,
+        uint256 _amount,
         uint256 _duration
     ) external whenNotPaused nonReentrant returns (uint256) {
         require(_buyer != address(0), "OmniCoinEscrowV2: Invalid buyer");
         require(_arbitrator != address(0), "OmniCoinEscrowV2: Invalid arbitrator");
         require(_duration <= maxEscrowDuration, "OmniCoinEscrowV2: Duration too long");
-        
-        gtUint64 gtAmount;
-        if (isMpcAvailable) {
-            gtAmount = MpcCore.validateCiphertext(amount);
-            
-            // Check minimum amount
-            gtBool isEnough = MpcCore.ge(gtAmount, minEscrowAmount);
-            require(MpcCore.decrypt(isEnough), "OmniCoinEscrowV2: Amount too small");
-        } else {
-            // Fallback for testing
-            uint64 plainAmount = uint64(uint256(keccak256(abi.encode(amount))));
-            gtAmount = gtUint64.wrap(plainAmount);
-            
-            uint64 minAmount = uint64(gtUint64.unwrap(minEscrowAmount));
-            require(plainAmount >= minAmount, "OmniCoinEscrowV2: Amount too small");
-        }
+        require(_amount >= uint64(gtUint64.unwrap(minEscrowAmount)), "OmniCoinEscrowV2: Amount too small");
         
         uint256 escrowId = escrowCount++;
         
         // Calculate fee (0.5% of amount)
+        uint256 feeAmount = (_amount * FEE_RATE) / BASIS_POINTS;
+        uint256 totalAmount = _amount + feeAmount;
+        
+        // Transfer tokens to escrow (standard transfer)
+        bool transferResult = token.transferFromPublic(msg.sender, address(this), totalAmount);
+        require(transferResult, "OmniCoinEscrowV2: Transfer failed");
+        
+        // Create escrow with public amounts wrapped as encrypted
+        gtUint64 gtAmount = gtUint64.wrap(uint64(_amount));
+        gtUint64 gtFee = gtUint64.wrap(uint64(feeAmount));
+        
+        escrows[escrowId] = PrivateEscrow({
+            id: escrowId,
+            seller: msg.sender,
+            buyer: _buyer,
+            arbitrator: _arbitrator,
+            encryptedAmount: gtAmount,
+            sellerEncryptedAmount: ctUint64.wrap(uint64(_amount)),
+            buyerEncryptedAmount: ctUint64.wrap(uint64(_amount)),
+            releaseTime: block.timestamp + _duration,
+            released: false,
+            disputed: false,
+            refunded: false,
+            encryptedFee: gtFee
+        });
+        
+        userEscrows[msg.sender].push(escrowId);
+        userEscrows[_buyer].push(escrowId);
+        
+        emit EscrowCreated(escrowId, msg.sender, _buyer, _arbitrator, block.timestamp + _duration);
+        
+        return escrowId;
+    }
+    
+    /**
+     * @dev Create escrow with privacy (premium feature)
+     * @param _buyer Buyer address
+     * @param _arbitrator Arbitrator address
+     * @param amount Encrypted amount
+     * @param _duration Escrow duration in seconds
+     * @param usePrivacy Whether to use privacy features
+     */
+    function createEscrowWithPrivacy(
+        address _buyer,
+        address _arbitrator,
+        itUint64 calldata amount,
+        uint256 _duration,
+        bool usePrivacy
+    ) external whenNotPaused nonReentrant returns (uint256) {
+        require(usePrivacy && isMpcAvailable, "OmniCoinEscrowV2: Privacy not available");
+        require(privacyFeeManager != address(0), "OmniCoinEscrowV2: Privacy fee manager not set");
+        require(_buyer != address(0), "OmniCoinEscrowV2: Invalid buyer");
+        require(_arbitrator != address(0), "OmniCoinEscrowV2: Invalid arbitrator");
+        require(_duration <= maxEscrowDuration, "OmniCoinEscrowV2: Duration too long");
+        
+        gtUint64 gtAmount = MpcCore.validateCiphertext(amount);
+        
+        // Check minimum amount
+        gtBool isEnough = MpcCore.ge(gtAmount, minEscrowAmount);
+        require(MpcCore.decrypt(isEnough), "OmniCoinEscrowV2: Amount too small");
+        
+        uint256 escrowId = escrowCount++;
+        
+        // Calculate fee (0.5% of amount) and privacy fee
         gtUint64 fee = _calculateFee(gtAmount);
         
-        // Create encrypted amounts for parties
-        ctUint64 sellerEncrypted;
-        ctUint64 buyerEncrypted;
+        // Collect privacy fee (10x normal fee)
+        uint256 normalFee = uint64(gtUint64.unwrap(fee));
+        uint256 privacyFee = normalFee * PRIVACY_MULTIPLIER;
+        PrivacyFeeManager(privacyFeeManager).collectPrivacyFee(
+            msg.sender,
+            keccak256("ESCROW_CREATE"),
+            privacyFee
+        );
         
-        if (isMpcAvailable) {
-            sellerEncrypted = MpcCore.offBoardToUser(gtAmount, msg.sender);
-            buyerEncrypted = MpcCore.offBoardToUser(gtAmount, _buyer);
-        } else {
-            uint64 amountValue = uint64(gtUint64.unwrap(gtAmount));
-            sellerEncrypted = ctUint64.wrap(amountValue);
-            buyerEncrypted = ctUint64.wrap(amountValue);
-        }
+        // Create encrypted amounts for parties
+        ctUint64 sellerEncrypted = MpcCore.offBoardToUser(gtAmount, msg.sender);
+        ctUint64 buyerEncrypted = MpcCore.offBoardToUser(gtAmount, _buyer);
         
         escrows[escrowId] = PrivateEscrow({
             id: escrowId,
@@ -247,20 +302,9 @@ contract OmniCoinEscrowV2 is AccessControl, ReentrancyGuard, Pausable {
         userEscrows[_buyer].push(escrowId);
         
         // Transfer tokens to escrow (including fee)
-        gtUint64 totalAmount;
-        if (isMpcAvailable) {
-            totalAmount = MpcCore.add(gtAmount, fee);
-            
-            // Use transferFrom with proper gtBool return type
-            gtBool transferResult = token.transferFrom(msg.sender, address(this), totalAmount);
-            require(MpcCore.decrypt(transferResult), "OmniCoinEscrowV2: Transfer failed");
-        } else {
-            // Fallback - calculate total for testing
-            uint64 amountValue = uint64(gtUint64.unwrap(gtAmount));
-            uint64 feeValue = uint64(gtUint64.unwrap(fee));
-            totalAmount = gtUint64.wrap(amountValue + feeValue);
-            // In test mode, assume transfer succeeds
-        }
+        gtUint64 totalAmount = MpcCore.add(gtAmount, fee);
+        gtBool transferResult = token.transferFrom(msg.sender, address(this), totalAmount);
+        require(MpcCore.decrypt(transferResult), "OmniCoinEscrowV2: Transfer failed");
         
         emit EscrowCreated(escrowId, msg.sender, _buyer, _arbitrator, block.timestamp + _duration);
         
@@ -337,7 +381,7 @@ contract OmniCoinEscrowV2 is AccessControl, ReentrancyGuard, Pausable {
     // =============================================================================
     
     /**
-     * @dev Create dispute for escrow
+     * @dev Create standard dispute for escrow (public)
      * @param escrowId Escrow ID
      * @param reason Dispute reason
      */
@@ -354,12 +398,7 @@ contract OmniCoinEscrowV2 is AccessControl, ReentrancyGuard, Pausable {
         uint256 disputeId = disputeCount++;
         
         // Initialize with zero amounts
-        gtUint64 zeroAmount;
-        if (isMpcAvailable) {
-            zeroAmount = MpcCore.setPublic64(0);
-        } else {
-            zeroAmount = gtUint64.wrap(0);
-        }
+        gtUint64 zeroAmount = gtUint64.wrap(0);
         
         disputes[disputeId] = PrivateDispute({
             escrowId: escrowId,
@@ -376,20 +415,126 @@ contract OmniCoinEscrowV2 is AccessControl, ReentrancyGuard, Pausable {
     }
     
     /**
-     * @dev Resolve dispute with encrypted payout amounts
+     * @dev Create dispute with privacy (encrypted reason, premium fees)
+     * @param escrowId Escrow ID
+     * @param reason Dispute reason (will be encrypted)
+     * @param usePrivacy Whether to use privacy features
+     */
+    function createDisputeWithPrivacy(
+        uint256 escrowId, 
+        string calldata reason,
+        bool usePrivacy
+    ) external whenNotPaused onlyEscrowParty(escrowId) escrowNotReleased(escrowId) {
+        require(usePrivacy && isMpcAvailable, "OmniCoinEscrowV2: Privacy not available");
+        require(privacyFeeManager != address(0), "OmniCoinEscrowV2: Privacy fee manager not set");
+        
+        PrivateEscrow storage escrow = escrows[escrowId];
+        require(!escrow.disputed, "OmniCoinEscrowV2: Already disputed");
+        
+        // Collect privacy fee for dispute creation
+        uint256 baseFee = uint64(gtUint64.unwrap(arbitrationFee));
+        uint256 privacyFee = baseFee * PRIVACY_MULTIPLIER;
+        PrivacyFeeManager(privacyFeeManager).collectPrivacyFee(
+            msg.sender,
+            keccak256("ESCROW_DISPUTE"),
+            privacyFee
+        );
+        
+        escrow.disputed = true;
+        uint256 disputeId = disputeCount++;
+        
+        // Initialize with zero amounts (encrypted)
+        gtUint64 zeroAmount = MpcCore.setPublic64(0);
+        
+        // Hash the reason for privacy
+        string memory privateReason = string(abi.encodePacked("[ENCRYPTED]", keccak256(bytes(reason))));
+        
+        disputes[disputeId] = PrivateDispute({
+            escrowId: escrowId,
+            reporter: msg.sender,
+            reason: privateReason,
+            timestamp: block.timestamp,
+            resolved: false,
+            resolver: address(0),
+            buyerRefund: zeroAmount,
+            sellerPayout: zeroAmount
+        });
+        
+        emit DisputeCreated(escrowId, disputeId, msg.sender, privateReason);
+    }
+    
+    /**
+     * @dev Resolve dispute with public amounts (standard)
      * @param disputeId Dispute ID
-     * @param buyerRefund Encrypted amount to refund buyer
-     * @param sellerPayout Encrypted amount to pay seller
+     * @param buyerRefundAmount Amount to refund buyer
+     * @param sellerPayoutAmount Amount to pay seller
      */
     function resolveDispute(
         uint256 disputeId,
-        itUint64 calldata buyerRefund,
-        itUint64 calldata sellerPayout
+        uint256 buyerRefundAmount,
+        uint256 sellerPayoutAmount
     ) external whenNotPaused nonReentrant onlyRole(ARBITRATOR_ROLE) {
         PrivateDispute storage dispute = disputes[disputeId];
         require(!dispute.resolved, "OmniCoinEscrowV2: Already resolved");
         
         PrivateEscrow storage escrow = escrows[dispute.escrowId];
+        
+        // Verify total equals escrow amount
+        uint256 escrowAmount = uint64(gtUint64.unwrap(escrow.encryptedAmount));
+        require(buyerRefundAmount + sellerPayoutAmount == escrowAmount, "OmniCoinEscrowV2: Invalid split");
+        
+        dispute.resolved = true;
+        dispute.resolver = msg.sender;
+        dispute.buyerRefund = gtUint64.wrap(uint64(buyerRefundAmount));
+        dispute.sellerPayout = gtUint64.wrap(uint64(sellerPayoutAmount));
+        escrow.released = true;
+        
+        // Transfer amounts
+        if (buyerRefundAmount > 0) {
+            bool buyerTransferResult = token.transferPublic(escrow.buyer, buyerRefundAmount);
+            require(buyerTransferResult, "OmniCoinEscrowV2: Buyer transfer failed");
+        }
+        
+        if (sellerPayoutAmount > 0) {
+            bool sellerTransferResult = token.transferPublic(escrow.seller, sellerPayoutAmount);
+            require(sellerTransferResult, "OmniCoinEscrowV2: Seller transfer failed");
+        }
+        
+        // Transfer fee to treasury
+        _distributeFee(escrow.encryptedFee);
+        
+        emit DisputeResolved(dispute.escrowId, disputeId, msg.sender, block.timestamp);
+    }
+    
+    /**
+     * @dev Resolve dispute with encrypted payout amounts (privacy)
+     * @param disputeId Dispute ID
+     * @param buyerRefund Encrypted amount to refund buyer
+     * @param sellerPayout Encrypted amount to pay seller
+     * @param usePrivacy Whether to use privacy features
+     */
+    function resolveDisputeWithPrivacy(
+        uint256 disputeId,
+        itUint64 calldata buyerRefund,
+        itUint64 calldata sellerPayout,
+        bool usePrivacy
+    ) external whenNotPaused nonReentrant onlyRole(ARBITRATOR_ROLE) {
+        require(usePrivacy && isMpcAvailable, "OmniCoinEscrowV2: Privacy not available");
+        require(privacyFeeManager != address(0), "OmniCoinEscrowV2: Privacy fee manager not set");
+        
+        PrivateDispute storage dispute = disputes[disputeId];
+        require(!dispute.resolved, "OmniCoinEscrowV2: Already resolved");
+        
+        PrivateEscrow storage escrow = escrows[dispute.escrowId];
+        
+        // Collect privacy fee for dispute resolution
+        uint256 baseFee = uint64(gtUint64.unwrap(arbitrationFee));
+        uint256 privacyFee = baseFee * PRIVACY_MULTIPLIER;
+        PrivacyFeeManager(privacyFeeManager).collectPrivacyFee(
+            msg.sender,
+            keccak256("DISPUTE_RESOLUTION"),
+            privacyFee
+        );
         
         gtUint64 gtBuyerRefund;
         gtUint64 gtSellerPayout;

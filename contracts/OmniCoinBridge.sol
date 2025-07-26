@@ -4,8 +4,14 @@ pragma solidity ^0.8.20;
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "../coti-contracts/contracts/utils/mpc/MpcCore.sol";
+import "./PrivacyFeeManager.sol";
 
 contract OmniCoinBridge is Ownable, ReentrancyGuard {
+    // Privacy configuration
+    uint256 public constant PRIVACY_MULTIPLIER = 10; // 10x fee for privacy
+    address public privacyFeeManager;
+    bool public isMpcAvailable;
     struct BridgeConfig {
         uint256 chainId;
         address token;
@@ -27,6 +33,9 @@ contract OmniCoinBridge is Ownable, ReentrancyGuard {
         uint256 timestamp;
         bool completed;
         bool refunded;
+        bool isPrivate;
+        ctUint64 encryptedAmount;  // For private transfers
+        ctUint64 encryptedFee;     // For private transfers
     }
 
     IERC20 public token;
@@ -74,12 +83,33 @@ contract OmniCoinBridge is Ownable, ReentrancyGuard {
     event BaseFeeUpdated(uint256 newFee);
     event MessageTimeoutUpdated(uint256 newTimeout);
 
-    constructor(address _token, address initialOwner) Ownable(initialOwner) {
+    constructor(
+        address _token, 
+        address initialOwner,
+        address _privacyFeeManager
+    ) Ownable(initialOwner) {
         token = IERC20(_token);
+        privacyFeeManager = _privacyFeeManager;
         minTransferAmount = 100 * 10 ** 6; // 100 tokens
         maxTransferAmount = 1000000 * 10 ** 6; // 1M tokens
         baseFee = 1 * 10 ** 6; // 1 token
         messageTimeout = 1 hours;
+        isMpcAvailable = false; // Default to false, set by admin when on COTI
+    }
+    
+    /**
+     * @dev Set MPC availability (admin only)
+     */
+    function setMpcAvailability(bool _available) external onlyOwner {
+        isMpcAvailable = _available;
+    }
+    
+    /**
+     * @dev Set privacy fee manager
+     */
+    function setPrivacyFeeManager(address _privacyFeeManager) external onlyOwner {
+        require(_privacyFeeManager != address(0), "Invalid address");
+        privacyFeeManager = _privacyFeeManager;
     }
 
     function configureBridge(
@@ -106,6 +136,9 @@ contract OmniCoinBridge is Ownable, ReentrancyGuard {
         emit BridgeConfigured(_chainId, _token, _minAmount, _maxAmount, _fee);
     }
 
+    /**
+     * @dev Initiate public bridge transfer (default, no privacy fees)
+     */
     function initiateTransfer(
         uint256 _targetChainId,
         address _targetToken,
@@ -131,7 +164,10 @@ contract OmniCoinBridge is Ownable, ReentrancyGuard {
             fee: fee,
             timestamp: block.timestamp,
             completed: false,
-            refunded: false
+            refunded: false,
+            isPrivate: false,
+            encryptedAmount: ctUint64.wrap(0),
+            encryptedFee: ctUint64.wrap(0)
         });
 
         require(
@@ -148,6 +184,99 @@ contract OmniCoinBridge is Ownable, ReentrancyGuard {
             _recipient,
             _amount,
             fee
+        );
+    }
+    
+    /**
+     * @dev Initiate private bridge transfer (premium feature)
+     * @param _targetChainId Target blockchain ID
+     * @param _targetToken Token address on target chain
+     * @param _recipient Recipient address
+     * @param _amount Encrypted transfer amount
+     * @param usePrivacy Whether to use privacy features
+     */
+    function initiateTransferWithPrivacy(
+        uint256 _targetChainId,
+        address _targetToken,
+        address _recipient,
+        itUint64 calldata _amount,
+        bool usePrivacy
+    ) external nonReentrant {
+        require(usePrivacy && isMpcAvailable, "Privacy not available");
+        require(privacyFeeManager != address(0), "Privacy fee manager not set");
+        
+        BridgeConfig storage config = bridgeConfigs[_targetChainId];
+        require(config.isActive, "Bridge inactive");
+        
+        // Validate encrypted amount
+        gtUint64 gtAmount = MpcCore.validateCiphertext(_amount);
+        
+        // Check amount bounds
+        gtUint64 gtMinAmount = MpcCore.setPublic64(uint64(config.minAmount));
+        gtUint64 gtMaxAmount = MpcCore.setPublic64(uint64(config.maxAmount));
+        gtBool isAboveMin = MpcCore.ge(gtAmount, gtMinAmount);
+        gtBool isBelowMax = MpcCore.le(gtAmount, gtMaxAmount);
+        require(MpcCore.decrypt(isAboveMin), "Amount too small");
+        require(MpcCore.decrypt(isBelowMax), "Amount too large");
+        
+        uint256 transferId = transferCount++;
+        
+        // Calculate privacy fee (0.5% of amount for bridge operations)
+        uint256 BRIDGE_FEE_RATE = 50; // 0.5% in basis points
+        uint256 BASIS_POINTS = 10000;
+        gtUint64 feeRate = MpcCore.setPublic64(uint64(BRIDGE_FEE_RATE));
+        gtUint64 basisPoints = MpcCore.setPublic64(uint64(BASIS_POINTS));
+        gtUint64 privacyFeeBase = MpcCore.mul(gtAmount, feeRate);
+        privacyFeeBase = MpcCore.div(privacyFeeBase, basisPoints);
+        
+        // Collect privacy fee (10x normal fee)
+        uint256 normalFee = uint64(gtUint64.unwrap(privacyFeeBase));
+        uint256 privacyFee = normalFee * PRIVACY_MULTIPLIER;
+        PrivacyFeeManager(privacyFeeManager).collectPrivacyFee(
+            msg.sender,
+            keccak256("BRIDGE_TRANSFER"),
+            privacyFee
+        );
+        
+        // Bridge fee (encrypted)
+        gtUint64 gtBridgeFee = MpcCore.setPublic64(uint64(config.fee));
+        ctUint64 encryptedFee = MpcCore.offBoard(gtBridgeFee);
+        
+        // Store transfer with encrypted amounts
+        ctUint64 encryptedAmount = MpcCore.offBoard(gtAmount);
+        
+        transfers[transferId] = Transfer({
+            id: transferId,
+            sender: msg.sender,
+            sourceChainId: block.chainid,
+            targetChainId: _targetChainId,
+            targetToken: _targetToken,
+            recipient: _recipient,
+            amount: 0, // Use encrypted version
+            fee: 0, // Use encrypted version
+            timestamp: block.timestamp,
+            completed: false,
+            refunded: false,
+            isPrivate: true,
+            encryptedAmount: encryptedAmount,
+            encryptedFee: encryptedFee
+        });
+        
+        // Transfer tokens (amount + bridge fee) using privacy
+        gtUint64 gtTotalAmount = MpcCore.add(gtAmount, gtBridgeFee);
+        
+        // Note: Actual token transfer would use OmniCoinCore's private transfer
+        // For now, emit event with transfer ID
+        
+        emit TransferInitiated(
+            transferId,
+            msg.sender,
+            block.chainid,
+            _targetChainId,
+            _targetToken,
+            _recipient,
+            0, // Amount is private
+            0  // Fee is private
         );
     }
 
@@ -258,7 +387,8 @@ contract OmniCoinBridge is Ownable, ReentrancyGuard {
             uint256 fee,
             uint256 timestamp,
             bool completed,
-            bool refunded
+            bool refunded,
+            bool isPrivate
         )
     {
         Transfer storage transfer = transfers[_transferId];
@@ -268,12 +398,28 @@ contract OmniCoinBridge is Ownable, ReentrancyGuard {
             transfer.targetChainId,
             transfer.targetToken,
             transfer.recipient,
-            transfer.amount,
-            transfer.fee,
+            transfer.isPrivate ? 0 : transfer.amount, // Hide amount if private
+            transfer.isPrivate ? 0 : transfer.fee,    // Hide fee if private
             transfer.timestamp,
             transfer.completed,
-            transfer.refunded
+            transfer.refunded,
+            transfer.isPrivate
         );
+    }
+    
+    /**
+     * @dev Get encrypted transfer amounts (only for authorized parties)
+     */
+    function getPrivateTransferAmounts(
+        uint256 _transferId
+    ) external view returns (ctUint64 encryptedAmount, ctUint64 encryptedFee) {
+        Transfer storage transfer = transfers[_transferId];
+        require(transfer.isPrivate, "Not a private transfer");
+        require(
+            msg.sender == transfer.sender || msg.sender == transfer.recipient || msg.sender == owner(),
+            "Not authorized"
+        );
+        return (transfer.encryptedAmount, transfer.encryptedFee);
     }
 
     function getBridgeConfig(

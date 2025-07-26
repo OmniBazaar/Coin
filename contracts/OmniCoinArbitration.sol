@@ -10,6 +10,7 @@ import "./omnicoin-erc20-coti.sol";
 import "./OmniCoinAccount.sol";
 import "./OmniCoinEscrow.sol";
 import "./OmniCoinConfig.sol";
+import "./PrivacyFeeManager.sol";
 
 /**
  * @title OmniCoinArbitration
@@ -102,6 +103,10 @@ contract OmniCoinArbitration is
     
     // MPC availability flag (true on COTI testnet/mainnet, false in Hardhat)
     bool public isMpcAvailable;
+    
+    // Privacy fee configuration
+    uint256 public constant PRIVACY_MULTIPLIER = 10; // 10x fee for privacy
+    address public privacyFeeManager;
     
     // Fee structure (aligned with arbitration workload)
     uint256 public constant ARBITRATION_FEE_RATE = 100;    // 1% of disputed amount
@@ -197,6 +202,14 @@ contract OmniCoinArbitration is
     }
     
     /**
+     * @dev Set privacy fee manager
+     */
+    function setPrivacyFeeManager(address _privacyFeeManager) external onlyOwner {
+        require(_privacyFeeManager != address(0), "OmniCoinArbitration: Invalid address");
+        privacyFeeManager = _privacyFeeManager;
+    }
+    
+    /**
      * @dev Set MPC availability (admin only, called when deploying to COTI testnet/mainnet)
      */
     function setMpcAvailability(bool _available) external onlyOwner {
@@ -281,18 +294,18 @@ contract OmniCoinArbitration is
     }
 
     /**
-     * @dev Creates a confidential dispute when multi-sig escrow reaches impasse
+     * @dev Creates a public dispute (default, no privacy fees)
      * @param _escrowId The escrow ID in dispute
-     * @param _disputedAmount Private amount in dispute (encrypted)
-     * @param _buyerClaim Private buyer's claimed amount (encrypted)
-     * @param _sellerClaim Private seller's claimed amount (encrypted)
+     * @param _disputedAmount Amount in dispute
+     * @param _buyerClaim Buyer's claimed amount
+     * @param _sellerClaim Seller's claimed amount
      * @param _evidenceHash Hash of dispute evidence
      */
-    function createConfidentialDispute(
+    function createDispute(
         bytes32 _escrowId,
-        ctUint64 _disputedAmount,
-        ctUint64 _buyerClaim,
-        ctUint64 _sellerClaim,
+        uint256 _disputedAmount,
+        uint256 _buyerClaim,
+        uint256 _sellerClaim,
         bytes32 _evidenceHash
     ) external {
         uint256 escrowId = uint256(_escrowId);
@@ -302,69 +315,165 @@ contract OmniCoinArbitration is
         require(disputed, "Escrow not disputed");
         require(msg.sender == buyer || msg.sender == seller, "Not authorized");
         require(disputes[_escrowId].timestamp == 0, "Dispute already exists");
-
-        // Encrypt total escrow balance for privacy
-        ctUint64 encryptedEscrowBalance;
-        if (isMpcAvailable) {
-            gtUint64 gtEscrowBalance = MpcCore.setPublic64(uint64(amount));
-            encryptedEscrowBalance = MpcCore.offBoard(gtEscrowBalance);
-            
-            // Verify claims don't exceed escrow balance (private verification)
-            gtUint64 gtBuyerClaim = MpcCore.onBoard(_buyerClaim);
-            gtUint64 gtSellerClaim = MpcCore.onBoard(_sellerClaim);
-            gtUint64 gtTotalClaim = MpcCore.add(gtBuyerClaim, gtSellerClaim);
-            gtBool claimsValid = MpcCore.le(gtTotalClaim, gtEscrowBalance);
-            
-            require(
-                MpcCore.decrypt(claimsValid),
-                "Total claims exceed escrow balance"
-            );
-        } else {
-            // In testing mode, use wrapped values and do simple validation
-            encryptedEscrowBalance = ctUint64.wrap(amount);
-            
-            // Simple validation without MPC
-            uint256 buyerClaimUnwrapped = ctUint64.unwrap(_buyerClaim);
-            uint256 sellerClaimUnwrapped = ctUint64.unwrap(_sellerClaim);
-            require(
-                buyerClaimUnwrapped + sellerClaimUnwrapped <= amount,
-                "Total claims exceed escrow balance"
-            );
-        }
-
-        // Determine dispute type based on disputed amount
-        uint256 disputeType = _determineDisputeType(_disputedAmount);
+        require(_buyerClaim + _sellerClaim <= amount, "Total claims exceed escrow balance");
         
-        // Select arbitrator(s) based on dispute complexity
+        // Convert to encrypted for internal storage
+        ctUint64 encryptedDisputedAmount = ctUint64.wrap(_disputedAmount);
+        ctUint64 encryptedBuyerClaim = ctUint64.wrap(_buyerClaim);
+        ctUint64 encryptedSellerClaim = ctUint64.wrap(_sellerClaim);
+        ctUint64 encryptedEscrowBalance = ctUint64.wrap(amount);
+        
+        // Determine dispute type and select arbitrators
+        uint256 disputeType = _determineDisputeType(encryptedDisputedAmount);
         address primaryArbitrator;
         address[] memory panelArbitrators;
         
-        if (disputeType == 1) { // Simple dispute
-            primaryArbitrator = _selectSingleArbitrator(_escrowId, _disputedAmount);
+        if (disputeType == 1) {
+            primaryArbitrator = _selectSingleArbitrator(_escrowId, encryptedDisputedAmount);
             panelArbitrators = new address[](0);
-        } else { // Complex dispute - requires panel
-            (primaryArbitrator, panelArbitrators) = _selectArbitrationPanel(_escrowId, _disputedAmount);
+        } else {
+            (primaryArbitrator, panelArbitrators) = _selectArbitrationPanel(_escrowId, encryptedDisputedAmount);
         }
         
         require(primaryArbitrator != address(0), "No suitable arbitrator found");
-
-        // Calculate arbitration fee privately
-        ctUint64 arbitrationFee;
-        if (isMpcAvailable) {
-            gtUint64 gtDisputedAmount = MpcCore.onBoard(_disputedAmount);
-            gtUint64 gtFeeRate = MpcCore.setPublic64(uint64(ARBITRATION_FEE_RATE));
-            gtUint64 gtDivisor = MpcCore.setPublic64(uint64(10000));
-            gtUint64 gtFee = MpcCore.mul(gtDisputedAmount, gtFeeRate);
-            gtUint64 gtArbitrationFee = MpcCore.div(gtFee, gtDivisor);
-            arbitrationFee = MpcCore.offBoard(gtArbitrationFee);
+        
+        // Calculate arbitration fee (public)
+        uint256 fee = (_disputedAmount * ARBITRATION_FEE_RATE) / 10000;
+        ctUint64 arbitrationFee = ctUint64.wrap(fee);
+        
+        // Create dispute
+        _createDisputeInternal(
+            _escrowId,
+            primaryArbitrator,
+            panelArbitrators,
+            disputeType,
+            _evidenceHash,
+            encryptedDisputedAmount,
+            encryptedEscrowBalance,
+            encryptedBuyerClaim,
+            encryptedSellerClaim,
+            arbitrationFee,
+            buyer,
+            seller
+        );
+    }
+    
+    /**
+     * @dev Creates a confidential dispute with privacy (premium feature)
+     * @param _escrowId The escrow ID in dispute
+     * @param _disputedAmount Private amount in dispute (encrypted)
+     * @param _buyerClaim Private buyer's claimed amount (encrypted)
+     * @param _sellerClaim Private seller's claimed amount (encrypted)
+     * @param _evidenceHash Hash of dispute evidence
+     * @param usePrivacy Whether to use privacy features
+     */
+    function createDisputeWithPrivacy(
+        bytes32 _escrowId,
+        itUint64 calldata _disputedAmount,
+        itUint64 calldata _buyerClaim,
+        itUint64 calldata _sellerClaim,
+        bytes32 _evidenceHash,
+        bool usePrivacy
+    ) external {
+        require(usePrivacy && isMpcAvailable, "OmniCoinArbitration: Privacy not available");
+        require(privacyFeeManager != address(0), "OmniCoinArbitration: Privacy fee manager not set");
+        uint256 escrowId = uint256(_escrowId);
+        (address seller, address buyer, address arbitrator, uint256 amount, uint256 releaseTime, bool released, bool disputed, bool refunded) = 
+            omniCoinEscrow.getEscrow(escrowId);
+        
+        require(disputed, "Escrow not disputed");
+        require(msg.sender == buyer || msg.sender == seller, "Not authorized");
+        require(disputes[_escrowId].timestamp == 0, "Dispute already exists");
+        
+        // Validate encrypted inputs
+        gtUint64 gtDisputedAmount = MpcCore.validateCiphertext(_disputedAmount);
+        gtUint64 gtBuyerClaim = MpcCore.validateCiphertext(_buyerClaim);
+        gtUint64 gtSellerClaim = MpcCore.validateCiphertext(_sellerClaim);
+        
+        // Verify claims don't exceed escrow balance
+        gtUint64 gtEscrowBalance = MpcCore.setPublic64(uint64(amount));
+        gtUint64 gtTotalClaim = MpcCore.add(gtBuyerClaim, gtSellerClaim);
+        gtBool claimsValid = MpcCore.le(gtTotalClaim, gtEscrowBalance);
+        require(MpcCore.decrypt(claimsValid), "Total claims exceed escrow balance");
+        
+        // Calculate privacy fee (1% of disputed amount for arbitration)
+        uint256 ARBITRATION_PRIVACY_FEE_RATE = 100; // 1% in basis points
+        uint256 BASIS_POINTS = 10000;
+        gtUint64 feeRate = MpcCore.setPublic64(uint64(ARBITRATION_PRIVACY_FEE_RATE));
+        gtUint64 basisPoints = MpcCore.setPublic64(uint64(BASIS_POINTS));
+        gtUint64 fee = MpcCore.mul(gtDisputedAmount, feeRate);
+        fee = MpcCore.div(fee, basisPoints);
+        
+        // Collect privacy fee (10x normal fee)
+        uint256 normalFee = uint64(gtUint64.unwrap(fee));
+        uint256 privacyFee = normalFee * PRIVACY_MULTIPLIER;
+        PrivacyFeeManager(privacyFeeManager).collectPrivacyFee(
+            msg.sender,
+            keccak256("ARBITRATION_DISPUTE"),
+            privacyFee
+        );
+        
+        // Convert amounts for internal storage
+        ctUint64 encryptedDisputedAmount = MpcCore.offBoard(gtDisputedAmount);
+        ctUint64 encryptedBuyerClaim = MpcCore.offBoard(gtBuyerClaim);
+        ctUint64 encryptedSellerClaim = MpcCore.offBoard(gtSellerClaim);
+        ctUint64 encryptedEscrowBalance = MpcCore.offBoard(gtEscrowBalance);
+        
+        // Determine dispute type and select arbitrators
+        uint256 disputeType = _determineDisputeType(encryptedDisputedAmount);
+        address primaryArbitrator;
+        address[] memory panelArbitrators;
+        
+        if (disputeType == 1) {
+            primaryArbitrator = _selectSingleArbitrator(_escrowId, encryptedDisputedAmount);
+            panelArbitrators = new address[](0);
         } else {
-            // In testing mode, calculate fee directly
-            uint256 disputedAmountUnwrapped = ctUint64.unwrap(_disputedAmount);
-            uint256 fee = (disputedAmountUnwrapped * ARBITRATION_FEE_RATE) / 10000;
-            arbitrationFee = ctUint64.wrap(fee);
+            (primaryArbitrator, panelArbitrators) = _selectArbitrationPanel(_escrowId, encryptedDisputedAmount);
         }
+        
+        require(primaryArbitrator != address(0), "No suitable arbitrator found");
+        
+        // Calculate arbitration fee
+        gtUint64 gtArbitrationFeeRate = MpcCore.setPublic64(uint64(ARBITRATION_FEE_RATE));
+        gtUint64 gtArbitrationFee = MpcCore.mul(gtDisputedAmount, gtArbitrationFeeRate);
+        gtArbitrationFee = MpcCore.div(gtArbitrationFee, basisPoints);
+        ctUint64 arbitrationFee = MpcCore.offBoard(gtArbitrationFee);
+        
+        // Create dispute
+        _createDisputeInternal(
+            _escrowId,
+            primaryArbitrator,
+            panelArbitrators,
+            disputeType,
+            _evidenceHash,
+            encryptedDisputedAmount,
+            encryptedEscrowBalance,
+            encryptedBuyerClaim,
+            encryptedSellerClaim,
+            arbitrationFee,
+            buyer,
+            seller
+        );
+    }
 
-        // Create confidential dispute
+    /**
+     * @dev Internal function to create dispute
+     */
+    function _createDisputeInternal(
+        bytes32 _escrowId,
+        address primaryArbitrator,
+        address[] memory panelArbitrators,
+        uint256 disputeType,
+        bytes32 _evidenceHash,
+        ctUint64 disputedAmount,
+        ctUint64 escrowBalance,
+        ctUint64 buyerClaim,
+        ctUint64 sellerClaim,
+        ctUint64 arbitrationFee,
+        address buyer,
+        address seller
+    ) internal {
+        // Create dispute
         disputes[_escrowId] = ConfidentialDispute({
             escrowId: _escrowId,
             primaryArbitrator: primaryArbitrator,
@@ -372,10 +481,10 @@ contract OmniCoinArbitration is
             timestamp: block.timestamp,
             disputeType: disputeType,
             evidenceHash: _evidenceHash,
-            disputedAmount: _disputedAmount,
-            escrowBalance: encryptedEscrowBalance,
-            buyerClaim: _buyerClaim,
-            sellerClaim: _sellerClaim,
+            disputedAmount: disputedAmount,
+            escrowBalance: escrowBalance,
+            buyerClaim: buyerClaim,
+            sellerClaim: sellerClaim,
             isResolved: isMpcAvailable ? MpcCore.offBoard(MpcCore.setPublic(false)) : ctBool.wrap(0),
             finalBuyerPayout: isMpcAvailable ? MpcCore.offBoard(MpcCore.setPublic64(uint64(0))) : ctUint64.wrap(0),
             finalSellerPayout: isMpcAvailable ? MpcCore.offBoard(MpcCore.setPublic64(uint64(0))) : ctUint64.wrap(0),
@@ -386,8 +495,8 @@ contract OmniCoinArbitration is
             resolutionHash: bytes32(0),
             deadlineTimestamp: block.timestamp + RESOLUTION_PERIOD
         });
-
-        // Track dispute participants privately
+        
+        // Track dispute participants
         address[] memory participants = new address[](panelArbitrators.length + 3);
         participants[0] = buyer;
         participants[1] = seller;
@@ -396,7 +505,7 @@ contract OmniCoinArbitration is
             participants[3 + i] = panelArbitrators[i];
         }
         disputeParticipants[_escrowId] = participants;
-
+        
         // Update arbitrator records
         arbitratorDisputes[primaryArbitrator].push(_escrowId);
         userDisputes[buyer].push(_escrowId);
@@ -411,92 +520,161 @@ contract OmniCoinArbitration is
             arbitrators[panelArbitrators[i]].totalCases++;
             arbitrators[panelArbitrators[i]].lastActiveTimestamp = block.timestamp;
         }
-
+        
         emit ConfidentialDisputeCreated(_escrowId, primaryArbitrator, disputeType, _evidenceHash);
         
         if (panelArbitrators.length > 0) {
             emit DisputePanelFormed(_escrowId, panelArbitrators);
         }
     }
-
+    
     /**
-     * @dev Resolves a confidential dispute with private payouts
+     * @dev Resolves a dispute with public payouts (default, no privacy fees)
      * @param _escrowId The dispute to resolve
-     * @param _buyerPayout Private payout amount for buyer (encrypted)
-     * @param _sellerPayout Private payout amount for seller (encrypted)
+     * @param _buyerPayout Payout amount for buyer
+     * @param _sellerPayout Payout amount for seller
      * @param _resolutionHash Hash of resolution reasoning
      */
-    function resolveConfidentialDispute(
+    function resolveDispute(
         bytes32 _escrowId,
-        ctUint64 _buyerPayout,
-        ctUint64 _sellerPayout,
+        uint256 _buyerPayout,
+        uint256 _sellerPayout,
         bytes32 _resolutionHash
     ) external nonReentrant {
         ConfidentialDispute storage dispute = disputes[_escrowId];
         
-        if (isMpcAvailable) {
-            gtBool gtIsResolved = MpcCore.onBoard(dispute.isResolved);
-            require(!MpcCore.decrypt(gtIsResolved), "Already resolved");
-        } else {
-            require(ctBool.unwrap(dispute.isResolved) == 0, "Already resolved");
-        }
+        require(ctBool.unwrap(dispute.isResolved) == 0, "Already resolved");
         require(
             msg.sender == dispute.primaryArbitrator || _isPanelArbitrator(_escrowId, msg.sender),
             "Not authorized arbitrator"
         );
         require(block.timestamp <= dispute.deadlineTimestamp, "Resolution deadline passed");
-
-        // Verify total payouts don't exceed escrow balance (private verification)
-        if (isMpcAvailable) {
-            gtUint64 gtBuyerPayout = MpcCore.onBoard(_buyerPayout);
-            gtUint64 gtSellerPayout = MpcCore.onBoard(_sellerPayout);
-            gtUint64 gtTotalPayout = MpcCore.add(gtBuyerPayout, gtSellerPayout);
-            gtUint64 gtEscrowBalance = MpcCore.onBoard(dispute.escrowBalance);
-            gtBool payoutsValid = MpcCore.le(gtTotalPayout, gtEscrowBalance);
-            
-            require(
-                MpcCore.decrypt(payoutsValid),
-                "Total payouts exceed escrow balance"
-            );
-        } else {
-            // In testing mode, do simple validation
-            uint256 buyerPayoutUnwrapped = ctUint64.unwrap(_buyerPayout);
-            uint256 sellerPayoutUnwrapped = ctUint64.unwrap(_sellerPayout);
-            uint256 escrowBalanceUnwrapped = ctUint64.unwrap(dispute.escrowBalance);
-            require(
-                buyerPayoutUnwrapped + sellerPayoutUnwrapped <= escrowBalanceUnwrapped,
-                "Total payouts exceed escrow balance"
-            );
-        }
-
-        // For panel disputes, require consensus (simplified for MVP)
+        
+        // Verify total payouts
+        uint256 escrowBalance = ctUint64.unwrap(dispute.escrowBalance);
+        require(_buyerPayout + _sellerPayout <= escrowBalance, "Total payouts exceed escrow balance");
+        
+        // For panel disputes, require consensus
         if (dispute.panelArbitrators.length > 0) {
-            require(_verifyPanelConsensus(_escrowId, _buyerPayout, _sellerPayout), "Panel consensus required");
+            ctUint64 buyerPayoutEncrypted = ctUint64.wrap(_buyerPayout);
+            ctUint64 sellerPayoutEncrypted = ctUint64.wrap(_sellerPayout);
+            require(_verifyPanelConsensus(_escrowId, buyerPayoutEncrypted, sellerPayoutEncrypted), "Panel consensus required");
         }
-
-        // Update dispute with private resolution
-        dispute.isResolved = isMpcAvailable ? MpcCore.offBoard(MpcCore.setPublic(true)) : ctBool.wrap(1);
-        dispute.finalBuyerPayout = _buyerPayout;
-        dispute.finalSellerPayout = _sellerPayout;
+        
+        // Update dispute with resolution
+        dispute.isResolved = ctBool.wrap(1);
+        dispute.finalBuyerPayout = ctUint64.wrap(_buyerPayout);
+        dispute.finalSellerPayout = ctUint64.wrap(_sellerPayout);
         dispute.resolutionHash = _resolutionHash;
-
-        // Distribute arbitration fees privately
+        
+        // Distribute arbitration fees
         _distributeArbitrationFees(_escrowId);
-
+        
         // Update arbitrator success statistics
         arbitrators[dispute.primaryArbitrator].successfulCases++;
         for (uint i = 0; i < dispute.panelArbitrators.length; i++) {
             arbitrators[dispute.panelArbitrators[i]].successfulCases++;
         }
-
-        // Execute private payouts through escrow integration
-        _executePrivatePayouts(_escrowId, _buyerPayout, _sellerPayout);
-
-        // Create verification hash for private amounts
+        
+        // Execute payouts
+        ctUint64 buyerPayoutEncrypted = ctUint64.wrap(_buyerPayout);
+        ctUint64 sellerPayoutEncrypted = ctUint64.wrap(_sellerPayout);
+        _executePrivatePayouts(_escrowId, buyerPayoutEncrypted, sellerPayoutEncrypted);
+        
+        // Create verification hash
         bytes32 payoutHash = keccak256(abi.encode(
             _buyerPayout, _sellerPayout, block.timestamp, _resolutionHash
         ));
-
+        
+        emit ConfidentialDisputeResolved(_escrowId, _resolutionHash, block.timestamp, payoutHash);
+    }
+    
+    /**
+     * @dev Resolves a dispute with private payouts (premium feature)
+     * @param _escrowId The dispute to resolve
+     * @param _buyerPayout Private payout amount for buyer (encrypted)
+     * @param _sellerPayout Private payout amount for seller (encrypted)
+     * @param _resolutionHash Hash of resolution reasoning
+     * @param usePrivacy Whether to use privacy features
+     */
+    function resolveDisputeWithPrivacy(
+        bytes32 _escrowId,
+        itUint64 calldata _buyerPayout,
+        itUint64 calldata _sellerPayout,
+        bytes32 _resolutionHash,
+        bool usePrivacy
+    ) external nonReentrant {
+        require(usePrivacy && isMpcAvailable, "OmniCoinArbitration: Privacy not available");
+        require(privacyFeeManager != address(0), "OmniCoinArbitration: Privacy fee manager not set");
+        ConfidentialDispute storage dispute = disputes[_escrowId];
+        
+        gtBool gtIsResolved = MpcCore.onBoard(dispute.isResolved);
+        require(!MpcCore.decrypt(gtIsResolved), "Already resolved");
+        require(
+            msg.sender == dispute.primaryArbitrator || _isPanelArbitrator(_escrowId, msg.sender),
+            "Not authorized arbitrator"
+        );
+        require(block.timestamp <= dispute.deadlineTimestamp, "Resolution deadline passed");
+        
+        // Validate encrypted inputs
+        gtUint64 gtBuyerPayout = MpcCore.validateCiphertext(_buyerPayout);
+        gtUint64 gtSellerPayout = MpcCore.validateCiphertext(_sellerPayout);
+        
+        // Verify total payouts don't exceed escrow balance
+        gtUint64 gtTotalPayout = MpcCore.add(gtBuyerPayout, gtSellerPayout);
+        gtUint64 gtEscrowBalance = MpcCore.onBoard(dispute.escrowBalance);
+        gtBool payoutsValid = MpcCore.le(gtTotalPayout, gtEscrowBalance);
+        require(MpcCore.decrypt(payoutsValid), "Total payouts exceed escrow balance");
+        
+        // Calculate privacy fee for resolution (0.5% of total payout)
+        uint256 RESOLUTION_PRIVACY_FEE_RATE = 50; // 0.5% in basis points
+        uint256 BASIS_POINTS = 10000;
+        gtUint64 feeRate = MpcCore.setPublic64(uint64(RESOLUTION_PRIVACY_FEE_RATE));
+        gtUint64 basisPoints = MpcCore.setPublic64(uint64(BASIS_POINTS));
+        gtUint64 fee = MpcCore.mul(gtTotalPayout, feeRate);
+        fee = MpcCore.div(fee, basisPoints);
+        
+        // Collect privacy fee (10x normal fee)
+        uint256 normalFee = uint64(gtUint64.unwrap(fee));
+        uint256 privacyFee = normalFee * PRIVACY_MULTIPLIER;
+        PrivacyFeeManager(privacyFeeManager).collectPrivacyFee(
+            msg.sender,
+            keccak256("ARBITRATION_RESOLUTION"),
+            privacyFee
+        );
+        
+        // Convert amounts for storage
+        ctUint64 encryptedBuyerPayout = MpcCore.offBoard(gtBuyerPayout);
+        ctUint64 encryptedSellerPayout = MpcCore.offBoard(gtSellerPayout);
+        
+        // For panel disputes, require consensus
+        if (dispute.panelArbitrators.length > 0) {
+            require(_verifyPanelConsensus(_escrowId, encryptedBuyerPayout, encryptedSellerPayout), "Panel consensus required");
+        }
+        
+        // Update dispute with private resolution
+        dispute.isResolved = MpcCore.offBoard(MpcCore.setPublic(true));
+        dispute.finalBuyerPayout = encryptedBuyerPayout;
+        dispute.finalSellerPayout = encryptedSellerPayout;
+        dispute.resolutionHash = _resolutionHash;
+        
+        // Distribute arbitration fees
+        _distributeArbitrationFees(_escrowId);
+        
+        // Update arbitrator success statistics
+        arbitrators[dispute.primaryArbitrator].successfulCases++;
+        for (uint i = 0; i < dispute.panelArbitrators.length; i++) {
+            arbitrators[dispute.panelArbitrators[i]].successfulCases++;
+        }
+        
+        // Execute private payouts
+        _executePrivatePayouts(_escrowId, encryptedBuyerPayout, encryptedSellerPayout);
+        
+        // Create verification hash
+        bytes32 payoutHash = keccak256(abi.encode(
+            encryptedBuyerPayout, encryptedSellerPayout, block.timestamp, _resolutionHash
+        ));
+        
         emit ConfidentialDisputeResolved(_escrowId, _resolutionHash, block.timestamp, payoutHash);
     }
 

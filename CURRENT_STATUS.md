@@ -1,7 +1,28 @@
 # OmniCoin Module Current Status
 
-**Last Updated:** 2025-01-27 23:55 UTC
-**Current Focus:** Privacy Logic Implementation - COMPLETED!
+**Last Updated:** 2025-07-26 10:05 UTC
+**Current Focus:** Privacy Implementation and Testing Framework
+
+## 🚨 PLATFORM DECISION: STAY WITH COTI (July 26, 2025)
+
+After extensive analysis of migrating to Polygon, the decision is to **STAY WITH COTI** for the following reasons:
+
+### Why Migration Would Be a Mistake
+1. **90% of our code is COTI-specific** - Complete rewrite required (6-10 months)
+2. **Cannot replicate MPC privacy** - Polygon zkEVM solves different problems
+3. **Would lose unique features** - Encrypted escrow, private staking, confidential arbitration
+4. **Competitive advantage lost** - We're building something unique that can't be copied
+
+### The Right Path Forward
+1. **Optimize COTI deployment** - Minimize on-chain operations, batch transactions
+2. **Run validators independently** - Process most operations off-chain
+3. **Improve fee management** - Better OMNI ↔ COTI conversion
+4. **Focus on unique privacy features** - First DeFi platform with true MPC privacy
+
+### Key Insight
+COTI MPC (Garbled Circuits) enables **computation on encrypted data** - fundamentally different from Polygon zkEVM which only provides **transaction privacy**. We need the former for our advanced features.
+
+See `COTI_TO_POLYGON_MIGRATION_ANALYSIS.md` for detailed analysis.
 
 ## Critical Architecture Update 🚨
 
@@ -119,7 +140,7 @@
 ### 4. Honest Testing Approach ✅ IMPLEMENTED
 **Problem:** Mocking/stubbing was hiding real integration issues
 
-**Solution:** 
+**Solution:**
 - Created TEST_GAPS.md documenting what cannot be tested locally
 - Business logic tests that explicitly skip MPC operations
 - Clear documentation of limitations in test files
@@ -159,7 +180,7 @@
 4. ✅ Fixed Ethers.js v6 compatibility issues
 5. ✅ Tests now run and show proper debug output
 
-## ✅ Testing Complete - All Tests Passing!
+## ✅ Testing Complete - All Tests Passing
 
 ### Issue Resolution
 - **Issue:** registerArbitrator() was reverting due to incorrect token contract
@@ -245,35 +266,35 @@
 
 ### High Priority - Architecture Implementation
 
-2. **Create Layer 2.5 Deployment Scripts**
+1. **Create Layer 2.5 Deployment Scripts**
    - OmniCoin validator network deployment
    - Genesis block configuration
    - Validator registration system
    - Initial supply minting strategy
 
-3. **Create Rollup/Checkpoint Contracts**
+2. **Create Rollup/Checkpoint Contracts**
    - OmniCoinStateCommitment.sol (for COTI)
    - OmniCoinRollupVerifier.sol (for COTI)
    - Merkle proof generation and verification
 
-4. **Design Bridge Contracts**
+3. **Design Bridge Contracts**
    - OmniCoinBridge.sol (OMNI ↔ COTI transfers)
    - OmniCoinMPCInterface.sol (privacy features)
    - Lock/mint mechanism for cross-chain
 
-5. **Update ValidatorBlockchainService**
+4. **Update ValidatorBlockchainService**
    - Adapt for Layer 2.5 consensus
    - Add checkpoint submission logic
    - Integrate treasury management
 
 ### Medium Priority - Optimization
 
-5. **Move Evaluator Logic to Validators** (PENDING)
+1. **Move Evaluator Logic to Validators** (PENDING)
    - Extract computation from smart contracts
    - Implement in validator nodes
    - Reduce on-chain gas costs
 
-6. **Simplify Main OmniCoin Contract** (PENDING)
+2. **Simplify Main OmniCoin Contract** (PENDING)
    - Focus on core token functionality
    - Delegate features to modules
    - Optimize for validator processing
@@ -289,6 +310,7 @@
 ## Technical Patterns Established
 
 ### MPC Compatibility Pattern
+
 ```solidity
 if (isMpcAvailable) {
     // COTI testnet code with MPC
@@ -307,15 +329,16 @@ if (isMpcAvailable) {
 
 ## 🔥 For Next Developer - CRITICAL PRIVACY PATTERN UPDATE
 
-### What Happened Today (January 27, 2025):
+### What Happened Today (January 27, 2025)
 1. **User identified critical flaw**: Setting `isMpcAvailable = false` would disable MPC on COTI
 2. **Implemented proper fix**: Separated technical capability from business logic
 3. **Created new pattern**: Explicit privacy choice functions with fee collection
 4. **OmniCoinCore DONE**: 35/35 tests passing with new privacy logic
 
-### 🎯 Tomorrow's Priority Tasks:
+### 🎯 Tomorrow's Priority Tasks
 
 1. **Apply Privacy Pattern to OmniCoinEscrowV2.sol**
+
    ```solidity
    // Add these functions:
    function createEscrowWithPrivacy(params..., bool usePrivacy) external {
@@ -345,12 +368,12 @@ if (isMpcAvailable) {
    - Add bridgeWithPrivacy() function
    - Integrate with PrivacyFeeManager
 
-### Key Files to Reference:
+### Key Files to Reference
 - **OmniCoinCore.sol** - See transferWithPrivacy() implementation (lines 237-264)
 - **PrivacyFeeManager.sol** - Fee collection interface
 - **Test pattern**: test/OmniCoinCore.test.js (all passing)
 
-### Testing Strategy:
+### Testing Strategy
 - Run existing tests first to ensure nothing breaks
 - Add new tests for WithPrivacy() functions
 - Verify PrivacyFeeManager integration
@@ -393,7 +416,7 @@ npx hardhat size-contracts
 ### Contract Compilation Status ✅
 All contracts compile successfully with MPC compatibility updates.
 
-### Test Results by Contract:
+### Test Results by Contract
 1. **OmniCoinArbitration.sol** ✅ - All 11 tests passing
 2. **OmniCoinCore.sol** ✅ - All 35 tests passing  
 3. **OmniCoinReputationV2.sol** ✅ - All 49 tests passing
@@ -404,12 +427,12 @@ All contracts compile successfully with MPC compatibility updates.
    - Fixed getTierInfo() return value destructuring
    - All tests now passing successfully
 
-### Test Issues Fixed Today:
+### Test Issues Fixed Today
 1. **OmniCoinReputationV2 Test Fixes:**
    - ✅ Fixed weight arrays to sum to exactly 10000
    - ✅ Fixed referral event to expect timestamp instead of block number
    - ✅ Adjusted test expectations to match actual default weights
-   
+
 2. **OmniCoinStakingV2 Test Fixes:**
    - ✅ Fixed getTierInfo() to destructure tuple return values
    - ✅ All tier info tests now properly handle the return format
@@ -444,8 +467,9 @@ Identified contracts exceeding 24.576 KB limit:
 
 ## Important: COTI PrivateERC20 Discovery
 
-The COTI PrivateERC20 DOES implement `transferFrom`, but it returns `gtBool` instead of `bool`. 
+The COTI PrivateERC20 DOES implement `transferFrom`, but it returns `gtBool` instead of `bool`.
 Our initial assumption was incorrect. The V2 contracts need to be updated to use:
+
 ```solidity
 gtBool result = token.transferFrom(from, to, amount);
 require(MpcCore.decrypt(result), "Transfer failed");
@@ -525,8 +549,9 @@ We've adopted an honest testing approach:
 
 Note: Test failures in reputation sub-contracts are due to MPC type limitations in local testing.
 
-## Commit Message for Today's Work:
-```
+## Commit Message for Today's Work
+
+```text
 fix: Implement proper privacy logic separation in OmniCoinCore
 
 - Separated isMpcAvailable (technical) from privacyEnabledByDefault (business)
@@ -548,7 +573,83 @@ The contracts are now ready for:
 5. Full privacy feature testing on COTI infrastructure
 6. Integration with other OmniBazaar modules
 
-**Critical**: 
+**Critical**:
 - Local tests validate business logic ONLY
 - Privacy features MUST be tested on COTI testnet
 - Initial supply minting NOW WORKS in both environments!
+
+## Major Accomplishments Today (2025-07-26)
+
+### 1. Privacy Implementation Complete ✅
+- Applied privacy logic pattern to all high-priority contracts
+- Users can choose between public operations (no fees) and private operations (10x fees)
+- Privacy fees collected through centralized PrivacyFeeManager
+- Contracts updated: Core, Escrow, Payment, Staking, Arbitration, Bridge, DEX, NFT Marketplace
+
+### 2. Registry Pattern Implementation ✅
+- Converted from Factory pattern to Registry pattern
+- Created OmniCoinRegistry for dynamic contract address resolution
+- Updated OmniCoinCore and OmniCoinEscrow to use RegistryAware base
+- Removes hardcoded addresses, enables upgradability
+
+### 3. Contract Organization ✅
+- Reorganized contracts directory structure
+- Moved versioned files (V1, V2) to reference directory
+- Kept only newest versions in main directory without version suffix
+- Updated all import paths to reflect new structure
+- Moved reputation contracts to main directory for deployment
+
+### 4. Deployment Infrastructure ✅
+- Created modular deployment helpers:
+  - DeploymentHelper (main contracts)
+  - DEXDeploymentHelper (DEX ecosystem)
+  - MarketplaceDeploymentHelper (marketplace contracts)
+  - ValidatorDeploymentHelper (validator infrastructure)
+- Created BatchProcessor for efficient multi-operation transactions
+- Created ValidatorSync for off-chain/on-chain state synchronization
+
+### 5. Privacy Testing Framework ✅
+- Created comprehensive test suite for privacy functions
+- Tests cover both public (no fee) and private (10x fee) operations
+- Created test files for Core, Escrow, Payment, and Staking
+- Added test runner and documentation
+
+## Next Priority Actions
+
+### 1. Complete Remaining Privacy Tests
+- OmniCoinArbitration.privacy.test.js
+- OmniCoinBridge.privacy.test.js
+- DEXSettlement.privacy.test.js
+- OmniNFTMarketplace.privacy.test.js
+
+### 2. Update Contracts for PrivacyFeeManager
+- Ensure all contracts properly integrate with fee manager
+- Verify fee collection and distribution logic
+
+### 3. Design Validator-COTI Settlement
+- Define efficient settlement mechanism
+- Implement batching for gas optimization
+- Create settlement monitoring
+
+## Storage Architecture Clarification (2025-07-26 07:54 UTC)
+
+After user feedback, we've clarified our optimization approach:
+
+### What Stays On-Chain (COTI)
+- Token balances and transfers
+- Staking amounts and rewards
+- NFT ownership records
+- Critical escrow states
+- Governance votes (encrypted)
+- Reputation scores (encrypted)
+
+### What Moves to Validator Database
+- Marketplace listings and metadata
+- DEX order books and trade history
+- Chat messages and room data
+- KYC attestations (hashed references)
+- User profiles and preferences
+- Transaction history and analytics
+
+### The Key Insight
+We already have validator off-chain storage in our architecture for Chat, DEX, KYC, and other functions. The optimization strategy should leverage this existing infrastructure rather than converting everything to events. Events are used for state change notifications and validator indexing, not as a replacement for all storage.

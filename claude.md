@@ -13,3 +13,18 @@ Create test that actually test the functionality and interoperability of the con
 Use minimal mocking and do actual integration of components and modules. Tight integration is critical in OmniBazaar/OmniCoin/OmniWallet/CryptoBazaar. If you must create a mock account, service, component or function, ENSURE that its inclusion and operation do not inhibit or prohibit the functioning of the actual account, service, component or function.
 
 Because we have so many contracts and they are so large, this contract will be bundled with others into "factory" contracts, and those bundled into the final OmniCoin contract. We will deploy this contract on the testnet first for testing. Then deploy for production. So, I think for testing purposes, we want to assume that the MPC dependencies will be provided.
+
+## IMPORTANT: Date and Time Accuracy
+
+**Always use the Bash tool to get accurate timestamps** when updating documentation:
+
+```bash
+date "+%Y-%m-%d %H:%M UTC"
+```
+
+Do NOT rely on the environment date shown in the system information, as it may be incorrect. Always run the date command before adding timestamps to:
+- CURRENT_STATUS.md
+- TODO.md
+- Any other documentation files
+- Commit messages
+- Comments in code

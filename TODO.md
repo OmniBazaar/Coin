@@ -1,5 +1,7 @@
 # OmniCoin Smart Contract Development Plan
 
+**Last Updated:** 2025-07-26 07:45 UTC
+
 ## Overview
 
 OmniCoin is being migrated from the Graphene blockchain to a new smart contract-based implementation on the COTI V2 platform. This implementation specifically leverages COTI V2's privacy features and integrates with all OmniBazaar components.
@@ -71,7 +73,20 @@ function doSomethingWithPrivacy(params, bool usePrivacy) {
 }
 ```
 
-### Implementation Priority (Updated 2025-01-27)
+## 🚨 PLATFORM DECISION UPDATE (2025-07-26)
+
+### Decision: STAY WITH COTI
+After thorough analysis, we're staying with COTI for its unique MPC privacy capabilities. Migration to Polygon would require 6-10 months and lose 80% of our privacy features.
+
+### Immediate Optimization Priorities:
+1. **Convert all storage to events** - 90% cost reduction
+2. **Implement batch processing** - Single tx for multiple operations  
+3. **Move evaluator logic to validators** - Off-chain computation
+4. **Use state commitments** - Only merkle roots on-chain
+
+See `COTI_TO_POLYGON_MIGRATION_ANALYSIS.md` for full analysis.
+
+### Implementation Priority (Updated 2025-07-26)
 
 #### 🔥 IMMEDIATE PRIORITY: Apply Privacy Logic Pattern to All Contracts
 

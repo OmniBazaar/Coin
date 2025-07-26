@@ -6,7 +6,6 @@ import "@openzeppelin/contracts/utils/Pausable.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import "../coti-contracts/contracts/token/PrivateERC20/PrivateERC20.sol";
 import "../coti-contracts/contracts/utils/mpc/MpcCore.sol";
-import "./base/RegistryAware.sol";
 
 interface IPrivacyFeeManager {
     function collectPrivacyFee(address user, bytes32 operationType, uint256 amount) external returns (bool);
@@ -14,15 +13,15 @@ interface IPrivacyFeeManager {
 
 /**
  * @title OmniCoinCore
- * @dev Core OmniCoin token with Registry pattern integration
+ * @dev Core OmniCoin token implementing COTI V2 privacy features with Hybrid L2.5 architecture
  * 
- * Updates:
- * - Extends RegistryAware for dynamic contract address resolution
- * - Removes hardcoded contract addresses (bridge, treasury, etc.)
- * - Uses registry for all inter-contract communication
- * - Maintains backward compatibility with existing interfaces
+ * This contract serves as the foundation for OmniCoin on COTI V2, providing:
+ * - Privacy-enabled ERC20 functionality using COTI's MPC/Garbled Circuits
+ * - Dual-layer validation (COTI V2 + OmniBazaar validators)
+ * - Bridge functionality between transaction and business logic layers
+ * - Role-based access control for minting, burning, and administration
  */
-contract OmniCoinCore is PrivateERC20, AccessControl, Pausable, ReentrancyGuard, RegistryAware {
+contract OmniCoinCore is PrivateERC20, AccessControl, Pausable, ReentrancyGuard {
     
     // =============================================================================
     // CONSTANTS & ROLES
@@ -56,6 +55,12 @@ contract OmniCoinCore is PrivateERC20, AccessControl, Pausable, ReentrancyGuard,
     /// @dev Minimum validators required for consensus
     uint256 public minimumValidators;
     
+    /// @dev Bridge contract for L2.5 operations
+    address public bridgeContract;
+    
+    /// @dev Treasury contract for fee distribution
+    address public treasuryContract;
+    
     /// @dev Track total supply for max supply checking (public counter)
     uint64 private _publicTotalSupply;
     
@@ -64,6 +69,9 @@ contract OmniCoinCore is PrivateERC20, AccessControl, Pausable, ReentrancyGuard,
     
     /// @dev Privacy enabled by default flag (business logic - always false)
     bool public privacyEnabledByDefault = false;
+    
+    /// @dev Privacy fee manager contract
+    address public privacyFeeManager;
     
     // =============================================================================
     // STRUCTS
@@ -86,6 +94,9 @@ contract OmniCoinCore is PrivateERC20, AccessControl, Pausable, ReentrancyGuard,
     event ValidatorOperationSubmitted(bytes32 indexed operationHash, address indexed submitter);
     event ValidatorOperationExecuted(bytes32 indexed operationHash, uint256 confirmations);
     event PrivacyPreferenceChanged(address indexed user, bool privacyEnabled);
+    event BridgeContractUpdated(address indexed oldBridge, address indexed newBridge);
+    event TreasuryContractUpdated(address indexed oldTreasury, address indexed newTreasury);
+    event PrivacyFeeManagerUpdated(address indexed oldManager, address indexed newManager);
     
     // =============================================================================
     // MODIFIERS
@@ -106,10 +117,11 @@ contract OmniCoinCore is PrivateERC20, AccessControl, Pausable, ReentrancyGuard,
     // =============================================================================
     
     constructor(
-        address _registry,
         address _admin,
+        address _bridgeContract,
+        address _treasuryContract,
         uint256 _minimumValidators
-    ) PrivateERC20("OmniCoin", "OMNI") RegistryAware(_registry) {
+    ) PrivateERC20("OmniCoin", "OMNI") {
         require(_admin != address(0), "OmniCoinCore: Admin cannot be zero address");
         require(_minimumValidators > 0, "OmniCoinCore: Minimum validators must be > 0");
         
@@ -119,38 +131,19 @@ contract OmniCoinCore is PrivateERC20, AccessControl, Pausable, ReentrancyGuard,
         _grantRole(BURNER_ROLE, _admin);
         _grantRole(PAUSER_ROLE, _admin);
         
+        bridgeContract = _bridgeContract;
+        treasuryContract = _treasuryContract;
         minimumValidators = _minimumValidators;
         
         // Initialize public supply counter
         _publicTotalSupply = 0; // Will be set when initial supply is minted
         
         // MPC availability will be set by admin after deployment
+        // Admin must call setMpcAvailability(true) when deploying on COTI
         isMpcAvailable = false; // Start false, admin sets true on COTI
-    }
-    
-    // =============================================================================
-    // REGISTRY INTEGRATION HELPERS
-    // =============================================================================
-    
-    /**
-     * @dev Get bridge contract from registry
-     */
-    function getBridgeContract() public returns (address) {
-        return _getContract(registry.BRIDGE());
-    }
-    
-    /**
-     * @dev Get treasury contract from registry
-     */
-    function getTreasuryContract() public returns (address) {
-        return _getContract(registry.TREASURY());
-    }
-    
-    /**
-     * @dev Get privacy fee manager from registry
-     */
-    function getPrivacyFeeManager() public returns (address) {
-        return _getContract(registry.FEE_MANAGER());
+        
+        emit BridgeContractUpdated(address(0), _bridgeContract);
+        emit TreasuryContractUpdated(address(0), _treasuryContract);
     }
     
     // =============================================================================
@@ -179,7 +172,11 @@ contract OmniCoinCore is PrivateERC20, AccessControl, Pausable, ReentrancyGuard,
             gtBool result = _mint(msg.sender, initialSupply);
             require(MpcCore.decrypt(result), "OmniCoinCore: Initial mint failed");
         } else {
-            // In test environment
+            // In test environment, we can't use the normal _mint because it relies on MPC
+            // So we'll just track the supply in our public counter
+            // The actual balance will be 0 in PrivateERC20 but our totalSupply() override will show the correct amount
+            // This is acceptable for testing purposes
+            // Emit a Transfer event with dummy encrypted values
             ctUint64 dummyValue = ctUint64.wrap(0);
             emit Transfer(address(0), msg.sender, dummyValue, dummyValue);
         }
@@ -262,7 +259,15 @@ contract OmniCoinCore is PrivateERC20, AccessControl, Pausable, ReentrancyGuard,
         whenNotPausedAndEnabled 
         returns (bool) 
     {
+        // For public transfers, we need to use the PrivateERC20 transferFrom
+        // which handles allowances internally
         address spender = _msgSender();
+        
+        // Check current allowance
+        Allowance memory currentAllowance = allowance(from, spender);
+        
+        // Since we're doing a public transfer, we need to ensure allowance is sufficient
+        // The allowance struct contains encrypted values, so we need to handle carefully
         
         // Convert amount to gtUint64
         gtUint64 gtAmount = gtUint64.wrap(uint64(amount));
@@ -291,7 +296,6 @@ contract OmniCoinCore is PrivateERC20, AccessControl, Pausable, ReentrancyGuard,
             // User explicitly chose privacy - collect fee
             require(userPrivacyPreference[from], "OmniCoinCore: Enable privacy preference first");
             
-            address privacyFeeManager = getPrivacyFeeManager();
             if (privacyFeeManager != address(0)) {
                 // Collect privacy fee from the sender (from address)
                 IPrivacyFeeManager(privacyFeeManager).collectPrivacyFee(
@@ -327,7 +331,6 @@ contract OmniCoinCore is PrivateERC20, AccessControl, Pausable, ReentrancyGuard,
             // User explicitly chose privacy - collect fee
             require(userPrivacyPreference[msg.sender], "OmniCoinCore: Enable privacy preference first");
             
-            address privacyFeeManager = getPrivacyFeeManager();
             if (privacyFeeManager != address(0)) {
                 // Collect privacy fee
                 IPrivacyFeeManager(privacyFeeManager).collectPrivacyFee(
@@ -362,7 +365,6 @@ contract OmniCoinCore is PrivateERC20, AccessControl, Pausable, ReentrancyGuard,
         require(userPrivacyPreference[msg.sender], "OmniCoinCore: Privacy not enabled for sender");
         
         // This is the explicit privacy path - always charge fee
-        address privacyFeeManager = getPrivacyFeeManager();
         if (privacyFeeManager != address(0)) {
             // For encrypted amounts, we estimate fee based on typical transfer
             uint256 estimatedAmount = 1000 * 10**6; // 1000 OMNI typical transfer
@@ -393,7 +395,6 @@ contract OmniCoinCore is PrivateERC20, AccessControl, Pausable, ReentrancyGuard,
         require(userPrivacyPreference[msg.sender], "OmniCoinCore: Privacy not enabled");
         
         // Charge privacy fee for garbled transfers
-        address privacyFeeManager = getPrivacyFeeManager();
         if (privacyFeeManager != address(0)) {
             uint256 estimatedAmount = 1000 * 10**6; // Estimate for fee
             IPrivacyFeeManager(privacyFeeManager).collectPrivacyFee(
@@ -450,6 +451,8 @@ contract OmniCoinCore is PrivateERC20, AccessControl, Pausable, ReentrancyGuard,
             return _mintPrivate(to, gtAmount);
         } else {
             // Fallback for testing - convert amount directly
+            // In real usage, the amount parameter would contain encrypted data
+            // For testing, we treat it as a plain uint64 value
             uint64 plainAmount = uint64(uint256(keccak256(abi.encode(amount))));
             gtUint64 gtAmount = gtUint64.wrap(plainAmount);
             return _mintPrivate(to, gtAmount);
@@ -574,6 +577,35 @@ contract OmniCoinCore is PrivateERC20, AccessControl, Pausable, ReentrancyGuard,
     // =============================================================================
     
     /**
+     * @dev Update bridge contract address
+     * @param newBridge New bridge contract address
+     */
+    function setBridgeContract(address newBridge) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        require(newBridge != address(0), "OmniCoinCore: Bridge cannot be zero address");
+        address oldBridge = bridgeContract;
+        bridgeContract = newBridge;
+        
+        if (oldBridge != address(0)) {
+            _revokeRole(BRIDGE_ROLE, oldBridge);
+        }
+        _grantRole(BRIDGE_ROLE, newBridge);
+        
+        emit BridgeContractUpdated(oldBridge, newBridge);
+    }
+    
+    /**
+     * @dev Update treasury contract address
+     * @param newTreasury New treasury contract address
+     */
+    function setTreasuryContract(address newTreasury) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        require(newTreasury != address(0), "OmniCoinCore: Treasury cannot be zero address");
+        address oldTreasury = treasuryContract;
+        treasuryContract = newTreasury;
+        
+        emit TreasuryContractUpdated(oldTreasury, newTreasury);
+    }
+    
+    /**
      * @dev Update minimum validators required
      * @param newMinimum New minimum validator count
      */
@@ -581,6 +613,25 @@ contract OmniCoinCore is PrivateERC20, AccessControl, Pausable, ReentrancyGuard,
         require(newMinimum > 0, "OmniCoinCore: Minimum must be > 0");
         require(newMinimum <= validatorCount, "OmniCoinCore: Minimum cannot exceed current count");
         minimumValidators = newMinimum;
+    }
+    
+    /**
+     * @dev Update privacy fee manager contract
+     * @param newManager New privacy fee manager address (can be zero to disable fees)
+     */
+    function setPrivacyFeeManager(address newManager) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        address oldManager = privacyFeeManager;
+        privacyFeeManager = newManager;
+        
+        // Grant fee collector role if not zero
+        if (newManager != address(0)) {
+            _grantRole(BRIDGE_ROLE, newManager); // Fee manager needs bridge role to collect fees
+        }
+        if (oldManager != address(0)) {
+            _revokeRole(BRIDGE_ROLE, oldManager);
+        }
+        
+        emit PrivacyFeeManagerUpdated(oldManager, newManager);
     }
     
     /**
@@ -608,6 +659,7 @@ contract OmniCoinCore is PrivateERC20, AccessControl, Pausable, ReentrancyGuard,
      */
     function _mintPrivate(address to, gtUint64 amount) internal returns (gtBool) {
         // Check max supply constraint by temporarily accessing the encrypted total supply
+        // We'll override the _update function to add this check during minting
         return _mint(to, amount);
     }
     
@@ -632,7 +684,7 @@ contract OmniCoinCore is PrivateERC20, AccessControl, Pausable, ReentrancyGuard,
         uint64 amount;
         
         if (isMpcAvailable) {
-            // Convert gtUint64 to uint64 for supply tracking
+            // Convert gtUint64 to uint64 for supply tracking (this reveals the amount but is necessary for max supply check)
             amount = MpcCore.decrypt(value);
         } else {
             // In testing mode, unwrap the value directly
@@ -642,6 +694,7 @@ contract OmniCoinCore is PrivateERC20, AccessControl, Pausable, ReentrancyGuard,
         // Update public supply counter for max supply enforcement
         if (from == address(0)) {
             // Minting - check max supply
+            // Note: During initial mint, _publicTotalSupply is already updated
             require(_publicTotalSupply <= MAX_SUPPLY, "OmniCoinCore: Would exceed max supply");
         } else if (to == address(0)) {
             // Burning - decrease counter
@@ -704,6 +757,7 @@ contract OmniCoinCore is PrivateERC20, AccessControl, Pausable, ReentrancyGuard,
     function testBalanceOf(address account) external view returns (uint256) {
         require(!isMpcAvailable, "OmniCoinCore: Use balanceOf for MPC environments");
         // In test mode, only the admin has the initial supply
+        // We check if the account has the DEFAULT_ADMIN_ROLE
         if (hasRole(DEFAULT_ADMIN_ROLE, account) && _publicTotalSupply > 0) {
             return _publicTotalSupply;
         }
@@ -753,33 +807,5 @@ contract OmniCoinCore is PrivateERC20, AccessControl, Pausable, ReentrancyGuard,
         
         operation.executed = true;
         emit ValidatorOperationExecuted(operationHash, operation.confirmations);
-    }
-    
-    // =============================================================================
-    // BACKWARD COMPATIBILITY
-    // =============================================================================
-    
-    /**
-     * @dev Get bridge contract (backward compatibility)
-     * @notice Deprecated - use registry directly
-     */
-    function bridgeContract() external returns (address) {
-        return getBridgeContract();
-    }
-    
-    /**
-     * @dev Get treasury contract (backward compatibility)
-     * @notice Deprecated - use registry directly
-     */
-    function treasuryContract() external returns (address) {
-        return getTreasuryContract();
-    }
-    
-    /**
-     * @dev Get privacy fee manager (backward compatibility)
-     * @notice Deprecated - use registry directly
-     */
-    function privacyFeeManager() external returns (address) {
-        return getPrivacyFeeManager();
     }
 }

@@ -2,7 +2,7 @@
 pragma solidity ^0.8.19;
 
 import "./ReputationSystemBase.sol";
-import "../interfaces/IReputationSystem.sol";
+import "./interfaces/IReputationSystem.sol";
 
 /**
  * @title OmniCoinIdentityVerification
