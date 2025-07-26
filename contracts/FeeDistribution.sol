@@ -7,6 +7,7 @@ import "@openzeppelin/contracts/access/AccessControl.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "@openzeppelin/contracts/utils/math/Math.sol";
+import "../coti-contracts/contracts/utils/mpc/MpcCore.sol";
 
 /**
  * @title FeeDistribution
@@ -76,6 +77,18 @@ contract FeeDistribution is ReentrancyGuard, Pausable, AccessControl {
         uint256 developmentShare
     );
 
+    event PrivateValidatorRewardDistributed(
+        address indexed validator,
+        bytes32 encryptedAmountHash,
+        uint256 distributionId
+    );
+
+    event PrivateRewardsClaimed(
+        address indexed validator,
+        bytes32 encryptedAmountHash,
+        address indexed token
+    );
+
     // Enums
     enum FeeSource {
         TRADING,
@@ -120,6 +133,8 @@ contract FeeDistribution is ReentrancyGuard, Pausable, AccessControl {
         uint256 amount;
         uint256 participationScore;
         bool claimed;
+        ctUint64 privateAmount;      // Privacy-enabled reward amount
+        ctBool privateClaimed;       // Privacy-enabled claim status
     }
 
     struct ValidatorInfo {
@@ -128,6 +143,8 @@ contract FeeDistribution is ReentrancyGuard, Pausable, AccessControl {
         uint256 totalRewardsClaimed;
         uint256 lastClaimTime;
         bool isActive;
+        ctUint64 privateTotalRewards;    // Privacy-enabled total rewards
+        ctUint64 privateStakeAmount;     // Privacy-enabled staking amount
     }
 
     struct RevenueMetrics {
@@ -146,6 +163,9 @@ contract FeeDistribution is ReentrancyGuard, Pausable, AccessControl {
 
     address public companyTreasury;
     address public developmentFund;
+    
+    // MPC availability flag (true on COTI testnet/mainnet, false in Hardhat)
+    bool public isMpcAvailable;
 
     mapping(address => ValidatorInfo) public validators;
     mapping(uint256 => Distribution) public distributions;
@@ -153,6 +173,10 @@ contract FeeDistribution is ReentrancyGuard, Pausable, AccessControl {
         public validatorPendingRewards; // validator -> token -> amount
     mapping(address => uint256) public companyPendingWithdrawals; // token -> amount
     mapping(address => uint256) public developmentPendingWithdrawals; // token -> amount
+    
+    // Privacy-enabled mappings using COTI V2 MPC
+    mapping(address => mapping(address => ctUint64)) private validatorPrivateRewards; // validator -> token -> encrypted amount
+    mapping(address => ctUint64) private validatorPrivateEarnings; // validator -> total encrypted earnings
 
     FeeCollection[] public feeCollections;
     mapping(FeeSource => uint256) public feeSourceTotals;
@@ -198,6 +222,37 @@ contract FeeDistribution is ReentrancyGuard, Pausable, AccessControl {
         _grantRole(TREASURY_ROLE, msg.sender);
 
         lastDistributionTime = block.timestamp;
+        
+        // MPC availability will be set by admin after deployment
+        isMpcAvailable = false; // Default to false (Hardhat/testing mode)
+    }
+
+    /**
+     * @dev Set MPC availability (admin only, called when deploying to COTI testnet/mainnet)
+     */
+    function setMpcAvailability(bool _available) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        isMpcAvailable = _available;
+    }
+
+    /**
+     * @dev Initialize validator for private rewards (called when validator is first registered)
+     */
+    function initializeValidatorPrivateRewards(address validator) external onlyRole(DISTRIBUTOR_ROLE) {
+        require(validator != address(0), "Invalid validator address");
+        
+        // Initialize basic validator info (always works)
+        validators[validator].validatorAddress = validator;
+        validators[validator].isActive = true;
+        
+        // Initialize private earnings if MPC is available
+        if (isMpcAvailable) {
+            gtUint64 gtZero = MpcCore.setPublic64(uint64(0));
+            ctUint64 ctZero = MpcCore.offBoard(gtZero);
+            
+            validatorPrivateEarnings[validator] = ctZero;
+            validators[validator].privateTotalRewards = ctZero;
+            validators[validator].privateStakeAmount = ctZero;
+        }
     }
 
     /**
@@ -347,24 +402,69 @@ contract FeeDistribution is ReentrancyGuard, Pausable, AccessControl {
                 : 0;
 
             if (validatorReward > 0) {
-                // Update validator info
+                // Update validator info (always works)
                 validators[validator].validatorAddress = validator;
                 validators[validator].participationScore = score;
                 validators[validator].isActive = true;
 
-                // Store distribution info
-                newDistribution.validatorDistributions[
-                        validator
-                    ] = ValidatorDistribution({
-                    amount: validatorReward,
-                    participationScore: score,
-                    claimed: false
-                });
+                // Add to public pending rewards (always works)
+                validatorPendingRewards[validator][address(feeToken)] += validatorReward;
 
-                // Add to pending rewards
-                validatorPendingRewards[validator][
-                    address(feeToken)
-                ] += validatorReward;
+                // Use MPC for privacy features if available
+                if (isMpcAvailable) {
+                    // Encrypt validator reward for privacy using COTI V2 MPC
+                    gtUint64 gtReward = MpcCore.setPublic64(uint64(validatorReward));
+                    ctUint64 encryptedReward = MpcCore.offBoard(gtReward);
+                    
+                    gtBool gtFalse = MpcCore.setPublic(false);
+                    ctBool notClaimed = MpcCore.offBoard(gtFalse);
+                    
+                    // Initialize private earnings if not set
+                    gtUint64 gtZero = MpcCore.setPublic64(uint64(0));
+                    ctUint64 ctZero = MpcCore.offBoard(gtZero);
+                    
+                    gtUint64 gtCurrentEarnings = MpcCore.onBoard(validatorPrivateEarnings[validator]);
+                    gtBool isZero = MpcCore.eq(gtCurrentEarnings, gtZero);
+                    
+                    if (MpcCore.decrypt(isZero)) {
+                        validatorPrivateEarnings[validator] = ctZero;
+                        validators[validator].privateTotalRewards = ctZero;
+                    }
+
+                    // Store distribution info with privacy
+                    newDistribution.validatorDistributions[validator] = ValidatorDistribution({
+                        amount: validatorReward,
+                        participationScore: score,
+                        claimed: false,
+                        privateAmount: encryptedReward,
+                        privateClaimed: notClaimed
+                    });
+                    
+                    // Add to private rewards using MPC operations
+                    gtUint64 gtCurrentPrivateRewards = MpcCore.onBoard(validatorPrivateRewards[validator][address(feeToken)]);
+                    gtUint64 gtNewPrivateRewards = MpcCore.add(gtCurrentPrivateRewards, gtReward);
+                    validatorPrivateRewards[validator][address(feeToken)] = MpcCore.offBoard(gtNewPrivateRewards);
+
+                    // Update total private earnings
+                    gtUint64 gtCurrentTotalEarnings = MpcCore.onBoard(validatorPrivateEarnings[validator]);
+                    gtUint64 gtNewTotalEarnings = MpcCore.add(gtCurrentTotalEarnings, gtReward);
+                    validatorPrivateEarnings[validator] = MpcCore.offBoard(gtNewTotalEarnings);
+                    validators[validator].privateTotalRewards = MpcCore.offBoard(gtNewTotalEarnings);
+
+                    // Emit privacy event
+                    bytes32 encryptedHash = keccak256(abi.encode(encryptedReward, validator, block.timestamp));
+                    emit PrivateValidatorRewardDistributed(validator, encryptedHash, currentDistributionId);
+
+                } else {
+                    // MPC not available - store distribution info without privacy features
+                    newDistribution.validatorDistributions[validator] = ValidatorDistribution({
+                        amount: validatorReward,
+                        participationScore: score,
+                        claimed: false,
+                        privateAmount: ctUint64.wrap(0), // Default encrypted value
+                        privateClaimed: ctBool.wrap(0)   // Default encrypted value
+                    });
+                }
             }
         }
 
@@ -396,7 +496,7 @@ contract FeeDistribution is ReentrancyGuard, Pausable, AccessControl {
     }
 
     /**
-     * @dev Claim validator rewards
+     * @dev Claim validator rewards (public version)
      */
     function claimValidatorRewards(address token) external nonReentrant {
         uint256 pendingAmount = validatorPendingRewards[msg.sender][token];
@@ -418,6 +518,58 @@ contract FeeDistribution is ReentrancyGuard, Pausable, AccessControl {
             pendingAmount,
             currentDistributionId
         );
+    }
+
+    /**
+     * @dev Claim validator rewards with privacy (encrypted amounts)
+     */
+    function claimPrivateValidatorRewards(address token) external nonReentrant {
+        if (isMpcAvailable) {
+            ctUint64 privatePendingAmount = validatorPrivateRewards[msg.sender][token];
+            
+            // Check if there are rewards to claim using COTI V2 MPC
+            gtUint64 gtPendingAmount = MpcCore.onBoard(privatePendingAmount);
+            gtUint64 gtZero = MpcCore.setPublic64(uint64(0));
+            gtBool hasRewards = MpcCore.gt(gtPendingAmount, gtZero);
+            
+            require(MpcCore.decrypt(hasRewards), "No private rewards");
+
+            // Decrypt amount for transfer (only revealed to validator)
+            uint64 decryptedAmount = MpcCore.decrypt(gtPendingAmount);
+        
+            // Reset private pending rewards to zero
+            ctUint64 ctZero = MpcCore.offBoard(gtZero);
+            validatorPrivateRewards[msg.sender][token] = ctZero;
+
+            // Update validator info with encrypted totals
+            validators[msg.sender].totalRewardsClaimed += decryptedAmount;
+            validators[msg.sender].lastClaimTime = block.timestamp;
+
+            // Transfer rewards (amount is only known to validator)
+            IERC20(token).safeTransfer(msg.sender, decryptedAmount);
+
+            // Emit privacy-preserving event with hash
+            bytes32 encryptedHash = keccak256(abi.encode(privatePendingAmount, msg.sender, block.timestamp));
+            emit PrivateRewardsClaimed(msg.sender, encryptedHash, token);
+
+        } else {
+            // MPC not available (e.g., in Hardhat testing) - fallback to public rewards
+            uint256 pendingAmount = validatorPendingRewards[msg.sender][token];
+            require(pendingAmount > 0, "No private rewards (fallback to public)");
+            
+            // Reset pending rewards
+            validatorPendingRewards[msg.sender][token] = 0;
+            
+            // Update validator info
+            validators[msg.sender].totalRewardsClaimed += pendingAmount;
+            validators[msg.sender].lastClaimTime = block.timestamp;
+            
+            // Transfer rewards
+            IERC20(token).safeTransfer(msg.sender, pendingAmount);
+            
+            // Emit regular event
+            emit ValidatorRewardClaimed(msg.sender, token, pendingAmount, currentDistributionId);
+        }
     }
 
     /**
@@ -621,6 +773,33 @@ contract FeeDistribution is ReentrancyGuard, Pausable, AccessControl {
         return validatorPendingRewards[validator][token];
     }
 
+    /**
+     * @dev Get validator's private pending rewards (only accessible by validator or admin)
+     */
+    function getValidatorPrivatePendingRewards(
+        address validator,
+        address token
+    ) external view returns (ctUint64) {
+        require(
+            msg.sender == validator || hasRole(DEFAULT_ADMIN_ROLE, msg.sender),
+            "Access denied: private rewards"
+        );
+        return validatorPrivateRewards[validator][token];
+    }
+
+    /**
+     * @dev Get validator's total private earnings (only accessible by validator or admin)
+     */
+    function getValidatorPrivateEarnings(
+        address validator
+    ) external view returns (ctUint64) {
+        require(
+            msg.sender == validator || hasRole(DEFAULT_ADMIN_ROLE, msg.sender),
+            "Access denied: private earnings"
+        );
+        return validatorPrivateEarnings[validator];
+    }
+
     function getCompanyPendingWithdrawals(
         address token
     ) external view returns (uint256) {
@@ -687,5 +866,12 @@ contract FeeDistribution is ReentrancyGuard, Pausable, AccessControl {
 
     function unpause() external onlyRole(DEFAULT_ADMIN_ROLE) {
         _unpause();
+    }
+
+    /**
+     * @dev Get contract version for privacy upgrade tracking
+     */
+    function getVersion() external pure returns (string memory) {
+        return "FeeDistribution v2.0.0 - COTI V2 Privacy Integration";
     }
 }

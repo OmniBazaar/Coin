@@ -38,6 +38,9 @@ contract OmniCoinConfig is Ownable, ReentrancyGuard {
     uint256 public proposalThreshold;
     uint256 public votingPeriod;
     uint256 public quorum;
+    
+    // Testnet mode flag - bypasses reputation requirements for testing
+    bool public isTestnetMode;
 
     // Events
     event BridgeConfigAdded(
@@ -61,6 +64,7 @@ contract OmniCoinConfig is Ownable, ReentrancyGuard {
     event ProposalThresholdUpdated(uint256 oldThreshold, uint256 newThreshold);
     event VotingPeriodUpdated(uint256 oldPeriod, uint256 newPeriod);
     event QuorumUpdated(uint256 oldQuorum, uint256 newQuorum);
+    event TestnetModeToggled(bool enabled);
 
     constructor(address initialOwner) Ownable(initialOwner) {
         // Initialize default values
@@ -69,6 +73,7 @@ contract OmniCoinConfig is Ownable, ReentrancyGuard {
         proposalThreshold = 10000 * 10 ** 6; // 10,000 tokens
         votingPeriod = 3 days;
         quorum = 100000 * 10 ** 6; // 100,000 tokens
+        isTestnetMode = false; // Default to production mode
 
         // Initialize default staking tiers
         stakingTiers.push(
@@ -231,5 +236,10 @@ contract OmniCoinConfig is Ownable, ReentrancyGuard {
     function setQuorum(uint256 _quorum) external onlyOwner {
         emit QuorumUpdated(quorum, _quorum);
         quorum = _quorum;
+    }
+    
+    function toggleTestnetMode() external onlyOwner {
+        isTestnetMode = !isTestnetMode;
+        emit TestnetModeToggled(isTestnetMode);
     }
 }

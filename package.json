@@ -9,12 +9,22 @@
     "url": "git://github.com/omnibazaar/omnicoin.git"
   },
   "homepage": "https://docs.omnicoin.io",
-  "keywords": ["omnicoin", "omnibazaar", "coti", "privacy", "ethereum", "blockchain", "web3", "defi", "marketplace"],
+  "keywords": [
+    "omnicoin",
+    "omnibazaar",
+    "coti",
+    "privacy",
+    "ethereum",
+    "blockchain",
+    "web3",
+    "defi",
+    "marketplace"
+  ],
   "scripts": {
     "compile": "hardhat compile",
     "test": "hardhat test",
     "test:security": "hardhat test test/security/",
-    "test:integration": "hardhat test test/integration/", 
+    "test:integration": "hardhat test test/integration/",
     "test:validator": "jest test/validator-blockchain-integration.test.ts",
     "test:gas": "hardhat test --gas-reporter",
     "security:monitor": "node scripts/simple-security-monitor.js",
@@ -35,6 +45,7 @@
     "@types/jest": "^29.5.0",
     "@types/node": "^20.8.0",
     "hardhat": "^2.22.15",
+    "hardhat-contract-sizer": "^2.10.0",
     "hardhat-gas-reporter": "^1.0.9",
     "jest": "^29.7.0",
     "prettier": "^3.0.0",
