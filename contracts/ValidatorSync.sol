@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.19;
 
-import "@openzeppelin/contracts/access/AccessControl.sol";
-import "@openzeppelin/contracts/utils/Pausable.sol";
-import "./base/RegistryAware.sol";
+import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
+import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
+import {RegistryAware} from "./base/RegistryAware.sol";
 
 /**
  * @title ValidatorSync
@@ -16,13 +16,6 @@ import "./base/RegistryAware.sol";
  * - Emergency pause mechanism
  */
 contract ValidatorSync is RegistryAware, AccessControl, Pausable {
-    
-    // =============================================================================
-    // CONSTANTS & ROLES
-    // =============================================================================
-    
-    bytes32 public constant VALIDATOR_ROLE = keccak256("VALIDATOR_ROLE");
-    bytes32 public constant SYNC_MANAGER_ROLE = keccak256("SYNC_MANAGER_ROLE");
     
     // =============================================================================
     // STRUCTS
@@ -42,6 +35,13 @@ contract ValidatorSync is RegistryAware, AccessControl, Pausable {
         bytes signature;
         uint256 timestamp;
     }
+    
+    // =============================================================================
+    // CONSTANTS & ROLES
+    // =============================================================================
+    
+    bytes32 public constant VALIDATOR_ROLE = keccak256("VALIDATOR_ROLE");
+    bytes32 public constant SYNC_MANAGER_ROLE = keccak256("SYNC_MANAGER_ROLE");
     
     // =============================================================================
     // STATE VARIABLES
@@ -94,6 +94,18 @@ contract ValidatorSync is RegistryAware, AccessControl, Pausable {
     event SyncIntervalUpdated(uint256 oldInterval, uint256 newInterval);
     
     // =============================================================================
+    // CUSTOM ERRORS
+    // =============================================================================
+    
+    error TooEarlyForUpdate();
+    error InvalidStateRoot();
+    error FutureBlockNotAllowed();
+    error AlreadyFinalized();
+    error AlreadySigned();
+    error InvalidInterval();
+    error InvalidRequirement();
+    
+    // =============================================================================
     // CONSTRUCTOR
     // =============================================================================
     
@@ -122,17 +134,12 @@ contract ValidatorSync is RegistryAware, AccessControl, Pausable {
         bytes32 newStateRoot,
         uint256 blockNumber
     ) external onlyRole(VALIDATOR_ROLE) whenNotPaused returns (uint256) {
-        require(
-            block.timestamp >= lastSyncTime + syncInterval,
-            "ValidatorSync: Too early for update"
-        );
-        require(newStateRoot != bytes32(0), "ValidatorSync: Invalid state root");
-        require(
-            blockNumber <= block.number,
-            "ValidatorSync: Future block not allowed"
-        );
+        if (block.timestamp < lastSyncTime + syncInterval) revert TooEarlyForUpdate();
+        if (newStateRoot == bytes32(0)) revert InvalidStateRoot();
+        if (blockNumber > block.number) revert FutureBlockNotAllowed();
         
-        uint256 updateId = updateCounter++;
+        uint256 updateId = updateCounter;
+        ++updateCounter;
         
         stateUpdates[updateId] = StateUpdate({
             stateRoot: newStateRoot,
@@ -159,11 +166,8 @@ contract ValidatorSync is RegistryAware, AccessControl, Pausable {
         bytes calldata signature
     ) external onlyRole(VALIDATOR_ROLE) whenNotPaused {
         StateUpdate storage update = stateUpdates[updateId];
-        require(!update.finalized, "ValidatorSync: Already finalized");
-        require(
-            !hasSignedUpdate[updateId][msg.sender],
-            "ValidatorSync: Already signed"
-        );
+        if (update.finalized) revert AlreadyFinalized();
+        if (hasSignedUpdate[updateId][msg.sender]) revert AlreadySigned();
         
         _addValidatorSignature(updateId, msg.sender, signature);
         
@@ -195,7 +199,7 @@ contract ValidatorSync is RegistryAware, AccessControl, Pausable {
      */
     function _finalizeStateUpdate(uint256 updateId) internal {
         StateUpdate storage update = stateUpdates[updateId];
-        require(!update.finalized, "ValidatorSync: Already finalized");
+        if (update.finalized) revert AlreadyFinalized();
         
         bytes32 previousRoot = currentStateRoot;
         currentStateRoot = update.stateRoot;
@@ -231,7 +235,7 @@ contract ValidatorSync is RegistryAware, AccessControl, Pausable {
     ) external view returns (bool) {
         bytes32 computedHash = leaf;
         
-        for (uint256 i = 0; i < proof.length; i++) {
+        for (uint256 i = 0; i < proof.length; ++i) {
             bytes32 proofElement = proof[i];
             if (computedHash <= proofElement) {
                 computedHash = keccak256(abi.encodePacked(computedHash, proofElement));
@@ -254,7 +258,7 @@ contract ValidatorSync is RegistryAware, AccessControl, Pausable {
     function updateSyncInterval(
         uint256 newInterval
     ) external onlyRole(SYNC_MANAGER_ROLE) {
-        require(newInterval > 0, "ValidatorSync: Invalid interval");
+        if (newInterval == 0) revert InvalidInterval();
         uint256 oldInterval = syncInterval;
         syncInterval = newInterval;
         emit SyncIntervalUpdated(oldInterval, newInterval);
@@ -267,7 +271,7 @@ contract ValidatorSync is RegistryAware, AccessControl, Pausable {
     function updateRequiredValidators(
         uint256 newRequired
     ) external onlyRole(DEFAULT_ADMIN_ROLE) {
-        require(newRequired > 0, "ValidatorSync: Invalid requirement");
+        if (newRequired == 0) revert InvalidRequirement();
         requiredValidators = newRequired;
     }
     

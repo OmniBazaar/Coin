@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.19;
 
-import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
-import "@openzeppelin/contracts/utils/Pausable.sol";
-import "@openzeppelin/contracts/access/AccessControl.sol";
-import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
-import "@openzeppelin/contracts/utils/math/Math.sol";
-import "../coti-contracts/contracts/utils/mpc/MpcCore.sol";
+import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
+import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
+import {MpcCore, gtUint64, ctUint64} from "../coti-contracts/contracts/utils/mpc/MpcCore.sol";
 
 /**
  * @title FeeDistribution
@@ -29,10 +29,104 @@ contract FeeDistribution is ReentrancyGuard, Pausable, AccessControl {
     using SafeERC20 for IERC20;
     using Math for uint256;
 
+    // Enums
+    enum FeeSource {
+        TRADING,
+        PERPETUAL_FUTURES,
+        AUTO_CONVERSION,
+        MARKETPLACE,
+        CHAT_PREMIUM,
+        IPFS_STORAGE,
+        BLOCK_REWARDS,
+        BRIDGING,
+        STAKING_REWARDS
+    }
+
+    // Structs
+    struct DistributionRatio {
+        uint256 validatorShare; // 7000 = 70%
+        uint256 companyShare; // 2000 = 20%
+        uint256 developmentShare; // 1000 = 10%
+    }
+
+    struct FeeCollection {
+        address token;
+        uint256 amount;
+        FeeSource source;
+        uint256 timestamp;
+        address collector;
+    }
+
+    struct Distribution {
+        uint256 id;
+        uint256 totalAmount;
+        uint256 validatorShare;
+        uint256 companyShare;
+        uint256 developmentShare;
+        uint256 timestamp;
+        uint256 validatorCount;
+        bool completed;
+        mapping(address => ValidatorDistribution) validatorDistributions;
+    }
+
+    struct ValidatorDistribution {
+        uint256 amount;
+        bool claimed;
+        uint256 claimTime;
+        uint256 participationScore;
+        ctUint64 privateAmount;
+        ctBool privateClaimed;
+    }
+    
+    struct RevenueMetrics {
+        uint256 totalFeesCollected;
+        uint256 totalDistributed;
+        uint256 totalValidatorRewards;
+        uint256 totalCompanyRevenue;
+        uint256 totalDevelopmentFunding;
+        uint256 distributionCount;
+        uint256 lastDistributionTime;
+    }
+    
+    struct TreasuryAddresses {
+        address companyTreasury;
+        address developmentFund;
+    }
+
+    struct ValidatorInfo {
+        address validatorAddress;
+        uint256 participationScore;
+        uint256 totalEarned;
+        uint256 pendingRewards;
+        bool isActive;
+        uint256 lastUpdateTime;
+        ctUint64 privateRewardBalance; // For privacy mode
+        uint256 totalRewardsClaimed;
+        uint256 lastClaimTime;
+        ctUint64 privateTotalRewards;
+        ctUint64 privateStakeAmount;
+        mapping(address => uint256) tokenBalances;
+    }
+
+    // Constants
+    uint256 public constant BASIS_POINTS = 10000;
+    
     // Roles
     bytes32 public constant COLLECTOR_ROLE = keccak256("COLLECTOR_ROLE");
     bytes32 public constant DISTRIBUTOR_ROLE = keccak256("DISTRIBUTOR_ROLE");
     bytes32 public constant TREASURY_ROLE = keccak256("TREASURY_ROLE");
+
+    // Custom Errors
+    error InvalidAddress();
+    error InvalidAmount();
+    error InvalidDistribution();
+    error NoFeesPending();
+    error NotAuthorized();
+    error AlreadyClaimed();
+    error DistributionNotComplete();
+    error InvalidToken();
+    error NoFundsToWithdraw();
+    error InvalidFeeConfiguration();
 
     // Events
     event FeesCollected(
@@ -89,80 +183,11 @@ contract FeeDistribution is ReentrancyGuard, Pausable, AccessControl {
         address indexed token
     );
 
-    // Enums
-    enum FeeSource {
-        TRADING,
-        PERPETUAL_FUTURES,
-        AUTO_CONVERSION,
-        MARKETPLACE,
-        CHAT_PREMIUM,
-        IPFS_STORAGE,
-        BLOCK_REWARDS,
-        BRIDGING,
-        STAKING_REWARDS
-    }
-
-    // Structs
-    struct DistributionRatio {
-        uint256 validatorShare; // 7000 = 70%
-        uint256 companyShare; // 2000 = 20%
-        uint256 developmentShare; // 1000 = 10%
-    }
-
-    struct FeeCollection {
-        address token;
-        uint256 amount;
-        FeeSource source;
-        uint256 timestamp;
-        address collector;
-    }
-
-    struct Distribution {
-        uint256 id;
-        uint256 totalAmount;
-        uint256 validatorShare;
-        uint256 companyShare;
-        uint256 developmentShare;
-        uint256 timestamp;
-        uint256 validatorCount;
-        bool completed;
-        mapping(address => ValidatorDistribution) validatorDistributions;
-    }
-
-    struct ValidatorDistribution {
-        uint256 amount;
-        uint256 participationScore;
-        bool claimed;
-        ctUint64 privateAmount;      // Privacy-enabled reward amount
-        ctBool privateClaimed;       // Privacy-enabled claim status
-    }
-
-    struct ValidatorInfo {
-        address validatorAddress;
-        uint256 participationScore;
-        uint256 totalRewardsClaimed;
-        uint256 lastClaimTime;
-        bool isActive;
-        ctUint64 privateTotalRewards;    // Privacy-enabled total rewards
-        ctUint64 privateStakeAmount;     // Privacy-enabled staking amount
-    }
-
-    struct RevenueMetrics {
-        uint256 totalFeesCollected;
-        uint256 totalDistributed;
-        uint256 totalValidatorRewards;
-        uint256 totalCompanyRevenue;
-        uint256 totalDevelopmentFunding;
-        uint256 distributionCount;
-        uint256 lastDistributionTime;
-    }
 
     // State variables
-    IERC20 public immutable feeToken; // Primary fee token (XOM)
+    IERC20 public immutable FEE_TOKEN; // Primary fee token (XOM)
     DistributionRatio public distributionRatio;
-
-    address public companyTreasury;
-    address public developmentFund;
+    TreasuryAddresses public treasuryAddresses;
     
     // MPC availability flag (true on COTI testnet/mainnet, false in Hardhat)
     bool public isMpcAvailable;
@@ -175,7 +200,8 @@ contract FeeDistribution is ReentrancyGuard, Pausable, AccessControl {
     mapping(address => uint256) public developmentPendingWithdrawals; // token -> amount
     
     // Privacy-enabled mappings using COTI V2 MPC
-    mapping(address => mapping(address => ctUint64)) private validatorPrivateRewards; // validator -> token -> encrypted amount
+    // validator -> token -> encrypted amount
+    mapping(address => mapping(address => ctUint64)) private validatorPrivateRewards;
     mapping(address => ctUint64) private validatorPrivateEarnings; // validator -> total encrypted earnings
 
     FeeCollection[] public feeCollections;
@@ -194,17 +220,19 @@ contract FeeDistribution is ReentrancyGuard, Pausable, AccessControl {
     mapping(FeeSource => uint256) public feeSourceWeights; // For weighted distribution
 
     constructor(
-        address _feeToken,
-        address _companyTreasury,
-        address _developmentFund
+        address feeToken_,
+        address companyTreasury_,
+        address developmentFund_
     ) {
-        require(_feeToken != address(0), "Invalid fee token");
-        require(_companyTreasury != address(0), "Invalid company treasury");
-        require(_developmentFund != address(0), "Invalid development fund");
+        if (feeToken_ == address(0)) revert InvalidToken();
+        if (companyTreasury_ == address(0)) revert InvalidAddress();
+        if (developmentFund_ == address(0)) revert InvalidAddress();
 
-        feeToken = IERC20(_feeToken);
-        companyTreasury = _companyTreasury;
-        developmentFund = _developmentFund;
+        FEE_TOKEN = IERC20(feeToken_);
+        treasuryAddresses = TreasuryAddresses({
+            companyTreasury: companyTreasury_,
+            developmentFund: developmentFund_
+        });
 
         // Initialize distribution ratios (70/20/10)
         distributionRatio = DistributionRatio({
@@ -238,7 +266,7 @@ contract FeeDistribution is ReentrancyGuard, Pausable, AccessControl {
      * @dev Initialize validator for private rewards (called when validator is first registered)
      */
     function initializeValidatorPrivateRewards(address validator) external onlyRole(DISTRIBUTOR_ROLE) {
-        require(validator != address(0), "Invalid validator address");
+        if (validator == address(0)) revert InvalidAddress();
         
         // Initialize basic validator info (always works)
         validators[validator].validatorAddress = validator;
@@ -263,8 +291,8 @@ contract FeeDistribution is ReentrancyGuard, Pausable, AccessControl {
         uint256 amount,
         FeeSource source
     ) external onlyRole(COLLECTOR_ROLE) {
-        require(amount > 0, "Amount must be positive");
-        require(enabledFeeSources[source], "Fee source not enabled");
+        if (amount == 0) revert InvalidAmount();
+        if (!enabledFeeSources[source]) revert InvalidToken();
 
         // Transfer fees to this contract
         IERC20(token).safeTransferFrom(msg.sender, address(this), amount);
@@ -296,12 +324,10 @@ contract FeeDistribution is ReentrancyGuard, Pausable, AccessControl {
         uint256[] calldata amounts,
         FeeSource[] calldata sources
     ) external onlyRole(COLLECTOR_ROLE) {
-        require(
-            tokens.length == amounts.length && amounts.length == sources.length,
-            "Arrays length mismatch"
-        );
+        if (tokens.length != amounts.length || amounts.length != sources.length)
+            revert InvalidAmount();
 
-        for (uint256 i = 0; i < tokens.length; i++) {
+        for (uint256 i = 0; i < tokens.length; ++i) {
             if (amounts[i] > 0 && enabledFeeSources[sources[i]]) {
                 // Transfer fees
                 IERC20(tokens[i]).safeTransferFrom(
@@ -344,136 +370,269 @@ contract FeeDistribution is ReentrancyGuard, Pausable, AccessControl {
         address[] calldata validatorAddresses,
         uint256[] calldata participationScores
     ) external onlyRole(DISTRIBUTOR_ROLE) nonReentrant {
-        require(
-            validatorAddresses.length == participationScores.length,
-            "Arrays length mismatch"
-        );
-        require(validatorAddresses.length > 0, "No validators provided");
-        require(
-            block.timestamp >= lastDistributionTime + distributionInterval,
-            "Distribution too early"
-        );
+        _validateDistributionInputs(validatorAddresses, participationScores);
+        
+        uint256 totalAmount = _calculateDistributableAmount();
+        if (totalAmount < minimumDistributionAmount)
+            revert InvalidAmount();
 
-        uint256 totalAmount = feeToken.balanceOf(address(this)) -
-            companyPendingWithdrawals[address(feeToken)] -
-            developmentPendingWithdrawals[address(feeToken)];
-
-        require(
-            totalAmount >= minimumDistributionAmount,
-            "Insufficient amount for distribution"
-        );
-
-        // Calculate distribution amounts
-        uint256 validatorShareAmount = (totalAmount *
-            distributionRatio.validatorShare) / 10000;
-        uint256 companyShareAmount = (totalAmount *
-            distributionRatio.companyShare) / 10000;
-        uint256 developmentShareAmount = (totalAmount *
-            distributionRatio.developmentShare) / 10000;
+        // Calculate distribution shares
+        (uint256 validatorShareAmount, uint256 companyShareAmount, uint256 developmentShareAmount) = 
+            _calculateDistributionShares(totalAmount);
 
         // Create new distribution
-        currentDistributionId++;
-        Distribution storage newDistribution = distributions[
-            currentDistributionId
-        ];
+        Distribution storage newDistribution = _createNewDistribution(
+            totalAmount,
+            validatorShareAmount,
+            companyShareAmount,
+            developmentShareAmount,
+            validatorAddresses.length
+        );
+
+        // Calculate total participation score
+        uint256 totalParticipationScore = _calculateTotalParticipationScore(participationScores);
+
+        // Distribute to validators
+        _distributeToValidators(
+            newDistribution,
+            validatorAddresses,
+            participationScores,
+            validatorShareAmount,
+            totalParticipationScore
+        );
+
+        // Allocate company and development shares
+        companyPendingWithdrawals[address(FEE_TOKEN)] += companyShareAmount;
+        developmentPendingWithdrawals[
+            address(FEE_TOKEN)
+        ] += developmentShareAmount;
+
+        // Update metrics and finalize
+        _finalizeDistribution(
+            newDistribution,
+            totalAmount,
+            validatorShareAmount,
+            companyShareAmount,
+            developmentShareAmount
+        );
+    }
+    
+    /**
+     * @dev Validate distribution inputs
+     */
+    function _validateDistributionInputs(
+        address[] calldata validatorAddresses,
+        uint256[] calldata participationScores
+    ) internal view {
+        if (validatorAddresses.length != participationScores.length)
+            revert InvalidAmount();
+        if (validatorAddresses.length == 0) revert InvalidAmount();
+        if (block.timestamp < lastDistributionTime + distributionInterval)
+            revert InvalidDistribution();
+    }
+    
+    /**
+     * @dev Calculate distributable amount
+     */
+    function _calculateDistributableAmount() internal view returns (uint256) {
+        return FEE_TOKEN.balanceOf(address(this)) -
+            companyPendingWithdrawals[address(FEE_TOKEN)] -
+            developmentPendingWithdrawals[address(FEE_TOKEN)];
+    }
+    
+    /**
+     * @dev Calculate distribution shares
+     */
+    function _calculateDistributionShares(uint256 totalAmount) 
+        internal 
+        view 
+        returns (uint256 validatorShare, uint256 companyShare, uint256 developmentShare) 
+    {
+        validatorShare = (totalAmount * distributionRatio.validatorShare) / BASIS_POINTS;
+        companyShare = (totalAmount * distributionRatio.companyShare) / BASIS_POINTS;
+        developmentShare = (totalAmount * distributionRatio.developmentShare) / BASIS_POINTS;
+    }
+    
+    /**
+     * @dev Create new distribution record
+     */
+    function _createNewDistribution(
+        uint256 totalAmount,
+        uint256 validatorShareAmount,
+        uint256 companyShareAmount,
+        uint256 developmentShareAmount,
+        uint256 validatorCount
+    ) internal returns (Distribution storage) {
+        ++currentDistributionId;
+        Distribution storage newDistribution = distributions[currentDistributionId];
         newDistribution.id = currentDistributionId;
         newDistribution.totalAmount = totalAmount;
         newDistribution.validatorShare = validatorShareAmount;
         newDistribution.companyShare = companyShareAmount;
         newDistribution.developmentShare = developmentShareAmount;
         newDistribution.timestamp = block.timestamp;
-        newDistribution.validatorCount = validatorAddresses.length;
+        newDistribution.validatorCount = validatorCount;
         newDistribution.completed = false;
-
-        // Calculate individual validator rewards based on participation scores
-        uint256 totalParticipationScore = 0;
-        for (uint256 i = 0; i < participationScores.length; i++) {
-            totalParticipationScore += participationScores[i];
+        return newDistribution;
+    }
+    
+    /**
+     * @dev Calculate total participation score
+     */
+    function _calculateTotalParticipationScore(uint256[] calldata scores) 
+        internal 
+        pure 
+        returns (uint256 total) 
+    {
+        for (uint256 i = 0; i < scores.length; ++i) {
+            total += scores[i];
         }
-
-        // Distribute to validators
-        for (uint256 i = 0; i < validatorAddresses.length; i++) {
+    }
+    
+    /**
+     * @dev Distribute rewards to validators
+     */
+    function _distributeToValidators(
+        Distribution storage newDistribution,
+        address[] calldata validatorAddresses,
+        uint256[] calldata participationScores,
+        uint256 validatorShareAmount,
+        uint256 totalParticipationScore
+    ) internal {
+        for (uint256 i = 0; i < validatorAddresses.length; ++i) {
             address validator = validatorAddresses[i];
             uint256 score = participationScores[i];
-
-            // Calculate validator's share based on participation score
+            
             uint256 validatorReward = totalParticipationScore > 0
                 ? (validatorShareAmount * score) / totalParticipationScore
                 : 0;
-
+                
             if (validatorReward > 0) {
-                // Update validator info (always works)
-                validators[validator].validatorAddress = validator;
-                validators[validator].participationScore = score;
-                validators[validator].isActive = true;
-
-                // Add to public pending rewards (always works)
-                validatorPendingRewards[validator][address(feeToken)] += validatorReward;
-
-                // Use MPC for privacy features if available
-                if (isMpcAvailable) {
-                    // Encrypt validator reward for privacy using COTI V2 MPC
-                    gtUint64 gtReward = MpcCore.setPublic64(uint64(validatorReward));
-                    ctUint64 encryptedReward = MpcCore.offBoard(gtReward);
-                    
-                    gtBool gtFalse = MpcCore.setPublic(false);
-                    ctBool notClaimed = MpcCore.offBoard(gtFalse);
-                    
-                    // Initialize private earnings if not set
-                    gtUint64 gtZero = MpcCore.setPublic64(uint64(0));
-                    ctUint64 ctZero = MpcCore.offBoard(gtZero);
-                    
-                    gtUint64 gtCurrentEarnings = MpcCore.onBoard(validatorPrivateEarnings[validator]);
-                    gtBool isZero = MpcCore.eq(gtCurrentEarnings, gtZero);
-                    
-                    if (MpcCore.decrypt(isZero)) {
-                        validatorPrivateEarnings[validator] = ctZero;
-                        validators[validator].privateTotalRewards = ctZero;
-                    }
-
-                    // Store distribution info with privacy
-                    newDistribution.validatorDistributions[validator] = ValidatorDistribution({
-                        amount: validatorReward,
-                        participationScore: score,
-                        claimed: false,
-                        privateAmount: encryptedReward,
-                        privateClaimed: notClaimed
-                    });
-                    
-                    // Add to private rewards using MPC operations
-                    gtUint64 gtCurrentPrivateRewards = MpcCore.onBoard(validatorPrivateRewards[validator][address(feeToken)]);
-                    gtUint64 gtNewPrivateRewards = MpcCore.add(gtCurrentPrivateRewards, gtReward);
-                    validatorPrivateRewards[validator][address(feeToken)] = MpcCore.offBoard(gtNewPrivateRewards);
-
-                    // Update total private earnings
-                    gtUint64 gtCurrentTotalEarnings = MpcCore.onBoard(validatorPrivateEarnings[validator]);
-                    gtUint64 gtNewTotalEarnings = MpcCore.add(gtCurrentTotalEarnings, gtReward);
-                    validatorPrivateEarnings[validator] = MpcCore.offBoard(gtNewTotalEarnings);
-                    validators[validator].privateTotalRewards = MpcCore.offBoard(gtNewTotalEarnings);
-
-                    // Emit privacy event
-                    bytes32 encryptedHash = keccak256(abi.encode(encryptedReward, validator, block.timestamp));
-                    emit PrivateValidatorRewardDistributed(validator, encryptedHash, currentDistributionId);
-
-                } else {
-                    // MPC not available - store distribution info without privacy features
-                    newDistribution.validatorDistributions[validator] = ValidatorDistribution({
-                        amount: validatorReward,
-                        participationScore: score,
-                        claimed: false,
-                        privateAmount: ctUint64.wrap(0), // Default encrypted value
-                        privateClaimed: ctBool.wrap(0)   // Default encrypted value
-                    });
-                }
+                _processValidatorReward(
+                    newDistribution,
+                    validator,
+                    score,
+                    validatorReward
+                );
             }
         }
-
-        // Allocate company and development shares
-        companyPendingWithdrawals[address(feeToken)] += companyShareAmount;
-        developmentPendingWithdrawals[
-            address(feeToken)
-        ] += developmentShareAmount;
-
+    }
+    
+    /**
+     * @dev Process individual validator reward
+     */
+    function _processValidatorReward(
+        Distribution storage newDistribution,
+        address validator,
+        uint256 score,
+        uint256 validatorReward
+    ) internal {
+        // Update validator info
+        validators[validator].validatorAddress = validator;
+        validators[validator].participationScore = score;
+        validators[validator].isActive = true;
+        
+        // Add to public pending rewards
+        validatorPendingRewards[validator][address(FEE_TOKEN)] += validatorReward;
+        
+        if (isMpcAvailable) {
+            _processPrivateValidatorReward(
+                newDistribution,
+                validator,
+                score,
+                validatorReward
+            );
+        } else {
+            // MPC not available - store distribution info without privacy features
+            newDistribution.validatorDistributions[validator] = ValidatorDistribution({
+                amount: validatorReward,
+                participationScore: score,
+                claimed: false,
+                privateAmount: ctUint64.wrap(0),
+                privateClaimed: ctBool.wrap(0)
+            });
+        }
+    }
+    
+    /**
+     * @dev Process private validator reward with MPC
+     */
+    function _processPrivateValidatorReward(
+        Distribution storage newDistribution,
+        address validator,
+        uint256 score,
+        uint256 validatorReward
+    ) internal {
+        gtUint64 gtReward = MpcCore.setPublic64(uint64(validatorReward));
+        ctUint64 encryptedReward = MpcCore.offBoard(gtReward);
+        
+        gtBool gtFalse = MpcCore.setPublic(false);
+        ctBool notClaimed = MpcCore.offBoard(gtFalse);
+        
+        // Initialize private earnings if needed
+        _initializePrivateEarnings(validator);
+        
+        // Store distribution info
+        newDistribution.validatorDistributions[validator] = ValidatorDistribution({
+            amount: validatorReward,
+            participationScore: score,
+            claimed: false,
+            privateAmount: encryptedReward,
+            privateClaimed: notClaimed
+        });
+        
+        // Update private rewards
+        _updatePrivateRewards(validator, gtReward);
+        
+        // Emit privacy event
+        bytes32 encryptedHash = keccak256(abi.encode(encryptedReward, validator, block.timestamp));
+        emit PrivateValidatorRewardDistributed(validator, encryptedHash, currentDistributionId);
+    }
+    
+    /**
+     * @dev Initialize private earnings if needed
+     */
+    function _initializePrivateEarnings(address validator) internal {
+        gtUint64 gtZero = MpcCore.setPublic64(uint64(0));
+        ctUint64 ctZero = MpcCore.offBoard(gtZero);
+        
+        gtUint64 gtCurrentEarnings = MpcCore.onBoard(validatorPrivateEarnings[validator]);
+        gtBool isZero = MpcCore.eq(gtCurrentEarnings, gtZero);
+        
+        if (MpcCore.decrypt(isZero)) {
+            validatorPrivateEarnings[validator] = ctZero;
+            validators[validator].privateTotalRewards = ctZero;
+        }
+    }
+    
+    /**
+     * @dev Update private rewards using MPC
+     */
+    function _updatePrivateRewards(address validator, gtUint64 gtReward) internal {
+        // Update token-specific private rewards
+        gtUint64 gtCurrentPrivateRewards = MpcCore.onBoard(
+            validatorPrivateRewards[validator][address(FEE_TOKEN)]
+        );
+        gtUint64 gtNewPrivateRewards = MpcCore.add(gtCurrentPrivateRewards, gtReward);
+        validatorPrivateRewards[validator][address(FEE_TOKEN)] = MpcCore.offBoard(gtNewPrivateRewards);
+        
+        // Update total private earnings
+        gtUint64 gtCurrentTotalEarnings = MpcCore.onBoard(validatorPrivateEarnings[validator]);
+        gtUint64 gtNewTotalEarnings = MpcCore.add(gtCurrentTotalEarnings, gtReward);
+        validatorPrivateEarnings[validator] = MpcCore.offBoard(gtNewTotalEarnings);
+        validators[validator].privateTotalRewards = MpcCore.offBoard(gtNewTotalEarnings);
+    }
+    
+    /**
+     * @dev Finalize distribution and update metrics
+     */
+    function _finalizeDistribution(
+        Distribution storage newDistribution,
+        uint256 totalAmount,
+        uint256 validatorShareAmount,
+        uint256 companyShareAmount,
+        uint256 developmentShareAmount
+    ) internal {
         // Update metrics
         revenueMetrics.totalDistributed += totalAmount;
         revenueMetrics.totalValidatorRewards += validatorShareAmount;
@@ -481,10 +640,10 @@ contract FeeDistribution is ReentrancyGuard, Pausable, AccessControl {
         revenueMetrics.totalDevelopmentFunding += developmentShareAmount;
         revenueMetrics.distributionCount++;
         revenueMetrics.lastDistributionTime = block.timestamp;
-
+        
         newDistribution.completed = true;
         lastDistributionTime = block.timestamp;
-
+        
         emit FeesDistributed(
             currentDistributionId,
             totalAmount,
@@ -500,7 +659,7 @@ contract FeeDistribution is ReentrancyGuard, Pausable, AccessControl {
      */
     function claimValidatorRewards(address token) external nonReentrant {
         uint256 pendingAmount = validatorPendingRewards[msg.sender][token];
-        require(pendingAmount > 0, "No pending rewards");
+        if (pendingAmount == 0) revert NoFeesPending();
 
         // Reset pending rewards
         validatorPendingRewards[msg.sender][token] = 0;
@@ -532,7 +691,7 @@ contract FeeDistribution is ReentrancyGuard, Pausable, AccessControl {
             gtUint64 gtZero = MpcCore.setPublic64(uint64(0));
             gtBool hasRewards = MpcCore.gt(gtPendingAmount, gtZero);
             
-            require(MpcCore.decrypt(hasRewards), "No private rewards");
+            if (!MpcCore.decrypt(hasRewards)) revert NoFeesPending();
 
             // Decrypt amount for transfer (only revealed to validator)
             uint64 decryptedAmount = MpcCore.decrypt(gtPendingAmount);
@@ -555,7 +714,7 @@ contract FeeDistribution is ReentrancyGuard, Pausable, AccessControl {
         } else {
             // MPC not available (e.g., in Hardhat testing) - fallback to public rewards
             uint256 pendingAmount = validatorPendingRewards[msg.sender][token];
-            require(pendingAmount > 0, "No private rewards (fallback to public)");
+            if (pendingAmount == 0) revert NoFeesPending();
             
             // Reset pending rewards
             validatorPendingRewards[msg.sender][token] = 0;
@@ -579,16 +738,14 @@ contract FeeDistribution is ReentrancyGuard, Pausable, AccessControl {
         address token,
         uint256 amount
     ) external onlyRole(TREASURY_ROLE) {
-        require(amount > 0, "Amount must be positive");
-        require(
-            companyPendingWithdrawals[token] >= amount,
-            "Insufficient company funds"
-        );
+        if (amount == 0) revert InvalidAmount();
+        if (companyPendingWithdrawals[token] < amount)
+            revert NoFundsToWithdraw();
 
         companyPendingWithdrawals[token] -= amount;
-        IERC20(token).safeTransfer(companyTreasury, amount);
+        IERC20(token).safeTransfer(treasuryAddresses.companyTreasury, amount);
 
-        emit CompanyFeesWithdrawn(token, amount, companyTreasury);
+        emit CompanyFeesWithdrawn(token, amount, treasuryAddresses.companyTreasury);
     }
 
     /**
@@ -598,16 +755,14 @@ contract FeeDistribution is ReentrancyGuard, Pausable, AccessControl {
         address token,
         uint256 amount
     ) external onlyRole(TREASURY_ROLE) {
-        require(amount > 0, "Amount must be positive");
-        require(
-            developmentPendingWithdrawals[token] >= amount,
-            "Insufficient development funds"
-        );
+        if (amount == 0) revert InvalidAmount();
+        if (developmentPendingWithdrawals[token] < amount)
+            revert NoFundsToWithdraw();
 
         developmentPendingWithdrawals[token] -= amount;
-        IERC20(token).safeTransfer(developmentFund, amount);
+        IERC20(token).safeTransfer(treasuryAddresses.developmentFund, amount);
 
-        emit DevelopmentFeesWithdrawn(token, amount, developmentFund);
+        emit DevelopmentFeesWithdrawn(token, amount, treasuryAddresses.developmentFund);
     }
 
     /**
@@ -618,14 +773,10 @@ contract FeeDistribution is ReentrancyGuard, Pausable, AccessControl {
         uint256 _companyShare,
         uint256 _developmentShare
     ) external onlyRole(DEFAULT_ADMIN_ROLE) {
-        require(
-            _validatorShare + _companyShare + _developmentShare == 10000,
-            "Ratios must sum to 100%"
-        );
-        require(
-            _validatorShare >= 5000,
-            "Validator share must be at least 50%"
-        );
+        if (_validatorShare + _companyShare + _developmentShare != 10000)
+            revert InvalidFeeConfiguration();
+        if (_validatorShare < 5000)
+            revert InvalidFeeConfiguration();
 
         distributionRatio = DistributionRatio({
             validatorShare: _validatorShare,
@@ -647,11 +798,9 @@ contract FeeDistribution is ReentrancyGuard, Pausable, AccessControl {
         uint256 _distributionInterval,
         uint256 _minimumDistributionAmount
     ) external onlyRole(DEFAULT_ADMIN_ROLE) {
-        require(_distributionInterval >= 1 hours, "Interval too short");
-        require(
-            _minimumDistributionAmount > 0,
-            "Minimum amount must be positive"
-        );
+        if (_distributionInterval < 1 hours) revert InvalidDistribution();
+        if (_minimumDistributionAmount == 0)
+            revert InvalidAmount();
 
         distributionInterval = _distributionInterval;
         minimumDistributionAmount = _minimumDistributionAmount;
@@ -664,11 +813,13 @@ contract FeeDistribution is ReentrancyGuard, Pausable, AccessControl {
         address _companyTreasury,
         address _developmentFund
     ) external onlyRole(DEFAULT_ADMIN_ROLE) {
-        require(_companyTreasury != address(0), "Invalid company treasury");
-        require(_developmentFund != address(0), "Invalid development fund");
+        if (_companyTreasury == address(0)) revert InvalidAddress();
+        if (_developmentFund == address(0)) revert InvalidAddress();
 
-        companyTreasury = _companyTreasury;
-        developmentFund = _developmentFund;
+        treasuryAddresses = TreasuryAddresses({
+            companyTreasury: _companyTreasury,
+            developmentFund: _developmentFund
+        });
     }
 
     /**
@@ -688,7 +839,7 @@ contract FeeDistribution is ReentrancyGuard, Pausable, AccessControl {
         FeeSource source,
         uint256 weight
     ) external onlyRole(DEFAULT_ADMIN_ROLE) {
-        require(weight <= 10000, "Weight cannot exceed 100%");
+        if (weight > 10000) revert InvalidFeeConfiguration();
         feeSourceWeights[source] = weight;
     }
 
@@ -780,10 +931,8 @@ contract FeeDistribution is ReentrancyGuard, Pausable, AccessControl {
         address validator,
         address token
     ) external view returns (ctUint64) {
-        require(
-            msg.sender == validator || hasRole(DEFAULT_ADMIN_ROLE, msg.sender),
-            "Access denied: private rewards"
-        );
+        if (msg.sender != validator && !hasRole(DEFAULT_ADMIN_ROLE, msg.sender))
+            revert NotAuthorized();
         return validatorPrivateRewards[validator][token];
     }
 
@@ -793,10 +942,8 @@ contract FeeDistribution is ReentrancyGuard, Pausable, AccessControl {
     function getValidatorPrivateEarnings(
         address validator
     ) external view returns (ctUint64) {
-        require(
-            msg.sender == validator || hasRole(DEFAULT_ADMIN_ROLE, msg.sender),
-            "Access denied: private earnings"
-        );
+        if (msg.sender != validator && !hasRole(DEFAULT_ADMIN_ROLE, msg.sender))
+            revert NotAuthorized();
         return validatorPrivateEarnings[validator];
     }
 
@@ -841,14 +988,14 @@ contract FeeDistribution is ReentrancyGuard, Pausable, AccessControl {
     function getFeeCollection(
         uint256 index
     ) external view returns (FeeCollection memory) {
-        require(index < feeCollections.length, "Index out of bounds");
+        if (index >= feeCollections.length) revert InvalidAmount();
         return feeCollections[index];
     }
 
     function canDistribute() external view returns (bool) {
-        uint256 totalAmount = feeToken.balanceOf(address(this)) -
-            companyPendingWithdrawals[address(feeToken)] -
-            developmentPendingWithdrawals[address(feeToken)];
+        uint256 totalAmount = FEE_TOKEN.balanceOf(address(this)) -
+            companyPendingWithdrawals[address(FEE_TOKEN)] -
+            developmentPendingWithdrawals[address(FEE_TOKEN)];
 
         return
             totalAmount >= minimumDistributionAmount &&

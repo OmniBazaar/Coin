@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.19;
 
-import "@openzeppelin/contracts/access/AccessControl.sol";
-import "@openzeppelin/contracts/utils/Pausable.sol";
+import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
+import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
 
 /**
  * @title OmniCoinRegistry
@@ -16,6 +16,34 @@ import "@openzeppelin/contracts/utils/Pausable.sol";
  * - Gas optimization through caching
  */
 contract OmniCoinRegistry is AccessControl, Pausable {
+    
+    // =============================================================================
+    // STRUCTS
+    // =============================================================================
+    
+    struct ContractInfo {
+        address contractAddress;
+        uint256 version;
+        bool isActive;
+        string description;
+        uint256 deployedAt;
+        uint256 updatedAt;
+    }
+    
+    // =============================================================================
+    // CUSTOM ERRORS
+    // =============================================================================
+    
+    error InvalidAddress();
+    error ContractAlreadyRegistered();
+    error ContractNotRegistered();
+    error ContractNotActive();
+    error InvalidIdentifier();
+    error UnauthorizedUpgrade();
+    error VersionMismatch();
+    error BatchSizeMismatch();
+    error InvalidVersion();
+    error NoTargetContract();
     
     // =============================================================================
     // ROLES
@@ -65,19 +93,6 @@ contract OmniCoinRegistry is AccessControl, Pausable {
     bytes32 public constant NFT_MARKETPLACE = keccak256("NFT_MARKETPLACE");
     
     // =============================================================================
-    // STRUCTS
-    // =============================================================================
-    
-    struct ContractInfo {
-        address contractAddress;
-        uint256 version;
-        bool isActive;
-        string description;
-        uint256 deployedAt;
-        uint256 updatedAt;
-    }
-    
-    // =============================================================================
     // STATE VARIABLES
     // =============================================================================
     
@@ -125,7 +140,7 @@ contract OmniCoinRegistry is AccessControl, Pausable {
     // =============================================================================
     
     constructor(address _admin) {
-        require(_admin != address(0), "Registry: Invalid admin");
+        if (_admin == address(0)) revert InvalidAddress();
         
         _grantRole(DEFAULT_ADMIN_ROLE, _admin);
         _grantRole(ADMIN_ROLE, _admin);
@@ -150,9 +165,9 @@ contract OmniCoinRegistry is AccessControl, Pausable {
         address contractAddress,
         string calldata description
     ) external onlyRole(ADMIN_ROLE) whenNotPaused {
-        require(identifier != bytes32(0), "Registry: Invalid identifier");
-        require(contractAddress != address(0), "Registry: Invalid address");
-        require(!identifierExists[identifier], "Registry: Already registered");
+        if (identifier == bytes32(0)) revert InvalidIdentifier();
+        if (contractAddress == address(0)) revert InvalidAddress();
+        if (identifierExists[identifier]) revert ContractAlreadyRegistered();
         
         contracts[identifier] = ContractInfo({
             contractAddress: contractAddress,
@@ -179,9 +194,9 @@ contract OmniCoinRegistry is AccessControl, Pausable {
         bytes32 identifier,
         address newAddress
     ) external onlyRole(UPDATER_ROLE) whenNotPaused {
-        require(identifierExists[identifier], "Registry: Not registered");
-        require(newAddress != address(0), "Registry: Invalid address");
-        require(contracts[identifier].isActive, "Registry: Contract inactive");
+        if (!identifierExists[identifier]) revert ContractNotRegistered();
+        if (newAddress == address(0)) revert InvalidAddress();
+        if (!contracts[identifier].isActive) revert ContractNotActive();
         
         ContractInfo storage info = contracts[identifier];
         address oldAddress = info.contractAddress;
@@ -206,11 +221,8 @@ contract OmniCoinRegistry is AccessControl, Pausable {
         address[] calldata addresses,
         string[] calldata descriptions
     ) external onlyRole(ADMIN_ROLE) whenNotPaused {
-        require(
-            identifiers.length == addresses.length && 
-            addresses.length == descriptions.length,
-            "Registry: Length mismatch"
-        );
+        if (identifiers.length != addresses.length || 
+            addresses.length != descriptions.length) revert BatchSizeMismatch();
         
         for (uint256 i = 0; i < identifiers.length; i++) {
             if (!identifierExists[identifiers[i]] && addresses[i] != address(0)) {
@@ -244,8 +256,8 @@ contract OmniCoinRegistry is AccessControl, Pausable {
         external 
         onlyRole(ADMIN_ROLE) 
     {
-        require(identifierExists[identifier], "Registry: Not registered");
-        require(contracts[identifier].isActive, "Registry: Already inactive");
+        if (!identifierExists[identifier]) revert ContractNotRegistered();
+        if (!contracts[identifier].isActive) revert ContractNotActive();
         
         contracts[identifier].isActive = false;
         emit ContractDeactivated(identifier);
@@ -259,8 +271,8 @@ contract OmniCoinRegistry is AccessControl, Pausable {
         external 
         onlyRole(ADMIN_ROLE) 
     {
-        require(identifierExists[identifier], "Registry: Not registered");
-        require(!contracts[identifier].isActive, "Registry: Already active");
+        if (!identifierExists[identifier]) revert ContractNotRegistered();
+        if (contracts[identifier].isActive) revert ContractNotActive();
         
         contracts[identifier].isActive = true;
         emit ContractReactivated(identifier);
@@ -276,8 +288,8 @@ contract OmniCoinRegistry is AccessControl, Pausable {
      * @return Contract address
      */
     function getContract(bytes32 identifier) external view returns (address) {
-        require(identifierExists[identifier], "Registry: Not registered");
-        require(contracts[identifier].isActive, "Registry: Contract inactive");
+        if (!identifierExists[identifier]) revert ContractNotRegistered();
+        if (!contracts[identifier].isActive) revert ContractNotActive();
         return contracts[identifier].contractAddress;
     }
     
@@ -291,7 +303,7 @@ contract OmniCoinRegistry is AccessControl, Pausable {
         view 
         returns (ContractInfo memory) 
     {
-        require(identifierExists[identifier], "Registry: Not registered");
+        if (!identifierExists[identifier]) revert ContractNotRegistered();
         return contracts[identifier];
     }
     
@@ -332,8 +344,8 @@ contract OmniCoinRegistry is AccessControl, Pausable {
         view 
         returns (address) 
     {
-        require(identifierExists[identifier], "Registry: Not registered");
-        require(version > 0 && version <= contracts[identifier].version, "Registry: Invalid version");
+        if (!identifierExists[identifier]) revert ContractNotRegistered();
+        if (version == 0 || version > contracts[identifier].version) revert InvalidVersion();
         return versionHistory[identifier][version];
     }
     
@@ -361,8 +373,8 @@ contract OmniCoinRegistry is AccessControl, Pausable {
      * @param newAdmin New emergency admin address
      */
     function updateEmergencyAdmin(address newAdmin) external {
-        require(msg.sender == emergencyAdmin, "Registry: Not emergency admin");
-        require(newAdmin != address(0), "Registry: Invalid admin");
+        if (msg.sender != emergencyAdmin) revert UnauthorizedUpgrade();
+        if (newAdmin == address(0)) revert InvalidAddress();
         
         address oldAdmin = emergencyAdmin;
         emergencyAdmin = newAdmin;
@@ -375,7 +387,7 @@ contract OmniCoinRegistry is AccessControl, Pausable {
      * @param newFallback New emergency fallback address
      */
     function updateEmergencyFallback(address newFallback) external onlyRole(ADMIN_ROLE) {
-        require(newFallback != address(0), "Registry: Invalid fallback");
+        if (newFallback == address(0)) revert InvalidAddress();
         
         address oldFallback = emergencyFallback;
         emergencyFallback = newFallback;
@@ -387,10 +399,8 @@ contract OmniCoinRegistry is AccessControl, Pausable {
      * @dev Emergency pause
      */
     function emergencyPause() external {
-        require(
-            msg.sender == emergencyAdmin || msg.sender == emergencyFallback,
-            "Registry: Not authorized"
-        );
+        if (msg.sender != emergencyAdmin && msg.sender != emergencyFallback) 
+            revert UnauthorizedUpgrade();
         _pause();
     }
     

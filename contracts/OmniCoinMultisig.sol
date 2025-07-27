@@ -1,10 +1,14 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.20;
+pragma solidity ^0.8.19;
 
-import "@openzeppelin/contracts/access/Ownable.sol";
-import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
+import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
 contract OmniCoinMultisig is Ownable, ReentrancyGuard {
+    // =============================================================================
+    // STRUCTS
+    // =============================================================================
+    
     struct Transaction {
         uint256 id;
         address target;
@@ -22,6 +26,10 @@ contract OmniCoinMultisig is Ownable, ReentrancyGuard {
         bool isActive;
         uint256 lastActive;
     }
+    
+    // =============================================================================
+    // STATE VARIABLES
+    // =============================================================================
 
     mapping(uint256 => Transaction) public transactions;
     mapping(address => Signer) public signers;
@@ -30,6 +38,29 @@ contract OmniCoinMultisig is Ownable, ReentrancyGuard {
     uint256 public transactionCount;
     uint256 public minSignatures;
     uint256 public signerTimeout;
+    
+    // =============================================================================
+    // CUSTOM ERRORS
+    // =============================================================================
+    
+    error ZeroTarget();
+    error InsufficientSignatures();
+    error TooManySignatures();
+    error TransactionNotFound();
+    error TransactionAlreadyExecuted();
+    error TransactionCanceled();
+    error AlreadySigned();
+    error NotSigner();
+    error AlreadyActiveSigner();
+    error InactiveSigners();
+    error TransactionExecutionFailed();
+    error NotOwnerOrSigner();
+    error InvalidMinSignatures();
+    error InvalidTimeout();
+    
+    // =============================================================================
+    // EVENTS
+    // =============================================================================
 
     event TransactionCreated(
         uint256 indexed transactionId,
@@ -40,7 +71,7 @@ contract OmniCoinMultisig is Ownable, ReentrancyGuard {
     );
     event TransactionSigned(uint256 indexed transactionId, address signer);
     event TransactionExecuted(uint256 indexed transactionId);
-    event TransactionCanceled(uint256 indexed transactionId);
+    event TransactionCancelledEvent(uint256 indexed transactionId);
     event SignerAdded(address indexed signer);
     event SignerRemoved(address indexed signer);
     event MinSignaturesUpdated(uint256 oldCount, uint256 newCount);
@@ -57,17 +88,12 @@ contract OmniCoinMultisig is Ownable, ReentrancyGuard {
         uint256 value,
         uint256 requiredSignatures
     ) external onlyOwner nonReentrant returns (uint256) {
-        require(target != address(0), "OmniCoinMultisig: zero target");
-        require(
-            requiredSignatures >= minSignatures,
-            "OmniCoinMultisig: insufficient signatures"
-        );
-        require(
-            requiredSignatures <= activeSigners.length,
-            "OmniCoinMultisig: too many signatures"
-        );
+        if (target == address(0)) revert ZeroTarget();
+        if (requiredSignatures < minSignatures) revert InsufficientSignatures();
+        if (requiredSignatures > activeSigners.length) revert TooManySignatures();
 
-        uint256 transactionId = transactionCount++;
+        uint256 transactionId = transactionCount;
+        ++transactionCount;
 
         Transaction storage transaction = transactions[transactionId];
         transaction.id = transactionId;
@@ -89,13 +115,10 @@ contract OmniCoinMultisig is Ownable, ReentrancyGuard {
 
     function signTransaction(uint256 transactionId) external nonReentrant {
         Transaction storage transaction = transactions[transactionId];
-        require(!transaction.executed, "OmniCoinMultisig: already executed");
-        require(!transaction.canceled, "OmniCoinMultisig: canceled");
-        require(
-            !transaction.signed[msg.sender],
-            "OmniCoinMultisig: already signed"
-        );
-        require(signers[msg.sender].isActive, "OmniCoinMultisig: not signer");
+        if (transaction.executed) revert TransactionAlreadyExecuted();
+        if (transaction.canceled) revert TransactionCanceled();
+        if (transaction.signed[msg.sender]) revert AlreadySigned();
+        if (!signers[msg.sender].isActive) revert NotSigner();
 
         transaction.signed[msg.sender] = true;
         transaction.signatureCount++;
@@ -105,19 +128,17 @@ contract OmniCoinMultisig is Ownable, ReentrancyGuard {
 
     function executeTransaction(uint256 transactionId) external nonReentrant {
         Transaction storage transaction = transactions[transactionId];
-        require(!transaction.executed, "OmniCoinMultisig: already executed");
-        require(!transaction.canceled, "OmniCoinMultisig: canceled");
-        require(
-            transaction.signatureCount >= transaction.requiredSignatures,
-            "OmniCoinMultisig: insufficient signatures"
-        );
+        if (transaction.executed) revert TransactionAlreadyExecuted();
+        if (transaction.canceled) revert TransactionCanceled();
+        if (transaction.signatureCount < transaction.requiredSignatures) 
+            revert InsufficientSignatures();
 
         transaction.executed = true;
 
         (bool success, ) = transaction.target.call{value: transaction.value}(
             transaction.data
         );
-        require(success, "OmniCoinMultisig: execution failed");
+        if (!success) revert TransactionExecutionFailed();
 
         emit TransactionExecuted(transactionId);
     }
@@ -126,17 +147,17 @@ contract OmniCoinMultisig is Ownable, ReentrancyGuard {
         uint256 transactionId
     ) external onlyOwner nonReentrant {
         Transaction storage transaction = transactions[transactionId];
-        require(!transaction.executed, "OmniCoinMultisig: already executed");
-        require(!transaction.canceled, "OmniCoinMultisig: already canceled");
+        if (transaction.executed) revert TransactionAlreadyExecuted();
+        if (transaction.canceled) revert TransactionCanceled();
 
         transaction.canceled = true;
 
-        emit TransactionCanceled(transactionId);
+        emit TransactionCancelledEvent(transactionId);
     }
 
     function addSigner(address signer) external onlyOwner nonReentrant {
-        require(signer != address(0), "OmniCoinMultisig: zero signer");
-        require(!signers[signer].isActive, "OmniCoinMultisig: already signer");
+        if (signer == address(0)) revert ZeroTarget();
+        if (signers[signer].isActive) revert AlreadyActiveSigner();
 
         signers[signer] = Signer({
             account: signer,
@@ -150,11 +171,11 @@ contract OmniCoinMultisig is Ownable, ReentrancyGuard {
     }
 
     function removeSigner(address signer) public onlyOwner nonReentrant {
-        require(signers[signer].isActive, "OmniCoinMultisig: not signer");
+        if (!signers[signer].isActive) revert NotSigner();
 
         signers[signer].isActive = false;
 
-        for (uint256 i = 0; i < activeSigners.length; i++) {
+        for (uint256 i = 0; i < activeSigners.length; ++i) {
             if (activeSigners[i] == signer) {
                 activeSigners[i] = activeSigners[activeSigners.length - 1];
                 activeSigners.pop();
@@ -166,7 +187,7 @@ contract OmniCoinMultisig is Ownable, ReentrancyGuard {
     }
 
     function updateSignerActivity(address signer) external {
-        require(signers[signer].isActive, "OmniCoinMultisig: not signer");
+        if (!signers[signer].isActive) revert NotSigner();
 
         signers[signer].lastActive = block.timestamp;
 
@@ -177,11 +198,8 @@ contract OmniCoinMultisig is Ownable, ReentrancyGuard {
     }
 
     function setMinSignatures(uint256 _count) external onlyOwner {
-        require(_count > 0, "OmniCoinMultisig: zero count");
-        require(
-            _count <= activeSigners.length,
-            "OmniCoinMultisig: too many signatures"
-        );
+        if (_count == 0) revert InvalidMinSignatures();
+        if (_count > activeSigners.length) revert TooManySignatures();
 
         emit MinSignaturesUpdated(minSignatures, _count);
         minSignatures = _count;
@@ -248,8 +266,8 @@ contract OmniCoinMultisig is Ownable, ReentrancyGuard {
     }
 
     function isApproved(
-        address from,
-        address to,
+        address /* from */,
+        address /* to */,
         uint256 amount
     ) external view returns (bool) {
         // For now, return true for small amounts, false for large amounts requiring multisig

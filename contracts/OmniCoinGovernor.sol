@@ -1,11 +1,31 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import "@openzeppelin/contracts/access/Ownable.sol";
-import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
-import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
+import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
 contract OmniCoinGovernor is Ownable, ReentrancyGuard {
+    // Enums
+    enum VoteType {
+        Against,
+        For,
+        Abstain
+    }
+    
+    // Custom errors
+    error InsufficientBalance();
+    error ProposalNotFound();
+    error ProposalNotActive();
+    error ProposalNotPending();
+    error AlreadyVoted();
+    error InvalidVoteType();
+    error ProposalNotPassed();
+    error ProposalAlreadyExecuted();
+    error InvalidVotingPeriod();
+    error InvalidProposalThreshold();
+    error InvalidQuorum();
+    
     struct Proposal {
         uint256 id;
         address proposer;
@@ -55,12 +75,6 @@ contract OmniCoinGovernor is Ownable, ReentrancyGuard {
     event ProposalThresholdUpdated(uint256 oldThreshold, uint256 newThreshold);
     event QuorumUpdated(uint256 oldQuorum, uint256 newQuorum);
 
-    enum VoteType {
-        Against,
-        For,
-        Abstain
-    }
-
     constructor(address _token, address initialOwner) Ownable(initialOwner) {
         token = IERC20(_token);
         votingPeriod = 3 days;
@@ -72,10 +86,8 @@ contract OmniCoinGovernor is Ownable, ReentrancyGuard {
         string memory description,
         ProposalAction[] memory actions
     ) external nonReentrant returns (uint256) {
-        require(
-            token.balanceOf(msg.sender) >= proposalThreshold,
-            "OmniCoinGovernor: insufficient balance"
-        );
+        if (token.balanceOf(msg.sender) < proposalThreshold) 
+            revert InsufficientBalance();
 
         uint256 proposalId = proposalCount++;
         uint256 startTime = block.timestamp;
@@ -105,12 +117,9 @@ contract OmniCoinGovernor is Ownable, ReentrancyGuard {
 
     function cancel(uint256 proposalId) external nonReentrant {
         Proposal storage proposal = proposals[proposalId];
-        require(
-            msg.sender == proposal.proposer,
-            "OmniCoinGovernor: not proposer"
-        );
-        require(!proposal.executed, "OmniCoinGovernor: already executed");
-        require(!proposal.canceled, "OmniCoinGovernor: already canceled");
+        if (msg.sender != proposal.proposer) revert ProposalNotFound();
+        if (proposal.executed) revert ProposalAlreadyExecuted();
+        if (proposal.canceled) revert ProposalNotPending();
 
         proposal.canceled = true;
 
@@ -119,21 +128,12 @@ contract OmniCoinGovernor is Ownable, ReentrancyGuard {
 
     function execute(uint256 proposalId) external nonReentrant {
         Proposal storage proposal = proposals[proposalId];
-        require(!proposal.executed, "OmniCoinGovernor: already executed");
-        require(!proposal.canceled, "OmniCoinGovernor: canceled");
-        require(
-            block.timestamp >= proposal.endTime,
-            "OmniCoinGovernor: voting not ended"
-        );
-        require(
-            proposal.forVotes > proposal.againstVotes,
-            "OmniCoinGovernor: proposal failed"
-        );
-        require(
-            proposal.forVotes + proposal.againstVotes + proposal.abstainVotes >=
-                quorum,
-            "OmniCoinGovernor: quorum not met"
-        );
+        if (proposal.executed) revert ProposalAlreadyExecuted();
+        if (proposal.canceled) revert ProposalNotPending();
+        if (block.timestamp < proposal.endTime) revert ProposalNotActive();
+        if (proposal.forVotes <= proposal.againstVotes) revert ProposalNotPassed();
+        if (proposal.forVotes + proposal.againstVotes + proposal.abstainVotes < quorum) 
+            revert ProposalNotPassed();
 
         proposal.executed = true;
 
@@ -142,7 +142,7 @@ contract OmniCoinGovernor is Ownable, ReentrancyGuard {
             (bool success, ) = actions[i].target.call{value: actions[i].value}(
                 actions[i].data
             );
-            require(success, "OmniCoinGovernor: action failed");
+            if (!success) revert ProposalNotPassed();
         }
 
         emit ProposalExecuted(proposalId);
@@ -153,23 +153,14 @@ contract OmniCoinGovernor is Ownable, ReentrancyGuard {
         VoteType support
     ) external nonReentrant {
         Proposal storage proposal = proposals[proposalId];
-        require(!proposal.executed, "OmniCoinGovernor: already executed");
-        require(!proposal.canceled, "OmniCoinGovernor: canceled");
-        require(
-            block.timestamp >= proposal.startTime,
-            "OmniCoinGovernor: voting not started"
-        );
-        require(
-            block.timestamp <= proposal.endTime,
-            "OmniCoinGovernor: voting ended"
-        );
-        require(
-            !proposal.hasVoted[msg.sender],
-            "OmniCoinGovernor: already voted"
-        );
+        if (proposal.executed) revert ProposalAlreadyExecuted();
+        if (proposal.canceled) revert ProposalNotPending();
+        if (block.timestamp < proposal.startTime || block.timestamp > proposal.endTime) 
+            revert ProposalNotActive();
+        if (proposal.hasVoted[msg.sender]) revert AlreadyVoted();
 
         uint256 weight = token.balanceOf(msg.sender);
-        require(weight > 0, "OmniCoinGovernor: no voting power");
+        if (weight == 0) revert InsufficientBalance();
 
         proposal.hasVoted[msg.sender] = true;
         proposal.votes[msg.sender] = weight;

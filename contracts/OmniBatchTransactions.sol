@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
-import "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
-import "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
-import "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol";
-import "./OmniCoinCore.sol";
+import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
+import {OwnableUpgradeable} from "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
+import {ReentrancyGuardUpgradeable} from "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
+import {PausableUpgradeable} from "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol";
+import {OmniCoinCore} from "./OmniCoinCore.sol";
 
 /**
  * @title OmniBatchTransactions
@@ -18,6 +18,23 @@ contract OmniBatchTransactions is
     ReentrancyGuardUpgradeable,
     PausableUpgradeable
 {
+    // Custom errors
+    error EmptyBatch();
+    error BatchTooLarge();
+    error InsufficientGas();
+    error InternalCallOnly();
+    error OperationFailed();
+    error TransferFailed();
+    error ApprovalFailed();
+    error StakeOperationsNotSupported();
+    error UnstakeOperationsNotSupported();
+    error ArrayLengthMismatch();
+    error TooManyTransfers();
+    error Unauthorized();
+    error InvalidWhitelistRequest();
+    error InvalidMaxBatchSize();
+    error InvalidMaxGasPerOperation();
+    
     // Transaction types
     enum TransactionType {
         TRANSFER,
@@ -119,8 +136,8 @@ contract OmniBatchTransactions is
         nonReentrant
         returns (uint256 batchId, BatchResult[] memory results)
     {
-        require(operations.length > 0, "Empty batch");
-        require(operations.length <= maxBatchSize, "Batch too large");
+        if (operations.length == 0) revert EmptyBatch();
+        if (operations.length > maxBatchSize) revert BatchTooLarge();
 
         batchId = ++batchCounter;
         results = new BatchResult[](operations.length);
@@ -194,7 +211,7 @@ contract OmniBatchTransactions is
             string memory errorMessage
         )
     {
-        require(gasleft() >= maxGasPerOperation, "Insufficient gas");
+        if (gasleft() < maxGasPerOperation) revert InsufficientGas();
 
         try this._performOperation{gas: maxGasPerOperation}(operation) returns (
             bytes memory data
@@ -213,7 +230,7 @@ contract OmniBatchTransactions is
     function _performOperation(
         BatchOperation calldata operation
     ) external returns (bytes memory) {
-        require(msg.sender == address(this), "Internal call only");
+        if (msg.sender != address(this)) revert InternalCallOnly();
 
         if (operation.opType == TransactionType.TRANSFER) {
             return _executeTransfer(operation);
@@ -228,7 +245,7 @@ contract OmniBatchTransactions is
             (bool success, bytes memory data) = operation.target.call{
                 value: operation.value
             }(operation.data);
-            require(success, "Operation failed");
+            if (!success) revert OperationFailed();
             return data;
         }
     }
@@ -243,7 +260,7 @@ contract OmniBatchTransactions is
             operation.data,
             (address, uint256)
         );
-        require(omniCoin.transferPublic(recipient, amount), "Transfer failed");
+        if (!omniCoin.transferPublic(recipient, amount)) revert TransferFailed();
         return abi.encode(true);
     }
 
@@ -257,7 +274,7 @@ contract OmniBatchTransactions is
             operation.data,
             (address, uint256)
         );
-        require(omniCoin.approvePublic(spender, amount), "Approval failed");
+        if (!omniCoin.approvePublic(spender, amount)) revert ApprovalFailed();
         return abi.encode(true);
     }
 
@@ -312,8 +329,8 @@ contract OmniBatchTransactions is
         address[] calldata recipients,
         string[] calldata tokenURIs
     ) external view returns (BatchOperation[] memory operations) {
-        require(recipients.length == tokenURIs.length, "Array length mismatch");
-        require(recipients.length <= maxBatchSize, "Too many NFTs");
+        if (recipients.length != tokenURIs.length) revert ArrayLengthMismatch();
+        if (recipients.length > maxBatchSize) revert TooManyTransfers();
 
         operations = new BatchOperation[](recipients.length);
 
@@ -391,7 +408,7 @@ contract OmniBatchTransactions is
      * @dev Update maximum batch size
      */
     function updateMaxBatchSize(uint256 newSize) external onlyOwner {
-        require(newSize > 0 && newSize <= 100, "Invalid batch size");
+        if (newSize == 0 || newSize > 100) revert InvalidMaxBatchSize();
         maxBatchSize = newSize;
         emit MaxBatchSizeUpdated(newSize);
     }
@@ -400,7 +417,7 @@ contract OmniBatchTransactions is
      * @dev Update maximum gas per operation
      */
     function updateMaxGasPerOperation(uint256 newGas) external onlyOwner {
-        require(newGas >= 100000 && newGas <= 1000000, "Invalid gas limit");
+        if (newGas < 100000 || newGas > 1000000) revert InvalidMaxGasPerOperation();
         maxGasPerOperation = newGas;
         emit MaxGasPerOperationUpdated(newGas);
     }

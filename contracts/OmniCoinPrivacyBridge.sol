@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.19;
 
-import "@openzeppelin/contracts/access/AccessControl.sol";
-import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
-import "@openzeppelin/contracts/utils/Pausable.sol";
-import "./OmniCoin.sol";
-import "./PrivateOmniCoin.sol";
-import "./PrivacyFeeManagerV2.sol";
-import "./base/RegistryAware.sol";
+import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
+import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
+import {OmniCoin} from "./OmniCoin.sol";
+import {PrivateOmniCoin} from "./PrivateOmniCoin.sol";
+import {PrivacyFeeManagerV2} from "./PrivacyFeeManagerV2.sol";
+import {RegistryAware} from "./base/RegistryAware.sol";
 
 /**
  * @title OmniCoinPrivacyBridge
@@ -36,13 +36,13 @@ contract OmniCoinPrivacyBridge is AccessControl, ReentrancyGuard, Pausable, Regi
     // =============================================================================
     
     /// @dev Public token contract
-    OmniCoin public immutable omniCoin;
+    OmniCoin public immutable OMNI_COIN;
     
     /// @dev Private token contract  
-    PrivateOmniCoin public immutable privateOmniCoin;
+    PrivateOmniCoin public immutable PRIVATE_OMNI_COIN;
     
     /// @dev Privacy fee manager
-    PrivacyFeeManagerV2 public immutable privacyFeeManager;
+    PrivacyFeeManagerV2 public immutable PRIVACY_FEE_MANAGER;
     
     /// @dev Bridge fee in basis points (100 = 1%)
     uint256 public bridgeFee = 100; // 1% default
@@ -81,6 +81,7 @@ contract OmniCoinPrivacyBridge is AccessControl, ReentrancyGuard, Pausable, Regi
     error InsufficientBalance();
     error InvalidFee();
     error TransferFailed();
+    error InvalidRecipient();
     
     // =============================================================================
     // CONSTRUCTOR
@@ -99,13 +100,13 @@ contract OmniCoinPrivacyBridge is AccessControl, ReentrancyGuard, Pausable, Regi
         address _privacyFeeManager,
         address _registry
     ) RegistryAware(_registry) {
-        require(_omniCoin != address(0), "Invalid OmniCoin");
-        require(_privateOmniCoin != address(0), "Invalid PrivateOmniCoin");
-        require(_privacyFeeManager != address(0), "Invalid PrivacyFeeManager");
+        if (_omniCoin == address(0)) revert InvalidAmount();
+        if (_privateOmniCoin == address(0)) revert InvalidAmount();
+        if (_privacyFeeManager == address(0)) revert InvalidAmount();
         
-        omniCoin = OmniCoin(_omniCoin);
-        privateOmniCoin = PrivateOmniCoin(_privateOmniCoin);
-        privacyFeeManager = PrivacyFeeManagerV2(_privacyFeeManager);
+        OMNI_COIN = OmniCoin(_omniCoin);
+        PRIVATE_OMNI_COIN = PrivateOmniCoin(_privateOmniCoin);
+        PRIVACY_FEE_MANAGER = PrivacyFeeManagerV2(_privacyFeeManager);
         
         // Grant roles
         _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
@@ -135,11 +136,11 @@ contract OmniCoinPrivacyBridge is AccessControl, ReentrancyGuard, Pausable, Regi
         amountOut = amount - fee;
         
         // Transfer OmniCoin from user to bridge
-        bool success = omniCoin.transferFrom(msg.sender, address(this), amount);
+        bool success = OMNI_COIN.transferFrom(msg.sender, address(this), amount);
         if (!success) revert TransferFailed();
         
         // Mint PrivateOmniCoin to user
-        privateOmniCoin.mint(msg.sender, amountOut);
+        PRIVATE_OMNI_COIN.mint(msg.sender, amountOut);
         
         // Record fee
         totalFeesCollected += fee;
@@ -163,14 +164,14 @@ contract OmniCoinPrivacyBridge is AccessControl, ReentrancyGuard, Pausable, Regi
         if (amount == 0) revert InvalidAmount();
         
         // Check bridge has enough OmniCoin
-        uint256 bridgeBalance = omniCoin.balanceOf(address(this));
+        uint256 bridgeBalance = OMNI_COIN.balanceOf(address(this));
         if (bridgeBalance < amount) revert InsufficientBalance();
         
         // Burn PrivateOmniCoin from user
-        privateOmniCoin.burn(msg.sender, amount);
+        PRIVATE_OMNI_COIN.burn(msg.sender, amount);
         
         // Transfer OmniCoin to user
-        bool success = omniCoin.transfer(msg.sender, amount);
+        bool success = OMNI_COIN.transfer(msg.sender, amount);
         if (!success) revert TransferFailed();
         
         totalConvertedToPublic += amount;
@@ -205,12 +206,12 @@ contract OmniCoinPrivacyBridge is AccessControl, ReentrancyGuard, Pausable, Regi
         onlyRole(FEE_MANAGER_ROLE) 
         nonReentrant 
     {
-        require(recipient != address(0), "Invalid recipient");
+        if (recipient == address(0)) revert InvalidRecipient();
         if (amount > totalFeesCollected) revert InsufficientBalance();
         
         totalFeesCollected -= amount;
         
-        bool success = omniCoin.transfer(recipient, amount);
+        bool success = OMNI_COIN.transfer(recipient, amount);
         if (!success) revert TransferFailed();
         
         emit FeesWithdrawn(recipient, amount);
@@ -249,8 +250,8 @@ contract OmniCoinPrivacyBridge is AccessControl, ReentrancyGuard, Pausable, Regi
         uint256 toPrivate,
         uint256 toPublic
     ) {
-        publicBalance = omniCoin.balanceOf(address(this));
-        privateSupply = privateOmniCoin.totalSupply();
+        publicBalance = OMNI_COIN.balanceOf(address(this));
+        privateSupply = PRIVATE_OMNI_COIN.totalSupply();
         feesCollected = totalFeesCollected;
         toPrivate = totalConvertedToPrivate;
         toPublic = totalConvertedToPublic;

@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
-import "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
-import "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
-import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
-import "@openzeppelin/contracts/utils/cryptography/MessageHashUtils.sol";
-import "./OmniCoin.sol";
+import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
+import {OwnableUpgradeable} from "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
+import {ReentrancyGuardUpgradeable} from "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {ECDSA} from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
+import {MessageHashUtils} from "@openzeppelin/contracts/utils/cryptography/MessageHashUtils.sol";
+import {OmniCoin} from "./OmniCoin.sol";
 
 /**
  * @title OmniCoinAccount
@@ -20,6 +20,18 @@ contract OmniCoinAccount is
 {
     using ECDSA for bytes32;
     using MessageHashUtils for bytes32;
+
+    // Custom errors
+    error NotEntryPoint();
+    error AccountAlreadyDeployed();
+    error InvalidSignature();
+    error InvalidNonce();
+    error AccountNotDeployed();
+    error InvalidAddress();
+    error AmountMustBePositive();
+    error TransferFailed();
+    error NotWhitelisted();
+    error InvalidRecipient();
 
     // Structs
     struct UserOperation {
@@ -92,19 +104,17 @@ contract OmniCoinAccount is
         bytes32 userOpHash,
         uint256 missingAccountFunds
     ) external returns (uint256 validationData) {
-        require(msg.sender == entryPoint, "Not entry point");
-        require(
-            !isDeployed[userOp.sender] || userOp.initCode.length == 0,
-            "Account already deployed"
-        );
+        if (msg.sender != entryPoint) revert NotEntryPoint();
+        if (isDeployed[userOp.sender] && userOp.initCode.length > 0)
+            revert AccountAlreadyDeployed();
 
         // Validate signature
         bytes32 hash = userOpHash.toEthSignedMessageHash();
         address recovered = hash.recover(userOp.signature);
-        require(recovered == userOp.sender, "Invalid signature");
+        if (recovered != userOp.sender) revert InvalidSignature();
 
         // Validate nonce
-        require(nonces[userOp.sender] == userOp.nonce, "Invalid nonce");
+        if (nonces[userOp.sender] != userOp.nonce) revert InvalidNonce();
         nonces[userOp.sender]++;
 
         // Handle account deployment
@@ -128,8 +138,8 @@ contract OmniCoinAccount is
     function executeUserOp(
         UserOperation calldata userOp
     ) external nonReentrant returns (ExecutionResult memory result) {
-        require(msg.sender == entryPoint, "Not entry point");
-        require(isDeployed[userOp.sender], "Account not deployed");
+        if (msg.sender != entryPoint) revert NotEntryPoint();
+        if (!isDeployed[userOp.sender]) revert AccountNotDeployed();
 
         // Execute the operation
         (bool success, bytes memory returnData) = userOp.sender.call{
@@ -156,22 +166,20 @@ contract OmniCoinAccount is
     function updateStaking(uint256 amount) external nonReentrant {
         if (amount > stakingAmount[msg.sender]) {
             uint256 additionalStake = amount - stakingAmount[msg.sender];
-            require(
-                omniCoin.transferFrom(
+            if (!omniCoin.transferFrom(
                     msg.sender,
                     address(this),
                     additionalStake
-                ),
-                "Stake transfer failed"
-            );
+                )) revert TransferFailed();
         } else if (amount < stakingAmount[msg.sender]) {
             uint256 returnStake = stakingAmount[msg.sender] - amount;
-            require(
-                omniCoin.transfer(msg.sender, returnStake),
-                "Stake return failed"
-            );
+            // Update state before transfer to prevent reentrancy
+            stakingAmount[msg.sender] = amount;
+            if (!omniCoin.transfer(msg.sender, returnStake))
+                revert TransferFailed();
+        } else {
+            stakingAmount[msg.sender] = amount;
         }
-        stakingAmount[msg.sender] = amount;
         emit StakingUpdated(msg.sender, amount);
     }
 
@@ -179,7 +187,7 @@ contract OmniCoinAccount is
      * @dev Update reputation score for an account
      */
     function updateReputation(uint256 score) external {
-        require(msg.sender == owner(), "Not owner");
+        if (msg.sender != owner()) revert NotWhitelisted();
         reputationScore[msg.sender] = score;
         emit ReputationUpdated(msg.sender, score);
     }
@@ -188,7 +196,7 @@ contract OmniCoinAccount is
      * @dev Updates the entry point address
      */
     function updateEntryPoint(address _newEntryPoint) external onlyOwner {
-        require(_newEntryPoint != address(0), "Invalid entry point");
+        if (_newEntryPoint == address(0)) revert InvalidAddress();
         entryPoint = _newEntryPoint;
         emit EntryPointUpdated(_newEntryPoint);
     }

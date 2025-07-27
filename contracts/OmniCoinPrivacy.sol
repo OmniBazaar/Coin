@@ -1,11 +1,26 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import "@openzeppelin/contracts/access/Ownable.sol";
-import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
-import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
+import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
 contract OmniCoinPrivacy is Ownable, ReentrancyGuard {
+    // Custom errors
+    error ZeroCommitment();
+    error AccountExists();
+    error AccountNotFound();
+    error InsufficientBalance();
+    error InvalidAmount();
+    error BelowMinDeposit();
+    error ExceedsMaxWithdrawal();
+    error TransferFailed();
+    error InvalidNullifier();
+    error NullifierAlreadySpent();
+    error InvalidProof();
+    error ZeroAmount();
+    error InactiveAccount();
+    
     struct PrivacyAccount {
         bytes32 commitment;
         uint256 balance;
@@ -42,11 +57,8 @@ contract OmniCoinPrivacy is Ownable, ReentrancyGuard {
     }
 
     function createAccount(bytes32 commitment) external nonReentrant {
-        require(commitment != bytes32(0), "OmniCoinPrivacy: zero commitment");
-        require(
-            !accounts[commitment].isActive,
-            "OmniCoinPrivacy: account exists"
-        );
+        if (commitment == bytes32(0)) revert ZeroCommitment();
+        if (accounts[commitment].isActive) revert AccountExists();
 
         accounts[commitment] = PrivacyAccount({
             commitment: commitment,
@@ -60,8 +72,8 @@ contract OmniCoinPrivacy is Ownable, ReentrancyGuard {
 
     function closeAccount(bytes32 commitment) external nonReentrant {
         PrivacyAccount storage account = accounts[commitment];
-        require(account.isActive, "OmniCoinPrivacy: account not active");
-        require(account.balance == 0, "OmniCoinPrivacy: non-zero balance");
+        if (!account.isActive) revert InactiveAccount();
+        if (account.balance != 0) revert InsufficientBalance();
 
         account.isActive = false;
 
@@ -69,16 +81,14 @@ contract OmniCoinPrivacy is Ownable, ReentrancyGuard {
     }
 
     function deposit(bytes32 commitment, uint256 amount) external nonReentrant {
-        require(amount >= minDeposit, "OmniCoinPrivacy: amount too small");
-        require(amount <= maxWithdrawal, "OmniCoinPrivacy: amount too large");
+        if (amount < minDeposit) revert BelowMinDeposit();
+        if (amount > maxWithdrawal) revert ExceedsMaxWithdrawal();
 
         PrivacyAccount storage account = accounts[commitment];
-        require(account.isActive, "OmniCoinPrivacy: account not active");
+        if (!account.isActive) revert InactiveAccount();
 
-        require(
-            token.transferFrom(msg.sender, address(this), amount),
-            "OmniCoinPrivacy: transfer failed"
-        );
+        if (!token.transferFrom(msg.sender, address(this), amount))
+            revert TransferFailed();
 
         account.balance += amount;
 
@@ -91,34 +101,24 @@ contract OmniCoinPrivacy is Ownable, ReentrancyGuard {
         uint256 amount,
         bytes memory proof
     ) external nonReentrant {
-        require(amount > 0, "OmniCoinPrivacy: zero amount");
-        require(amount <= maxWithdrawal, "OmniCoinPrivacy: amount too large");
-        require(
-            !spentNullifiers[nullifier],
-            "OmniCoinPrivacy: nullifier spent"
-        );
+        if (amount == 0) revert ZeroAmount();
+        if (amount > maxWithdrawal) revert ExceedsMaxWithdrawal();
+        if (spentNullifiers[nullifier]) revert NullifierAlreadySpent();
 
         PrivacyAccount storage account = accounts[commitment];
-        require(account.isActive, "OmniCoinPrivacy: account not active");
-        require(
-            account.balance >= amount,
-            "OmniCoinPrivacy: insufficient balance"
-        );
+        if (!account.isActive) revert InactiveAccount();
+        if (account.balance < amount) revert InsufficientBalance();
 
         // Verify proof (to be implemented)
-        require(
-            verifyWithdrawal(commitment, nullifier, amount, proof),
-            "OmniCoinPrivacy: invalid proof"
-        );
+        if (!verifyWithdrawal(commitment, nullifier, amount, proof))
+            revert InvalidProof();
 
         spentNullifiers[nullifier] = true;
         account.balance -= amount;
         account.nonce++;
 
-        require(
-            token.transfer(msg.sender, amount - privacyFee),
-            "OmniCoinPrivacy: transfer failed"
-        );
+        if (!token.transfer(msg.sender, amount - privacyFee))
+            revert TransferFailed();
 
         emit Withdrawal(commitment, amount);
     }
@@ -138,27 +138,18 @@ contract OmniCoinPrivacy is Ownable, ReentrancyGuard {
 
         PrivacyAccount storage fromAccount = accounts[fromCommitment];
         PrivacyAccount storage toAccount = accounts[toCommitment];
-        require(
-            fromAccount.isActive,
-            "OmniCoinPrivacy: from account not active"
-        );
-        require(toAccount.isActive, "OmniCoinPrivacy: to account not active");
-        require(
-            fromAccount.balance >= amount,
-            "OmniCoinPrivacy: insufficient balance"
-        );
+        if (!fromAccount.isActive) revert InactiveAccount();
+        if (!toAccount.isActive) revert InactiveAccount();
+        if (fromAccount.balance < amount) revert InsufficientBalance();
 
         // Verify proof (to be implemented)
-        require(
-            verifyTransfer(
+        if (!verifyTransfer(
                 fromCommitment,
                 toCommitment,
                 nullifier,
                 amount,
                 proof
-            ),
-            "OmniCoinPrivacy: invalid proof"
-        );
+            )) revert InvalidProof();
 
         spentNullifiers[nullifier] = true;
         fromAccount.balance -= amount;

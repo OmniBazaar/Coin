@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.19;
 
-import "@openzeppelin/contracts/access/AccessControl.sol";
-import "@openzeppelin/contracts/utils/Pausable.sol";
-import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
-import "../coti-contracts/contracts/token/PrivateERC20/PrivateERC20.sol";
-import "../coti-contracts/contracts/utils/mpc/MpcCore.sol";
-import "./base/RegistryAware.sol";
+import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
+import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
+import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import {PrivateERC20} from "../coti-contracts/contracts/token/PrivateERC20/PrivateERC20.sol";
+import {MpcCore, gtUint64, ctUint64} from "../coti-contracts/contracts/utils/mpc/MpcCore.sol";
+import {RegistryAware} from "./base/RegistryAware.sol";
 
 /**
  * @title PrivateOmniCoin
@@ -50,6 +50,7 @@ contract PrivateOmniCoin is PrivateERC20, AccessControl, Pausable, ReentrancyGua
     event PrivacyMint(address indexed to, uint256 publicAmount);
     event PrivacyBurn(address indexed from, uint256 publicAmount);
     event MpcAvailabilityUpdated(bool available);
+    event RegistryUpdateRequested(address newRegistry);
     
     // =============================================================================
     // ERRORS
@@ -58,28 +59,6 @@ contract PrivateOmniCoin is PrivateERC20, AccessControl, Pausable, ReentrancyGua
     error OnlyBridge();
     error InvalidAmount();
     error MpcNotAvailable();
-    
-    // =============================================================================
-    // CONSTRUCTOR
-    // =============================================================================
-    
-    /**
-     * @dev Constructor initializes the private token
-     * @param _registry Address of the OmniCoinRegistry contract
-     */
-    constructor(address _registry) 
-        PrivateERC20("Private OmniCoin", "pXOM")
-        RegistryAware(_registry) 
-    {
-        require(_registry != address(0), "Invalid registry");
-        
-        // Grant roles to deployer
-        _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
-        _grantRole(PAUSER_ROLE, msg.sender);
-        
-        // MPC starts disabled for testing
-        isMpcAvailable = false;
-    }
     
     // =============================================================================
     // MODIFIERS
@@ -97,25 +76,25 @@ contract PrivateOmniCoin is PrivateERC20, AccessControl, Pausable, ReentrancyGua
     }
     
     // =============================================================================
-    // DECIMALS
+    // CONSTRUCTOR
     // =============================================================================
     
     /**
-     * @dev Returns the number of decimals (6 for compatibility)
+     * @dev Constructor initializes the private token
+     * @param _registry Address of the OmniCoinRegistry contract
      */
-    function decimals() public view virtual override returns (uint8) {
-        return 6;
-    }
-    
-    // =============================================================================
-    // TOTAL SUPPLY
-    // =============================================================================
-    
-    /**
-     * @dev Returns the total supply (public view for transparency)
-     */
-    function totalSupply() public view virtual override returns (uint256) {
-        return publicTotalSupply;
+    constructor(address _registry) 
+        PrivateERC20("Private OmniCoin", "pXOM")
+        RegistryAware(_registry) 
+    {
+        if (_registry == address(0)) revert InvalidAmount();
+        
+        // Grant roles to deployer
+        _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
+        _grantRole(PAUSER_ROLE, msg.sender);
+        
+        // MPC starts disabled for testing
+        isMpcAvailable = false;
     }
     
     // =============================================================================
@@ -140,7 +119,7 @@ contract PrivateOmniCoin is PrivateERC20, AccessControl, Pausable, ReentrancyGua
         }
         
         // Mint using parent contract's internal function
-        gtBool success = _mint(to, encryptedAmount);
+        _mint(to, encryptedAmount);
         
         // Update public total supply
         publicTotalSupply += amount;
@@ -166,7 +145,7 @@ contract PrivateOmniCoin is PrivateERC20, AccessControl, Pausable, ReentrancyGua
         }
         
         // Burn using parent contract's internal function
-        gtBool success = _burn(from, encryptedAmount);
+        _burn(from, encryptedAmount);
         
         // Update public total supply
         publicTotalSupply -= amount;
@@ -200,26 +179,10 @@ contract PrivateOmniCoin is PrivateERC20, AccessControl, Pausable, ReentrancyGua
         }
         
         // Use parent's transfer function
-        gtBool result = transfer(to, encryptedAmount);
+        transfer(to, encryptedAmount);
         
         // For testing, assume success
         return true;
-    }
-    
-    /**
-     * @dev Get balance as public value (decrypts in test mode)
-     * @param account Address to check
-     * @return balance Public balance value
-     */
-    function balanceOfPublic(address account) external view returns (uint256) {
-        // In production with MPC, this would require special permissions
-        // For testing, return a default value or use registry
-        if (!isMpcAvailable) {
-            // Test mode - could implement mock balances
-            return 0;
-        }
-        // In MPC mode, would need decryption rights
-        return 0;
     }
     
     // =============================================================================
@@ -270,11 +233,46 @@ contract PrivateOmniCoin is PrivateERC20, AccessControl, Pausable, ReentrancyGua
      * @param newRegistry New registry address
      */
     function setRegistry(address newRegistry) external onlyRole(DEFAULT_ADMIN_ROLE) {
-        require(newRegistry != address(0), "Invalid registry");
+        if (newRegistry == address(0)) revert InvalidAmount();
         // Note: registry is immutable in RegistryAware, so this would need refactoring
         // For now, emit event to track intention
         emit RegistryUpdateRequested(newRegistry);
     }
     
-    event RegistryUpdateRequested(address newRegistry);
+    /**
+     * @dev Get balance as public value (decrypts in test mode)
+     * @return balance Public balance value
+     */
+    function balanceOfPublic(address /* account */) external view returns (uint256) {
+        // In production with MPC, this would require special permissions
+        // For testing, return a default value or use registry
+        if (!isMpcAvailable) {
+            // Test mode - could implement mock balances
+            return 0;
+        }
+        // In MPC mode, would need decryption rights
+        return 0;
+    }
+    
+    // =============================================================================
+    // DECIMALS
+    // =============================================================================
+    
+    /**
+     * @dev Returns the number of decimals (6 for compatibility)
+     */
+    function decimals() public view virtual override returns (uint8) {
+        return 6;
+    }
+    
+    // =============================================================================
+    // TOTAL SUPPLY
+    // =============================================================================
+    
+    /**
+     * @dev Returns the total supply (public view for transparency)
+     */
+    function totalSupply() public view virtual override returns (uint256) {
+        return publicTotalSupply;
+    }
 }

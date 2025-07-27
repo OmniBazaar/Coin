@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.19;
 
-import "@openzeppelin/contracts/access/AccessControl.sol";
-import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
-import "@openzeppelin/contracts/utils/Pausable.sol";
-import "../coti-contracts/contracts/utils/mpc/MpcCore.sol";
-import "./OmniCoinConfig.sol";
-import "./OmniCoinCore.sol";
-import "./PrivacyFeeManager.sol";
+import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
+import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
+import {MpcCore, gtUint64, ctUint64, itUint64, gtBool} from "../coti-contracts/contracts/utils/mpc/MpcCore.sol";
+import {OmniCoinConfig} from "./OmniCoinConfig.sol";
+import {OmniCoinCore} from "./OmniCoinCore.sol";
+import {PrivacyFeeManager} from "./PrivacyFeeManager.sol";
 
 /**
  * @title OmniCoinStaking
@@ -20,14 +20,6 @@ import "./PrivacyFeeManager.sol";
  * - Private reward calculations with public distribution
  */
 contract OmniCoinStaking is AccessControl, ReentrancyGuard, Pausable {
-    
-    // =============================================================================
-    // CONSTANTS & ROLES
-    // =============================================================================
-    
-    bytes32 public constant ADMIN_ROLE = keccak256("ADMIN_ROLE");
-    bytes32 public constant VALIDATOR_ROLE = keccak256("VALIDATOR_ROLE");
-    bytes32 public constant REWARD_DISTRIBUTOR_ROLE = keccak256("REWARD_DISTRIBUTOR_ROLE");
     
     // =============================================================================
     // STRUCTS
@@ -49,6 +41,39 @@ contract OmniCoinStaking is AccessControl, ReentrancyGuard, Pausable {
         uint256 totalTierWeight;        // Public: total weight for PoP calculations
         gtUint64 totalEncryptedAmount;  // Private: total staked in this tier
     }
+    
+    // =============================================================================
+    // CUSTOM ERRORS
+    // =============================================================================
+    
+    error InvalidStakeAmount();
+    error InvalidPrivacyLevel();
+    error NoActiveStake();
+    error StakingDisabled();
+    error InsufficientStake();
+    error StakeAlreadyActive();
+    error StakeNotFound();
+    error UnstakeTooEarly();
+    error InvalidUnstakeAmount();
+    error CompoundTooEarly();
+    error EmergencyPauseActive();
+    error UnauthorizedAccess();
+    error InvalidConfiguration();
+    error PrivacyNotEnabled();
+    error MpcNotAvailable();
+    error TransferFailed();
+    error InvalidDuration();
+    error RewardsTooHigh();
+    error InvalidRewardRate();
+    error InvalidBasisPoints();
+    
+    // =============================================================================
+    // CONSTANTS & ROLES
+    // =============================================================================
+    
+    bytes32 public constant ADMIN_ROLE = keccak256("ADMIN_ROLE");
+    bytes32 public constant VALIDATOR_ROLE = keccak256("VALIDATOR_ROLE");
+    bytes32 public constant REWARD_DISTRIBUTOR_ROLE = keccak256("REWARD_DISTRIBUTOR_ROLE");
     
     // =============================================================================
     // STATE VARIABLES
@@ -101,12 +126,12 @@ contract OmniCoinStaking is AccessControl, ReentrancyGuard, Pausable {
     // =============================================================================
     
     modifier whenStakingNotPaused() {
-        require(!stakingPaused, "OmniCoinStaking: Staking is paused");
+        if (stakingPaused) revert StakingDisabled();
         _;
     }
     
     modifier onlyActiveStaker(address user) {
-        require(stakes[user].isActive, "OmniCoinStaking: No active stake");
+        if (!stakes[user].isActive) revert NoActiveStake();
         _;
     }
     
@@ -120,9 +145,9 @@ contract OmniCoinStaking is AccessControl, ReentrancyGuard, Pausable {
         address _admin,
         address _privacyFeeManager
     ) {
-        require(_config != address(0), "OmniCoinStaking: Config cannot be zero address");
-        require(_token != address(0), "OmniCoinStaking: Token cannot be zero address");
-        require(_admin != address(0), "OmniCoinStaking: Admin cannot be zero address");
+        if (_config == address(0)) revert InvalidConfiguration();
+        if (_token == address(0)) revert InvalidConfiguration();
+        if (_admin == address(0)) revert InvalidConfiguration();
         
         config = OmniCoinConfig(_config);
         token = OmniCoinCore(_token);
@@ -154,7 +179,7 @@ contract OmniCoinStaking is AccessControl, ReentrancyGuard, Pausable {
      * @dev Set privacy fee manager
      */
     function setPrivacyFeeManager(address _privacyFeeManager) external onlyRole(ADMIN_ROLE) {
-        require(_privacyFeeManager != address(0), "OmniCoinStaking: Invalid address");
+        if (_privacyFeeManager == address(0)) revert InvalidConfiguration();
         privacyFeeManager = _privacyFeeManager;
     }
     
@@ -172,11 +197,11 @@ contract OmniCoinStaking is AccessControl, ReentrancyGuard, Pausable {
         whenStakingNotPaused 
         nonReentrant 
     {
-        require(amount > 0, "OmniCoinStaking: Amount must be > 0");
+        if (amount == 0) revert InvalidStakeAmount();
         
         // Transfer tokens using public method
         bool transferResult = token.transferFromPublic(msg.sender, address(this), amount);
-        require(transferResult, "OmniCoinStaking: Transfer failed");
+        if (!transferResult) revert TransferFailed();
         
         // Convert to garbled for internal processing
         gtUint64 gtAmount = gtUint64.wrap(uint64(amount));
@@ -194,14 +219,14 @@ contract OmniCoinStaking is AccessControl, ReentrancyGuard, Pausable {
         whenStakingNotPaused 
         nonReentrant 
     {
-        require(usePrivacy && isMpcAvailable, "OmniCoinStaking: Privacy not available");
-        require(privacyFeeManager != address(0), "OmniCoinStaking: Privacy fee manager not set");
+        if (!usePrivacy || !isMpcAvailable) revert PrivacyNotEnabled();
+        if (privacyFeeManager == address(0)) revert InvalidConfiguration();
         
         gtUint64 gtAmount = MpcCore.validateCiphertext(amount);
         
         // Validate amount > 0
         gtBool isPositive = MpcCore.gt(gtAmount, MpcCore.setPublic64(0));
-        require(MpcCore.decrypt(isPositive), "OmniCoinStaking: Amount must be > 0");
+        if (!MpcCore.decrypt(isPositive)) revert InvalidStakeAmount();
         
         // Calculate privacy fee (0.2% of stake amount for staking operations)
         uint256 stakingFeeRate = 20; // 0.2% in basis points
@@ -222,7 +247,7 @@ contract OmniCoinStaking is AccessControl, ReentrancyGuard, Pausable {
         
         // Transfer tokens using private method
         gtBool transferResult = token.transferFrom(msg.sender, address(this), gtAmount);
-        require(MpcCore.decrypt(transferResult), "OmniCoinStaking: Transfer failed");
+        if (!MpcCore.decrypt(transferResult)) revert TransferFailed();
         
         _stakeInternal(msg.sender, gtAmount);
     }
@@ -359,7 +384,7 @@ contract OmniCoinStaking is AccessControl, ReentrancyGuard, Pausable {
         onlyActiveStaker(msg.sender) 
         nonReentrant 
     {
-        require(amount > 0, "OmniCoinStaking: Amount must be > 0");
+        if (amount == 0) revert InvalidStakeAmount();
         
         gtUint64 gtAmount = gtUint64.wrap(uint64(amount));
         _unstakeInternal(msg.sender, gtAmount);
@@ -376,14 +401,14 @@ contract OmniCoinStaking is AccessControl, ReentrancyGuard, Pausable {
         onlyActiveStaker(msg.sender) 
         nonReentrant 
     {
-        require(usePrivacy && isMpcAvailable, "OmniCoinStaking: Privacy not available");
-        require(privacyFeeManager != address(0), "OmniCoinStaking: Privacy fee manager not set");
+        if (!usePrivacy || !isMpcAvailable) revert PrivacyNotEnabled();
+        if (privacyFeeManager == address(0)) revert InvalidConfiguration();
         
         gtUint64 gtAmount = MpcCore.validateCiphertext(amount);
         
         // Validate amount > 0
         gtBool isPositive = MpcCore.gt(gtAmount, MpcCore.setPublic64(0));
-        require(MpcCore.decrypt(isPositive), "OmniCoinStaking: Amount must be > 0");
+        if (!MpcCore.decrypt(isPositive)) revert InvalidStakeAmount();
         
         // Calculate privacy fee for unstaking
         uint256 stakingFeeRate = 20; // 0.2% in basis points
@@ -427,12 +452,12 @@ contract OmniCoinStaking is AccessControl, ReentrancyGuard, Pausable {
         // Verify user has enough staked (using MPC comparison)
         if (isMpcAvailable) {
             gtBool hasEnough = MpcCore.ge(userStake.encryptedAmount, gtAmount);
-            require(MpcCore.decrypt(hasEnough), "OmniCoinStaking: Insufficient stake");
+            if (!MpcCore.decrypt(hasEnough)) revert InsufficientStake();
         } else {
             // Fallback comparison
             uint64 currentStake = uint64(gtUint64.unwrap(userStake.encryptedAmount));
             uint64 requestedAmount = uint64(gtUint64.unwrap(gtAmount));
-            require(currentStake >= requestedAmount, "OmniCoinStaking: Insufficient stake");
+            if (currentStake < requestedAmount) revert InsufficientStake();
         }
         
         // Calculate and add pending rewards
@@ -503,15 +528,12 @@ contract OmniCoinStaking is AccessControl, ReentrancyGuard, Pausable {
         // Transfer tokens back to user
         if (isMpcAvailable) {
             gtBool transferResult = token.transferGarbled(user, netAmount);
-            require(
-                MpcCore.decrypt(transferResult),
-                "OmniCoinStaking: Transfer failed"
-            );
+            if (!MpcCore.decrypt(transferResult)) revert TransferFailed();
         } else {
             // For public unstaking, use public transfer
             uint64 netAmountValue = uint64(gtUint64.unwrap(netAmount));
             bool transferResult = token.transferPublic(user, uint256(netAmountValue));
-            require(transferResult, "OmniCoinStaking: Transfer failed");
+            if (!transferResult) revert TransferFailed();
         }
         
         // Transfer penalty to treasury if applicable
@@ -519,17 +541,14 @@ contract OmniCoinStaking is AccessControl, ReentrancyGuard, Pausable {
             gtBool hasPenalty = MpcCore.gt(penalty, MpcCore.setPublic64(0));
             if (MpcCore.decrypt(hasPenalty)) {
                 gtBool penaltyTransferResult = token.transferGarbled(token.treasuryContract(), penalty);
-                require(
-                    MpcCore.decrypt(penaltyTransferResult),
-                    "OmniCoinStaking: Penalty transfer failed"
-                );
+                if (!MpcCore.decrypt(penaltyTransferResult)) revert TransferFailed();
             }
         } else {
             // Fallback - check penalty amount
             uint64 penaltyAmount = uint64(gtUint64.unwrap(penalty));
             if (penaltyAmount > 0) {
                 bool penaltyTransferResult = token.transferPublic(token.treasuryContract(), uint256(penaltyAmount));
-                require(penaltyTransferResult, "OmniCoinStaking: Penalty transfer failed");
+                if (!penaltyTransferResult) revert TransferFailed();
             }
         }
         
@@ -557,7 +576,7 @@ contract OmniCoinStaking is AccessControl, ReentrancyGuard, Pausable {
         // Check if there are rewards to claim
         if (isMpcAvailable) {
             gtBool hasRewards = MpcCore.gt(rewards, MpcCore.setPublic64(0));
-            require(MpcCore.decrypt(hasRewards), "OmniCoinStaking: No rewards to claim");
+            if (!MpcCore.decrypt(hasRewards)) revert InvalidStakeAmount();
             
             // Reset rewards
             userStake.encryptedRewards = MpcCore.setPublic64(0);
@@ -565,7 +584,7 @@ contract OmniCoinStaking is AccessControl, ReentrancyGuard, Pausable {
         } else {
             // Fallback - check rewards
             uint64 rewardAmount = uint64(gtUint64.unwrap(rewards));
-            require(rewardAmount > 0, "OmniCoinStaking: No rewards to claim");
+            if (rewardAmount == 0) revert InvalidStakeAmount();
             
             // Reset rewards
             userStake.encryptedRewards = gtUint64.wrap(0);
@@ -575,15 +594,12 @@ contract OmniCoinStaking is AccessControl, ReentrancyGuard, Pausable {
         // Transfer rewards
         if (isMpcAvailable) {
             gtBool rewardTransferResult = token.transferGarbled(msg.sender, rewards);
-            require(
-                MpcCore.decrypt(rewardTransferResult),
-                "OmniCoinStaking: Reward transfer failed"
-            );
+            if (!MpcCore.decrypt(rewardTransferResult)) revert TransferFailed();
         } else {
             // For public rewards, use public transfer
             uint64 rewardAmount = uint64(gtUint64.unwrap(rewards));
             bool rewardTransferResult = token.transferPublic(msg.sender, uint256(rewardAmount));
-            require(rewardTransferResult, "OmniCoinStaking: Reward transfer failed");
+            if (!rewardTransferResult) revert TransferFailed();
         }
         
         emit PrivateRewardsClaimed(msg.sender, block.timestamp);
@@ -658,7 +674,7 @@ contract OmniCoinStaking is AccessControl, ReentrancyGuard, Pausable {
         external 
         onlyRole(VALIDATOR_ROLE) 
     {
-        require(score <= 100, "OmniCoinStaking: Score must be <= 100");
+        if (score > 100) revert InvalidBasisPoints();
         
         uint256 oldScore = participationScores[user];
         participationScores[user] = score;

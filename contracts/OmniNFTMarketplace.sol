@@ -1,16 +1,16 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
-import "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
-import "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
-import "@openzeppelin/contracts/token/ERC721/IERC721.sol";
-import "@openzeppelin/contracts/token/ERC721/IERC721Receiver.sol";
-import "../coti-contracts/contracts/utils/mpc/MpcCore.sol";
-import "./OmniCoinCore.sol";
-import "./OmniCoinEscrow.sol";
-import "./ListingNFT.sol";
-import "./PrivacyFeeManager.sol";
+import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
+import {OwnableUpgradeable} from "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
+import {ReentrancyGuardUpgradeable} from "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
+import {IERC721} from "@openzeppelin/contracts/token/ERC721/IERC721.sol";
+import {IERC721Receiver} from "@openzeppelin/contracts/token/ERC721/IERC721Receiver.sol";
+import {MpcCore, gtUint64, gtBool, ctUint64, itUint64} from "../coti-contracts/contracts/utils/mpc/MpcCore.sol";
+import {OmniCoinCore} from "./OmniCoinCore.sol";
+import {OmniCoinEscrow} from "./OmniCoinEscrow.sol";
+import {ListingNFT} from "./ListingNFT.sol";
+import {PrivacyFeeManager} from "./PrivacyFeeManager.sol";
 
 /**
  * @title OmniNFTMarketplace
@@ -121,6 +121,51 @@ contract OmniNFTMarketplace is
     }
 
     // =============================================================================
+    // CUSTOM ERRORS
+    // =============================================================================
+    
+    error InvalidAddress();
+    error ListingNotActive();
+    error NotFixedPrice();
+    error CannotBuyOwnItem();
+    error UsePrivacyFunction();
+    error PaymentFailed();
+    error FeePaymentFailed();
+    error PrivacyNotAvailable();
+    error PrivacyFeeManagerNotSet();
+    error NotTokenOwner();
+    error InvalidAuctionDuration();
+    error InvalidPrice();
+    error NotAuction();
+    error AuctionEnded();
+    error AuctionStillActive();
+    error CannotBidOwnAuction();
+    error BidBelowReserve();
+    error BidTooLow();
+    error RefundFailed();
+    error BidTransferFailed();
+    error CannotOfferOwnItem();
+    error InvalidOfferAmount();
+    error InvalidExpiry();
+    error OfferTransferFailed();
+    error OnlySellerCanCancel();
+    error CannotCancelWithBids();
+    error OnlySellerCanAccept();
+    error OfferNotAvailable();
+    error OfferExpired();
+    error NotPrivateListing();
+    error NotAuthorized();
+    error NotPrivateOffer();
+    error FeeTooHigh();
+    error WithdrawalFailed();
+
+    // =============================================================================
+    // CONSTANTS
+    // =============================================================================
+    
+    uint256 public constant PRIVACY_MULTIPLIER = 10; // 10x fee for privacy
+
+    // =============================================================================
     // STATE VARIABLES
     // =============================================================================
     
@@ -147,8 +192,6 @@ contract OmniNFTMarketplace is
     uint256 public maxAuctionDuration;
     uint256 public minAuctionDuration;
     address public feeRecipient;
-    
-    uint256 public constant PRIVACY_MULTIPLIER = 10; // 10x fee for privacy
 
     MarketplaceStats public stats;
 
@@ -245,7 +288,7 @@ contract OmniNFTMarketplace is
      * @dev Set privacy fee manager
      */
     function setPrivacyFeeManager(address _privacyFeeManager) external onlyOwner {
-        require(_privacyFeeManager != address(0), "Invalid address");
+        if (_privacyFeeManager == address(0)) revert InvalidAddress();
         privacyFeeManager = _privacyFeeManager;
     }
 
@@ -284,25 +327,21 @@ contract OmniNFTMarketplace is
      */
     function buyItem(uint256 listingId) external nonReentrant {
         Listing storage listing = listings[listingId];
-        require(listing.status == ListingStatus.ACTIVE, "Listing not active");
-        require(listing.listingType == ListingType.FIXED_PRICE, "Not fixed price");
-        require(msg.sender != listing.seller, "Cannot buy own item");
-        require(!listing.isPrivate, "Use buyItemWithPrivacy for private listings");
+        if (listing.status != ListingStatus.ACTIVE) revert ListingNotActive();
+        if (listing.listingType != ListingType.FIXED_PRICE) revert NotFixedPrice();
+        if (msg.sender == listing.seller) revert CannotBuyOwnItem();
+        if (listing.isPrivate) revert UsePrivacyFunction();
 
         uint256 totalPrice = listing.price;
         uint256 fee = (totalPrice * platformFee) / 10000;
         uint256 sellerAmount = totalPrice - fee;
 
         // Transfer payment
-        require(
-            omniCoin.transferFromPublic(msg.sender, listing.seller, sellerAmount),
-            "Payment failed"
-        );
+        if (!omniCoin.transferFromPublic(msg.sender, listing.seller, sellerAmount)) 
+            revert PaymentFailed();
         if (fee > 0) {
-            require(
-                omniCoin.transferFromPublic(msg.sender, feeRecipient, fee),
-                "Fee payment failed"
-            );
+            if (!omniCoin.transferFromPublic(msg.sender, feeRecipient, fee))
+                revert FeePaymentFailed();
         }
 
         // Transfer NFT
@@ -313,8 +352,8 @@ contract OmniNFTMarketplace is
         );
 
         listing.status = ListingStatus.SOLD;
-        stats.activeListings--;
-        stats.totalSales++;
+        --stats.activeListings;
+        ++stats.totalSales;
         stats.totalVolume += totalPrice;
         userStats[listing.seller] += totalPrice;
 
@@ -326,7 +365,7 @@ contract OmniNFTMarketplace is
      */
     function placeBid(uint256 listingId, uint256 bidAmount) external nonReentrant {
         Listing storage listing = listings[listingId];
-        require(!listing.isPrivate, "Use placeBidWithPrivacy for private auctions");
+        if (listing.isPrivate) revert UsePrivacyFunction();
         _placeBidInternal(listingId, bidAmount, false);
     }
 
@@ -359,22 +398,18 @@ contract OmniNFTMarketplace is
         string[] memory tags,
         bool usePrivacy
     ) external nonReentrant returns (uint256 listingId) {
-        require(usePrivacy && isMpcAvailable, "Privacy not available");
-        require(privacyFeeManager != address(0), "Privacy fee manager not set");
+        if (!usePrivacy || !isMpcAvailable) revert PrivacyNotAvailable();
+        if (privacyFeeManager == address(0)) revert PrivacyFeeManagerNotSet();
         
-        require(
-            IERC721(nftContract).ownerOf(tokenId) == msg.sender,
-            "Not token owner"
-        );
+        if (IERC721(nftContract).ownerOf(tokenId) != msg.sender)
+            revert NotTokenOwner();
         
         // Validate encrypted price
         gtUint64 gtPrice = MpcCore.validateCiphertext(price);
         
         if (listingType == ListingType.AUCTION) {
-            require(
-                duration >= minAuctionDuration && duration <= maxAuctionDuration,
-                "Invalid auction duration"
-            );
+            if (duration < minAuctionDuration || duration > maxAuctionDuration)
+                revert InvalidAuctionDuration();
         }
 
         // Collect privacy fee for listing creation
@@ -424,13 +459,13 @@ contract OmniNFTMarketplace is
             auction.encryptedReservePrice = MpcCore.offBoard(gtPrice);
             
             // Set encrypted bid increment (5% of price)
-            gtUint64 gtIncrement = MpcCore.div(gtPrice, MpcCore.setPublic64(20));
+            // gtUint64 gtIncrement = MpcCore.div(gtPrice, MpcCore.setPublic64(20));
             auction.bidIncrement = 0; // Hidden for privacy
         }
 
-        stats.totalListings++;
-        stats.activeListings++;
-        stats.privateListings++;
+        ++stats.totalListings;
+        ++stats.activeListings;
+        ++stats.privateListings;
 
         emit ListingCreated(listingId, msg.sender, nftContract, tokenId, 0, true);
         
@@ -444,12 +479,12 @@ contract OmniNFTMarketplace is
         uint256 listingId,
         bool usePrivacy
     ) external nonReentrant {
-        require(usePrivacy && isMpcAvailable, "Privacy not available");
+        if (!usePrivacy || !isMpcAvailable) revert PrivacyNotAvailable();
         Listing storage listing = listings[listingId];
-        require(listing.status == ListingStatus.ACTIVE, "Listing not active");
-        require(listing.listingType == ListingType.FIXED_PRICE, "Not fixed price");
-        require(msg.sender != listing.seller, "Cannot buy own item");
-        require(listing.isPrivate, "Use buyItem for public listings");
+        if (listing.status != ListingStatus.ACTIVE) revert ListingNotActive();
+        if (listing.listingType != ListingType.FIXED_PRICE) revert NotFixedPrice();
+        if (msg.sender == listing.seller) revert CannotBuyOwnItem();
+        if (!listing.isPrivate) revert UsePrivacyFunction();
 
         // Get encrypted price
         gtUint64 gtPrice = MpcCore.onBoard(listing.encryptedPrice);
@@ -472,15 +507,11 @@ contract OmniNFTMarketplace is
         );
 
         // Transfer payment
-        require(
-            omniCoin.transferFromPublic(msg.sender, listing.seller, sellerAmount),
-            "Payment failed"
-        );
+        if (!omniCoin.transferFromPublic(msg.sender, listing.seller, sellerAmount)) 
+            revert PaymentFailed();
         if (fee > 0) {
-            require(
-                omniCoin.transferFromPublic(msg.sender, feeRecipient, fee),
-                "Fee payment failed"
-            );
+            if (!omniCoin.transferFromPublic(msg.sender, feeRecipient, fee))
+                revert FeePaymentFailed();
         }
 
         // Transfer NFT
@@ -491,9 +522,9 @@ contract OmniNFTMarketplace is
         );
 
         listing.status = ListingStatus.SOLD;
-        stats.activeListings--;
-        stats.totalSales++;
-        stats.privateSales++;
+        --stats.activeListings;
+        ++stats.totalSales;
+        ++stats.privateSales;
         stats.totalVolume += totalPrice;
         userStats[listing.seller] += totalPrice;
 
@@ -508,9 +539,9 @@ contract OmniNFTMarketplace is
         itUint64 calldata bidAmount,
         bool usePrivacy
     ) external nonReentrant {
-        require(usePrivacy && isMpcAvailable, "Privacy not available");
+        if (!usePrivacy || !isMpcAvailable) revert PrivacyNotAvailable();
         Listing storage listing = listings[listingId];
-        require(listing.isPrivate, "Use placeBid for public auctions");
+        if (!listing.isPrivate) revert UsePrivacyFunction();
         
         // Validate encrypted bid
         gtUint64 gtBidAmount = MpcCore.validateCiphertext(bidAmount);
@@ -541,7 +572,7 @@ contract OmniNFTMarketplace is
         uint256 expiry,
         bool usePrivacy
     ) external nonReentrant returns (uint256 offerId) {
-        require(usePrivacy && isMpcAvailable, "Privacy not available");
+        if (!usePrivacy || !isMpcAvailable) revert PrivacyNotAvailable();
         
         // Validate encrypted amount
         gtUint64 gtAmount = MpcCore.validateCiphertext(amount);
@@ -576,17 +607,13 @@ contract OmniNFTMarketplace is
         string[] memory tags,
         bool isPrivate
     ) internal returns (uint256 listingId) {
-        require(
-            IERC721(nftContract).ownerOf(tokenId) == msg.sender,
-            "Not token owner"
-        );
-        require(price > 0, "Price must be greater than 0");
+        if (IERC721(nftContract).ownerOf(tokenId) != msg.sender)
+            revert NotTokenOwner();
+        if (price == 0) revert InvalidPrice();
 
         if (listingType == ListingType.AUCTION) {
-            require(
-                duration >= minAuctionDuration && duration <= maxAuctionDuration,
-                "Invalid auction duration"
-            );
+            if (duration < minAuctionDuration || duration > maxAuctionDuration)
+                revert InvalidAuctionDuration();
         }
 
         // Transfer NFT to marketplace
@@ -624,8 +651,8 @@ contract OmniNFTMarketplace is
             auctions[listingId].bidIncrement = price / 20; // 5% minimum increment
         }
 
-        stats.totalListings++;
-        stats.activeListings++;
+        ++stats.totalListings;
+        ++stats.activeListings;
 
         emit ListingCreated(listingId, msg.sender, nftContract, tokenId, price, false);
     }
@@ -633,34 +660,28 @@ contract OmniNFTMarketplace is
     function _placeBidInternal(
         uint256 listingId,
         uint256 bidAmount,
-        bool isPrivate
+        bool // isPrivate
     ) internal {
         Listing storage listing = listings[listingId];
         Auction storage auction = auctions[listingId];
 
-        require(listing.status == ListingStatus.ACTIVE, "Listing not active");
-        require(listing.listingType == ListingType.AUCTION, "Not an auction");
-        require(block.timestamp <= listing.endTime, "Auction ended");
-        require(msg.sender != listing.seller, "Cannot bid on own auction");
-        require(bidAmount >= auction.reservePrice, "Bid below reserve");
-        require(
-            bidAmount >= auction.highestBid + auction.bidIncrement,
-            "Bid too low"
-        );
+        if (listing.status != ListingStatus.ACTIVE) revert ListingNotActive();
+        if (listing.listingType != ListingType.AUCTION) revert NotAuction();
+        if (block.timestamp > listing.endTime) revert AuctionEnded();
+        if (msg.sender == listing.seller) revert CannotBidOwnAuction();
+        if (bidAmount < auction.reservePrice) revert BidBelowReserve();
+        if (bidAmount < auction.highestBid + auction.bidIncrement)
+            revert BidTooLow();
 
         // Refund previous highest bidder
         if (auction.highestBidder != address(0)) {
-            require(
-                omniCoin.transferPublic(auction.highestBidder, auction.highestBid),
-                "Refund failed"
-            );
+            if (!omniCoin.transferPublic(auction.highestBidder, auction.highestBid))
+                revert RefundFailed();
         }
 
         // Transfer new bid amount
-        require(
-            omniCoin.transferFromPublic(msg.sender, address(this), bidAmount),
-            "Bid transfer failed"
-        );
+        if (!omniCoin.transferFromPublic(msg.sender, address(this), bidAmount))
+            revert BidTransferFailed();
 
         auction.highestBid = bidAmount;
         auction.highestBidder = msg.sender;
@@ -668,7 +689,7 @@ contract OmniNFTMarketplace is
 
         // Add to bidders array if first bid
         bool isNewBidder = true;
-        for (uint256 i = 0; i < auction.bidders.length; i++) {
+        for (uint256 i = 0; i < auction.bidders.length; ++i) {
             if (auction.bidders[i] == msg.sender) {
                 isNewBidder = false;
                 break;
@@ -696,15 +717,15 @@ contract OmniNFTMarketplace is
         Listing storage listing = listings[listingId];
         Auction storage auction = auctions[listingId];
 
-        require(listing.status == ListingStatus.ACTIVE, "Listing not active");
-        require(listing.listingType == ListingType.AUCTION, "Not an auction");
-        require(block.timestamp <= listing.endTime, "Auction ended");
-        require(msg.sender != listing.seller, "Cannot bid on own auction");
+        if (listing.status != ListingStatus.ACTIVE) revert ListingNotActive();
+        if (listing.listingType != ListingType.AUCTION) revert NotAuction();
+        if (block.timestamp > listing.endTime) revert AuctionEnded();
+        if (msg.sender == listing.seller) revert CannotBidOwnAuction();
 
         // Check reserve price
         gtUint64 gtReserve = MpcCore.onBoard(auction.encryptedReservePrice);
         gtBool meetsReserve = MpcCore.ge(bidAmount, gtReserve);
-        require(MpcCore.decrypt(meetsReserve), "Bid below reserve");
+        if (!MpcCore.decrypt(meetsReserve)) revert BidBelowReserve();
 
         // Check bid increment
         if (auction.highestBidder != address(0)) {
@@ -712,21 +733,17 @@ contract OmniNFTMarketplace is
             gtUint64 gtIncrement = MpcCore.div(gtHighest, MpcCore.setPublic64(20)); // 5%
             gtUint64 minBid = MpcCore.add(gtHighest, gtIncrement);
             gtBool validBid = MpcCore.ge(bidAmount, minBid);
-            require(MpcCore.decrypt(validBid), "Bid too low");
+            if (!MpcCore.decrypt(validBid)) revert BidTooLow();
             
             // Refund previous bidder
             uint64 previousBid = MpcCore.decrypt(gtHighest);
-            require(
-                omniCoin.transferPublic(auction.highestBidder, uint256(previousBid)),
-                "Refund failed"
-            );
+            if (!omniCoin.transferPublic(auction.highestBidder, uint256(previousBid)))
+                revert RefundFailed();
         }
 
         // Transfer new bid amount
-        require(
-            omniCoin.transferFromPublic(msg.sender, address(this), uint256(bidDecrypted)),
-            "Bid transfer failed"
-        );
+        if (!omniCoin.transferFromPublic(msg.sender, address(this), uint256(bidDecrypted)))
+            revert BidTransferFailed();
 
         // Update auction state
         auction.encryptedHighestBid = MpcCore.offBoard(bidAmount);
@@ -735,7 +752,7 @@ contract OmniNFTMarketplace is
 
         // Add to bidders array if first bid
         bool isNewBidder = true;
-        for (uint256 i = 0; i < auction.bidders.length; i++) {
+        for (uint256 i = 0; i < auction.bidders.length; ++i) {
             if (auction.bidders[i] == msg.sender) {
                 isNewBidder = false;
                 break;
@@ -762,16 +779,14 @@ contract OmniNFTMarketplace is
         bool isPrivate
     ) internal returns (uint256 offerId) {
         Listing storage listing = listings[listingId];
-        require(listing.status == ListingStatus.ACTIVE, "Listing not active");
-        require(msg.sender != listing.seller, "Cannot offer on own item");
-        require(amount > 0, "Invalid offer amount");
-        require(expiry > block.timestamp, "Invalid expiry");
+        if (listing.status != ListingStatus.ACTIVE) revert ListingNotActive();
+        if (msg.sender == listing.seller) revert CannotOfferOwnItem();
+        if (amount == 0) revert InvalidOfferAmount();
+        if (expiry <= block.timestamp) revert InvalidExpiry();
 
         // Transfer offer amount to escrow
-        require(
-            omniCoin.transferFromPublic(msg.sender, address(this), amount),
-            "Offer transfer failed"
-        );
+        if (!omniCoin.transferFromPublic(msg.sender, address(this), amount))
+            revert OfferTransferFailed();
 
         offerId = ++offerCounter;
         offers[offerId] = Offer({
@@ -799,16 +814,14 @@ contract OmniNFTMarketplace is
         uint256 expiry
     ) internal returns (uint256 offerId) {
         Listing storage listing = listings[listingId];
-        require(listing.status == ListingStatus.ACTIVE, "Listing not active");
-        require(msg.sender != listing.seller, "Cannot offer on own item");
-        require(amountDecrypted > 0, "Invalid offer amount");
-        require(expiry > block.timestamp, "Invalid expiry");
+        if (listing.status != ListingStatus.ACTIVE) revert ListingNotActive();
+        if (msg.sender == listing.seller) revert CannotOfferOwnItem();
+        if (amountDecrypted == 0) revert InvalidOfferAmount();
+        if (expiry <= block.timestamp) revert InvalidExpiry();
 
         // Transfer offer amount to escrow
-        require(
-            omniCoin.transferFromPublic(msg.sender, address(this), uint256(amountDecrypted)),
-            "Offer transfer failed"
-        );
+        if (!omniCoin.transferFromPublic(msg.sender, address(this), uint256(amountDecrypted)))
+            revert OfferTransferFailed();
 
         offerId = ++offerCounter;
         offers[offerId] = Offer({
@@ -838,15 +851,13 @@ contract OmniNFTMarketplace is
      */
     function cancelListing(uint256 listingId) external nonReentrant {
         Listing storage listing = listings[listingId];
-        require(msg.sender == listing.seller, "Only seller can cancel");
-        require(listing.status == ListingStatus.ACTIVE, "Listing not active");
+        if (msg.sender != listing.seller) revert OnlySellerCanCancel();
+        if (listing.status != ListingStatus.ACTIVE) revert ListingNotActive();
 
         if (listing.listingType == ListingType.AUCTION) {
             Auction storage auction = auctions[listingId];
-            require(
-                auction.highestBidder == address(0),
-                "Cannot cancel auction with bids"
-            );
+            if (auction.highestBidder != address(0))
+                revert CannotCancelWithBids();
         }
 
         // Return NFT to seller
@@ -857,7 +868,7 @@ contract OmniNFTMarketplace is
         );
 
         listing.status = ListingStatus.CANCELLED;
-        stats.activeListings--;
+        --stats.activeListings;
 
         emit ListingCancelled(listingId);
     }
@@ -869,9 +880,9 @@ contract OmniNFTMarketplace is
         Listing storage listing = listings[listingId];
         Auction storage auction = auctions[listingId];
 
-        require(listing.status == ListingStatus.ACTIVE, "Listing not active");
-        require(listing.listingType == ListingType.AUCTION, "Not an auction");
-        require(block.timestamp > listing.endTime, "Auction still active");
+        if (listing.status != ListingStatus.ACTIVE) revert ListingNotActive();
+        if (listing.listingType != ListingType.AUCTION) revert NotAuction();
+        if (block.timestamp <= listing.endTime) revert AuctionStillActive();
 
         if (auction.highestBidder != address(0)) {
             uint256 totalPrice;
@@ -887,15 +898,11 @@ contract OmniNFTMarketplace is
             uint256 sellerAmount = totalPrice - fee;
 
             // Transfer payment to seller
-            require(
-                omniCoin.transferPublic(listing.seller, sellerAmount),
-                "Payment failed"
-            );
+            if (!omniCoin.transferPublic(listing.seller, sellerAmount))
+                revert PaymentFailed();
             if (fee > 0) {
-                require(
-                    omniCoin.transferPublic(feeRecipient, fee),
-                    "Fee payment failed"
-                );
+                if (!omniCoin.transferPublic(feeRecipient, fee))
+                    revert FeePaymentFailed();
             }
 
             // Transfer NFT to winner
@@ -906,9 +913,9 @@ contract OmniNFTMarketplace is
             );
 
             listing.status = ListingStatus.SOLD;
-            stats.totalSales++;
+            ++stats.totalSales;
             if (listing.isPrivate) {
-                stats.privateSales++;
+                ++stats.privateSales;
             }
             stats.totalVolume += totalPrice;
             userStats[listing.seller] += totalPrice;
@@ -924,7 +931,7 @@ contract OmniNFTMarketplace is
             listing.status = ListingStatus.EXPIRED;
         }
 
-        stats.activeListings--;
+        --stats.activeListings;
     }
 
     /**
@@ -934,10 +941,10 @@ contract OmniNFTMarketplace is
         Offer storage offer = offers[offerId];
         Listing storage listing = listings[offer.listingId];
 
-        require(msg.sender == listing.seller, "Only seller can accept");
-        require(!offer.accepted && !offer.cancelled, "Offer not available");
-        require(block.timestamp <= offer.expiry, "Offer expired");
-        require(listing.status == ListingStatus.ACTIVE, "Listing not active");
+        if (msg.sender != listing.seller) revert OnlySellerCanAccept();
+        if (offer.accepted || offer.cancelled) revert OfferNotAvailable();
+        if (block.timestamp > offer.expiry) revert OfferExpired();
+        if (listing.status != ListingStatus.ACTIVE) revert ListingNotActive();
 
         uint256 amount;
         if (offer.isPrivate) {
@@ -951,12 +958,10 @@ contract OmniNFTMarketplace is
         uint256 sellerAmount = amount - fee;
 
         // Transfer payment
-        require(
-            omniCoin.transferPublic(listing.seller, sellerAmount),
-            "Payment failed"
-        );
+        if (!omniCoin.transferPublic(listing.seller, sellerAmount))
+            revert PaymentFailed();
         if (fee > 0) {
-            require(omniCoin.transferPublic(feeRecipient, fee), "Fee payment failed");
+            if (!omniCoin.transferPublic(feeRecipient, fee)) revert FeePaymentFailed();
         }
 
         // Transfer NFT
@@ -968,10 +973,10 @@ contract OmniNFTMarketplace is
 
         offer.accepted = true;
         listing.status = ListingStatus.SOLD;
-        stats.activeListings--;
-        stats.totalSales++;
+        --stats.activeListings;
+        ++stats.totalSales;
         if (offer.isPrivate || listing.isPrivate) {
-            stats.privateSales++;
+            ++stats.privateSales;
         }
         stats.totalVolume += amount;
         userStats[listing.seller] += amount;
@@ -1019,12 +1024,9 @@ contract OmniNFTMarketplace is
      */
     function getPrivateListingPrice(uint256 listingId) external view returns (ctUint64) {
         Listing storage listing = listings[listingId];
-        require(listing.isPrivate, "Not a private listing");
-        require(
-            msg.sender == listing.seller || 
-            msg.sender == owner(),
-            "Not authorized"
-        );
+        if (!listing.isPrivate) revert NotPrivateListing();
+        if (msg.sender != listing.seller && msg.sender != owner())
+            revert NotAuthorized();
         return listing.encryptedPrice;
     }
     
@@ -1034,13 +1036,11 @@ contract OmniNFTMarketplace is
     function getPrivateOfferAmount(uint256 offerId) external view returns (ctUint64) {
         Offer storage offer = offers[offerId];
         Listing storage listing = listings[offer.listingId];
-        require(offer.isPrivate, "Not a private offer");
-        require(
-            msg.sender == offer.buyer || 
-            msg.sender == listing.seller || 
-            msg.sender == owner(),
-            "Not authorized"
-        );
+        if (!offer.isPrivate) revert NotPrivateOffer();
+        if (msg.sender != offer.buyer && 
+            msg.sender != listing.seller && 
+            msg.sender != owner())
+            revert NotAuthorized();
         return offer.encryptedAmount;
     }
 
@@ -1048,7 +1048,7 @@ contract OmniNFTMarketplace is
      * @dev Increment listing views
      */
     function incrementViews(uint256 listingId) external {
-        listings[listingId].views++;
+        ++listings[listingId].views;
     }
 
     /**
@@ -1063,7 +1063,7 @@ contract OmniNFTMarketplace is
      * @dev Update platform fee
      */
     function updatePlatformFee(uint256 newFee) external onlyOwner {
-        require(newFee <= 1000, "Fee too high"); // Max 10%
+        if (newFee > 1000) revert FeeTooHigh(); // Max 10%
         platformFee = newFee;
         emit PlatformFeeUpdated(newFee);
     }
@@ -1085,6 +1085,6 @@ contract OmniNFTMarketplace is
      */
     function emergencyWithdraw() external onlyOwner {
         uint256 balance = omniCoin.balanceOfPublic(address(this));
-        require(omniCoin.transferPublic(owner(), balance), "Withdrawal failed");
+        if (!omniCoin.transferPublic(owner(), balance)) revert WithdrawalFailed();
     }
 }

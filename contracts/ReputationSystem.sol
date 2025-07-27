@@ -1,14 +1,19 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.19;
 
-import "./ReputationSystemBase.sol";
-import "./base/RegistryAware.sol";
+import {ReputationSystemBase} from "./ReputationSystemBase.sol";
+import {RegistryAware} from "./base/RegistryAware.sol";
 
 /**
  * @title ReputationSystem
  * @dev Concrete implementation of ReputationSystemBase with Registry integration
  */
 contract ReputationSystem is ReputationSystemBase, RegistryAware {
+    
+    // Constants
+    uint256 public constant DEFAULT_REPUTATION = 100;
+    uint256 public constant MAX_REPUTATION = 1000;
+    uint256 public constant MIN_REPUTATION = 0;
     
     // State variables for reputation tracking
     mapping(address => uint256) public reputationScores;
@@ -17,14 +22,17 @@ contract ReputationSystem is ReputationSystemBase, RegistryAware {
     mapping(address => uint256) public lastActivityTimestamp;
     mapping(address => mapping(uint8 => uint256)) public componentScores;
     
-    uint256 public constant DEFAULT_REPUTATION = 100;
-    uint256 public constant MAX_REPUTATION = 1000;
-    uint256 public constant MIN_REPUTATION = 0;
-    
     // Events
     event ReputationUpdated(address indexed user, uint256 newScore, string reason);
     event UserVerified(address indexed user);
     event ComponentScoreUpdated(address indexed user, uint8 component, uint256 score);
+    
+    // Custom errors
+    error OnlyAuthorizedContracts();
+    error InsufficientPrivileges();
+    error InvalidAddress();
+    error InvalidComponent();
+    error ArrayLengthMismatch();
     
     constructor(
         address _registry,
@@ -62,7 +70,7 @@ contract ReputationSystem is ReputationSystemBase, RegistryAware {
             _updateReputation(user, -10, "Failed transaction");
         }
         
-        userActivityCount[user]++;
+        ++userActivityCount[user];
         lastActivityTimestamp[user] = block.timestamp;
     }
     
@@ -93,12 +101,12 @@ contract ReputationSystem is ReputationSystemBase, RegistryAware {
             reason = "Provided review";
             component = COMPONENT_COMMUNITY_ENGAGEMENT;
         } else {
-            revert("Invalid activity type");
+            revert InvalidComponent();
         }
         
         _updateReputation(user, change, reason);
         _updateComponentScore(user, component, uint256(change));
-        userActivityCount[user]++;
+        ++userActivityCount[user];
         lastActivityTimestamp[user] = block.timestamp;
     }
     
@@ -214,12 +222,10 @@ contract ReputationSystem is ReputationSystemBase, RegistryAware {
         int256[] calldata changes,
         string[] calldata reasons
     ) external onlyRole(REPUTATION_UPDATER_ROLE) {
-        require(
-            users.length == changes.length && changes.length == reasons.length,
-            "Array length mismatch"
-        );
+        if (users.length != changes.length || changes.length != reasons.length)
+            revert ArrayLengthMismatch();
         
-        for (uint256 i = 0; i < users.length; i++) {
+        for (uint256 i = 0; i < users.length; ++i) {
             _updateReputation(users[i], changes[i], reasons[i]);
         }
     }
@@ -235,7 +241,7 @@ contract ReputationSystem is ReputationSystemBase, RegistryAware {
         userActivityCount[user] = 0;
         
         // Reset all component scores
-        for (uint8 i = 0; i < MAX_COMPONENTS; i++) {
+        for (uint8 i = 0; i < MAX_COMPONENTS; ++i) {
             componentScores[user][i] = 0;
         }
         
@@ -251,7 +257,7 @@ contract ReputationSystem is ReputationSystemBase, RegistryAware {
         uint256 totalWeight = 0;
         uint256 weightedScore = 0;
         
-        for (uint8 i = 0; i < MAX_COMPONENTS; i++) {
+        for (uint8 i = 0; i < MAX_COMPONENTS; ++i) {
             uint256 weight = componentWeights[i];
             if (weight > 0) {
                 totalWeight += weight;

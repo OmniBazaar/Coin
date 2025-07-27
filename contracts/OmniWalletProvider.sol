@@ -1,16 +1,16 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
-import "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
-import "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
-import "./OmniCoinCore.sol";
-import "./OmniCoinAccount.sol";
-import "./OmniCoinPayment.sol";
-import "./OmniCoinEscrow.sol";
-import "./OmniCoinPrivacy.sol";
-import "./OmniCoinBridge.sol";
-import "./ListingNFT.sol";
+import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
+import {OwnableUpgradeable} from "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
+import {ReentrancyGuardUpgradeable} from "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
+import {OmniCoinCore} from "./OmniCoinCore.sol";
+import {OmniCoinAccount} from "./OmniCoinAccount.sol";
+import {OmniCoinPayment} from "./OmniCoinPayment.sol";
+import {OmniCoinEscrow} from "./OmniCoinEscrow.sol";
+import {OmniCoinPrivacy} from "./OmniCoinPrivacy.sol";
+import {OmniCoinBridge} from "./OmniCoinBridge.sol";
+import {ListingNFT} from "./ListingNFT.sol";
 
 /**
  * @title OmniWalletProvider
@@ -22,15 +22,6 @@ contract OmniWalletProvider is
     OwnableUpgradeable,
     ReentrancyGuardUpgradeable
 {
-    // Contract interfaces
-    OmniCoinCore public omniCoin;
-    OmniCoinAccount public accountManager;
-    OmniCoinPayment public paymentProcessor;
-    OmniCoinEscrow public escrowManager;
-    OmniCoinPrivacy public privacyManager;
-    OmniCoinBridge public bridgeManager;
-    ListingNFT public nftManager;
-
     // Wallet-specific structures
     struct WalletInfo {
         address walletAddress;
@@ -58,6 +49,23 @@ contract OmniWalletProvider is
         bool isActive;
         mapping(bytes4 => bool) approvedMethods;
     }
+
+    // Custom errors
+    error UnauthorizedSessionCreation();
+    error InvalidTarget();
+    error SimulationFailed();
+    error InvalidRecipient();
+    error InvalidAmount();
+    error TransferFailed();
+
+    // Contract interfaces
+    OmniCoinCore public omniCoin;
+    OmniCoinAccount public accountManager;
+    OmniCoinPayment public paymentProcessor;
+    OmniCoinEscrow public escrowManager;
+    OmniCoinPrivacy public privacyManager;
+    OmniCoinBridge public bridgeManager;
+    ListingNFT public nftManager;
 
     // State variables
     mapping(address => WalletSession) public sessions;
@@ -139,7 +147,7 @@ contract OmniWalletProvider is
     function createSession(
         address wallet
     ) external returns (uint256 sessionId) {
-        require(wallet == msg.sender, "Unauthorized session creation");
+        if (wallet != msg.sender) revert UnauthorizedSessionCreation();
 
         sessionId = ++sessionCounter;
         uint256 expiryTime = block.timestamp + sessionDuration;
@@ -188,12 +196,12 @@ contract OmniWalletProvider is
     function simulateTransaction(
         address target,
         bytes calldata data,
-        uint256 value
+        uint256 // value
     ) external view {
-        require(target != address(0), "Invalid target");
+        if (target == address(0)) revert InvalidTarget();
         // This function is used for simulation only
         (bool success, ) = target.staticcall(data);
-        require(success, "Simulation failed");
+        if (!success) revert SimulationFailed();
     }
 
     /**
@@ -204,8 +212,8 @@ contract OmniWalletProvider is
         uint256 amount,
         bool usePrivacy
     ) external nonReentrant returns (bool success) {
-        require(recipient != address(0), "Invalid recipient");
-        require(amount > 0, "Invalid amount");
+        if (recipient == address(0)) revert InvalidRecipient();
+        if (amount == 0) revert InvalidAmount();
 
         if (usePrivacy) {
             // Route through privacy manager if enabled
@@ -230,7 +238,7 @@ contract OmniWalletProvider is
                 proof
             );
         } else {
-            require(omniCoin.transferPublic(recipient, amount), "Transfer failed");
+            if (!omniCoin.transferPublic(recipient, amount)) revert TransferFailed();
         }
 
         return true;
@@ -301,7 +309,7 @@ contract OmniWalletProvider is
      * @dev Get wallet's cross-chain transfer history
      */
     function getCrossChainHistory(
-        address wallet
+        address // wallet
     )
         external
         view
@@ -349,7 +357,7 @@ contract OmniWalletProvider is
         tokenURIs = new string[](listings.length);
         transactionCounts = new uint256[](listings.length);
 
-        for (uint256 i = 0; i < listings.length; i++) {
+        for (uint256 i = 0; i < listings.length; ++i) {
             tokenURIs[i] = nftManager.tokenURI(listings[i]);
             // Get transaction count for each NFT
             transactionCounts[i] = 1; // Placeholder
@@ -377,7 +385,7 @@ contract OmniWalletProvider is
      */
     function isValidSession(address wallet) external view returns (bool) {
         WalletSession storage session = sessions[wallet];
-        return session.isActive && block.timestamp <= session.expiryTime;
+        return session.isActive && block.timestamp < session.expiryTime;
     }
 
     /**

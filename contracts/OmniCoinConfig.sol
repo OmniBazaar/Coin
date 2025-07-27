@@ -1,14 +1,18 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.20;
+pragma solidity ^0.8.19;
 
-import "@openzeppelin/contracts/access/Ownable.sol";
-import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
+import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
 /**
  * @title OmniCoinConfig
  * @dev Configuration contract for OmniCoin parameters that can be set before deployment
  */
 contract OmniCoinConfig is Ownable, ReentrancyGuard {
+    // =============================================================================
+    // STRUCTS
+    // =============================================================================
+    
     struct BridgeConfig {
         uint256 chainId;
         address token;
@@ -26,6 +30,10 @@ contract OmniCoinConfig is Ownable, ReentrancyGuard {
         uint256 penaltyRate;
     }
 
+    // =============================================================================
+    // STATE VARIABLES
+    // =============================================================================
+    
     // Bridge configuration
     BridgeConfig[] public bridgeConfigs;
 
@@ -42,7 +50,20 @@ contract OmniCoinConfig is Ownable, ReentrancyGuard {
     // Testnet mode flag - bypasses reputation requirements for testing
     bool public isTestnetMode;
 
-    // Events
+    // =============================================================================
+    // CUSTOM ERRORS
+    // =============================================================================
+    
+    error InvalidAmount();
+    error InvalidRate();
+    error InvalidPeriod();
+    error InvalidChainId();
+    error TierNotFound();
+    error ConfigNotFound();
+    
+    // =============================================================================
+    // EVENTS
+    // =============================================================================
     event BridgeConfigAdded(
         uint256 indexed chainId,
         address token,
@@ -115,9 +136,9 @@ contract OmniCoinConfig is Ownable, ReentrancyGuard {
         uint256 _maxAmount,
         uint256 _fee
     ) external onlyOwner {
-        require(_chainId != block.chainid, "Invalid chain ID");
-        require(_token != address(0), "Invalid token");
-        require(_minAmount <= _maxAmount, "Invalid amounts");
+        if (_chainId == block.chainid) revert InvalidChainId();
+        if (_token == address(0)) revert InvalidAmount();
+        if (_minAmount > _maxAmount) revert InvalidAmount();
 
         bridgeConfigs.push(
             BridgeConfig({
@@ -134,7 +155,7 @@ contract OmniCoinConfig is Ownable, ReentrancyGuard {
     }
 
     function removeBridgeConfig(uint256 _chainId) external onlyOwner {
-        for (uint256 i = 0; i < bridgeConfigs.length; i++) {
+        for (uint256 i = 0; i < bridgeConfigs.length; ++i) {
             if (bridgeConfigs[i].chainId == _chainId) {
                 bridgeConfigs[i].isActive = false;
                 emit BridgeConfigRemoved(_chainId);
@@ -144,7 +165,7 @@ contract OmniCoinConfig is Ownable, ReentrancyGuard {
     }
 
     function isBridgeSupported(uint256 _chainId) external view returns (bool) {
-        for (uint256 i = 0; i < bridgeConfigs.length; i++) {
+        for (uint256 i = 0; i < bridgeConfigs.length; ++i) {
             if (
                 bridgeConfigs[i].chainId == _chainId &&
                 bridgeConfigs[i].isActive
@@ -158,7 +179,7 @@ contract OmniCoinConfig is Ownable, ReentrancyGuard {
     function getBridgeConfig(
         uint256 _chainId
     ) external view returns (BridgeConfig memory) {
-        for (uint256 i = 0; i < bridgeConfigs.length; i++) {
+        for (uint256 i = 0; i < bridgeConfigs.length; ++i) {
             if (bridgeConfigs[i].chainId == _chainId) {
                 return bridgeConfigs[i];
             }
@@ -175,10 +196,7 @@ contract OmniCoinConfig is Ownable, ReentrancyGuard {
         uint256 _lockPeriod,
         uint256 _penaltyRate
     ) external onlyOwner {
-        require(
-            _tierId < stakingTiers.length,
-            "OmniCoinConfig: invalid tier ID"
-        );
+        if (_tierId >= stakingTiers.length) revert TierNotFound();
 
         stakingTiers[_tierId] = StakingTier({
             minAmount: _minAmount,
@@ -201,7 +219,7 @@ contract OmniCoinConfig is Ownable, ReentrancyGuard {
     function getStakingTier(
         uint256 _amount
     ) external view returns (StakingTier memory) {
-        for (uint256 i = 0; i < stakingTiers.length; i++) {
+        for (uint256 i = 0; i < stakingTiers.length; ++i) {
             if (
                 _amount >= stakingTiers[i].minAmount &&
                 _amount <= stakingTiers[i].maxAmount
@@ -209,7 +227,7 @@ contract OmniCoinConfig is Ownable, ReentrancyGuard {
                 return stakingTiers[i];
             }
         }
-        revert("OmniCoinConfig: no matching staking tier");
+        revert TierNotFound();
     }
 
     // Configuration update functions

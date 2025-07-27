@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import "@openzeppelin/contracts/access/AccessControl.sol";
-import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
-import "@openzeppelin/contracts/utils/Pausable.sol";
-import "../coti-contracts/contracts/utils/mpc/MpcCore.sol";
-import "./OmniCoinCore.sol";
-import "./OmniCoinAccount.sol";
-import "./OmniCoinStaking.sol";
-import "./PrivacyFeeManager.sol";
+import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
+import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
+import {MpcCore, gtUint64, ctUint64, itUint64} from "../coti-contracts/contracts/utils/mpc/MpcCore.sol";
+import {OmniCoinCore} from "./OmniCoinCore.sol";
+import {OmniCoinAccount} from "./OmniCoinAccount.sol";
+import {OmniCoinStaking} from "./OmniCoinStaking.sol";
+import {PrivacyFeeManager} from "./PrivacyFeeManager.sol";
 
 /**
  * @title OmniCoinPayment
@@ -23,6 +23,28 @@ import "./PrivacyFeeManager.sol";
  * - User choice for privacy on each operation
  */
 contract OmniCoinPayment is AccessControl, ReentrancyGuard, Pausable {
+    
+    // =============================================================================
+    // CUSTOM ERRORS
+    // =============================================================================
+    
+    error InvalidReceiver();
+    error InvalidAmount();
+    error InsufficientBalance();
+    error PrivacyNotEnabled();
+    error TransferFailed();
+    error StakingFailed();
+    error PaymentNotFound();
+    error StreamNotActive();
+    error StreamAlreadyCompleted();
+    error UnauthorizedAccess();
+    error InvalidBatchSize();
+    error PrivacyFeeRequired();
+    error PaymentAlreadyProcessed();
+    error InvalidStreamDuration();
+    error InvalidStreamRate();
+    error StreamNotFound();
+    error InvalidFee();
     
     // =============================================================================
     // CONSTANTS & ROLES
@@ -138,8 +160,8 @@ contract OmniCoinPayment is AccessControl, ReentrancyGuard, Pausable {
     // =============================================================================
     
     modifier validReceiver(address receiver) {
-        require(receiver != address(0), "OmniCoinPayment: Invalid receiver");
-        require(receiver != msg.sender, "OmniCoinPayment: Cannot send to self");
+        if (receiver == address(0)) revert InvalidReceiver();
+        if (receiver == msg.sender) revert InvalidReceiver();
         _;
     }
     
@@ -154,10 +176,10 @@ contract OmniCoinPayment is AccessControl, ReentrancyGuard, Pausable {
         address _admin,
         address _privacyFeeManager
     ) {
-        require(_token != address(0), "OmniCoinPayment: Invalid token");
-        require(_accountContract != address(0), "OmniCoinPayment: Invalid account contract");
-        require(_stakingContract != address(0), "OmniCoinPayment: Invalid staking contract");
-        require(_admin != address(0), "OmniCoinPayment: Invalid admin");
+        if (_token == address(0)) revert InvalidReceiver();
+        if (_accountContract == address(0)) revert InvalidReceiver();
+        if (_stakingContract == address(0)) revert InvalidReceiver();
+        if (_admin == address(0)) revert InvalidReceiver();
         
         token = OmniCoinCore(_token);
         accountContract = OmniCoinAccount(_accountContract);

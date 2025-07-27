@@ -1,16 +1,44 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.19;
 
-import "@openzeppelin/contracts/token/ERC721/ERC721.sol";
-import "@openzeppelin/contracts/token/ERC721/extensions/ERC721URIStorage.sol";
-import "@openzeppelin/contracts/access/Ownable.sol";
-
-import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import {ERC721} from "@openzeppelin/contracts/token/ERC721/ERC721.sol";
+import {ERC721URIStorage} from "@openzeppelin/contracts/token/ERC721/extensions/ERC721URIStorage.sol";
+import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
+import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
 contract ListingNFT is ERC721URIStorage, Ownable, ReentrancyGuard {
+    // Enums
+    enum TransactionStatus {
+        Pending,
+        Completed,
+        Cancelled
+    }
+    
+    // Structs
+    struct Transaction {
+        address seller;
+        address buyer;
+        uint256 price;
+        uint256 quantity;
+        TransactionStatus status;
+        string escrowId;
+        uint256 createdAt;
+        uint256 updatedAt;
+    }
+    
+    // Custom errors
+    error NotAuthorizedToMint();
+    error ListingDoesNotExist();
+    error NotListingOwner();
+    error CannotBuyOwnListing();
+    error NotAuthorized();
+    error CannotTransferPendingTransaction();
+    
+    // State variables
     uint256 private _tokenIds;
     mapping(address => bool) public approvedMinters;
 
+    // Events
     event MinterApprovalChanged(address indexed minter, bool approved);
 
     constructor(
@@ -38,23 +66,6 @@ contract ListingNFT is ERC721URIStorage, Ownable, ReentrancyGuard {
         return approvedMinters[minter];
     }
 
-    struct Transaction {
-        address seller;
-        address buyer;
-        uint256 price;
-        uint256 quantity;
-        TransactionStatus status;
-        string escrowId;
-        uint256 createdAt;
-        uint256 updatedAt;
-    }
-
-    enum TransactionStatus {
-        Pending,
-        Completed,
-        Cancelled
-    }
-
     mapping(uint256 => Transaction) public transactions;
     mapping(address => uint256[]) public userListings;
     mapping(address => uint256[]) public userTransactions;
@@ -75,10 +86,8 @@ contract ListingNFT is ERC721URIStorage, Ownable, ReentrancyGuard {
     );
 
     function mint(address to, string memory tokenURI) public returns (uint256) {
-        require(
-            approvedMinters[msg.sender] || msg.sender == owner(),
-            "ListingNFT: Not authorized to mint"
-        );
+        if (!approvedMinters[msg.sender] && msg.sender != owner())
+            revert NotAuthorizedToMint();
         
         _tokenIds++;
         uint256 newTokenId = _tokenIds;
@@ -97,9 +106,9 @@ contract ListingNFT is ERC721URIStorage, Ownable, ReentrancyGuard {
         uint256 quantity,
         uint256 price
     ) public nonReentrant returns (uint256) {
-        require(_ownerOf(tokenId) != address(0), "Listing does not exist");
-        require(ownerOf(tokenId) == msg.sender, "Not the listing owner");
-        require(buyer != msg.sender, "Cannot buy your own listing");
+        if (_ownerOf(tokenId) == address(0)) revert ListingDoesNotExist();
+        if (ownerOf(tokenId) != msg.sender) revert NotListingOwner();
+        if (buyer == msg.sender) revert CannotBuyOwnListing();
 
         Transaction memory newTransaction = Transaction({
             seller: msg.sender,
@@ -124,12 +133,10 @@ contract ListingNFT is ERC721URIStorage, Ownable, ReentrancyGuard {
         uint256 tokenId,
         TransactionStatus newStatus
     ) public {
-        require(_ownerOf(tokenId) != address(0), "Listing does not exist");
+        if (_ownerOf(tokenId) == address(0)) revert ListingDoesNotExist();
         Transaction storage transaction = transactions[tokenId];
-        require(
-            msg.sender == transaction.seller || msg.sender == transaction.buyer,
-            "Not authorized"
-        );
+        if (msg.sender != transaction.seller && msg.sender != transaction.buyer)
+            revert NotAuthorized();
 
         transaction.status = newStatus;
         transaction.updatedAt = block.timestamp;
@@ -143,12 +150,10 @@ contract ListingNFT is ERC721URIStorage, Ownable, ReentrancyGuard {
     }
 
     function setEscrowId(uint256 tokenId, string memory escrowId) public {
-        require(_ownerOf(tokenId) != address(0), "Listing does not exist");
+        if (_ownerOf(tokenId) == address(0)) revert ListingDoesNotExist();
         Transaction storage transaction = transactions[tokenId];
-        require(
-            msg.sender == transaction.seller || msg.sender == transaction.buyer,
-            "Not authorized"
-        );
+        if (msg.sender != transaction.seller && msg.sender != transaction.buyer)
+            revert NotAuthorized();
 
         transaction.escrowId = escrowId;
         transaction.updatedAt = block.timestamp;
@@ -169,7 +174,7 @@ contract ListingNFT is ERC721URIStorage, Ownable, ReentrancyGuard {
     function getTransaction(
         uint256 tokenId
     ) public view returns (Transaction memory) {
-        require(_ownerOf(tokenId) != address(0), "Listing does not exist");
+        if (_ownerOf(tokenId) == address(0)) revert ListingDoesNotExist();
         return transactions[tokenId];
     }
 
@@ -182,10 +187,8 @@ contract ListingNFT is ERC721URIStorage, Ownable, ReentrancyGuard {
 
         // Check if transaction is pending before transfer
         if (from != address(0) && to != address(0)) {
-            require(
-                transactions[tokenId].status != TransactionStatus.Pending,
-                "Cannot transfer while transaction is pending"
-            );
+            if (transactions[tokenId].status == TransactionStatus.Pending)
+                revert CannotTransferPendingTransaction();
         }
 
         return super._update(to, tokenId, auth);

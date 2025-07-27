@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.19;
 
-import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
-import "@openzeppelin/contracts/token/ERC20/extensions/ERC20Burnable.sol";
-import "@openzeppelin/contracts/token/ERC20/extensions/ERC20Pausable.sol";
-import "@openzeppelin/contracts/access/AccessControl.sol";
-import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
-import "./base/RegistryAware.sol";
+import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
+import {ERC20Burnable} from "@openzeppelin/contracts/token/ERC20/extensions/ERC20Burnable.sol";
+import {ERC20Pausable} from "@openzeppelin/contracts/token/ERC20/extensions/ERC20Pausable.sol";
+import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
+import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import {RegistryAware} from "./base/RegistryAware.sol";
 
 /**
  * @title OmniCoin
@@ -24,6 +24,17 @@ import "./base/RegistryAware.sol";
 contract OmniCoin is ERC20, ERC20Burnable, ERC20Pausable, AccessControl, ReentrancyGuard, RegistryAware {
     
     // =============================================================================
+    // STRUCTS
+    // =============================================================================
+    
+    struct ValidatorOperation {
+        address initiator;
+        uint256 amount;
+        uint256 timestamp;
+        bool executed;
+    }
+    
+    // =============================================================================
     // CONSTANTS & ROLES
     // =============================================================================
     
@@ -31,6 +42,20 @@ contract OmniCoin is ERC20, ERC20Burnable, ERC20Pausable, AccessControl, Reentra
     bytes32 public constant PAUSER_ROLE = keccak256("PAUSER_ROLE");
     bytes32 public constant VALIDATOR_ROLE = keccak256("VALIDATOR_ROLE");
     bytes32 public constant BRIDGE_ROLE = keccak256("BRIDGE_ROLE");
+    
+    // =============================================================================
+    // CUSTOM ERRORS
+    // =============================================================================
+    
+    error ExceedsMaxSupply();
+    error InvalidValidator();
+    error InvalidAmount();
+    error OperationNotFound();
+    error OperationAlreadyExecuted();
+    error UnauthorizedValidator();
+    error ZeroAddress();
+    error BridgeTransferFailed();
+    error InsufficientBalance();
     
     uint256 public constant INITIAL_SUPPLY = 100_000_000 * 10**6; // 100M tokens
     uint256 public constant MAX_SUPPLY = 1_000_000_000 * 10**6; // 1B tokens max
@@ -40,20 +65,13 @@ contract OmniCoin is ERC20, ERC20Burnable, ERC20Pausable, AccessControl, Reentra
     // =============================================================================
     
     /// @dev Maximum supply cap
-    uint256 public immutable maxSupply;
+    uint256 public immutable MAX_SUPPLY_CAP;
     
     /// @dev Registry of approved validators
     mapping(address => bool) public validators;
     
     /// @dev Validator operation tracking
     mapping(bytes32 => ValidatorOperation) public validatorOperations;
-    
-    struct ValidatorOperation {
-        address initiator;
-        uint256 amount;
-        uint256 timestamp;
-        bool executed;
-    }
     
     // =============================================================================
     // EVENTS
@@ -77,9 +95,9 @@ contract OmniCoin is ERC20, ERC20Burnable, ERC20Pausable, AccessControl, Reentra
         ERC20("OmniCoin", "XOM") 
         RegistryAware(_registry) 
     {
-        require(_registry != address(0), "Invalid registry");
+        if (_registry == address(0)) revert InvalidRegistry();
         
-        maxSupply = MAX_SUPPLY;
+        MAX_SUPPLY_CAP = MAX_SUPPLY;
         
         // Grant roles to deployer
         _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
@@ -111,7 +129,7 @@ contract OmniCoin is ERC20, ERC20Burnable, ERC20Pausable, AccessControl, Reentra
      * @param amount Amount to mint
      */
     function mint(address to, uint256 amount) external onlyRole(MINTER_ROLE) {
-        require(totalSupply() + amount <= maxSupply, "Exceeds max supply");
+        if (totalSupply() + amount > MAX_SUPPLY_CAP) revert ExceedsMaxSupply();
         _mint(to, amount);
     }
     
@@ -137,7 +155,7 @@ contract OmniCoin is ERC20, ERC20Burnable, ERC20Pausable, AccessControl, Reentra
      * @param validator Address to add as validator
      */
     function addValidator(address validator) external onlyRole(DEFAULT_ADMIN_ROLE) {
-        require(validator != address(0), "Invalid validator");
+        if (validator == address(0)) revert InvalidValidator();
         validators[validator] = true;
         emit ValidatorAdded(validator);
     }
@@ -173,8 +191,8 @@ contract OmniCoin is ERC20, ERC20Burnable, ERC20Pausable, AccessControl, Reentra
         bytes32 operationId, 
         uint256 amount
     ) external {
-        require(isValidator(msg.sender), "Not a validator");
-        require(!validatorOperations[operationId].executed, "Already executed");
+        if (!isValidator(msg.sender)) revert UnauthorizedValidator();
+        if (validatorOperations[operationId].executed) revert OperationAlreadyExecuted();
         
         validatorOperations[operationId] = ValidatorOperation({
             initiator: msg.sender,
@@ -191,10 +209,10 @@ contract OmniCoin is ERC20, ERC20Burnable, ERC20Pausable, AccessControl, Reentra
      * @param operationId Operation identifier to execute
      */
     function executeValidatorOperation(bytes32 operationId) external {
-        require(isValidator(msg.sender), "Not a validator");
+        if (!isValidator(msg.sender)) revert UnauthorizedValidator();
         ValidatorOperation storage op = validatorOperations[operationId];
-        require(op.initiator != address(0), "Operation not found");
-        require(!op.executed, "Already executed");
+        if (op.initiator == address(0)) revert OperationNotFound();
+        if (op.executed) revert OperationAlreadyExecuted();
         
         op.executed = true;
         emit ValidatorOperationExecuted(operationId);
@@ -210,7 +228,7 @@ contract OmniCoin is ERC20, ERC20Burnable, ERC20Pausable, AccessControl, Reentra
      */
     function transferToBridge(uint256 amount) external nonReentrant whenNotPaused {
         address bridge = registry.getContract(keccak256("OMNICOIN_BRIDGE"));
-        require(bridge != address(0), "Bridge not set");
+        if (bridge == address(0)) revert ZeroAddress();
         
         _transfer(msg.sender, bridge, amount);
         emit BridgeTransferInitiated(msg.sender, bridge, amount);
@@ -258,7 +276,7 @@ contract OmniCoin is ERC20, ERC20Burnable, ERC20Pausable, AccessControl, Reentra
      * @param newRegistry New registry address
      */
     function setRegistry(address newRegistry) external onlyRole(DEFAULT_ADMIN_ROLE) {
-        require(newRegistry != address(0), "Invalid registry");
+        if (newRegistry == address(0)) revert InvalidRegistry();
         // Note: registry is immutable in RegistryAware, so this would need refactoring
         // For now, emit event to track intention
         emit RegistryUpdateRequested(newRegistry);

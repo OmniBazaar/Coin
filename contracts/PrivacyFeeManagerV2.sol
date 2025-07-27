@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.19;
 
-import "@openzeppelin/contracts/access/AccessControl.sol";
-import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
-import "@openzeppelin/contracts/utils/Pausable.sol";
-import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import "./OmniCoin.sol";
-import "./PrivateOmniCoin.sol";
+import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
+import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {OmniCoin} from "./OmniCoin.sol";
+import {PrivateOmniCoin} from "./PrivateOmniCoin.sol";
 
 /**
  * @title PrivacyFeeManagerV2
@@ -30,11 +30,26 @@ contract PrivacyFeeManagerV2 is AccessControl, ReentrancyGuard, Pausable {
     uint256 public constant BASIS_POINTS = 10000;
     
     // =============================================================================
-    // STATE VARIABLES
+    // IMMUTABLE VARIABLES
     // =============================================================================
     
-    OmniCoin public immutable omniCoin;
-    PrivateOmniCoin public immutable privateOmniCoin;
+    OmniCoin public immutable OMNI_COIN;
+    PrivateOmniCoin public immutable PRIVATE_OMNI_COIN;
+    
+    // =============================================================================
+    // CUSTOM ERRORS
+    // =============================================================================
+    
+    error InvalidOmniCoin();
+    error InvalidPrivateOmniCoin();
+    error InvalidTreasury();
+    error InvalidAdmin();
+    error FeeTransferFailed();
+    error FeeTooHigh();
+    
+    // =============================================================================
+    // STATE VARIABLES
+    // =============================================================================
     address public treasury;
     
     // Fee structure (in basis points)
@@ -73,13 +88,13 @@ contract PrivacyFeeManagerV2 is AccessControl, ReentrancyGuard, Pausable {
         address _treasury,
         address _admin
     ) {
-        require(_omniCoin != address(0), "Invalid OmniCoin");
-        require(_privateOmniCoin != address(0), "Invalid PrivateOmniCoin");
-        require(_treasury != address(0), "Invalid treasury");
-        require(_admin != address(0), "Invalid admin");
+        if (_omniCoin == address(0)) revert InvalidOmniCoin();
+        if (_privateOmniCoin == address(0)) revert InvalidPrivateOmniCoin();
+        if (_treasury == address(0)) revert InvalidTreasury();
+        if (_admin == address(0)) revert InvalidAdmin();
         
-        omniCoin = OmniCoin(_omniCoin);
-        privateOmniCoin = PrivateOmniCoin(_privateOmniCoin);
+        OMNI_COIN = OmniCoin(_omniCoin);
+        PRIVATE_OMNI_COIN = PrivateOmniCoin(_privateOmniCoin);
         treasury = _treasury;
         
         _grantRole(DEFAULT_ADMIN_ROLE, _admin);
@@ -147,10 +162,8 @@ contract PrivacyFeeManagerV2 is AccessControl, ReentrancyGuard, Pausable {
         if (feeAmount == 0) return 0;
         
         // Transfer fee from payer to treasury
-        require(
-            IERC20(address(omniCoin)).transferFrom(payer, treasury, feeAmount),
-            "Fee transfer failed"
-        );
+        if (!IERC20(address(OMNI_COIN)).transferFrom(payer, treasury, feeAmount))
+            revert FeeTransferFailed();
         
         // Update statistics
         totalFeesCollected[operationType] += feeAmount;
@@ -183,7 +196,7 @@ contract PrivacyFeeManagerV2 is AccessControl, ReentrancyGuard, Pausable {
         
         // Use PrivateOmniCoin's transferPublic function
         // This maintains privacy while collecting fees
-        privateOmniCoin.transferPublic(treasury, feeAmount);
+        PRIVATE_OMNI_COIN.transferPublic(treasury, feeAmount);
         
         // Update statistics (aggregated, not linked to specific users)
         totalFeesCollected[operationType] += feeAmount;
@@ -206,7 +219,7 @@ contract PrivacyFeeManagerV2 is AccessControl, ReentrancyGuard, Pausable {
         bytes32 operationType,
         uint256 newFeeBasisPoints
     ) external onlyRole(FEE_MANAGER_ROLE) {
-        require(newFeeBasisPoints <= 1000, "Fee too high"); // Max 10%
+        if (newFeeBasisPoints > 1000) revert FeeTooHigh(); // Max 10%
         
         uint256 oldFee = operationFees[operationType];
         operationFees[operationType] = newFeeBasisPoints;
@@ -219,7 +232,7 @@ contract PrivacyFeeManagerV2 is AccessControl, ReentrancyGuard, Pausable {
      * @param newTreasury New treasury address
      */
     function updateTreasury(address newTreasury) external onlyRole(TREASURY_ROLE) {
-        require(newTreasury != address(0), "Invalid treasury");
+        if (newTreasury == address(0)) revert InvalidTreasury();
         
         address oldTreasury = treasury;
         treasury = newTreasury;
@@ -247,7 +260,7 @@ contract PrivacyFeeManagerV2 is AccessControl, ReentrancyGuard, Pausable {
             keccak256("BRIDGE_CONVERSION")
         ];
         
-        for (uint i = 0; i < operations.length; i++) {
+        for (uint256 i = 0; i < operations.length; ++i) {
             total += totalFeesCollected[operations[i]];
         }
     }

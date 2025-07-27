@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.19;
 
-import "./ReputationSystemBase.sol";
-import "./interfaces/IReputationSystem.sol";
+import {ReputationSystemBase} from "./ReputationSystemBase.sol";
 
 /**
  * @title OmniCoinReferralSystem
@@ -15,28 +14,6 @@ import "./interfaces/IReputationSystem.sol";
  * - Referral quality metrics
  */
 contract OmniCoinReferralSystem is ReputationSystemBase, IReferralSystem {
-    
-    // =============================================================================
-    // CONSTANTS
-    // =============================================================================
-    
-    uint256 public constant MIN_REFERRAL_SCORE = 100;      // Minimum score to be eligible referrer
-    uint256 public constant REFERRAL_DECAY_PERIOD = 180 days; // Referrals decay after 6 months
-    uint256 public constant MAX_REFERRAL_LEVELS = 3;       // Track up to 3 levels
-    uint256 public constant BASE_REFERRAL_REWARD = 100;    // Base reward points
-    
-    // Referral reward multipliers by level (basis points)
-    uint256[3] public levelMultipliers = [
-        10000,  // Level 1: 100%
-        5000,   // Level 2: 50%
-        2500    // Level 3: 25%
-    ];
-    
-    // =============================================================================
-    // ROLES
-    // =============================================================================
-    
-    bytes32 public constant REFERRAL_MANAGER_ROLE = keccak256("REFERRAL_MANAGER_ROLE");
     
     // =============================================================================
     // STRUCTS
@@ -62,8 +39,40 @@ contract OmniCoinReferralSystem is ReputationSystemBase, IReferralSystem {
     }
     
     // =============================================================================
+    // CONSTANTS & ROLES
+    // =============================================================================
+    
+    bytes32 public constant REFERRAL_MANAGER_ROLE = keccak256("REFERRAL_MANAGER_ROLE");
+    
+    uint256 public constant MIN_REFERRAL_SCORE = 100;      // Minimum score to be eligible referrer
+    uint256 public constant REFERRAL_DECAY_PERIOD = 180 days; // Referrals decay after 6 months
+    uint256 public constant MAX_REFERRAL_LEVELS = 3;       // Track up to 3 levels
+    uint256 public constant BASE_REFERRAL_REWARD = 100;    // Base reward points
+    
+    // =============================================================================
+    // CUSTOM ERRORS
+    // =============================================================================
+    
+    error InvalidReferrer();
+    error InvalidReferee();
+    error CannotReferSelf();
+    error AlreadyReferred();
+    error ReferrerNotActiveReferrer();
+    error InvalidReferralDepth();
+    error UserNotActiveReferrer();
+    error InvalidBatchSize();
+    error ArrayLengthMismatch();
+    
+    // =============================================================================
     // STATE VARIABLES
     // =============================================================================
+    
+    // Referral reward multipliers by level (basis points)
+    uint256[3] public levelMultipliers = [
+        10000,  // Level 1: 100%
+        5000,   // Level 2: 50%
+        2500    // Level 3: 25%
+    ];
     
     /// @dev User referral data
     mapping(address => ReferralData) public referralData;
@@ -112,15 +121,12 @@ contract OmniCoinReferralSystem is ReputationSystemBase, IReferralSystem {
         address referee,
         itUint64 calldata activityScore
     ) external override whenNotPaused nonReentrant onlyRole(REFERRAL_MANAGER_ROLE) {
-        require(referrer != address(0), "ReferralSystem: Invalid referrer");
-        require(referee != address(0), "ReferralSystem: Invalid referee");
-        require(referrer != referee, "ReferralSystem: Cannot refer self");
-        require(referrerOf[referee] == address(0), "ReferralSystem: Already referred");
-        require(
-            referralData[referrer].isActiveReferrer || 
-            referralData[referrer].directReferralCount == 0,
-            "ReferralSystem: Referrer not eligible"
-        );
+        if (referrer == address(0)) revert InvalidReferrer();
+        if (referee == address(0)) revert InvalidReferee();
+        if (referrer == referee) revert CannotReferSelf();
+        if (referrerOf[referee] != address(0)) revert AlreadyReferred();
+        if (!referralData[referrer].isActiveReferrer && 
+            referralData[referrer].directReferralCount != 0) revert ReferrerNotActiveReferrer();
         
         // Validate activity score
         gtUint64 gtActivityScore = _validateInput(activityScore);
@@ -165,7 +171,7 @@ contract OmniCoinReferralSystem is ReputationSystemBase, IReferralSystem {
         address referrer,
         itUint64 calldata rewardAmount
     ) external override whenNotPaused onlyRole(REFERRAL_MANAGER_ROLE) {
-        require(referralData[referrer].isActiveReferrer, "ReferralSystem: Not active referrer");
+        if (!referralData[referrer].isActiveReferrer) revert UserNotActiveReferrer();
         
         gtUint64 gtReward = _validateInput(rewardAmount);
         
@@ -203,7 +209,7 @@ contract OmniCoinReferralSystem is ReputationSystemBase, IReferralSystem {
         string calldata reason
     ) external whenNotPaused onlyRole(REFERRAL_MANAGER_ROLE) {
         ReferralRecord storage record = referralRecords[referee];
-        require(record.isActive, "ReferralSystem: Not active");
+        if (!record.isActive) revert AlreadyReferred();
         
         record.isActive = false;
         
@@ -286,7 +292,7 @@ contract OmniCoinReferralSystem is ReputationSystemBase, IReferralSystem {
         ctUint64 score,
         ctUint64 rewards
     ) {
-        require(msg.sender == user, "ReferralSystem: Not authorized");
+        if (msg.sender != user) revert InvalidReferrer();
         ReferralData storage data = referralData[user];
         return (data.userEncryptedScore, data.userEncryptedRewards);
     }
@@ -299,7 +305,7 @@ contract OmniCoinReferralSystem is ReputationSystemBase, IReferralSystem {
         view 
         returns (address[] memory) 
     {
-        require(level > 0 && level <= MAX_REFERRAL_LEVELS, "ReferralSystem: Invalid level");
+        if (level == 0 || level > MAX_REFERRAL_LEVELS) revert InvalidReferralDepth();
         return referralTree[referrer][level];
     }
     
@@ -353,7 +359,7 @@ contract OmniCoinReferralSystem is ReputationSystemBase, IReferralSystem {
         uint8 level,
         gtUint64 activityScore
     ) internal {
-        require(level > 0 && level <= MAX_REFERRAL_LEVELS, "ReferralSystem: Invalid level");
+        if (level == 0 || level > MAX_REFERRAL_LEVELS) revert InvalidReferralDepth();
         
         // Calculate reward based on activity and level
         gtUint64 baseReward;
@@ -413,8 +419,8 @@ contract OmniCoinReferralSystem is ReputationSystemBase, IReferralSystem {
         external 
         onlyRole(ADMIN_ROLE) 
     {
-        for (uint i = 0; i < 3; i++) {
-            require(newMultipliers[i] <= BASIS_POINTS, "ReferralSystem: Invalid multiplier");
+        for (uint256 i = 0; i < 3; i++) {
+            if (newMultipliers[i] > BASIS_POINTS) revert InvalidReferralDepth();
         }
         levelMultipliers = newMultipliers;
         emit LevelMultipliersUpdated(newMultipliers);

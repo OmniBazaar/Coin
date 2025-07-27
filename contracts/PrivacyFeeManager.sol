@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.19;
 
-import "@openzeppelin/contracts/access/AccessControl.sol";
-import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
-import "@openzeppelin/contracts/utils/Pausable.sol";
-import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import "./OmniCoin.sol";
+import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
+import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {OmniCoin} from "./OmniCoin.sol";
 
 /**
  * @title PrivacyFeeManager
@@ -34,10 +34,29 @@ contract PrivacyFeeManager is AccessControl, ReentrancyGuard, Pausable {
     uint256 public constant MIN_COTI_RESERVE = 1000 * 10**18; // 1000 COTI minimum
     
     // =============================================================================
+    // CUSTOM ERRORS
+    // =============================================================================
+    
+    error InvalidAddress();
+    error InvalidAmount();
+    error MustDepositCredits();
+    error TransferFromFailed();
+    error InsufficientCredits();
+    error TransferFailed();
+    error UnknownOperationType();
+    error NotAuthorized();
+    error NoFeeRequired();
+    error InsufficientPrivacyCredits();
+    error InsufficientCotiReserve();
+    error TargetTooLow();
+    error InvalidRouter();
+    error InvalidToken();
+    
+    // =============================================================================
     // STATE VARIABLES
     // =============================================================================
     
-    OmniCoin public immutable omniCoin;
+    OmniCoin public immutable OMNI_COIN;
     address public cotiToken;
     address public dexRouter;
     
@@ -112,12 +131,12 @@ contract PrivacyFeeManager is AccessControl, ReentrancyGuard, Pausable {
         address _dexRouter,
         address _admin
     ) {
-        require(_omniCoin != address(0), "Invalid OmniCoin address");
+        if (_omniCoin == address(0)) revert InvalidAddress();
         require(_cotiToken != address(0), "Invalid COTI address");
         require(_dexRouter != address(0), "Invalid DEX router");
         require(_admin != address(0), "Invalid admin address");
         
-        omniCoin = OmniCoin(_omniCoin);
+        OMNI_COIN = OmniCoin(_omniCoin);
         cotiToken = _cotiToken;
         dexRouter = _dexRouter;
         
@@ -143,7 +162,7 @@ contract PrivacyFeeManager is AccessControl, ReentrancyGuard, Pausable {
         
         // Transfer OMNI tokens from user
         require(
-            IERC20(address(omniCoin)).transferFrom(msg.sender, address(this), amount),
+            IERC20(address(OMNI_COIN)).transferFrom(msg.sender, address(this), amount),
             "Credit deposit failed"
         );
         
@@ -171,7 +190,7 @@ contract PrivacyFeeManager is AccessControl, ReentrancyGuard, Pausable {
         
         // Transfer OMNI back to user
         require(
-            IERC20(address(omniCoin)).transfer(msg.sender, amount),
+            IERC20(address(OMNI_COIN)).transfer(msg.sender, amount),
             "Credit withdrawal failed"
         );
         
@@ -257,7 +276,7 @@ contract PrivacyFeeManager is AccessControl, ReentrancyGuard, Pausable {
         // Only registered contracts can collect fees
         require(
             hasRole(FEE_MANAGER_ROLE, msg.sender) || 
-            omniCoin.hasRole(keccak256("BRIDGE_ROLE"), msg.sender),
+            OMNI_COIN.hasRole(keccak256("BRIDGE_ROLE"), msg.sender),
             "Unauthorized fee collector"
         );
         
@@ -271,8 +290,8 @@ contract PrivacyFeeManager is AccessControl, ReentrancyGuard, Pausable {
         // Update statistics
         totalCreditsUsed += feeAmount;
         totalFeesCollected += feeAmount;
-        totalPrivacyTransactions++;
-        userPrivacyUsage[user]++;
+        ++totalPrivacyTransactions;
+        ++userPrivacyUsage[user];
         
         emit PrivacyCreditsUsed(
             user, 
@@ -307,7 +326,7 @@ contract PrivacyFeeManager is AccessControl, ReentrancyGuard, Pausable {
         // Only registered contracts can collect fees
         require(
             hasRole(FEE_MANAGER_ROLE, msg.sender) || 
-            omniCoin.hasRole(keccak256("BRIDGE_ROLE"), msg.sender),
+            OMNI_COIN.hasRole(keccak256("BRIDGE_ROLE"), msg.sender),
             "Unauthorized fee collector"
         );
         
@@ -316,14 +335,14 @@ contract PrivacyFeeManager is AccessControl, ReentrancyGuard, Pausable {
         
         // Transfer fee from user to this contract (VISIBLE TRANSACTION)
         require(
-            IERC20(address(omniCoin)).transferFrom(user, address(this), feeAmount),
+            IERC20(address(OMNI_COIN)).transferFrom(user, address(this), feeAmount),
             "Fee transfer failed"
         );
         
         omniCoinReserve += feeAmount;
         totalFeesCollected += feeAmount;
-        totalPrivacyTransactions++;
-        userPrivacyUsage[user]++;
+        ++totalPrivacyTransactions;
+        ++userPrivacyUsage[user];
         
         emit PrivacyFeeCollected(user, operationType, feeAmount, block.timestamp);
         
@@ -376,7 +395,7 @@ contract PrivacyFeeManager is AccessControl, ReentrancyGuard, Pausable {
     function recordBridgeUsage(address user, uint256 amount) external {
         // Only authorized contracts can record usage
         require(
-            msg.sender == address(omniCoin) || 
+            msg.sender == address(OMNI_COIN) || 
             hasRole(FEE_MANAGER_ROLE, msg.sender),
             "PrivacyFeeManager: Unauthorized"
         );
@@ -538,9 +557,7 @@ contract PrivacyFeeManager is AccessControl, ReentrancyGuard, Pausable {
         uint256 amount
     ) external onlyRole(DEFAULT_ADMIN_ROLE) {
         require(token != address(0), "Invalid token");
-        require(
-            IERC20(token).transfer(msg.sender, amount),
-            "Recovery failed"
-        );
+        if (!IERC20(token).transfer(msg.sender, amount))
+            revert TransferFailed();
     }
 }

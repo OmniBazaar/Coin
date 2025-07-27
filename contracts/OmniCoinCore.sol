@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.19;
 
-import "@openzeppelin/contracts/access/AccessControl.sol";
-import "@openzeppelin/contracts/utils/Pausable.sol";
-import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
-import "../coti-contracts/contracts/token/PrivateERC20/PrivateERC20.sol";
-import "../coti-contracts/contracts/utils/mpc/MpcCore.sol";
-import "./base/RegistryAware.sol";
+import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
+import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
+import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import {PrivateERC20} from "../coti-contracts/contracts/token/PrivateERC20/PrivateERC20.sol";
+import {MpcCore, gtUint64, ctUint64, itUint64} from "../coti-contracts/contracts/utils/mpc/MpcCore.sol";
+import {RegistryAware} from "./base/RegistryAware.sol";
 
 interface IPrivacyFeeManager {
     function collectPrivacyFee(address user, bytes32 operationType, uint256 amount) external returns (bool);
@@ -23,6 +23,18 @@ interface IPrivacyFeeManager {
  * - Maintains backward compatibility with existing interfaces
  */
 contract OmniCoinCore is PrivateERC20, AccessControl, Pausable, ReentrancyGuard, RegistryAware {
+    
+    // =============================================================================
+    // STRUCTS
+    // =============================================================================
+    
+    struct ValidatorOperation {
+        bytes32 operationHash;
+        address[] validators;
+        uint256 confirmations;
+        bool executed;
+        uint256 timestamp;
+    }
     
     // =============================================================================
     // CONSTANTS & ROLES
@@ -66,16 +78,21 @@ contract OmniCoinCore is PrivateERC20, AccessControl, Pausable, ReentrancyGuard,
     bool public privacyEnabledByDefault = false;
     
     // =============================================================================
-    // STRUCTS
+    // CUSTOM ERRORS
     // =============================================================================
     
-    struct ValidatorOperation {
-        bytes32 operationHash;
-        address[] validators;
-        uint256 confirmations;
-        bool executed;
-        uint256 timestamp;
-    }
+    error NotValidator();
+    error InvalidAddress();
+    error InvalidAmount();
+    error ExceedsMaxSupply();
+    error InsufficientValidators();
+    error OperationNotFound();
+    error OperationAlreadyExecuted();
+    error AlreadyConfirmed();
+    error ContractPaused();
+    error PrivacyNotEnabled();
+    error PrivacyFeeFailed();
+    error MpcNotAvailable();
     
     // =============================================================================
     // EVENTS
@@ -92,12 +109,12 @@ contract OmniCoinCore is PrivateERC20, AccessControl, Pausable, ReentrancyGuard,
     // =============================================================================
     
     modifier onlyValidator() {
-        require(validators[msg.sender], "OmniCoinCore: Not a registered validator");
+        if (!validators[msg.sender]) revert NotValidator();
         _;
     }
     
     modifier whenNotPausedAndEnabled() {
-        require(!paused(), "OmniCoinCore: Contract is paused");
+        if (paused()) revert ContractPaused();
         _;
     }
     
@@ -110,8 +127,8 @@ contract OmniCoinCore is PrivateERC20, AccessControl, Pausable, ReentrancyGuard,
         address _admin,
         uint256 _minimumValidators
     ) PrivateERC20("OmniCoin", "OMNI") RegistryAware(_registry) {
-        require(_admin != address(0), "OmniCoinCore: Admin cannot be zero address");
-        require(_minimumValidators > 0, "OmniCoinCore: Minimum validators must be > 0");
+        if (_admin == address(0)) revert InvalidAddress();
+        if (_minimumValidators == 0) revert InsufficientValidators();
         
         // Grant roles to admin
         _grantRole(DEFAULT_ADMIN_ROLE, _admin);
@@ -168,7 +185,7 @@ contract OmniCoinCore is PrivateERC20, AccessControl, Pausable, ReentrancyGuard,
      * @dev Mint initial supply (called once after deployment)
      */
     function mintInitialSupply() external onlyRole(DEFAULT_ADMIN_ROLE) {
-        require(_publicTotalSupply == 0, "OmniCoinCore: Initial supply already minted");
+        if (_publicTotalSupply != 0) revert InvalidAmount();
         
         // Update the public total supply tracker
         _publicTotalSupply = INITIAL_SUPPLY;
@@ -177,7 +194,7 @@ contract OmniCoinCore is PrivateERC20, AccessControl, Pausable, ReentrancyGuard,
             // On COTI with MPC enabled
             gtUint64 initialSupply = MpcCore.setPublic64(uint64(INITIAL_SUPPLY));
             gtBool result = _mint(msg.sender, initialSupply);
-            require(MpcCore.decrypt(result), "OmniCoinCore: Initial mint failed");
+            if (!MpcCore.decrypt(result)) revert InvalidAmount();
         } else {
             // In test environment
             ctUint64 dummyValue = ctUint64.wrap(0);
@@ -194,11 +211,11 @@ contract OmniCoinCore is PrivateERC20, AccessControl, Pausable, ReentrancyGuard,
      * @param validator Address of the validator to add
      */
     function addValidator(address validator) external onlyRole(DEFAULT_ADMIN_ROLE) {
-        require(validator != address(0), "OmniCoinCore: Validator cannot be zero address");
-        require(!validators[validator], "OmniCoinCore: Validator already exists");
+        if (validator == address(0)) revert InvalidAddress();
+        if (validators[validator]) revert InvalidAddress();
         
         validators[validator] = true;
-        validatorCount++;
+        ++validatorCount;
         
         _grantRole(VALIDATOR_ROLE, validator);
         
@@ -210,11 +227,11 @@ contract OmniCoinCore is PrivateERC20, AccessControl, Pausable, ReentrancyGuard,
      * @param validator Address of the validator to remove
      */
     function removeValidator(address validator) external onlyRole(DEFAULT_ADMIN_ROLE) {
-        require(validators[validator], "OmniCoinCore: Validator does not exist");
-        require(validatorCount > minimumValidators, "OmniCoinCore: Cannot go below minimum validators");
+        if (!validators[validator]) revert NotValidator();
+        if (validatorCount <= minimumValidators) revert InsufficientValidators();
         
         validators[validator] = false;
-        validatorCount--;
+        --validatorCount;
         
         _revokeRole(VALIDATOR_ROLE, validator);
         
@@ -289,7 +306,7 @@ contract OmniCoinCore is PrivateERC20, AccessControl, Pausable, ReentrancyGuard,
     {
         if (usePrivacy && isMpcAvailable) {
             // User explicitly chose privacy - collect fee
-            require(userPrivacyPreference[from], "OmniCoinCore: Enable privacy preference first");
+            if (!userPrivacyPreference[from]) revert PrivacyNotEnabled();
             
             address privacyFeeManager = getPrivacyFeeManager();
             if (privacyFeeManager != address(0)) {
@@ -347,7 +364,7 @@ contract OmniCoinCore is PrivateERC20, AccessControl, Pausable, ReentrancyGuard,
     {
         if (usePrivacy && isMpcAvailable) {
             // User explicitly chose privacy - collect fee
-            require(userPrivacyPreference[msg.sender], "OmniCoinCore: Enable privacy preference first");
+            if (!userPrivacyPreference[msg.sender]) revert PrivacyNotEnabled();
             
             address privacyFeeManager = getPrivacyFeeManager();
             if (privacyFeeManager != address(0)) {
@@ -383,7 +400,7 @@ contract OmniCoinCore is PrivateERC20, AccessControl, Pausable, ReentrancyGuard,
     {
         if (usePrivacy && isMpcAvailable) {
             // User explicitly chose privacy - collect fee
-            require(userPrivacyPreference[msg.sender], "OmniCoinCore: Enable privacy preference first");
+            if (!userPrivacyPreference[msg.sender]) revert PrivacyNotEnabled();
             
             address privacyFeeManager = getPrivacyFeeManager();
             if (privacyFeeManager != address(0)) {
@@ -416,8 +433,8 @@ contract OmniCoinCore is PrivateERC20, AccessControl, Pausable, ReentrancyGuard,
         nonReentrant 
         returns (gtBool) 
     {
-        require(isMpcAvailable, "OmniCoinCore: MPC not available");
-        require(userPrivacyPreference[msg.sender], "OmniCoinCore: Privacy not enabled for sender");
+        if (!isMpcAvailable) revert MpcNotAvailable();
+        if (!userPrivacyPreference[msg.sender]) revert PrivacyNotEnabled();
         
         // This is the explicit privacy path - always charge fee
         address privacyFeeManager = getPrivacyFeeManager();
@@ -447,8 +464,8 @@ contract OmniCoinCore is PrivateERC20, AccessControl, Pausable, ReentrancyGuard,
         nonReentrant 
         returns (gtBool) 
     {
-        require(isMpcAvailable, "OmniCoinCore: MPC not available");
-        require(userPrivacyPreference[msg.sender], "OmniCoinCore: Privacy not enabled");
+        if (!isMpcAvailable) revert MpcNotAvailable();
+        if (!userPrivacyPreference[msg.sender]) revert PrivacyNotEnabled();
         
         // Charge privacy fee for garbled transfers
         address privacyFeeManager = getPrivacyFeeManager();
@@ -501,7 +518,7 @@ contract OmniCoinCore is PrivateERC20, AccessControl, Pausable, ReentrancyGuard,
         nonReentrant 
         returns (gtBool) 
     {
-        require(to != address(0), "OmniCoinCore: Cannot mint to zero address");
+        if (to == address(0)) revert InvalidAddress();
         
         if (isMpcAvailable) {
             gtUint64 gtAmount = MpcCore.validateCiphertext(amount);
@@ -526,7 +543,7 @@ contract OmniCoinCore is PrivateERC20, AccessControl, Pausable, ReentrancyGuard,
         nonReentrant 
         returns (gtBool) 
     {
-        require(to != address(0), "OmniCoinCore: Cannot mint to zero address");
+        if (to == address(0)) revert InvalidAddress();
         return _mintPrivate(to, amount);
     }
     
@@ -609,16 +626,16 @@ contract OmniCoinCore is PrivateERC20, AccessControl, Pausable, ReentrancyGuard,
         whenNotPausedAndEnabled 
     {
         ValidatorOperation storage operation = validatorOperations[operationHash];
-        require(operation.operationHash != bytes32(0), "OmniCoinCore: Operation does not exist");
-        require(!operation.executed, "OmniCoinCore: Operation already executed");
+        if (operation.operationHash == bytes32(0)) revert OperationNotFound();
+        if (operation.executed) revert OperationAlreadyExecuted();
         
         // Check if validator already confirmed
-        for (uint256 i = 0; i < operation.validators.length; i++) {
-            require(operation.validators[i] != msg.sender, "OmniCoinCore: Already confirmed");
+        for (uint256 i = 0; i < operation.validators.length; ++i) {
+            if (operation.validators[i] == msg.sender) revert AlreadyConfirmed();
         }
         
         operation.validators.push(msg.sender);
-        operation.confirmations++;
+        ++operation.confirmations;
         
         // Execute if minimum confirmations reached
         if (operation.confirmations >= minimumValidators) {
@@ -851,12 +868,9 @@ contract OmniCoinCore is PrivateERC20, AccessControl, Pausable, ReentrancyGuard,
         onlyRole(DEFAULT_ADMIN_ROLE) 
     {
         ValidatorOperation storage operation = validatorOperations[operationHash];
-        require(operation.operationHash != bytes32(0), "OmniCoinCore: Operation does not exist");
-        require(!operation.executed, "OmniCoinCore: Operation already executed");
-        require(
-            block.timestamp > operation.timestamp + 24 hours, 
-            "OmniCoinCore: Must wait 24 hours before emergency execution"
-        );
+        if (operation.operationHash == bytes32(0)) revert OperationNotFound();
+        if (operation.executed) revert OperationAlreadyExecuted();
+        if (block.timestamp <= operation.timestamp + 24 hours) revert OperationNotFound();
         
         operation.executed = true;
         emit ValidatorOperationExecuted(operationHash, operation.confirmations);

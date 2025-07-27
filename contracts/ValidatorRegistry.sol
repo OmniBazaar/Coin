@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.19;
 
-import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
-import "@openzeppelin/contracts/utils/Pausable.sol";
-import "@openzeppelin/contracts/access/AccessControl.sol";
-import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
-import "@openzeppelin/contracts/utils/math/Math.sol";
+import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
+import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
 /**
  * @title ValidatorRegistry
@@ -23,6 +23,15 @@ import "@openzeppelin/contracts/utils/math/Math.sol";
 contract ValidatorRegistry is ReentrancyGuard, Pausable, AccessControl {
     using SafeERC20 for IERC20;
     using Math for uint256;
+
+    // Enums
+    enum ValidatorStatus {
+        INACTIVE,
+        ACTIVE,
+        SUSPENDED,
+        JAILED,
+        EXITING
+    }
 
     // Roles
     bytes32 public constant VALIDATOR_MANAGER_ROLE =
@@ -75,15 +84,6 @@ contract ValidatorRegistry is ReentrancyGuard, Pausable, AccessControl {
         ValidatorStatus oldStatus,
         ValidatorStatus newStatus
     );
-
-    // Enums
-    enum ValidatorStatus {
-        INACTIVE,
-        ACTIVE,
-        SUSPENDED,
-        JAILED,
-        EXITING
-    }
 
     // Structs
     struct ValidatorInfo {
@@ -157,17 +157,37 @@ contract ValidatorRegistry is ReentrancyGuard, Pausable, AccessControl {
     uint256 public constant CHAT_ACTIVITY_WEIGHT = 15;
     uint256 public constant IPFS_STORAGE_WEIGHT = 10;
 
+    // Custom errors
+    error InvalidStakingToken();
+    error MinimumStakeMustBePositive();
+    error MaximumStakeTooLow();
+    error InsufficientStake();
+    error StakeExceedsMaximum();
+    error NodeIdRequired();
+    error AlreadyRegistered();
+    error NodeIdAlreadyTaken();
+    error HardwareRequirementsNotMet();
+    error NotAValidator();
+    error AdditionalStakeMustBePositive();
+    error AlreadyExiting();
+    error NotInExitingState();
+    error UnstakingPeriodNotCompleted();
+    error ValidatorNotFound();
+    error SlashAmountMustBePositive();
+    error SlashAmountExceedsStake();
+    error ArraysLengthMismatch();
+    error EpochNotReady();
+    error NotEnoughActiveValidators();
+    error EpochDurationTooShort();
+
     constructor(
         address _stakingToken,
         uint256 _minimumStake,
         uint256 _maximumStake
     ) {
-        require(_stakingToken != address(0), "Invalid staking token");
-        require(_minimumStake > 0, "Minimum stake must be positive");
-        require(
-            _maximumStake >= _minimumStake,
-            "Maximum stake must be >= minimum"
-        );
+        if (_stakingToken == address(0)) revert InvalidStakingToken();
+        if (_minimumStake == 0) revert MinimumStakeMustBePositive();
+        if (_maximumStake < _minimumStake) revert MaximumStakeTooLow();
 
         stakingToken = IERC20(_stakingToken);
 
@@ -196,29 +216,14 @@ contract ValidatorRegistry is ReentrancyGuard, Pausable, AccessControl {
         string calldata nodeId,
         HardwareSpecs calldata hardwareSpecs
     ) external nonReentrant whenNotPaused {
-        require(
-            stakeAmount >= stakingConfig.minimumStake,
-            "Insufficient stake"
-        );
-        require(
-            stakeAmount <= stakingConfig.maximumStake,
-            "Stake exceeds maximum"
-        );
-        require(bytes(nodeId).length > 0, "Node ID required");
-        require(
-            validators[msg.sender].validatorAddress == address(0),
-            "Already registered"
-        );
-        require(
-            nodeIdToValidator[nodeId] == address(0),
-            "Node ID already taken"
-        );
+        if (stakeAmount < stakingConfig.minimumStake) revert InsufficientStake();
+        if (stakeAmount > stakingConfig.maximumStake) revert StakeExceedsMaximum();
+        if (bytes(nodeId).length == 0) revert NodeIdRequired();
+        if (validators[msg.sender].validatorAddress != address(0)) revert AlreadyRegistered();
+        if (nodeIdToValidator[nodeId] != address(0)) revert NodeIdAlreadyTaken();
 
         // Verify hardware requirements
-        require(
-            _verifyHardwareSpecs(hardwareSpecs),
-            "Hardware requirements not met"
-        );
+        if (!_verifyHardwareSpecs(hardwareSpecs)) revert HardwareRequirementsNotMet();
 
         // Transfer stake
         stakingToken.safeTransferFrom(msg.sender, address(this), stakeAmount);
@@ -250,8 +255,8 @@ contract ValidatorRegistry is ReentrancyGuard, Pausable, AccessControl {
         nodeIdToValidator[nodeId] = msg.sender;
         validatorList.push(msg.sender);
         totalStaked += stakeAmount;
-        totalValidators++;
-        activeValidators++;
+        ++totalValidators;
+        ++activeValidators;
 
         emit ValidatorRegistered(
             msg.sender,
@@ -265,18 +270,12 @@ contract ValidatorRegistry is ReentrancyGuard, Pausable, AccessControl {
      * @dev Increase validator stake
      */
     function increaseStake(uint256 additionalStake) external nonReentrant {
-        require(
-            validators[msg.sender].validatorAddress != address(0),
-            "Not a validator"
-        );
-        require(additionalStake > 0, "Additional stake must be positive");
+        if (validators[msg.sender].validatorAddress == address(0)) revert NotAValidator();
+        if (additionalStake == 0) revert AdditionalStakeMustBePositive();
 
         uint256 newTotalStake = validators[msg.sender].stakedAmount +
             additionalStake;
-        require(
-            newTotalStake <= stakingConfig.maximumStake,
-            "Stake exceeds maximum"
-        );
+        if (newTotalStake > stakingConfig.maximumStake) revert StakeExceedsMaximum();
 
         // Transfer additional stake
         stakingToken.safeTransferFrom(
@@ -300,21 +299,15 @@ contract ValidatorRegistry is ReentrancyGuard, Pausable, AccessControl {
      * @dev Request to deregister and unstake
      */
     function requestDeregistration() external {
-        require(
-            validators[msg.sender].validatorAddress != address(0),
-            "Not a validator"
-        );
-        require(
-            validators[msg.sender].status != ValidatorStatus.EXITING,
-            "Already exiting"
-        );
+        if (validators[msg.sender].validatorAddress == address(0)) revert NotAValidator();
+        if (validators[msg.sender].status == ValidatorStatus.EXITING) revert AlreadyExiting();
 
         validators[msg.sender].status = ValidatorStatus.EXITING;
         validators[msg.sender].exitTime =
             block.timestamp +
             stakingConfig.unstakingPeriod;
 
-        activeValidators--;
+        --activeValidators;
 
         emit ValidatorStatusChanged(
             msg.sender,
@@ -328,15 +321,9 @@ contract ValidatorRegistry is ReentrancyGuard, Pausable, AccessControl {
      */
     function completeDeregistration() external nonReentrant {
         ValidatorInfo storage validator = validators[msg.sender];
-        require(validator.validatorAddress != address(0), "Not a validator");
-        require(
-            validator.status == ValidatorStatus.EXITING,
-            "Not in exiting state"
-        );
-        require(
-            block.timestamp >= validator.exitTime,
-            "Unstaking period not completed"
-        );
+        if (validator.validatorAddress == address(0)) revert NotAValidator();
+        if (validator.status != ValidatorStatus.EXITING) revert NotInExitingState();
+        if (block.timestamp < validator.exitTime) revert UnstakingPeriodNotCompleted();
 
         uint256 refundAmount = validator.stakedAmount;
 
@@ -346,7 +333,7 @@ contract ValidatorRegistry is ReentrancyGuard, Pausable, AccessControl {
         delete validators[msg.sender];
 
         totalStaked -= refundAmount;
-        totalValidators--;
+        --totalValidators;
 
         // Refund stake
         stakingToken.safeTransfer(msg.sender, refundAmount);
@@ -366,10 +353,7 @@ contract ValidatorRegistry is ReentrancyGuard, Pausable, AccessControl {
         uint256 ipfsDataStored
     ) external onlyRole(ORACLE_ROLE) {
         ValidatorInfo storage validator = validators[validatorAddress];
-        require(
-            validator.validatorAddress != address(0),
-            "Validator not found"
-        );
+        if (validator.validatorAddress == address(0)) revert ValidatorNotFound();
 
         // Update performance metrics
         validator.performance.blocksProduced += blocksProduced;
@@ -391,7 +375,7 @@ contract ValidatorRegistry is ReentrancyGuard, Pausable, AccessControl {
             validator.status == ValidatorStatus.ACTIVE
         ) {
             validator.status = ValidatorStatus.SUSPENDED;
-            activeValidators--;
+            --activeValidators;
 
             emit ValidatorStatusChanged(
                 validatorAddress,
@@ -417,15 +401,9 @@ contract ValidatorRegistry is ReentrancyGuard, Pausable, AccessControl {
         string calldata reason
     ) external onlyRole(SLASHER_ROLE) {
         ValidatorInfo storage validator = validators[validatorAddress];
-        require(
-            validator.validatorAddress != address(0),
-            "Validator not found"
-        );
-        require(slashAmount > 0, "Slash amount must be positive");
-        require(
-            slashAmount <= validator.stakedAmount,
-            "Slash amount exceeds stake"
-        );
+        if (validator.validatorAddress == address(0)) revert ValidatorNotFound();
+        if (slashAmount == 0) revert SlashAmountMustBePositive();
+        if (slashAmount > validator.stakedAmount) revert SlashAmountExceedsStake();
 
         // Apply slashing
         validator.stakedAmount -= slashAmount;
@@ -434,7 +412,7 @@ contract ValidatorRegistry is ReentrancyGuard, Pausable, AccessControl {
         totalStaked -= slashAmount;
 
         if (validator.status == ValidatorStatus.ACTIVE) {
-            activeValidators--;
+            --activeValidators;
         }
 
         // Burned tokens (sent to zero address)
@@ -460,12 +438,9 @@ contract ValidatorRegistry is ReentrancyGuard, Pausable, AccessControl {
         address[] calldata validatorAddresses,
         uint256[] calldata rewardAmounts
     ) external onlyRole(VALIDATOR_MANAGER_ROLE) {
-        require(
-            validatorAddresses.length == rewardAmounts.length,
-            "Arrays length mismatch"
-        );
+        if (validatorAddresses.length != rewardAmounts.length) revert ArraysLengthMismatch();
 
-        for (uint256 i = 0; i < validatorAddresses.length; i++) {
+        for (uint256 i = 0; i < validatorAddresses.length; ++i) {
             ValidatorInfo storage validator = validators[validatorAddresses[i]];
             if (
                 validator.validatorAddress != address(0) && rewardAmounts[i] > 0
@@ -491,16 +466,13 @@ contract ValidatorRegistry is ReentrancyGuard, Pausable, AccessControl {
      * @dev Advance epoch and update validator states
      */
     function advanceEpoch() external {
-        require(
-            block.timestamp >= lastEpochTime + epochDuration,
-            "Epoch not ready"
-        );
+        if (block.timestamp < lastEpochTime + epochDuration) revert EpochNotReady();
 
-        currentEpoch++;
+        ++currentEpoch;
         lastEpochTime = block.timestamp;
 
         // Update validator states based on participation
-        for (uint256 i = 0; i < validatorList.length; i++) {
+        for (uint256 i = 0; i < validatorList.length; ++i) {
             address validatorAddr = validatorList[i];
             ValidatorInfo storage validator = validators[validatorAddr];
 
@@ -512,7 +484,7 @@ contract ValidatorRegistry is ReentrancyGuard, Pausable, AccessControl {
                     stakingConfig.participationThreshold
                 ) {
                     validator.status = ValidatorStatus.ACTIVE;
-                    activeValidators++;
+                    ++activeValidators;
 
                     emit ValidatorStatusChanged(
                         validatorAddr,
@@ -530,7 +502,7 @@ contract ValidatorRegistry is ReentrancyGuard, Pausable, AccessControl {
     function getValidatorSelection(
         uint256 count
     ) external view returns (address[] memory) {
-        require(count <= activeValidators, "Not enough active validators");
+        if (count > activeValidators) revert NotEnoughActiveValidators();
 
         // Create array of active validators with their scores
         address[] memory activeValidatorAddresses = new address[](
@@ -539,18 +511,18 @@ contract ValidatorRegistry is ReentrancyGuard, Pausable, AccessControl {
         uint256[] memory scores = new uint256[](activeValidators);
         uint256 activeIndex = 0;
 
-        for (uint256 i = 0; i < validatorList.length; i++) {
+        for (uint256 i = 0; i < validatorList.length; ++i) {
             ValidatorInfo storage validator = validators[validatorList[i]];
             if (validator.status == ValidatorStatus.ACTIVE) {
                 activeValidatorAddresses[activeIndex] = validatorList[i];
                 scores[activeIndex] = validator.participationScore;
-                activeIndex++;
+                ++activeIndex;
             }
         }
 
         // Sort by participation score (simple bubble sort for small arrays)
-        for (uint256 i = 0; i < activeValidators - 1; i++) {
-            for (uint256 j = 0; j < activeValidators - i - 1; j++) {
+        for (uint256 i = 0; i < activeValidators - 1; ++i) {
+            for (uint256 j = 0; j < activeValidators - i - 1; ++j) {
                 if (scores[j] < scores[j + 1]) {
                     // Swap scores
                     uint256 tempScore = scores[j];
@@ -569,7 +541,7 @@ contract ValidatorRegistry is ReentrancyGuard, Pausable, AccessControl {
 
         // Return top performers
         address[] memory selected = new address[](count);
-        for (uint256 i = 0; i < count; i++) {
+        for (uint256 i = 0; i < count; ++i) {
             selected[i] = activeValidatorAddresses[i];
         }
 
@@ -629,7 +601,7 @@ contract ValidatorRegistry is ReentrancyGuard, Pausable, AccessControl {
     }
 
     function _removeValidatorFromList(address validatorAddress) internal {
-        for (uint256 i = 0; i < validatorList.length; i++) {
+        for (uint256 i = 0; i < validatorList.length; ++i) {
             if (validatorList[i] == validatorAddress) {
                 validatorList[i] = validatorList[validatorList.length - 1];
                 validatorList.pop();
@@ -659,10 +631,10 @@ contract ValidatorRegistry is ReentrancyGuard, Pausable, AccessControl {
         address[] memory active = new address[](activeValidators);
         uint256 index = 0;
 
-        for (uint256 i = 0; i < validatorList.length; i++) {
+        for (uint256 i = 0; i < validatorList.length; ++i) {
             if (validators[validatorList[i]].status == ValidatorStatus.ACTIVE) {
                 active[index] = validatorList[i];
-                index++;
+                ++index;
             }
         }
 
@@ -695,7 +667,7 @@ contract ValidatorRegistry is ReentrancyGuard, Pausable, AccessControl {
     function updateEpochDuration(
         uint256 newDuration
     ) external onlyRole(DEFAULT_ADMIN_ROLE) {
-        require(newDuration >= 1 hours, "Epoch duration too short");
+        if (newDuration < 1 hours) revert EpochDurationTooShort();
         epochDuration = newDuration;
     }
 

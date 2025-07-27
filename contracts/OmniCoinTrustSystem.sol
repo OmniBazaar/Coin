@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.19;
 
-import "./ReputationSystemBase.sol";
-import "./interfaces/IReputationSystem.sol";
+import {ReputationSystemBase} from "./ReputationSystemBase.sol";
 
 /**
  * @title OmniCoinTrustSystem
@@ -15,6 +14,41 @@ import "./interfaces/IReputationSystem.sol";
  * - Vote delegation and withdrawal
  */
 contract OmniCoinTrustSystem is ReputationSystemBase, ITrustSystem {
+    
+    // =============================================================================
+    // STRUCTS
+    // =============================================================================
+    
+    struct TrustData {
+        gtUint64 encryptedDPoSVotes;        // Private: total DPoS votes received
+        ctUint64 userEncryptedVotes;        // Private: votes encrypted for user viewing
+        uint256 publicVoterCount;           // Public: number of unique voters
+        uint256 cotiProofOfTrustScore;      // Public: COTI PoT score (if available)
+        bool useCotiPoT;                    // Public: whether to use COTI PoT or DPoS
+        uint256 lastTrustUpdate;            // Public: last trust update timestamp
+        uint256 lastDecayCalculation;       // Last time decay was calculated
+    }
+    
+    struct Vote {
+        gtUint64 encryptedAmount;           // Private: vote amount
+        uint256 timestamp;                  // When vote was cast
+        bool isActive;                      // Whether vote is still active
+    }
+    
+    // =============================================================================
+    // CUSTOM ERRORS
+    // =============================================================================
+    
+    error InvalidVoter();
+    error InvalidCandidate();
+    error InsufficientVoteAmount();
+    error AlreadyVoted();
+    error ExceedsMaxDelegations();
+    error VoteNotFound();
+    error UnauthorizedAccess();
+    error ArrayLengthMismatch();
+    error CotiNotEnabled();
+    error InvalidCotiScore();
     
     // =============================================================================
     // CONSTANTS
@@ -32,26 +66,6 @@ contract OmniCoinTrustSystem is ReputationSystemBase, ITrustSystem {
     bytes32 public constant COTI_ORACLE_ROLE = keccak256("COTI_ORACLE_ROLE");
     
     // =============================================================================
-    // STRUCTS
-    // =============================================================================
-    
-    struct TrustData {
-        gtUint64 encryptedDPoSVotes;        // Private: total DPoS votes received
-        ctUint64 userEncryptedVotes;        // Private: votes encrypted for user viewing
-        uint256 publicVoterCount;           // Public: number of unique voters
-        uint256 cotiProofOfTrustScore;      // Public: COTI PoT score (if available)
-        bool useCotiPoT;                    // Public: whether to use COTI PoT or DPoS
-        uint256 lastTrustUpdate;            // Public: last trust update timestamp
-        uint256 lastDecayCalculation;       // Last time decay was calculated
-    }
-    
-    struct VoteRecord {
-        gtUint64 encryptedAmount;           // Private: vote amount
-        uint256 timestamp;                  // When vote was cast
-        bool isActive;                      // Whether vote is active
-    }
-    
-    // =============================================================================
     // STATE VARIABLES
     // =============================================================================
     
@@ -59,7 +73,7 @@ contract OmniCoinTrustSystem is ReputationSystemBase, ITrustSystem {
     mapping(address => TrustData) public trustData;
     
     /// @dev Vote records: voter => candidate => vote record
-    mapping(address => mapping(address => VoteRecord)) public voteRecords;
+    mapping(address => mapping(address => Vote)) public voteRecords;
     
     /// @dev Delegation count per voter
     mapping(address => uint256) public voterDelegationCount;
@@ -107,25 +121,23 @@ contract OmniCoinTrustSystem is ReputationSystemBase, ITrustSystem {
         address candidate,
         itUint64 calldata votes
     ) external override whenNotPaused nonReentrant {
-        require(candidate != address(0), "TrustSystem: Invalid candidate");
-        require(candidate != msg.sender, "TrustSystem: Cannot vote for self");
-        require(
-            voterDelegationCount[msg.sender] < MAX_DELEGATIONS,
-            "TrustSystem: Too many delegations"
-        );
+        if (candidate == address(0)) revert InvalidCandidate();
+        if (candidate == msg.sender) revert InvalidCandidate();
+        if (voterDelegationCount[msg.sender] >= MAX_DELEGATIONS) 
+            revert ExceedsMaxDelegations();
         
         // Validate vote amount
         gtUint64 gtVotes = _validateInput(votes);
         
         if (isMpcAvailable) {
             gtBool isEnough = MpcCore.ge(gtVotes, MpcCore.setPublic64(uint64(MIN_VOTE_AMOUNT)));
-            require(MpcCore.decrypt(isEnough), "TrustSystem: Insufficient vote amount");
+            if (!MpcCore.decrypt(isEnough)) revert InsufficientVoteAmount();
         } else {
             uint64 voteAmount = uint64(gtUint64.unwrap(gtVotes));
-            require(voteAmount >= uint64(MIN_VOTE_AMOUNT), "TrustSystem: Insufficient vote amount");
+            if (voteAmount < uint64(MIN_VOTE_AMOUNT)) revert InsufficientVoteAmount();
         }
         
-        VoteRecord storage record = voteRecords[msg.sender][candidate];
+        Vote storage record = voteRecords[msg.sender][candidate];
         TrustData storage candidateTrust = trustData[candidate];
         
         // If first vote for this candidate, update counts
@@ -192,8 +204,8 @@ contract OmniCoinTrustSystem is ReputationSystemBase, ITrustSystem {
         address candidate,
         itUint64 calldata votes
     ) external override whenNotPaused nonReentrant {
-        VoteRecord storage record = voteRecords[msg.sender][candidate];
-        require(record.isActive, "TrustSystem: No active vote");
+        Vote storage record = voteRecords[msg.sender][candidate];
+        if (!record.isActive) revert VoteNotFound();
         
         gtUint64 gtVotes = _validateInput(votes);
         TrustData storage candidateTrust = trustData[candidate];
@@ -204,11 +216,11 @@ contract OmniCoinTrustSystem is ReputationSystemBase, ITrustSystem {
         // Validate withdrawal amount
         if (isMpcAvailable) {
             gtBool hasEnough = MpcCore.ge(record.encryptedAmount, gtVotes);
-            require(MpcCore.decrypt(hasEnough), "TrustSystem: Insufficient votes");
+            if (!MpcCore.decrypt(hasEnough)) revert InsufficientVoteAmount();
         } else {
             uint64 currentVotes = uint64(gtUint64.unwrap(record.encryptedAmount));
             uint64 withdrawAmount = uint64(gtUint64.unwrap(gtVotes));
-            require(currentVotes >= withdrawAmount, "TrustSystem: Insufficient votes");
+            if (currentVotes < withdrawAmount) revert InsufficientVoteAmount();
         }
         
         // Update vote record
@@ -274,7 +286,7 @@ contract OmniCoinTrustSystem is ReputationSystemBase, ITrustSystem {
         address user,
         uint256 score
     ) external override whenNotPaused onlyRole(COTI_ORACLE_ROLE) {
-        require(cotiPoTEnabled, "TrustSystem: COTI PoT not enabled");
+        if (!cotiPoTEnabled) revert CotiNotEnabled();
         
         TrustData storage userData = trustData[user];
         userData.cotiProofOfTrustScore = score;
@@ -301,7 +313,7 @@ contract OmniCoinTrustSystem is ReputationSystemBase, ITrustSystem {
         address user,
         bool useCoti
     ) external override whenNotPaused onlyRole(TRUST_MANAGER_ROLE) {
-        require(cotiPoTEnabled || !useCoti, "TrustSystem: COTI PoT not enabled");
+        if (!cotiPoTEnabled && useCoti) revert CotiNotEnabled();
         
         trustData[user].useCotiPoT = useCoti;
         emit TrustMethodChanged(user, useCoti, block.timestamp);
@@ -364,14 +376,14 @@ contract OmniCoinTrustSystem is ReputationSystemBase, ITrustSystem {
      * @dev Get user's encrypted votes (for user viewing)
      */
     function getUserEncryptedVotes(address user) external view returns (ctUint64) {
-        require(msg.sender == user, "TrustSystem: Not authorized");
+        if (msg.sender != user) revert UnauthorizedAccess();
         return trustData[user].userEncryptedVotes;
     }
     
     /**
      * @dev Get vote record details
      */
-    function getVoteRecord(
+    function getVote(
         address voter,
         address candidate
     ) external returns (
@@ -379,8 +391,8 @@ contract OmniCoinTrustSystem is ReputationSystemBase, ITrustSystem {
         uint256 timestamp,
         ctUint64 encryptedAmount
     ) {
-        require(msg.sender == voter, "TrustSystem: Not authorized");
-        VoteRecord storage record = voteRecords[voter][candidate];
+        if (msg.sender != voter) revert UnauthorizedAccess();
+        Vote storage record = voteRecords[voter][candidate];
         
         if (isMpcAvailable && record.isActive) {
             encryptedAmount = MpcCore.offBoardToUser(record.encryptedAmount, voter);
@@ -439,7 +451,7 @@ contract OmniCoinTrustSystem is ReputationSystemBase, ITrustSystem {
      */
     function _removeCandidate(address voter, address candidate) internal {
         address[] storage candidates = voterCandidates[voter];
-        for (uint i = 0; i < candidates.length; i++) {
+        for (uint256 i = 0; i < candidates.length; i++) {
             if (candidates[i] == candidate) {
                 candidates[i] = candidates[candidates.length - 1];
                 candidates.pop();
@@ -464,7 +476,7 @@ contract OmniCoinTrustSystem is ReputationSystemBase, ITrustSystem {
      * @dev Add COTI oracle
      */
     function addCotiOracle(address oracle) external onlyRole(ADMIN_ROLE) {
-        require(oracle != address(0), "TrustSystem: Invalid oracle");
+        if (oracle == address(0)) revert InvalidCandidate();
         _grantRole(COTI_ORACLE_ROLE, oracle);
         emit CotiOracleAdded(oracle);
     }

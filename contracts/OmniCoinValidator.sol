@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import "@openzeppelin/contracts/access/Ownable.sol";
-import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
-import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
+import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
 contract OmniCoinValidator is Ownable, ReentrancyGuard {
     struct Validator {
@@ -21,6 +21,20 @@ contract OmniCoinValidator is Ownable, ReentrancyGuard {
         uint256 minStake;
         uint256 maxValidators;
     }
+
+    // Custom errors
+    error InvalidValidator();
+    error AlreadyRegistered();
+    error InsufficientBalance();
+    error TransferFailed();
+    error NotActiveValidator();
+    error StillHasStake();
+    error InsufficientStakeAmount();
+    error ValidatorSetFull();
+    error NoRewardsAvailable();
+    error RewardTransferFailed();
+    error InvalidAddress();
+    error InvalidAmount();
 
     IERC20 public token;
     uint256 public rewardRate;
@@ -53,14 +67,8 @@ contract OmniCoinValidator is Ownable, ReentrancyGuard {
     }
 
     function registerValidator() external nonReentrant {
-        require(
-            !validators[msg.sender].isActive,
-            "OmniCoinValidator: already registered"
-        );
-        require(
-            token.balanceOf(msg.sender) >= minStake,
-            "OmniCoinValidator: insufficient balance"
-        );
+        if (validators[msg.sender].isActive) revert AlreadyRegistered();
+        if (token.balanceOf(msg.sender) < minStake) revert InsufficientBalance();
 
         validators[msg.sender] = Validator({
             account: msg.sender,
@@ -76,8 +84,8 @@ contract OmniCoinValidator is Ownable, ReentrancyGuard {
 
     function unregisterValidator() external nonReentrant {
         Validator storage validator = validators[msg.sender];
-        require(validator.isActive, "OmniCoinValidator: not registered");
-        require(validator.stake == 0, "OmniCoinValidator: has stake");
+        if (!validator.isActive) revert NotActiveValidator();
+        if (validator.stake != 0) revert StillHasStake();
 
         validator.isActive = false;
 
@@ -86,12 +94,9 @@ contract OmniCoinValidator is Ownable, ReentrancyGuard {
 
     function stake(uint256 amount) external nonReentrant {
         Validator storage validator = validators[msg.sender];
-        require(validator.isActive, "OmniCoinValidator: not registered");
-        require(amount > 0, "OmniCoinValidator: zero amount");
-        require(
-            token.balanceOf(msg.sender) >= amount,
-            "OmniCoinValidator: insufficient balance"
-        );
+        if (!validator.isActive) revert NotActiveValidator();
+        if (amount == 0) revert InvalidAmount();
+        if (token.balanceOf(msg.sender) < amount) revert InsufficientBalance();
 
         // Claim pending rewards
         uint256 pendingRewards = calculateRewards(msg.sender);
@@ -110,22 +115,17 @@ contract OmniCoinValidator is Ownable, ReentrancyGuard {
             }
         }
 
-        require(
-            token.transferFrom(msg.sender, address(this), amount),
-            "OmniCoinValidator: transfer failed"
-        );
+        if (!token.transferFrom(msg.sender, address(this), amount)) 
+            revert TransferFailed();
 
         emit ValidatorStaked(msg.sender, amount);
     }
 
     function unstake(uint256 amount) external nonReentrant {
         Validator storage validator = validators[msg.sender];
-        require(validator.isActive, "OmniCoinValidator: not registered");
-        require(amount > 0, "OmniCoinValidator: zero amount");
-        require(
-            amount <= validator.stake,
-            "OmniCoinValidator: insufficient stake"
-        );
+        if (!validator.isActive) revert NotActiveValidator();
+        if (amount == 0) revert InvalidAmount();
+        if (amount > validator.stake) revert InsufficientStakeAmount();
 
         // Claim pending rewards
         uint256 pendingRewards = calculateRewards(msg.sender);
@@ -142,29 +142,23 @@ contract OmniCoinValidator is Ownable, ReentrancyGuard {
             removeFromActiveSet(msg.sender);
         }
 
-        require(
-            token.transfer(msg.sender, amount),
-            "OmniCoinValidator: transfer failed"
-        );
+        if (!token.transfer(msg.sender, amount)) revert TransferFailed();
 
         emit ValidatorUnstaked(msg.sender, amount);
     }
 
     function claimRewards() external nonReentrant {
         Validator storage validator = validators[msg.sender];
-        require(validator.isActive, "OmniCoinValidator: not registered");
+        if (!validator.isActive) revert NotActiveValidator();
 
         uint256 pendingRewards = calculateRewards(msg.sender);
         uint256 totalRewards = validator.accumulatedRewards + pendingRewards;
-        require(totalRewards > 0, "OmniCoinValidator: no rewards");
+        if (totalRewards == 0) revert NoRewardsAvailable();
 
         validator.accumulatedRewards = 0;
         validator.lastRewardTime = block.timestamp;
 
-        require(
-            token.transfer(msg.sender, totalRewards),
-            "OmniCoinValidator: transfer failed"
-        );
+        if (!token.transfer(msg.sender, totalRewards)) revert RewardTransferFailed();
 
         emit RewardsClaimed(msg.sender, totalRewards);
     }

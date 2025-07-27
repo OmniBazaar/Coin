@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.19;
 
-import "@openzeppelin/contracts/access/AccessControl.sol";
-import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
-import "@openzeppelin/contracts/utils/Pausable.sol";
-import "../coti-contracts/contracts/utils/mpc/MpcCore.sol";
-import "./interfaces/IReputationSystem.sol";
-import "./OmniCoinConfig.sol";
+import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
+import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
+import {MpcCore, gtUint64, ctUint64, itUint64} from "../coti-contracts/contracts/utils/mpc/MpcCore.sol";
+import {OmniCoinConfig} from "./OmniCoinConfig.sol";
+import {IReputationCore, IIdentityVerification, ITrustSystem, IReferralSystem} from "./interfaces/IReputationSystem.sol";
 
 /**
  * @title OmniCoinReputationCore
@@ -20,6 +20,27 @@ import "./OmniCoinConfig.sol";
  * - Standard reputation components
  */
 contract OmniCoinReputationCore is IReputationCore, AccessControl, ReentrancyGuard, Pausable {
+    
+    // =============================================================================
+    // STRUCTS
+    // =============================================================================
+    
+    struct PrivateReputation {
+        gtUint64 encryptedTotalScore;       // Private: total reputation score
+        ctUint64 userEncryptedScore;        // Private: score encrypted for user viewing
+        uint256 publicTier;                 // Public: reputation tier for validator selection
+        uint256 lastUpdate;                 // Public: timestamp of last update
+        uint256 totalInteractions;          // Public: number of interactions
+        bool isPrivacyEnabled;              // Public: user's privacy preference
+        bool isActive;                      // Public: whether reputation is active
+    }
+    
+    struct ReputationComponent {
+        gtUint64 encryptedValue;            // Private: component value
+        ctUint64 userEncryptedValue;        // Private: value encrypted for user viewing
+        uint256 interactionCount;           // Public: number of interactions
+        uint256 lastUpdate;                 // Public: last update timestamp
+    }
     
     // =============================================================================
     // CONSTANTS & ROLES
@@ -53,25 +74,20 @@ contract OmniCoinReputationCore is IReputationCore, AccessControl, ReentrancyGua
     uint256 public constant TIER_DIAMOND = 50000;
     
     // =============================================================================
-    // STRUCTS
+    // CUSTOM ERRORS
     // =============================================================================
     
-    struct PrivateReputation {
-        gtUint64 encryptedTotalScore;       // Private: total reputation score
-        ctUint64 userEncryptedScore;        // Private: score encrypted for user viewing
-        uint256 publicTier;                 // Public: reputation tier for validator selection
-        uint256 lastUpdate;                 // Public: timestamp of last update
-        uint256 totalInteractions;          // Public: number of interactions
-        bool isPrivacyEnabled;              // Public: user's privacy preference
-        bool isActive;                      // Public: whether reputation is active
-    }
-    
-    struct ReputationComponent {
-        gtUint64 encryptedValue;            // Private: component value
-        ctUint64 userEncryptedValue;        // Private: value encrypted for user viewing
-        uint256 interactionCount;           // Public: number of interactions
-        uint256 lastUpdate;                 // Public: last update timestamp
-    }
+    error InvalidAddress();
+    error InvalidAmount();
+    error UnauthorizedModule();
+    error ComponentNotEnabled();
+    error InvalidComponentId();
+    error WeightExceedsLimit();
+    error InvalidBasisPoints();
+    error ReputationInactive();
+    error BatchLengthMismatch();
+    error ComponentAlreadyRegistered();
+    error ComponentNotRegistered();
     
     // =============================================================================
     // STATE VARIABLES
@@ -122,8 +138,8 @@ contract OmniCoinReputationCore is IReputationCore, AccessControl, ReentrancyGua
         address _trustModule,
         address _referralModule
     ) {
-        require(_admin != address(0), "ReputationCore: Invalid admin");
-        require(_config != address(0), "ReputationCore: Invalid config");
+        if (_admin == address(0)) revert InvalidAddress();
+        if (_config == address(0)) revert InvalidAddress();
         
         _grantRole(DEFAULT_ADMIN_ROLE, _admin);
         _grantRole(ADMIN_ROLE, _admin);
@@ -181,12 +197,9 @@ contract OmniCoinReputationCore is IReputationCore, AccessControl, ReentrancyGua
         uint8 componentId,
         itUint64 calldata value
     ) external override whenNotPaused nonReentrant {
-        require(
-            hasRole(MODULE_ROLE, msg.sender) || 
-            hasRole(REPUTATION_UPDATER_ROLE, msg.sender),
-            "ReputationCore: Not authorized"
-        );
-        require(componentId < MAX_COMPONENTS, "ReputationCore: Invalid component");
+        if (!hasRole(MODULE_ROLE, msg.sender) && 
+            !hasRole(REPUTATION_UPDATER_ROLE, msg.sender)) revert UnauthorizedModule();
+        if (componentId >= MAX_COMPONENTS) revert InvalidComponentId();
         
         // Validate and convert input
         gtUint64 gtValue;
@@ -275,10 +288,8 @@ contract OmniCoinReputationCore is IReputationCore, AccessControl, ReentrancyGua
      * @dev Get user's encrypted total score (for user viewing)
      */
     function getUserEncryptedScore(address user) external view returns (ctUint64) {
-        require(
-            msg.sender == user || !userReputations[user].isPrivacyEnabled,
-            "ReputationCore: Not authorized"
-        );
+        if (msg.sender != user && userReputations[user].isPrivacyEnabled) 
+            revert UnauthorizedModule();
         return userReputations[user].userEncryptedScore;
     }
     
@@ -290,10 +301,8 @@ contract OmniCoinReputationCore is IReputationCore, AccessControl, ReentrancyGua
      * @dev Set privacy preference
      */
     function setPrivacyEnabled(address user, bool enabled) external override {
-        require(
-            msg.sender == user || hasRole(ADMIN_ROLE, msg.sender),
-            "ReputationCore: Not authorized"
-        );
+        if (msg.sender != user && !hasRole(ADMIN_ROLE, msg.sender)) 
+            revert UnauthorizedModule();
         
         userReputations[user].isPrivacyEnabled = enabled;
         emit PrivacyPreferenceUpdated(user, enabled);
@@ -314,7 +323,7 @@ contract OmniCoinReputationCore is IReputationCore, AccessControl, ReentrancyGua
      * @dev Get component weight
      */
     function getComponentWeight(uint8 componentId) external view override returns (uint256) {
-        require(componentId < MAX_COMPONENTS, "ReputationCore: Invalid component");
+        if (componentId >= MAX_COMPONENTS) revert InvalidComponentId();
         return componentWeights[componentId];
     }
     
@@ -322,8 +331,8 @@ contract OmniCoinReputationCore is IReputationCore, AccessControl, ReentrancyGua
      * @dev Set component weight
      */
     function setComponentWeight(uint8 componentId, uint256 weight) external override onlyRole(ADMIN_ROLE) {
-        require(componentId < MAX_COMPONENTS, "ReputationCore: Invalid component");
-        require(weight <= BASIS_POINTS, "ReputationCore: Weight too high");
+        if (componentId >= MAX_COMPONENTS) revert InvalidComponentId();
+        if (weight > BASIS_POINTS) revert WeightExceedsLimit();
         
         componentWeights[componentId] = weight;
         
@@ -332,7 +341,7 @@ contract OmniCoinReputationCore is IReputationCore, AccessControl, ReentrancyGua
         for (uint8 i = 0; i < MAX_COMPONENTS; i++) {
             total += componentWeights[i];
         }
-        require(total == BASIS_POINTS, "ReputationCore: Weights must sum to 10000");
+        if (total != BASIS_POINTS) revert InvalidBasisPoints();
         
         emit ComponentWeightUpdated(componentId, weight, block.timestamp);
     }
@@ -343,10 +352,10 @@ contract OmniCoinReputationCore is IReputationCore, AccessControl, ReentrancyGua
     function batchUpdateWeights(uint256[11] calldata newWeights) external onlyRole(ADMIN_ROLE) {
         uint256 total = 0;
         for (uint8 i = 0; i < MAX_COMPONENTS; i++) {
-            require(newWeights[i] <= BASIS_POINTS, "ReputationCore: Weight too high");
+            if (newWeights[i] > BASIS_POINTS) revert WeightExceedsLimit();
             total += newWeights[i];
         }
-        require(total == BASIS_POINTS, "ReputationCore: Weights must sum to 10000");
+        if (total != BASIS_POINTS) revert InvalidBasisPoints();
         
         for (uint8 i = 0; i < MAX_COMPONENTS; i++) {
             componentWeights[i] = newWeights[i];
@@ -474,70 +483,93 @@ contract OmniCoinReputationCore is IReputationCore, AccessControl, ReentrancyGua
      * @dev Calculate weighted total of all components
      */
     function _calculateWeightedTotal(address user) internal returns (gtUint64) {
-        gtUint64 total;
-        
         if (isMpcAvailable) {
-            total = MpcCore.setPublic64(0);
-            
-            // Aggregate standard components
-            for (uint8 i = 0; i < MAX_COMPONENTS; i++) {
-                if (componentWeights[i] == 0) continue;
-                
-                gtUint64 componentValue;
-                
-                // Get value from appropriate source
-                if (i == COMPONENT_IDENTITY_VERIFICATION && address(identityModule) != address(0)) {
-                    componentValue = identityModule.getIdentityScore(user);
-                } else if (i == COMPONENT_TRUST_SCORE && address(trustModule) != address(0)) {
-                    componentValue = trustModule.getTrustScore(user);
-                } else if (i == COMPONENT_REFERRAL_ACTIVITY && address(referralModule) != address(0)) {
-                    componentValue = referralModule.getReferralScore(user);
-                } else {
-                    componentValue = componentData[user][i].encryptedValue;
-                    // Initialize if zero
-                    if (uint64(gtUint64.unwrap(componentValue)) == 0) {
-                        componentValue = gtUint64.wrap(0);
-                    }
-                }
-                
-                // Apply weight
-                gtUint64 weight = MpcCore.setPublic64(uint64(componentWeights[i]));
-                gtUint64 weighted = MpcCore.mul(componentValue, weight);
-                weighted = MpcCore.div(weighted, MpcCore.setPublic64(uint64(BASIS_POINTS)));
-                
-                total = MpcCore.add(total, weighted);
-            }
+            return _calculateWeightedTotalMPC(user);
         } else {
-            // Fallback calculation
-            uint64 totalValue = 0;
+            return _calculateWeightedTotalFallback(user);
+        }
+    }
+    
+    /**
+     * @dev Calculate weighted total using MPC
+     */
+    function _calculateWeightedTotalMPC(address user) internal returns (gtUint64) {
+        gtUint64 total = MpcCore.setPublic64(0);
+        
+        for (uint8 i = 0; i < MAX_COMPONENTS; i++) {
+            if (componentWeights[i] == 0) continue;
             
-            for (uint8 i = 0; i < MAX_COMPONENTS; i++) {
-                if (componentWeights[i] == 0) continue;
-                
-                uint64 componentValue;
-                
-                if (i == COMPONENT_IDENTITY_VERIFICATION && address(identityModule) != address(0)) {
-                    componentValue = uint64(gtUint64.unwrap(identityModule.getIdentityScore(user)));
-                } else if (i == COMPONENT_TRUST_SCORE && address(trustModule) != address(0)) {
-                    componentValue = uint64(gtUint64.unwrap(trustModule.getTrustScore(user)));
-                } else if (i == COMPONENT_REFERRAL_ACTIVITY && address(referralModule) != address(0)) {
-                    componentValue = uint64(gtUint64.unwrap(referralModule.getReferralScore(user)));
-                } else {
-                    componentValue = uint64(gtUint64.unwrap(componentData[user][i].encryptedValue));
-                }
-                
-                // Use unchecked to avoid overflow on intermediate calculation
-                unchecked {
-                    uint256 temp = uint256(componentValue) * uint256(componentWeights[i]);
-                    uint64 weighted = uint64(temp / BASIS_POINTS);
-                    totalValue += weighted;
-                }
-            }
-            
-            total = gtUint64.wrap(totalValue);
+            gtUint64 componentValue = _getComponentValue(user, i);
+            gtUint64 weighted = _applyWeight(componentValue, componentWeights[i]);
+            total = MpcCore.add(total, weighted);
         }
         
         return total;
+    }
+    
+    /**
+     * @dev Calculate weighted total without MPC
+     */
+    function _calculateWeightedTotalFallback(address user) internal returns (gtUint64) {
+        uint64 totalValue = 0;
+        
+        for (uint8 i = 0; i < MAX_COMPONENTS; i++) {
+            if (componentWeights[i] == 0) continue;
+            
+            uint64 componentValue = _getComponentValueFallback(user, i);
+            
+            unchecked {
+                uint256 temp = uint256(componentValue) * uint256(componentWeights[i]);
+                uint64 weighted = uint64(temp / BASIS_POINTS);
+                totalValue += weighted;
+            }
+        }
+        
+        return gtUint64.wrap(totalValue);
+    }
+    
+    /**
+     * @dev Get component value from appropriate source
+     */
+    function _getComponentValue(address user, uint8 componentId) internal returns (gtUint64) {
+        if (componentId == COMPONENT_IDENTITY_VERIFICATION && address(identityModule) != address(0)) {
+            return identityModule.getIdentityScore(user);
+        } else if (componentId == COMPONENT_TRUST_SCORE && address(trustModule) != address(0)) {
+            return trustModule.getTrustScore(user);
+        } else if (componentId == COMPONENT_REFERRAL_ACTIVITY && address(referralModule) != address(0)) {
+            return referralModule.getReferralScore(user);
+        } else {
+            gtUint64 value = componentData[user][componentId].encryptedValue;
+            // Initialize if zero
+            if (uint64(gtUint64.unwrap(value)) == 0) {
+                value = gtUint64.wrap(0);
+            }
+            return value;
+        }
+    }
+    
+    /**
+     * @dev Get component value without MPC
+     */
+    function _getComponentValueFallback(address user, uint8 componentId) internal returns (uint64) {
+        if (componentId == COMPONENT_IDENTITY_VERIFICATION && address(identityModule) != address(0)) {
+            return uint64(gtUint64.unwrap(identityModule.getIdentityScore(user)));
+        } else if (componentId == COMPONENT_TRUST_SCORE && address(trustModule) != address(0)) {
+            return uint64(gtUint64.unwrap(trustModule.getTrustScore(user)));
+        } else if (componentId == COMPONENT_REFERRAL_ACTIVITY && address(referralModule) != address(0)) {
+            return uint64(gtUint64.unwrap(referralModule.getReferralScore(user)));
+        } else {
+            return uint64(gtUint64.unwrap(componentData[user][componentId].encryptedValue));
+        }
+    }
+    
+    /**
+     * @dev Apply weight to component value
+     */
+    function _applyWeight(gtUint64 value, uint256 weight) internal returns (gtUint64) {
+        gtUint64 weightEncrypted = MpcCore.setPublic64(uint64(weight));
+        gtUint64 weighted = MpcCore.mul(value, weightEncrypted);
+        return MpcCore.div(weighted, MpcCore.setPublic64(uint64(BASIS_POINTS)));
     }
     
     /**

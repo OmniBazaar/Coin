@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.0;
+pragma solidity ^0.8.19;
 
-import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
-import "@openzeppelin/contracts/access/Ownable.sol";
-import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
 contract SecureSend is ReentrancyGuard, Ownable {
     struct Escrow {
@@ -46,6 +46,25 @@ contract SecureSend is ReentrancyGuard, Ownable {
         bool isPositive
     );
 
+    // Custom errors
+    error InvalidSellerAddress();
+    error InvalidEscrowAgentAddress();
+    error InvalidAmount();
+    error InvalidExpirationTime();
+    error TransferFailed();
+    error EscrowNotFound();
+    error NotBuyer();
+    error AlreadyVoted();
+    error EscrowExpired();
+    error NotSellerOrAgent();
+    error NotBuyerOrAgent();
+    error EscrowAlreadyReleased();
+    error EscrowAlreadyRefunded();
+    error NotExpired();
+    error InsufficientVotes();
+    error NotEscrowAgent();
+    error InvalidAddress();
+
     constructor(
         address _paymentToken,
         address _feeCollector
@@ -60,10 +79,10 @@ contract SecureSend is ReentrancyGuard, Ownable {
         uint256 _amount,
         uint256 _expirationTime
     ) external nonReentrant returns (bytes32) {
-        require(_seller != address(0), "Invalid seller address");
-        require(_escrowAgent != address(0), "Invalid escrow agent address");
-        require(_amount > 0, "Amount must be greater than 0");
-        require(_expirationTime > block.timestamp, "Invalid expiration time");
+        if (_seller == address(0)) revert InvalidSellerAddress();
+        if (_escrowAgent == address(0)) revert InvalidEscrowAgentAddress();
+        if (_amount == 0) revert InvalidAmount();
+        if (_expirationTime <= block.timestamp) revert InvalidExpirationTime();
 
         bytes32 escrowId = keccak256(
             abi.encodePacked(
@@ -75,7 +94,7 @@ contract SecureSend is ReentrancyGuard, Ownable {
             )
         );
 
-        require(escrows[escrowId].buyer == address(0), "Escrow already exists");
+        if (escrows[escrowId].buyer != address(0)) revert EscrowNotFound();
 
         Escrow storage escrow = escrows[escrowId];
         escrow.buyer = msg.sender;
@@ -89,10 +108,8 @@ contract SecureSend is ReentrancyGuard, Ownable {
         escrow.negativeVotes = 0;
 
         // Transfer tokens to escrow contract
-        require(
-            paymentToken.transferFrom(msg.sender, address(this), _amount),
-            "Token transfer failed"
-        );
+        if (!paymentToken.transferFrom(msg.sender, address(this), _amount))
+            revert TransferFailed();
 
         emit EscrowCreated(
             escrowId,
@@ -108,24 +125,20 @@ contract SecureSend is ReentrancyGuard, Ownable {
 
     function vote(bytes32 _escrowId, bool _isPositive) external {
         Escrow storage escrow = escrows[_escrowId];
-        require(
-            msg.sender == escrow.buyer ||
-                msg.sender == escrow.seller ||
-                msg.sender == escrow.escrowAgent,
-            "Not authorized to vote"
-        );
-        require(!escrow.hasVoted[msg.sender], "Already voted");
-        require(
-            !escrow.isReleased && !escrow.isRefunded,
-            "Escrow already resolved"
-        );
-        require(block.timestamp <= escrow.expirationTime, "Escrow expired");
+        if (msg.sender != escrow.buyer && 
+            msg.sender != escrow.seller && 
+            msg.sender != escrow.escrowAgent)
+            revert NotBuyerOrAgent();
+        if (escrow.hasVoted[msg.sender]) revert AlreadyVoted();
+        if (escrow.isReleased || escrow.isRefunded)
+            revert EscrowAlreadyReleased();
+        if (block.timestamp > escrow.expirationTime) revert EscrowExpired();
 
         escrow.hasVoted[msg.sender] = true;
         if (_isPositive) {
-            escrow.positiveVotes++;
+            ++escrow.positiveVotes;
         } else {
-            escrow.negativeVotes++;
+            ++escrow.negativeVotes;
         }
 
         emit VoteCast(_escrowId, msg.sender, _isPositive);
@@ -140,10 +153,8 @@ contract SecureSend is ReentrancyGuard, Ownable {
 
     function _releaseEscrow(bytes32 _escrowId) internal {
         Escrow storage escrow = escrows[_escrowId];
-        require(
-            !escrow.isReleased && !escrow.isRefunded,
-            "Escrow already resolved"
-        );
+        if (escrow.isReleased || escrow.isRefunded)
+            revert EscrowAlreadyReleased();
 
         escrow.isReleased = true;
 
@@ -151,24 +162,18 @@ contract SecureSend is ReentrancyGuard, Ownable {
         uint256 feeAmount = (escrow.amount * ESCROW_FEE_PERCENTAGE) / 10000;
         uint256 sellerAmount = escrow.amount - feeAmount;
 
-        require(
-            paymentToken.transfer(escrow.seller, sellerAmount),
-            "Seller transfer failed"
-        );
-        require(
-            paymentToken.transfer(feeCollector, feeAmount),
-            "Fee transfer failed"
-        );
+        if (!paymentToken.transfer(escrow.seller, sellerAmount))
+            revert TransferFailed();
+        if (!paymentToken.transfer(feeCollector, feeAmount))
+            revert TransferFailed();
 
         emit EscrowReleased(_escrowId, msg.sender);
     }
 
     function _refundEscrow(bytes32 _escrowId) internal {
         Escrow storage escrow = escrows[_escrowId];
-        require(
-            !escrow.isReleased && !escrow.isRefunded,
-            "Escrow already resolved"
-        );
+        if (escrow.isReleased || escrow.isRefunded)
+            revert EscrowAlreadyReleased();
 
         escrow.isRefunded = true;
 
@@ -176,14 +181,10 @@ contract SecureSend is ReentrancyGuard, Ownable {
         uint256 feeAmount = (escrow.amount * ESCROW_FEE_PERCENTAGE) / 10000;
         uint256 buyerAmount = escrow.amount - feeAmount;
 
-        require(
-            paymentToken.transfer(escrow.buyer, buyerAmount),
-            "Buyer transfer failed"
-        );
-        require(
-            paymentToken.transfer(feeCollector, feeAmount),
-            "Fee transfer failed"
-        );
+        if (!paymentToken.transfer(escrow.buyer, buyerAmount))
+            revert TransferFailed();
+        if (!paymentToken.transfer(feeCollector, feeAmount))
+            revert TransferFailed();
 
         emit EscrowRefunded(_escrowId, msg.sender);
     }
@@ -193,21 +194,16 @@ contract SecureSend is ReentrancyGuard, Ownable {
         uint256 _newExpirationTime
     ) external {
         Escrow storage escrow = escrows[_escrowId];
-        require(
-            msg.sender == escrow.buyer ||
-                msg.sender == escrow.seller ||
-                msg.sender == escrow.escrowAgent,
-            "Not authorized"
-        );
-        require(
-            !escrow.isReleased && !escrow.isRefunded,
-            "Escrow already resolved"
-        );
-        require(
-            _newExpirationTime > block.timestamp,
-            "Invalid expiration time"
-        );
-        require(_newExpirationTime > escrow.expirationTime, "Must extend time");
+        if (msg.sender != escrow.buyer && 
+            msg.sender != escrow.seller && 
+            msg.sender != escrow.escrowAgent)
+            revert NotBuyerOrAgent();
+        if (escrow.isReleased || escrow.isRefunded)
+            revert EscrowAlreadyReleased();
+        if (_newExpirationTime <= block.timestamp) 
+            revert InvalidExpirationTime();
+        if (_newExpirationTime <= escrow.expirationTime) 
+            revert InvalidExpirationTime();
 
         escrow.expirationTime = _newExpirationTime;
     }

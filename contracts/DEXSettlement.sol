@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.19;
 
-import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
-import "@openzeppelin/contracts/utils/Pausable.sol";
-import "@openzeppelin/contracts/access/AccessControl.sol";
-import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
-import "../coti-contracts/contracts/utils/mpc/MpcCore.sol";
-import "./PrivacyFeeManager.sol";
+import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
+import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import {MpcCore, gtUint64, ctUint64, itUint64} from "../coti-contracts/contracts/utils/mpc/MpcCore.sol";
+import {PrivacyFeeManager} from "./PrivacyFeeManager.sol";
 
 /**
  * @title DEXSettlement
@@ -23,24 +23,6 @@ import "./PrivacyFeeManager.sol";
  */
 contract DEXSettlement is ReentrancyGuard, Pausable, AccessControl {
     using SafeERC20 for IERC20;
-
-    // =============================================================================
-    // CONSTANTS & ROLES
-    // =============================================================================
-    
-    // Roles
-    bytes32 public constant VALIDATOR_ROLE = keccak256("VALIDATOR_ROLE");
-    bytes32 public constant CIRCUIT_BREAKER_ROLE = keccak256("CIRCUIT_BREAKER_ROLE");
-    bytes32 public constant FEE_MANAGER_ROLE = keccak256("FEE_MANAGER_ROLE");
-
-    // Privacy configuration
-    uint256 public constant PRIVACY_MULTIPLIER = 10; // 10x fee for privacy
-    
-    // Fee constants (basis points: 10000 = 100%)
-    uint256 public constant SPOT_MAKER_FEE = 10; // 0.1%
-    uint256 public constant SPOT_TAKER_FEE = 20; // 0.2%
-    uint256 public constant PERP_MAKER_FEE = 5; // 0.05%
-    uint256 public constant PERP_TAKER_FEE = 15; // 0.15%
 
     // =============================================================================
     // STRUCTS
@@ -82,6 +64,41 @@ contract DEXSettlement is ReentrancyGuard, Pausable, AccessControl {
         bool isActive;
         uint256 lastRewardTime;
     }
+
+    // =============================================================================
+    // CUSTOM ERRORS
+    // =============================================================================
+    
+    error InvalidTokenAddress();
+    error InvalidAmount();
+    error InvalidDeadline();
+    error TradeExpired();
+    error AlreadyExecuted();
+    error UnauthorizedValidator();
+    error SlippageTooHigh();
+    error NoFundsToWithdraw();
+    error InvalidTrade();
+    error PrivacyNotAvailable();
+    error InsufficientLiquidity();
+    error InvalidFeeConfiguration();
+
+    // =============================================================================
+    // CONSTANTS & ROLES
+    // =============================================================================
+    
+    // Roles
+    bytes32 public constant VALIDATOR_ROLE = keccak256("VALIDATOR_ROLE");
+    bytes32 public constant CIRCUIT_BREAKER_ROLE = keccak256("CIRCUIT_BREAKER_ROLE");
+    bytes32 public constant FEE_MANAGER_ROLE = keccak256("FEE_MANAGER_ROLE");
+
+    // Privacy configuration
+    uint256 public constant PRIVACY_MULTIPLIER = 10; // 10x fee for privacy
+    
+    // Fee constants (basis points: 10000 = 100%)
+    uint256 public constant SPOT_MAKER_FEE = 10; // 0.1%
+    uint256 public constant SPOT_TAKER_FEE = 20; // 0.2%
+    uint256 public constant PERP_MAKER_FEE = 5; // 0.05%
+    uint256 public constant PERP_TAKER_FEE = 15; // 0.15%
 
     // =============================================================================
     // STATE VARIABLES
@@ -143,8 +160,8 @@ contract DEXSettlement is ReentrancyGuard, Pausable, AccessControl {
         address _developmentFund,
         address _privacyFeeManager
     ) {
-        require(_companyTreasury != address(0), "Invalid company treasury");
-        require(_developmentFund != address(0), "Invalid development fund");
+        if (_companyTreasury == address(0)) revert InvalidTokenAddress();
+        if (_developmentFund == address(0)) revert InvalidTokenAddress();
 
         _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
         _grantRole(CIRCUIT_BREAKER_ROLE, msg.sender);
@@ -180,7 +197,7 @@ contract DEXSettlement is ReentrancyGuard, Pausable, AccessControl {
      * @dev Set privacy fee manager
      */
     function setPrivacyFeeManager(address _privacyFeeManager) external onlyRole(DEFAULT_ADMIN_ROLE) {
-        require(_privacyFeeManager != address(0), "Invalid address");
+        if (_privacyFeeManager == address(0)) revert InvalidTokenAddress();
         privacyFeeManager = _privacyFeeManager;
     }
 
@@ -194,33 +211,31 @@ contract DEXSettlement is ReentrancyGuard, Pausable, AccessControl {
     function settleTrade(
         Trade calldata trade
     ) external nonReentrant whenNotPaused onlyRole(VALIDATOR_ROLE) {
-        require(!emergencyStop, "Emergency stop activated");
-        require(!trade.executed, "Trade already executed");
-        require(block.timestamp <= trade.deadline, "Trade deadline exceeded");
-        require(trade.maker != trade.taker, "Self-trading not allowed");
-        require(!trade.isPrivate, "Use settleTradeWithPrivacy for private trades");
+        if (emergencyStop) revert InvalidTrade();
+        if (trade.executed) revert AlreadyExecuted();
+        if (block.timestamp > trade.deadline) revert TradeExpired();
+        if (trade.maker == trade.taker) revert InvalidTrade();
+        if (trade.isPrivate) revert InvalidTrade();
 
         // Reset daily volume if new day
         _resetDailyVolumeIfNeeded();
 
         // Check volume limits
-        require(trade.amountIn <= maxTradeSize, "Trade size exceeds limit");
-        require(
-            dailyVolumeUsed + trade.amountIn <= dailyVolumeLimit,
-            "Daily volume limit exceeded"
-        );
+        if (trade.amountIn > maxTradeSize) revert InvalidAmount();
+        if (dailyVolumeUsed + trade.amountIn > dailyVolumeLimit) {
+            revert InvalidAmount();
+        }
 
         // Verify validator signature
-        require(
-            _verifyValidatorSignature(trade),
-            "Invalid validator signature"
-        );
+        if (!_verifyValidatorSignature(trade)) {
+            revert UnauthorizedValidator();
+        }
 
         // Check token balances and allowances
         _verifyTradeRequirements(trade);
 
         // Check slippage protection
-        require(_checkSlippageProtection(trade), "Slippage exceeds maximum");
+        if (!_checkSlippageProtection(trade)) revert SlippageTooHigh();
 
         // Store trade
         trades[trade.id] = trade;
@@ -268,11 +283,11 @@ contract DEXSettlement is ReentrancyGuard, Pausable, AccessControl {
         bytes calldata validatorSignature,
         bool usePrivacy
     ) external nonReentrant whenNotPaused onlyRole(VALIDATOR_ROLE) {
-        require(usePrivacy && isMpcAvailable, "Privacy not available");
-        require(privacyFeeManager != address(0), "Privacy fee manager not set");
-        require(!emergencyStop, "Emergency stop activated");
-        require(block.timestamp <= deadline, "Trade deadline exceeded");
-        require(maker != taker, "Self-trading not allowed");
+        if (!usePrivacy || !isMpcAvailable) revert PrivacyNotAvailable();
+        if (privacyFeeManager == address(0)) revert InvalidTokenAddress();
+        if (emergencyStop) revert InvalidTrade();
+        if (block.timestamp > deadline) revert TradeExpired();
+        if (maker == taker) revert InvalidTrade();
         
         // Validate encrypted amounts
         gtUint64 gtAmountIn = MpcCore.validateCiphertext(amountIn);
@@ -280,15 +295,14 @@ contract DEXSettlement is ReentrancyGuard, Pausable, AccessControl {
         
         // Check trade size (decrypt for validation)
         uint64 amountInPlain = MpcCore.decrypt(gtAmountIn);
-        require(amountInPlain <= maxTradeSize, "Trade size exceeds limit");
+        if (amountInPlain > maxTradeSize) revert InvalidAmount();
         
         // Reset daily volume if new day
         _resetDailyVolumeIfNeeded();
         
-        require(
-            dailyVolumeUsed + amountInPlain <= dailyVolumeLimit,
-            "Daily volume limit exceeded"
-        );
+        if (dailyVolumeUsed + amountInPlain > dailyVolumeLimit) {
+            revert InvalidAmount();
+        }
         
         // Calculate privacy fee (0.1% of trade volume for DEX)
         uint256 dexFeeRate = 10; // 0.1% in basis points
@@ -366,22 +380,18 @@ contract DEXSettlement is ReentrancyGuard, Pausable, AccessControl {
     }
     
     function _verifyTradeRequirements(Trade calldata trade) internal view {
-        require(
-            IERC20(trade.tokenIn).balanceOf(trade.taker) >= trade.amountIn,
-            "Insufficient taker balance"
-        );
-        require(
-            IERC20(trade.tokenOut).balanceOf(trade.maker) >= trade.amountOut,
-            "Insufficient maker balance"
-        );
-        require(
-            IERC20(trade.tokenIn).allowance(trade.taker, address(this)) >= trade.amountIn,
-            "Insufficient taker allowance"
-        );
-        require(
-            IERC20(trade.tokenOut).allowance(trade.maker, address(this)) >= trade.amountOut,
-            "Insufficient maker allowance"
-        );
+        if (IERC20(trade.tokenIn).balanceOf(trade.taker) < trade.amountIn) {
+            revert InsufficientLiquidity();
+        }
+        if (IERC20(trade.tokenOut).balanceOf(trade.maker) < trade.amountOut) {
+            revert InsufficientLiquidity();
+        }
+        if (IERC20(trade.tokenIn).allowance(trade.taker, address(this)) < trade.amountIn) {
+            revert InsufficientLiquidity();
+        }
+        if (IERC20(trade.tokenOut).allowance(trade.maker, address(this)) < trade.amountOut) {
+            revert InsufficientLiquidity();
+        }
     }
     
     function _executeAtomicSettlement(Trade calldata trade) internal {
@@ -467,13 +477,12 @@ contract DEXSettlement is ReentrancyGuard, Pausable, AccessControl {
         ctUint64 encryptedTakerFee
     ) {
         Trade storage trade = trades[tradeId];
-        require(trade.isPrivate, "Not a private trade");
-        require(
-            msg.sender == trade.maker || 
-            msg.sender == trade.taker || 
-            hasRole(DEFAULT_ADMIN_ROLE, msg.sender),
-            "Not authorized"
-        );
+        if (!trade.isPrivate) revert InvalidTrade();
+        if (msg.sender != trade.maker && 
+            msg.sender != trade.taker && 
+            !hasRole(DEFAULT_ADMIN_ROLE, msg.sender)) {
+            revert UnauthorizedValidator();
+        }
         
         return (
             trade.encryptedAmountIn,
@@ -515,8 +524,8 @@ contract DEXSettlement is ReentrancyGuard, Pausable, AccessControl {
         address validatorAddress,
         uint256 initialParticipationScore
     ) external onlyRole(DEFAULT_ADMIN_ROLE) {
-        require(validatorAddress != address(0), "Invalid validator address");
-        require(!validators[validatorAddress].isActive, "Validator already registered");
+        if (validatorAddress == address(0)) revert InvalidTokenAddress();
+        if (validators[validatorAddress].isActive) revert InvalidTrade();
 
         validators[validatorAddress] = ValidatorInfo({
             validatorAddress: validatorAddress,
@@ -534,7 +543,7 @@ contract DEXSettlement is ReentrancyGuard, Pausable, AccessControl {
      */
     function distributeValidatorFees(address validator) external {
         uint256 pendingFees = validatorPendingFees[validator];
-        require(pendingFees > 0, "No pending fees");
+        if (pendingFees == 0) revert NoFundsToWithdraw();
 
         validatorPendingFees[validator] = 0;
         validators[validator].totalFeesEarned += pendingFees;

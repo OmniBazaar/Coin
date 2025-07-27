@@ -1,21 +1,17 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.20;
+pragma solidity ^0.8.19;
 
-import "@openzeppelin/contracts/access/Ownable.sol";
-import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
-import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import "../coti-contracts/contracts/utils/mpc/MpcCore.sol";
-import "./PrivacyFeeManager.sol";
+import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
+import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {MpcCore, gtUint64, ctUint64, itUint64} from "../coti-contracts/contracts/utils/mpc/MpcCore.sol";
+import {PrivacyFeeManager} from "./PrivacyFeeManager.sol";
 
 contract OmniCoinBridge is Ownable, ReentrancyGuard {
-    // Privacy configuration
-    uint256 public constant PRIVACY_MULTIPLIER = 10; // 10x fee for privacy
-    address public privacyFeeManager;
-    bool public isMpcAvailable;
+    // =============================================================================
+    // STRUCTS
+    // =============================================================================
     
-    // Role for validators
-    bytes32 public constant VALIDATOR_ROLE = keccak256("VALIDATOR_ROLE");
-    mapping(address => bool) public validators;
     struct BridgeConfig {
         uint256 chainId;
         address token;
@@ -42,8 +38,21 @@ contract OmniCoinBridge is Ownable, ReentrancyGuard {
         ctUint64 encryptedFee;     // For private transfers
     }
 
+    // =============================================================================
+    // CONSTANTS
+    // =============================================================================
+    
+    uint256 public constant PRIVACY_MULTIPLIER = 10; // 10x fee for privacy
+    bytes32 public constant VALIDATOR_ROLE = keccak256("VALIDATOR_ROLE");
+    
+    // =============================================================================
+    // STATE VARIABLES
+    // =============================================================================
+    
     IERC20 public token;
-
+    address public privacyFeeManager;
+    bool public isMpcAvailable;
+    mapping(address => bool) public validators;
     mapping(uint256 => BridgeConfig) public bridgeConfigs;
     mapping(uint256 => Transfer) public transfers;
     mapping(bytes32 => bool) public processedMessages;
@@ -54,6 +63,30 @@ contract OmniCoinBridge is Ownable, ReentrancyGuard {
     uint256 public baseFee;
     uint256 public messageTimeout;
 
+    // =============================================================================
+    // CUSTOM ERRORS
+    // =============================================================================
+    
+    error InvalidToken();
+    error InvalidAmount();
+    error TransferTooSmall();
+    error TransferTooLarge();
+    error BridgeNotActive();
+    error TransferNotFound();
+    error TransferAlreadyCompleted();
+    error TransferAlreadyRefunded();
+    error UnauthorizedValidator();
+    error InsufficientFee();
+    error MessageAlreadyProcessed();
+    error InvalidChainId();
+    error InvalidRecipient();
+    error MessageTimeout();
+    error TransferFailed();
+    
+    // =============================================================================
+    // EVENTS
+    // =============================================================================
+    
     event BridgeConfigured(
         uint256 indexed chainId,
         address indexed token,
@@ -112,7 +145,7 @@ contract OmniCoinBridge is Ownable, ReentrancyGuard {
      * @dev Set privacy fee manager
      */
     function setPrivacyFeeManager(address _privacyFeeManager) external onlyOwner {
-        require(_privacyFeeManager != address(0), "Invalid address");
+        if (_privacyFeeManager == address(0)) revert InvalidToken();
         privacyFeeManager = _privacyFeeManager;
     }
 
@@ -123,10 +156,10 @@ contract OmniCoinBridge is Ownable, ReentrancyGuard {
         uint256 _maxAmount,
         uint256 _fee
     ) external onlyOwner {
-        require(_token != address(0), "Invalid token");
-        require(_minAmount > 0, "Invalid min amount");
-        require(_maxAmount > _minAmount, "Invalid max amount");
-        require(_fee >= baseFee, "Invalid fee");
+        if (_token == address(0)) revert InvalidToken();
+        if (_minAmount == 0) revert InvalidAmount();
+        if (_maxAmount <= _minAmount) revert InvalidAmount();
+        if (_fee < baseFee) revert InsufficientFee();
 
         bridgeConfigs[_chainId] = BridgeConfig({
             chainId: _chainId,
@@ -150,11 +183,12 @@ contract OmniCoinBridge is Ownable, ReentrancyGuard {
         uint256 _amount
     ) external nonReentrant {
         BridgeConfig storage config = bridgeConfigs[_targetChainId];
-        require(config.isActive, "Bridge inactive");
-        require(_amount >= config.minAmount, "Amount too small");
-        require(_amount <= config.maxAmount, "Amount too large");
+        if (!config.isActive) revert BridgeNotActive();
+        if (_amount < config.minAmount) revert TransferTooSmall();
+        if (_amount > config.maxAmount) revert TransferTooLarge();
 
-        uint256 transferId = transferCount++;
+        uint256 transferId = transferCount;
+        ++transferCount;
         uint256 fee = config.fee;
 
         transfers[transferId] = Transfer({
@@ -206,11 +240,11 @@ contract OmniCoinBridge is Ownable, ReentrancyGuard {
         itUint64 calldata _amount,
         bool usePrivacy
     ) external nonReentrant {
-        require(usePrivacy && isMpcAvailable, "Privacy not available");
-        require(privacyFeeManager != address(0), "Privacy fee manager not set");
+        if (!usePrivacy || !isMpcAvailable) revert BridgeNotActive();
+        if (privacyFeeManager == address(0)) revert InvalidToken();
         
         BridgeConfig storage config = bridgeConfigs[_targetChainId];
-        require(config.isActive, "Bridge inactive");
+        if (!config.isActive) revert BridgeNotActive();
         
         // Validate encrypted amount
         gtUint64 gtAmount = MpcCore.validateCiphertext(_amount);
@@ -220,10 +254,11 @@ contract OmniCoinBridge is Ownable, ReentrancyGuard {
         gtUint64 gtMaxAmount = MpcCore.setPublic64(uint64(config.maxAmount));
         gtBool isAboveMin = MpcCore.ge(gtAmount, gtMinAmount);
         gtBool isBelowMax = MpcCore.le(gtAmount, gtMaxAmount);
-        require(MpcCore.decrypt(isAboveMin), "Amount too small");
-        require(MpcCore.decrypt(isBelowMax), "Amount too large");
+        if (!MpcCore.decrypt(isAboveMin)) revert TransferTooSmall();
+        if (!MpcCore.decrypt(isBelowMax)) revert TransferTooLarge();
         
-        uint256 transferId = transferCount++;
+        uint256 transferId = transferCount;
+        ++transferCount;
         
         // Calculate privacy fee (0.5% of amount for bridge operations)
         uint256 bridgeFeeRate = 50; // 0.5% in basis points
@@ -290,12 +325,9 @@ contract OmniCoinBridge is Ownable, ReentrancyGuard {
         bytes memory _signature
     ) external nonReentrant {
         Transfer storage transfer = transfers[_transferId];
-        require(!transfer.completed, "Already completed");
-        require(!transfer.refunded, "Already refunded");
-        require(
-            block.timestamp <= transfer.timestamp + messageTimeout,
-            "Message expired"
-        );
+        if (transfer.completed) revert TransferAlreadyCompleted();
+        if (transfer.refunded) revert TransferAlreadyRefunded();
+        if (block.timestamp > transfer.timestamp + messageTimeout) revert MessageTimeout();
 
         bytes32 messageHash = keccak256(
             abi.encodePacked(
@@ -310,8 +342,8 @@ contract OmniCoinBridge is Ownable, ReentrancyGuard {
             )
         );
 
-        require(!processedMessages[messageHash], "Message processed");
-        require(verifyMessage(messageHash, _signature), "Invalid signature");
+        if (processedMessages[messageHash]) revert MessageAlreadyProcessed();
+        if (!verifyMessage(messageHash, _signature)) revert UnauthorizedValidator();
 
         transfer.completed = true;
         processedMessages[messageHash] = true;
@@ -330,19 +362,13 @@ contract OmniCoinBridge is Ownable, ReentrancyGuard {
 
     function refundTransfer(uint256 _transferId) external nonReentrant {
         Transfer storage transfer = transfers[_transferId];
-        require(!transfer.completed, "Already completed");
-        require(!transfer.refunded, "Already refunded");
-        require(
-            block.timestamp > transfer.timestamp + messageTimeout,
-            "Not expired"
-        );
+        if (transfer.completed) revert TransferAlreadyCompleted();
+        if (transfer.refunded) revert TransferAlreadyRefunded();
+        if (block.timestamp <= transfer.timestamp + messageTimeout) revert MessageTimeout();
 
         transfer.refunded = true;
 
-        require(
-            token.transfer(transfer.sender, transfer.amount + transfer.fee),
-            "Transfer failed"
-        );
+        if (!token.transfer(transfer.sender, transfer.amount + transfer.fee)) revert TransferFailed();
 
         emit TransferRefunded(
             _transferId,
@@ -353,25 +379,25 @@ contract OmniCoinBridge is Ownable, ReentrancyGuard {
     }
 
     function setMinTransferAmount(uint256 _amount) external onlyOwner {
-        require(_amount > 0, "Invalid amount");
+        if (_amount == 0) revert InvalidAmount();
         minTransferAmount = _amount;
         emit MinTransferAmountUpdated(_amount);
     }
 
     function setMaxTransferAmount(uint256 _amount) external onlyOwner {
-        require(_amount > minTransferAmount, "Invalid amount");
+        if (_amount <= minTransferAmount) revert InvalidAmount();
         maxTransferAmount = _amount;
         emit MaxTransferAmountUpdated(_amount);
     }
 
     function setBaseFee(uint256 _fee) external onlyOwner {
-        require(_fee > 0, "Invalid fee");
+        if (_fee == 0) revert InsufficientFee();
         baseFee = _fee;
         emit BaseFeeUpdated(_fee);
     }
 
     function setMessageTimeout(uint256 _timeout) external onlyOwner {
-        require(_timeout > 0, "Invalid timeout");
+        if (_timeout == 0) revert MessageTimeout();
         messageTimeout = _timeout;
         emit MessageTimeoutUpdated(_timeout);
     }
@@ -418,7 +444,7 @@ contract OmniCoinBridge is Ownable, ReentrancyGuard {
         uint256 _transferId
     ) external view returns (ctUint64 encryptedAmount, ctUint64 encryptedFee) {
         Transfer storage transfer = transfers[_transferId];
-        require(transfer.isPrivate, "Not a private transfer");
+        if (!transfer.isPrivate) revert TransferNotFound();
         require(
             msg.sender == transfer.sender || msg.sender == transfer.recipient || msg.sender == owner(),
             "Not authorized"
@@ -451,7 +477,7 @@ contract OmniCoinBridge is Ownable, ReentrancyGuard {
     
     // Validator management functions
     function addValidator(address _validator) external onlyOwner {
-        require(_validator != address(0), "Invalid validator address");
+        if (_validator == address(0)) revert InvalidToken();
         validators[_validator] = true;
     }
     

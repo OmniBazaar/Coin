@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.20;
+pragma solidity ^0.8.19;
 
-import "@openzeppelin/contracts/access/AccessControl.sol";
-import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
-import "@openzeppelin/contracts/utils/Pausable.sol";
-import "../coti-contracts/contracts/utils/mpc/MpcCore.sol";
-import "./base/RegistryAware.sol";
-import "./OmniCoinCore.sol";
-import "./PrivacyFeeManager.sol";
+import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
+import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
+import {MpcCore, gtUint64, ctUint64, itUint64, gtBool} from "../coti-contracts/contracts/utils/mpc/MpcCore.sol";
+import {RegistryAware} from "./base/RegistryAware.sol";
+import {OmniCoinCore} from "./OmniCoinCore.sol";
+import {PrivacyFeeManager} from "./PrivacyFeeManager.sol";
 
 /**
  * @title OmniCoinEscrow
@@ -86,6 +86,26 @@ contract OmniCoinEscrow is RegistryAware, AccessControl, ReentrancyGuard, Pausab
     bool public isMpcAvailable;
     
     // =============================================================================
+    // CUSTOM ERRORS
+    // =============================================================================
+    
+    error InvalidAddress();
+    error InvalidAmount();
+    error InvalidDuration();
+    error EscrowNotFound();
+    error EscrowAlreadyReleased();
+    error EscrowAlreadyRefunded();
+    error EscrowDisputed();
+    error NotParticipant();
+    error NotArbitrator();
+    error TooEarlyToRelease();
+    error DisputeNotFound();
+    error DisputeAlreadyResolved();
+    error InvalidRefundAllocation();
+    error MpcNotAvailable();
+    error TransferFailed();
+    
+    // =============================================================================
     // EVENTS
     // =============================================================================
     
@@ -119,18 +139,15 @@ contract OmniCoinEscrow is RegistryAware, AccessControl, ReentrancyGuard, Pausab
     // =============================================================================
     
     modifier onlyEscrowParty(uint256 escrowId) {
-        require(
-            msg.sender == escrows[escrowId].seller ||
-            msg.sender == escrows[escrowId].buyer ||
-            msg.sender == escrows[escrowId].arbitrator,
-            "OmniCoinEscrow: Not escrow party"
-        );
+        if (msg.sender != escrows[escrowId].seller &&
+            msg.sender != escrows[escrowId].buyer &&
+            msg.sender != escrows[escrowId].arbitrator) revert NotParticipant();
         _;
     }
     
     modifier escrowNotReleased(uint256 escrowId) {
-        require(!escrows[escrowId].released, "OmniCoinEscrow: Already released");
-        require(!escrows[escrowId].refunded, "OmniCoinEscrow: Already refunded");
+        if (escrows[escrowId].released) revert EscrowAlreadyReleased();
+        if (escrows[escrowId].refunded) revert EscrowAlreadyRefunded();
         _;
     }
     
@@ -142,7 +159,7 @@ contract OmniCoinEscrow is RegistryAware, AccessControl, ReentrancyGuard, Pausab
         address _registry,
         address _admin
     ) RegistryAware(_registry) {
-        require(_admin != address(0), "OmniCoinEscrow: Invalid admin");
+        if (_admin == address(0)) revert InvalidAddress();
         
         // Setup roles
         _grantRole(DEFAULT_ADMIN_ROLE, _admin);
@@ -218,12 +235,13 @@ contract OmniCoinEscrow is RegistryAware, AccessControl, ReentrancyGuard, Pausab
         uint256 _amount,
         uint256 _duration
     ) external whenNotPaused nonReentrant returns (uint256) {
-        require(_buyer != address(0), "OmniCoinEscrow: Invalid buyer");
-        require(_arbitrator != address(0), "OmniCoinEscrow: Invalid arbitrator");
-        require(_duration <= maxEscrowDuration, "OmniCoinEscrow: Duration too long");
-        require(_amount >= uint64(gtUint64.unwrap(minEscrowAmount)), "OmniCoinEscrow: Amount too small");
+        if (_buyer == address(0)) revert InvalidAddress();
+        if (_arbitrator == address(0)) revert InvalidAddress();
+        if (_duration > maxEscrowDuration) revert InvalidDuration();
+        if (_amount < uint64(gtUint64.unwrap(minEscrowAmount))) revert InvalidAmount();
         
-        uint256 escrowId = escrowCount++;
+        uint256 escrowId = escrowCount;
+        ++escrowCount;
         
         // Calculate fee (0.5% of amount)
         uint256 feeAmount = (_amount * FEE_RATE) / BASIS_POINTS;
@@ -232,7 +250,7 @@ contract OmniCoinEscrow is RegistryAware, AccessControl, ReentrancyGuard, Pausab
         // Transfer tokens to escrow (standard transfer)
         OmniCoinCore token = getOmniCoinCore();
         bool transferResult = token.transferFromPublic(msg.sender, address(this), totalAmount);
-        require(transferResult, "OmniCoinEscrow: Transfer failed");
+        if (!transferResult) revert TransferFailed();
         
         // Create escrow with public amounts wrapped as encrypted
         gtUint64 gtAmount = gtUint64.wrap(uint64(_amount));
@@ -276,20 +294,21 @@ contract OmniCoinEscrow is RegistryAware, AccessControl, ReentrancyGuard, Pausab
         uint256 _duration,
         bool usePrivacy
     ) external whenNotPaused nonReentrant returns (uint256) {
-        require(usePrivacy && isMpcAvailable, "OmniCoinEscrow: Privacy not available");
+        if (!usePrivacy || !isMpcAvailable) revert MpcNotAvailable();
         address privacyFeeManager = getPrivacyFeeManager();
-        require(privacyFeeManager != address(0), "OmniCoinEscrow: Privacy fee manager not set");
-        require(_buyer != address(0), "OmniCoinEscrow: Invalid buyer");
-        require(_arbitrator != address(0), "OmniCoinEscrow: Invalid arbitrator");
-        require(_duration <= maxEscrowDuration, "OmniCoinEscrow: Duration too long");
+        if (privacyFeeManager == address(0)) revert InvalidAddress();
+        if (_buyer == address(0)) revert InvalidAddress();
+        if (_arbitrator == address(0)) revert InvalidAddress();
+        if (_duration > maxEscrowDuration) revert InvalidDuration();
         
         gtUint64 gtAmount = MpcCore.validateCiphertext(amount);
         
         // Check minimum amount
         gtBool isEnough = MpcCore.ge(gtAmount, minEscrowAmount);
-        require(MpcCore.decrypt(isEnough), "OmniCoinEscrow: Amount too small");
+        if (!MpcCore.decrypt(isEnough)) revert InvalidAmount();
         
-        uint256 escrowId = escrowCount++;
+        uint256 escrowId = escrowCount;
+        ++escrowCount;
         
         // Calculate fee (0.5% of amount) and privacy fee
         gtUint64 fee = _calculateFee(gtAmount);
@@ -329,7 +348,7 @@ contract OmniCoinEscrow is RegistryAware, AccessControl, ReentrancyGuard, Pausab
         OmniCoinCore token = getOmniCoinCore();
         gtUint64 totalAmount = MpcCore.add(gtAmount, fee);
         gtBool transferResult = token.transferFrom(msg.sender, address(this), totalAmount);
-        require(MpcCore.decrypt(transferResult), "OmniCoinEscrow: Transfer failed");
+        if (!MpcCore.decrypt(transferResult)) revert TransferFailed();
         
         emit EscrowCreated(escrowId, msg.sender, _buyer, _arbitrator, block.timestamp + _duration);
         
@@ -351,8 +370,8 @@ contract OmniCoinEscrow is RegistryAware, AccessControl, ReentrancyGuard, Pausab
         escrowNotReleased(escrowId) 
     {
         PrivateEscrow storage escrow = escrows[escrowId];
-        require(msg.sender == escrow.seller, "OmniCoinEscrow: Only seller can release");
-        require(!escrow.disputed, "OmniCoinEscrow: Escrow disputed");
+        if (msg.sender != escrow.seller) revert NotParticipant();
+        if (escrow.disputed) revert EscrowDisputed();
         
         escrow.released = true;
         
@@ -360,7 +379,7 @@ contract OmniCoinEscrow is RegistryAware, AccessControl, ReentrancyGuard, Pausab
         OmniCoinCore token = getOmniCoinCore();
         if (isMpcAvailable) {
             gtBool transferResult = token.transferGarbled(escrow.buyer, escrow.encryptedAmount);
-            require(MpcCore.decrypt(transferResult), "OmniCoinEscrow: Transfer failed");
+            if (!MpcCore.decrypt(transferResult)) revert TransferFailed();
         } else {
             // Fallback - assume transfer succeeds in test mode
         }
@@ -382,9 +401,9 @@ contract OmniCoinEscrow is RegistryAware, AccessControl, ReentrancyGuard, Pausab
         escrowNotReleased(escrowId) 
     {
         PrivateEscrow storage escrow = escrows[escrowId];
-        require(msg.sender == escrow.buyer, "OmniCoinEscrow: Only buyer can request refund");
-        require(block.timestamp >= escrow.releaseTime, "OmniCoinEscrow: Too early");
-        require(!escrow.disputed, "OmniCoinEscrow: Escrow disputed");
+        if (msg.sender != escrow.buyer) revert NotParticipant();
+        if (block.timestamp < escrow.releaseTime) revert TooEarlyToRelease();
+        if (escrow.disputed) revert EscrowDisputed();
         
         escrow.refunded = true;
         
@@ -392,7 +411,7 @@ contract OmniCoinEscrow is RegistryAware, AccessControl, ReentrancyGuard, Pausab
         OmniCoinCore token = getOmniCoinCore();
         if (isMpcAvailable) {
             gtBool transferResult = token.transferGarbled(escrow.seller, escrow.encryptedAmount);
-            require(MpcCore.decrypt(transferResult), "OmniCoinEscrow: Transfer failed");
+            if (!MpcCore.decrypt(transferResult)) revert TransferFailed();
         } else {
             // Fallback - assume transfer succeeds in test mode
         }
@@ -419,10 +438,11 @@ contract OmniCoinEscrow is RegistryAware, AccessControl, ReentrancyGuard, Pausab
         escrowNotReleased(escrowId) 
     {
         PrivateEscrow storage escrow = escrows[escrowId];
-        require(!escrow.disputed, "OmniCoinEscrow: Already disputed");
+        if (escrow.disputed) revert EscrowDisputed();
         
         escrow.disputed = true;
-        uint256 disputeId = disputeCount++;
+        uint256 disputeId = disputeCount;
+        ++disputeCount;
         
         // Initialize with zero amounts
         gtUint64 zeroAmount = gtUint64.wrap(0);
@@ -452,12 +472,12 @@ contract OmniCoinEscrow is RegistryAware, AccessControl, ReentrancyGuard, Pausab
         string calldata reason,
         bool usePrivacy
     ) external whenNotPaused onlyEscrowParty(escrowId) escrowNotReleased(escrowId) {
-        require(usePrivacy && isMpcAvailable, "OmniCoinEscrow: Privacy not available");
+        if (!usePrivacy || !isMpcAvailable) revert MpcNotAvailable();
         address privacyFeeManager = getPrivacyFeeManager();
-        require(privacyFeeManager != address(0), "OmniCoinEscrow: Privacy fee manager not set");
+        if (privacyFeeManager == address(0)) revert InvalidAddress();
         
         PrivateEscrow storage escrow = escrows[escrowId];
-        require(!escrow.disputed, "OmniCoinEscrow: Already disputed");
+        if (escrow.disputed) revert EscrowDisputed();
         
         // Collect privacy fee for dispute creation
         uint256 baseFee = uint64(gtUint64.unwrap(arbitrationFee));
@@ -469,7 +489,8 @@ contract OmniCoinEscrow is RegistryAware, AccessControl, ReentrancyGuard, Pausab
         );
         
         escrow.disputed = true;
-        uint256 disputeId = disputeCount++;
+        uint256 disputeId = disputeCount;
+        ++disputeCount;
         
         // Initialize with zero amounts (encrypted)
         gtUint64 zeroAmount = MpcCore.setPublic64(0);
@@ -503,13 +524,13 @@ contract OmniCoinEscrow is RegistryAware, AccessControl, ReentrancyGuard, Pausab
         uint256 sellerPayoutAmount
     ) external whenNotPaused nonReentrant onlyRole(ARBITRATOR_ROLE) {
         PrivateDispute storage dispute = disputes[disputeId];
-        require(!dispute.resolved, "OmniCoinEscrow: Already resolved");
+        if (dispute.resolved) revert DisputeAlreadyResolved();
         
         PrivateEscrow storage escrow = escrows[dispute.escrowId];
         
         // Verify total equals escrow amount
         uint256 escrowAmount = uint64(gtUint64.unwrap(escrow.encryptedAmount));
-        require(buyerRefundAmount + sellerPayoutAmount == escrowAmount, "OmniCoinEscrow: Invalid split");
+        if (buyerRefundAmount + sellerPayoutAmount != escrowAmount) revert InvalidRefundAllocation();
         
         dispute.resolved = true;
         dispute.resolver = msg.sender;
@@ -521,12 +542,12 @@ contract OmniCoinEscrow is RegistryAware, AccessControl, ReentrancyGuard, Pausab
         OmniCoinCore token = getOmniCoinCore();
         if (buyerRefundAmount > 0) {
             bool buyerTransferResult = token.transferPublic(escrow.buyer, buyerRefundAmount);
-            require(buyerTransferResult, "OmniCoinEscrow: Buyer transfer failed");
+            if (!buyerTransferResult) revert TransferFailed();
         }
         
         if (sellerPayoutAmount > 0) {
             bool sellerTransferResult = token.transferPublic(escrow.seller, sellerPayoutAmount);
-            require(sellerTransferResult, "OmniCoinEscrow: Seller transfer failed");
+            if (!sellerTransferResult) revert TransferFailed();
         }
         
         // Transfer fee to treasury
@@ -548,12 +569,12 @@ contract OmniCoinEscrow is RegistryAware, AccessControl, ReentrancyGuard, Pausab
         itUint64 calldata sellerPayout,
         bool usePrivacy
     ) external whenNotPaused nonReentrant onlyRole(ARBITRATOR_ROLE) {
-        require(usePrivacy && isMpcAvailable, "OmniCoinEscrow: Privacy not available");
+        if (!usePrivacy || !isMpcAvailable) revert MpcNotAvailable();
         address privacyFeeManager = getPrivacyFeeManager();
-        require(privacyFeeManager != address(0), "OmniCoinEscrow: Privacy fee manager not set");
+        if (privacyFeeManager == address(0)) revert InvalidAddress();
         
         PrivateDispute storage dispute = disputes[disputeId];
-        require(!dispute.resolved, "OmniCoinEscrow: Already resolved");
+        if (dispute.resolved) revert DisputeAlreadyResolved();
         
         PrivateEscrow storage escrow = escrows[dispute.escrowId];
         
@@ -576,7 +597,7 @@ contract OmniCoinEscrow is RegistryAware, AccessControl, ReentrancyGuard, Pausab
             // Verify total equals escrow amount
             gtUint64 total = MpcCore.add(gtBuyerRefund, gtSellerPayout);
             gtBool isEqual = MpcCore.eq(total, escrow.encryptedAmount);
-            require(MpcCore.decrypt(isEqual), "OmniCoinEscrow: Invalid split");
+            if (!MpcCore.decrypt(isEqual)) revert InvalidRefundAllocation();
         } else {
             // Fallback for testing
             uint64 buyerAmount = uint64(uint256(keccak256(abi.encode(buyerRefund))));
@@ -585,7 +606,7 @@ contract OmniCoinEscrow is RegistryAware, AccessControl, ReentrancyGuard, Pausab
             gtSellerPayout = gtUint64.wrap(sellerAmount);
             
             uint64 escrowAmount = uint64(gtUint64.unwrap(escrow.encryptedAmount));
-            require(buyerAmount + sellerAmount == escrowAmount, "OmniCoinEscrow: Invalid split");
+            if (buyerAmount + sellerAmount != escrowAmount) revert InvalidRefundAllocation();
         }
         
         dispute.resolved = true;

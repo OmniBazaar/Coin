@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
-import "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
-import "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
-import "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
-import "./OmniCoinCore.sol";
+import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
+import {OwnableUpgradeable} from "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
+import {ReentrancyGuardUpgradeable} from "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
+import {ECDSA} from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
+import {OmniCoinCore} from "./OmniCoinCore.sol";
 
 /**
  * @title OmniWalletRecovery
@@ -78,6 +78,31 @@ contract OmniWalletRecovery is
         address[] authorizedRecoverers;
         bool isActive;
     }
+
+    // Custom errors
+    error InvalidGuardianCount();
+    error InvalidThreshold();
+    error InvalidRecoveryDelay();
+    error InvalidGuardianAddress();
+    error CannotBeSelfGuardian();
+    error GuardianReputationTooLow();
+    error RecoveryNotConfigured();
+    error InvalidNewOwner();
+    error SameAsCurrentOwner();
+    error NotAuthorizedToInitiate();
+    error RecoveryNotPending();
+    error AlreadyApproved();
+    error NotAGuardian();
+    error RecoveryNotApproved();
+    error RecoveryDelayNotElapsed();
+    error NotAuthorizedToCancel();
+    error RecoveryNotCancellable();
+    error BackupNotActive();
+    error NotAuthorized();
+    error AlreadyAGuardian();
+    error TooManyGuardians();
+    error TooFewGuardians();
+    error GuardianNotFound();
 
     // State variables
     OmniCoinCore public omniCoin;
@@ -157,32 +182,22 @@ contract OmniWalletRecovery is
         uint256 _recoveryDelay,
         address _backupAddress
     ) external {
-        require(
-            _guardians.length >= minGuardians &&
-                _guardians.length <= maxGuardians,
-            "Invalid guardian count"
-        );
-        require(
-            _threshold > 0 && _threshold <= _guardians.length,
-            "Invalid threshold"
-        );
-        require(
-            _recoveryDelay >= 24 hours && _recoveryDelay <= maxRecoveryDelay,
-            "Invalid recovery delay"
-        );
+        if (_guardians.length < minGuardians || _guardians.length > maxGuardians)
+            revert InvalidGuardianCount();
+        if (_threshold == 0 || _threshold > _guardians.length)
+            revert InvalidThreshold();
+        if (_recoveryDelay < 24 hours || _recoveryDelay > maxRecoveryDelay)
+            revert InvalidRecoveryDelay();
 
         // Validate guardians
-        for (uint256 i = 0; i < _guardians.length; i++) {
-            require(_guardians[i] != address(0), "Invalid guardian address");
-            require(_guardians[i] != msg.sender, "Cannot be self-guardian");
+        for (uint256 i = 0; i < _guardians.length; ++i) {
+            if (_guardians[i] == address(0)) revert InvalidGuardianAddress();
+            if (_guardians[i] == msg.sender) revert CannotBeSelfGuardian();
 
             // Check guardian reputation if exists
             if (guardians[_guardians[i]].guardian != address(0)) {
-                require(
-                    guardians[_guardians[i]].reputation >=
-                        guardianReputationThreshold,
-                    "Guardian reputation too low"
-                );
+                if (guardians[_guardians[i]].reputation < guardianReputationThreshold)
+                    revert GuardianReputationTooLow();
             }
         }
 
@@ -198,7 +213,7 @@ contract OmniWalletRecovery is
         });
 
         // Update guardian mappings
-        for (uint256 i = 0; i < _guardians.length; i++) {
+        for (uint256 i = 0; i < _guardians.length; ++i) {
             walletsByGuardian[_guardians[i]].push(msg.sender);
 
             if (guardians[_guardians[i]].guardian == address(0)) {
@@ -226,14 +241,14 @@ contract OmniWalletRecovery is
         bytes memory evidence
     ) external nonReentrant returns (uint256 requestId) {
         WalletRecoveryConfig storage config = walletConfigs[walletAddress];
-        require(config.isActive, "Recovery not configured");
-        require(newOwner != address(0), "Invalid new owner");
-        require(newOwner != walletAddress, "Same as current owner");
+        if (!config.isActive) revert RecoveryNotConfigured();
+        if (newOwner == address(0)) revert InvalidNewOwner();
+        if (newOwner == walletAddress) revert SameAsCurrentOwner();
 
         // Check if initiator is authorized
         bool isAuthorized = false;
         if (method == RecoveryMethod.SOCIAL_RECOVERY) {
-            for (uint256 i = 0; i < config.guardians.length; i++) {
+            for (uint256 i = 0; i < config.guardians.length; ++i) {
                 if (config.guardians[i] == msg.sender) {
                     isAuthorized = true;
                     break;
@@ -242,7 +257,7 @@ contract OmniWalletRecovery is
         } else if (method == RecoveryMethod.EMERGENCY_RECOVERY) {
             isAuthorized = (msg.sender == config.backupAddress);
         }
-        require(isAuthorized, "Not authorized to initiate recovery");
+        if (!isAuthorized) revert NotAuthorizedToInitiate();
 
         requestId = ++requestCounter;
         bytes32 dataHash = keccak256(
@@ -280,21 +295,19 @@ contract OmniWalletRecovery is
             request.walletAddress
         ];
 
-        require(
-            request.status == RecoveryStatus.PENDING,
-            "Request not pending"
-        );
-        require(!request.guardianApprovals[msg.sender], "Already approved");
+        if (request.status != RecoveryStatus.PENDING)
+            revert RecoveryNotPending();
+        if (request.guardianApprovals[msg.sender]) revert AlreadyApproved();
 
         // Verify guardian authorization
         bool isGuardian = false;
-        for (uint256 i = 0; i < config.guardians.length; i++) {
+        for (uint256 i = 0; i < config.guardians.length; ++i) {
             if (config.guardians[i] == msg.sender) {
                 isGuardian = true;
                 break;
             }
         }
-        require(isGuardian, "Not a guardian");
+        if (!isGuardian) revert NotAGuardian();
 
         _approveRecovery(requestId, msg.sender);
     }
@@ -307,7 +320,7 @@ contract OmniWalletRecovery is
 
         request.guardianApprovals[approver] = true;
         request.approvers.push(approver);
-        request.approvals++;
+        ++request.approvals;
 
         emit RecoveryApproved(requestId, approver);
 
@@ -326,24 +339,20 @@ contract OmniWalletRecovery is
             request.walletAddress
         ];
 
-        require(
-            request.status == RecoveryStatus.APPROVED,
-            "Request not approved"
-        );
-        require(
-            block.timestamp >= request.timestamp + config.recoveryDelay,
-            "Recovery delay not elapsed"
-        );
+        if (request.status != RecoveryStatus.APPROVED)
+            revert RecoveryNotApproved();
+        if (block.timestamp < request.timestamp + config.recoveryDelay)
+            revert RecoveryDelayNotElapsed();
 
         // Execute the recovery by updating wallet ownership
         // This would typically interact with the wallet contract to transfer ownership
         request.status = RecoveryStatus.EXECUTED;
 
         // Update guardian reputations
-        for (uint256 i = 0; i < request.approvers.length; i++) {
+        for (uint256 i = 0; i < request.approvers.length; ++i) {
             GuardianInfo storage guardian = guardians[request.approvers[i]];
             if (guardian.reputation < 100) {
-                guardian.reputation += 1;
+                ++guardian.reputation;
             }
         }
 
@@ -360,17 +369,13 @@ contract OmniWalletRecovery is
     function cancelRecovery(uint256 requestId) external {
         RecoveryRequest storage request = recoveryRequests[requestId];
 
-        require(
-            msg.sender == request.initiator ||
-                msg.sender == request.walletAddress ||
-                msg.sender == owner(),
-            "Not authorized to cancel"
-        );
-        require(
-            request.status == RecoveryStatus.PENDING ||
-                request.status == RecoveryStatus.APPROVED,
-            "Cannot cancel"
-        );
+        if (msg.sender != request.initiator &&
+            msg.sender != request.walletAddress &&
+            msg.sender != owner())
+            revert NotAuthorizedToCancel();
+        if (request.status != RecoveryStatus.PENDING &&
+            request.status != RecoveryStatus.APPROVED)
+            revert RecoveryNotCancellable();
 
         request.status = RecoveryStatus.CANCELLED;
         emit RecoveryCancelled(requestId);
@@ -407,11 +412,11 @@ contract OmniWalletRecovery is
         address walletAddress
     ) external view returns (string memory encryptedData) {
         BackupData storage backup = backups[backupHash];
-        require(backup.isActive, "Backup not active");
+        if (!backup.isActive) revert BackupNotActive();
 
         // Check authorization
         bool authorized = false;
-        for (uint256 i = 0; i < backup.authorizedRecoverers.length; i++) {
+        for (uint256 i = 0; i < backup.authorizedRecoverers.length; ++i) {
             if (backup.authorizedRecoverers[i] == msg.sender) {
                 authorized = true;
                 break;
@@ -419,14 +424,14 @@ contract OmniWalletRecovery is
         }
 
         WalletRecoveryConfig storage config = walletConfigs[walletAddress];
-        for (uint256 i = 0; i < config.guardians.length; i++) {
+        for (uint256 i = 0; i < config.guardians.length; ++i) {
             if (config.guardians[i] == msg.sender) {
                 authorized = true;
                 break;
             }
         }
 
-        require(authorized || msg.sender == walletAddress, "Not authorized");
+        if (!authorized && msg.sender != walletAddress) revert NotAuthorized();
         return backup.encryptedData;
     }
 
@@ -435,17 +440,15 @@ contract OmniWalletRecovery is
      */
     function addGuardian(address guardian) external {
         WalletRecoveryConfig storage config = walletConfigs[msg.sender];
-        require(config.isActive, "Recovery not configured");
-        require(
-            config.guardians.length < maxGuardians,
-            "Max guardians reached"
-        );
-        require(guardian != address(0), "Invalid guardian");
-        require(guardian != msg.sender, "Cannot be self-guardian");
+        if (!config.isActive) revert RecoveryNotConfigured();
+        if (config.guardians.length >= maxGuardians)
+            revert TooManyGuardians();
+        if (guardian == address(0)) revert InvalidGuardianAddress();
+        if (guardian == msg.sender) revert CannotBeSelfGuardian();
 
         // Check if already a guardian
-        for (uint256 i = 0; i < config.guardians.length; i++) {
-            require(config.guardians[i] != guardian, "Already a guardian");
+        for (uint256 i = 0; i < config.guardians.length; ++i) {
+            if (config.guardians[i] == guardian) revert AlreadyAGuardian();
         }
 
         config.guardians.push(guardian);
@@ -470,14 +473,12 @@ contract OmniWalletRecovery is
      */
     function removeGuardian(address guardian) external {
         WalletRecoveryConfig storage config = walletConfigs[msg.sender];
-        require(config.isActive, "Recovery not configured");
-        require(
-            config.guardians.length > minGuardians,
-            "Below minimum guardians"
-        );
+        if (!config.isActive) revert RecoveryNotConfigured();
+        if (config.guardians.length <= minGuardians)
+            revert TooFewGuardians();
 
         // Find and remove guardian
-        for (uint256 i = 0; i < config.guardians.length; i++) {
+        for (uint256 i = 0; i < config.guardians.length; ++i) {
             if (config.guardians[i] == guardian) {
                 config.guardians[i] = config.guardians[
                     config.guardians.length - 1

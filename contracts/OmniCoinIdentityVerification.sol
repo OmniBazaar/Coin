@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.19;
 
-import "./ReputationSystemBase.sol";
-import "./interfaces/IReputationSystem.sol";
+import {ReputationSystemBase} from "./ReputationSystemBase.sol";
+import {IIdentityVerification} from "./interfaces/IReputationSystem.sol";
 
 /**
  * @title OmniCoinIdentityVerification
@@ -181,7 +181,7 @@ contract OmniCoinIdentityVerification is ReputationSystemBase, IIdentityVerifica
         string calldata reason
     ) external whenNotPaused onlyRole(IDENTITY_VERIFIER_ROLE) {
         IdentityRecord storage record = identityRecords[user];
-        require(record.isActive, "IdentityVerification: Not verified");
+        if (!record.isActive) revert NotVerified();
         
         // Update tier counts
         if (record.currentTier > 0) {
@@ -223,8 +223,8 @@ contract OmniCoinIdentityVerification is ReputationSystemBase, IIdentityVerifica
         bytes32 proofHash
     ) external whenNotPaused onlyRole(IDENTITY_VERIFIER_ROLE) {
         IdentityRecord storage record = identityRecords[user];
-        require(record.isActive, "IdentityVerification: Not verified");
-        require(record.currentTier > 0, "IdentityVerification: Cannot renew unverified");
+        if (!record.isActive) revert NotVerified();
+        if (record.currentTier == 0) revert InvalidTier();
         
         record.verificationTimestamp = block.timestamp;
         record.expirationTimestamp = block.timestamp + tierExpirationPeriods[record.currentTier];

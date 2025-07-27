@@ -1,10 +1,19 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import "@openzeppelin/contracts/access/Ownable.sol";
-import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
+import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
 contract OmniCoinGarbledCircuit is Ownable, ReentrancyGuard {
+    // Custom errors
+    error CircuitTooLarge();
+    error CircuitNotActive();
+    error InputTooLarge();
+    error InvalidInputSize();
+    error InvalidMaxCircuitSize();
+    error InvalidMaxInputSize();
+    error InvalidMaxOutputSize();
+    
     struct Circuit {
         bytes circuit;
         bytes inputLabels;
@@ -50,13 +59,10 @@ contract OmniCoinGarbledCircuit is Ownable, ReentrancyGuard {
     }
 
     function createCircuit(
-        address owner,
+        address,
         bytes memory circuit
     ) external onlyOwner nonReentrant returns (uint256) {
-        require(
-            circuit.length <= maxCircuitSize,
-            "OmniCoinGarbledCircuit: circuit too large"
-        );
+        if (circuit.length > maxCircuitSize) revert CircuitTooLarge();
 
         uint256 circuitId = circuitCount++;
 
@@ -81,10 +87,7 @@ contract OmniCoinGarbledCircuit is Ownable, ReentrancyGuard {
     }
 
     function deactivateCircuit(uint256 circuitId) external onlyOwner {
-        require(
-            circuits[circuitId].isActive,
-            "OmniCoinGarbledCircuit: circuit not active"
-        );
+        if (!circuits[circuitId].isActive) revert CircuitNotActive();
 
         circuits[circuitId].isActive = false;
 
@@ -95,18 +98,9 @@ contract OmniCoinGarbledCircuit is Ownable, ReentrancyGuard {
         uint256 circuitId,
         bytes memory input
     ) external nonReentrant {
-        require(
-            circuits[circuitId].isActive,
-            "OmniCoinGarbledCircuit: circuit not active"
-        );
-        require(
-            input.length <= maxInputSize,
-            "OmniCoinGarbledCircuit: input too large"
-        );
-        require(
-            input.length == circuits[circuitId].inputSize,
-            "OmniCoinGarbledCircuit: invalid input size"
-        );
+        if (!circuits[circuitId].isActive) revert CircuitNotActive();
+        if (input.length > maxInputSize) revert InputTooLarge();
+        if (input.length != circuits[circuitId].inputSize) revert InvalidInputSize();
 
         // Evaluate circuit (to be implemented)
         bytes memory output;

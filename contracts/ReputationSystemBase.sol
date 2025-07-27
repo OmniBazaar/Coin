@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.19;
 
-import "@openzeppelin/contracts/access/AccessControl.sol";
-import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
-import "@openzeppelin/contracts/utils/Pausable.sol";
-import "../coti-contracts/contracts/utils/mpc/MpcCore.sol";
-import "./interfaces/IReputationSystem.sol";
+import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
+import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
+import {MpcCore, gtUint64, ctUint64, itUint64} from "../coti-contracts/contracts/utils/mpc/MpcCore.sol";
+import {IReputationSystem} from "./interfaces/IReputationSystem.sol";
 
 /**
  * @title ReputationSystemBase
@@ -55,16 +55,26 @@ abstract contract ReputationSystemBase is IReputationSystem, AccessControl, Reen
     address public reputationCore;
     
     // =============================================================================
+    // CUSTOM ERRORS
+    // =============================================================================
+    
+    error OnlyCore();
+    error InvalidComponent();
+    error InvalidAdmin();
+    error InvalidCore();
+    error WeightTooHigh();
+    
+    // =============================================================================
     // MODIFIERS
     // =============================================================================
     
     modifier onlyCore() {
-        require(msg.sender == reputationCore, "ReputationSystemBase: Only core contract");
+        if (msg.sender != reputationCore) revert OnlyCore();
         _;
     }
     
     modifier validComponent(uint8 componentId) {
-        require(componentId < MAX_COMPONENTS, "ReputationSystemBase: Invalid component");
+        if (componentId >= MAX_COMPONENTS) revert InvalidComponent();
         _;
     }
     
@@ -73,8 +83,8 @@ abstract contract ReputationSystemBase is IReputationSystem, AccessControl, Reen
     // =============================================================================
     
     constructor(address _admin, address _reputationCore) {
-        require(_admin != address(0), "ReputationSystemBase: Invalid admin");
-        require(_reputationCore != address(0), "ReputationSystemBase: Invalid core");
+        if (_admin == address(0)) revert InvalidAdmin();
+        if (_reputationCore == address(0)) revert InvalidCore();
         
         _grantRole(DEFAULT_ADMIN_ROLE, _admin);
         _grantRole(ADMIN_ROLE, _admin);
@@ -101,6 +111,20 @@ abstract contract ReputationSystemBase is IReputationSystem, AccessControl, Reen
     // =============================================================================
     
     /**
+     * @dev Set component weight (only core contract)
+     */
+    function setComponentWeight(uint8 componentId, uint256 weight) 
+        external 
+        override 
+        onlyCore
+        validComponent(componentId) 
+    {
+        if (weight > BASIS_POINTS) revert WeightTooHigh();
+        componentWeights[componentId] = weight;
+        emit ComponentWeightUpdated(componentId, weight, block.timestamp);
+    }
+    
+    /**
      * @dev Get component weight
      */
     function getComponentWeight(uint8 componentId) 
@@ -111,20 +135,6 @@ abstract contract ReputationSystemBase is IReputationSystem, AccessControl, Reen
         returns (uint256) 
     {
         return componentWeights[componentId];
-    }
-    
-    /**
-     * @dev Set component weight (only core contract)
-     */
-    function setComponentWeight(uint8 componentId, uint256 weight) 
-        external 
-        override 
-        onlyCore
-        validComponent(componentId) 
-    {
-        require(weight <= BASIS_POINTS, "ReputationSystemBase: Weight too high");
-        componentWeights[componentId] = weight;
-        emit ComponentWeightUpdated(componentId, weight, block.timestamp);
     }
     
     // =============================================================================
