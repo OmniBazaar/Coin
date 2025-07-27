@@ -2,6 +2,8 @@
 pragma solidity ^0.8.19;
 
 import {ReputationSystemBase} from "./ReputationSystemBase.sol";
+import {ITrustSystem} from "./interfaces/IReputationSystem.sol";
+import {MpcCore, gtBool, gtUint64, ctUint64, itUint64} from "../coti-contracts/contracts/utils/mpc/MpcCore.sol";
 
 /**
  * @title OmniCoinTrustSystem

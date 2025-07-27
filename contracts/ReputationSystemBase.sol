@@ -5,7 +5,7 @@ import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
 import {MpcCore, gtUint64, ctUint64, itUint64} from "../coti-contracts/contracts/utils/mpc/MpcCore.sol";
-import {IReputationSystem} from "./interfaces/IReputationSystem.sol";
+import {IReputationSystem, IReputationCore} from "./interfaces/IReputationSystem.sol";
 
 /**
  * @title ReputationSystemBase

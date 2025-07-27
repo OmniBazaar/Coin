@@ -5,15 +5,29 @@ import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
 import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {PrivateERC20} from "../coti-contracts/contracts/token/PrivateERC20/PrivateERC20.sol";
-import {MpcCore, gtUint64, ctUint64, itUint64} from "../coti-contracts/contracts/utils/mpc/MpcCore.sol";
+import {MpcCore, gtBool, gtUint64, ctUint64, itUint64} from "../coti-contracts/contracts/utils/mpc/MpcCore.sol";
 import {RegistryAware} from "./base/RegistryAware.sol";
 
+/**
+ * @title IPrivacyFeeManager
+ * @author OmniCoin Development Team
+ * @notice Interface for privacy fee management
+ */
 interface IPrivacyFeeManager {
-    function collectPrivacyFee(address user, bytes32 operationType, uint256 amount) external returns (bool);
+    /**
+     * @notice Collect privacy fee from user
+     * @param user User address
+     * @param operationType Type of operation
+     * @param amount Fee amount
+     * @return success Whether fee collection was successful
+     */
+    function collectPrivacyFee(address user, bytes32 operationType, uint256 amount) external returns (bool success);
 }
 
 /**
  * @title OmniCoinCore
+ * @author OmniCoin Development Team
+ * @notice Core OmniCoin token with privacy features and Registry pattern integration
  * @dev Core OmniCoin token with Registry pattern integration
  * 
  * Updates:
@@ -40,42 +54,86 @@ contract OmniCoinCore is PrivateERC20, AccessControl, Pausable, ReentrancyGuard,
     // CONSTANTS & ROLES
     // =============================================================================
     
+    /// @notice Role for minting new tokens
     bytes32 public constant MINTER_ROLE = keccak256("MINTER_ROLE");
+    /// @notice Role for burning tokens
     bytes32 public constant BURNER_ROLE = keccak256("BURNER_ROLE");
+    /// @notice Role for pausing the contract
     bytes32 public constant PAUSER_ROLE = keccak256("PAUSER_ROLE");
+    /// @notice Role for validator operations
     bytes32 public constant VALIDATOR_ROLE = keccak256("VALIDATOR_ROLE");
+    /// @notice Role for bridge operations
     bytes32 public constant BRIDGE_ROLE = keccak256("BRIDGE_ROLE");
     
+    /// @notice Initial token supply (100M tokens)
     uint64 public constant INITIAL_SUPPLY = 100_000_000 * 10**6; // 100M tokens with 6 decimals
+    /// @notice Maximum token supply (1B tokens)
     uint64 public constant MAX_SUPPLY = 1_000_000_000 * 10**6; // 1B tokens max supply
     
     // =============================================================================
     // STATE VARIABLES
     // =============================================================================
     
-    /// @dev Registry of approved validators for L2.5 business logic operations
+    /// @notice Registry of approved validators for L2.5 business logic operations
     mapping(address => bool) public validators;
     
-    /// @dev Mapping to track validator network operations
+    /// @notice Mapping to track validator network operations
     mapping(bytes32 => ValidatorOperation) public validatorOperations;
     
-    /// @dev Privacy toggle for users (true = private, false = public)
+    /// @notice Privacy toggle for users (true = private, false = public)
     mapping(address => bool) public userPrivacyPreference;
     
-    /// @dev Total count of registered validators
+    /// @notice Total count of registered validators
     uint256 public validatorCount;
     
-    /// @dev Minimum validators required for consensus
+    /// @notice Minimum validators required for consensus
     uint256 public minimumValidators;
     
     /// @dev Track total supply for max supply checking (public counter)
     uint64 private _publicTotalSupply;
     
-    /// @dev MPC availability flag (true on COTI testnet/mainnet, false in Hardhat)
+    /// @notice MPC availability flag (true on COTI testnet/mainnet, false in Hardhat)
     bool public isMpcAvailable;
     
-    /// @dev Privacy enabled by default flag (business logic - always false)
+    /// @notice Privacy enabled by default flag (business logic - always false)
     bool public privacyEnabledByDefault = false;
+    
+    // =============================================================================
+    // EVENTS
+    // =============================================================================
+    
+    /**
+     * @notice Emitted when a validator is added
+     * @param validator Address of the new validator
+     */
+    event ValidatorAdded(address indexed validator);
+    
+    /**
+     * @notice Emitted when a validator is removed
+     * @param validator Address of the removed validator
+     */
+    event ValidatorRemoved(address indexed validator);
+    
+    /**
+     * @notice Emitted when a validator operation is submitted
+     * @param operationHash Hash of the operation
+     * @param submitter Address that submitted the operation
+     */
+    event ValidatorOperationSubmitted(bytes32 indexed operationHash, address indexed submitter);
+    
+    /**
+     * @notice Emitted when a validator operation is executed
+     * @param operationHash Hash of the operation
+     * @param confirmations Number of confirmations received
+     */
+    event ValidatorOperationExecuted(bytes32 indexed operationHash, uint256 indexed confirmations);
+    
+    /**
+     * @notice Emitted when a user changes their privacy preference
+     * @param user User address
+     * @param privacyEnabled Whether privacy is enabled
+     */
+    event PrivacyPreferenceChanged(address indexed user, bool indexed privacyEnabled);
     
     // =============================================================================
     // CUSTOM ERRORS
@@ -93,16 +151,10 @@ contract OmniCoinCore is PrivateERC20, AccessControl, Pausable, ReentrancyGuard,
     error PrivacyNotEnabled();
     error PrivacyFeeFailed();
     error MpcNotAvailable();
-    
-    // =============================================================================
-    // EVENTS
-    // =============================================================================
-    
-    event ValidatorAdded(address indexed validator);
-    event ValidatorRemoved(address indexed validator);
-    event ValidatorOperationSubmitted(bytes32 indexed operationHash, address indexed submitter);
-    event ValidatorOperationExecuted(bytes32 indexed operationHash, uint256 confirmations);
-    event PrivacyPreferenceChanged(address indexed user, bool privacyEnabled);
+    error MinimumValidatorsTooLow();
+    error MaxValidatorsTooHigh();
+    error TestEnvironmentOnly();
+    error InsufficientReputationForProposal();
     
     // =============================================================================
     // MODIFIERS
@@ -122,6 +174,12 @@ contract OmniCoinCore is PrivateERC20, AccessControl, Pausable, ReentrancyGuard,
     // CONSTRUCTOR
     // =============================================================================
     
+    /**
+     * @notice Initialize the OmniCoinCore contract
+     * @param _registry Address of the OmniCoinRegistry contract
+     * @param _admin Initial admin address
+     * @param _minimumValidators Minimum number of validators required
+     */
     constructor(
         address _registry,
         address _admin,
@@ -146,43 +204,20 @@ contract OmniCoinCore is PrivateERC20, AccessControl, Pausable, ReentrancyGuard,
     }
     
     // =============================================================================
-    // REGISTRY INTEGRATION HELPERS
-    // =============================================================================
-    
-    /**
-     * @dev Get bridge contract from registry
-     */
-    function getBridgeContract() public returns (address) {
-        return _getContract(registry.BRIDGE());
-    }
-    
-    /**
-     * @dev Get treasury contract from registry
-     */
-    function getTreasuryContract() public returns (address) {
-        return _getContract(registry.TREASURY());
-    }
-    
-    /**
-     * @dev Get privacy fee manager from registry
-     */
-    function getPrivacyFeeManager() public returns (address) {
-        return _getContract(registry.FEE_MANAGER());
-    }
-    
-    // =============================================================================
     // MPC AVAILABILITY MANAGEMENT
     // =============================================================================
     
     /**
-     * @dev Set MPC availability (admin only, called when deploying to COTI testnet/mainnet)
+     * @notice Set MPC availability (admin only)
+     * @dev Called when deploying to COTI testnet/mainnet
+     * @param _available Whether MPC is available
      */
     function setMpcAvailability(bool _available) external onlyRole(DEFAULT_ADMIN_ROLE) {
         isMpcAvailable = _available;
     }
     
     /**
-     * @dev Mint initial supply (called once after deployment)
+     * @notice Mint initial supply (called once after deployment)
      */
     function mintInitialSupply() external onlyRole(DEFAULT_ADMIN_ROLE) {
         if (_publicTotalSupply != 0) revert InvalidAmount();
@@ -207,7 +242,8 @@ contract OmniCoinCore is PrivateERC20, AccessControl, Pausable, ReentrancyGuard,
     // =============================================================================
     
     /**
-     * @dev Add a new validator to the network
+     * @notice Add a new validator to the network
+     * @dev Requires admin role and checks for duplicate validators
      * @param validator Address of the validator to add
      */
     function addValidator(address validator) external onlyRole(DEFAULT_ADMIN_ROLE) {
@@ -223,12 +259,13 @@ contract OmniCoinCore is PrivateERC20, AccessControl, Pausable, ReentrancyGuard,
     }
     
     /**
-     * @dev Remove a validator from the network
+     * @notice Remove a validator from the network
+     * @dev Requires admin role and maintains minimum validator count
      * @param validator Address of the validator to remove
      */
     function removeValidator(address validator) external onlyRole(DEFAULT_ADMIN_ROLE) {
         if (!validators[validator]) revert NotValidator();
-        if (validatorCount <= minimumValidators) revert InsufficientValidators();
+        if (validatorCount < minimumValidators + 1) revert InsufficientValidators();
         
         validators[validator] = false;
         --validatorCount;
@@ -243,7 +280,8 @@ contract OmniCoinCore is PrivateERC20, AccessControl, Pausable, ReentrancyGuard,
     // =============================================================================
     
     /**
-     * @dev Set user privacy preference
+     * @notice Set user privacy preference
+     * @dev Allows users to opt-in to privacy features
      * @param privacyEnabled True for private operations, false for public
      */
     function setPrivacyPreference(bool privacyEnabled) external {
@@ -251,10 +289,40 @@ contract OmniCoinCore is PrivateERC20, AccessControl, Pausable, ReentrancyGuard,
         emit PrivacyPreferenceChanged(msg.sender, privacyEnabled);
     }
     
+    // =============================================================================
+    // REGISTRY INTEGRATION HELPERS
+    // =============================================================================
+    
     /**
-     * @dev Standard public transfer (no privacy, no extra fees)
+     * @notice Get bridge contract from registry
+     * @return bridge Bridge contract address
+     */
+    function getBridgeContract() public returns (address bridge) {
+        return _getContract(registry.BRIDGE());
+    }
+    
+    /**
+     * @notice Get treasury contract from registry
+     * @return treasury Treasury contract address
+     */
+    function getTreasuryContract() public returns (address treasury) {
+        return _getContract(registry.TREASURY());
+    }
+    
+    /**
+     * @notice Get privacy fee manager from registry
+     * @return feeManager Privacy fee manager address
+     */
+    function getPrivacyFeeManager() public returns (address feeManager) {
+        return _getContract(registry.FEE_MANAGER());
+    }
+    
+    /**
+     * @notice Standard public transfer (no privacy, no extra fees)
+     * @dev Wrapper around internal _transfer function
      * @param to Recipient address
      * @param amount Transfer amount
+     * @return success Always returns true if no revert
      */
     function transferPublic(address to, uint256 amount) 
         public 
@@ -263,40 +331,42 @@ contract OmniCoinCore is PrivateERC20, AccessControl, Pausable, ReentrancyGuard,
     {
         // Convert to gtUint64 for internal use
         gtUint64 gtAmount = gtUint64.wrap(uint64(amount));
-        gtBool result = _transfer(msg.sender, to, gtAmount);
+        _transfer(msg.sender, to, gtAmount);
         // In public mode, we assume success
         return true;
     }
     
     /**
-     * @dev Standard public transferFrom (no privacy, no extra fees)
+     * @notice Standard public transferFrom (no privacy, no extra fees)
+     * @dev Uses PrivateERC20 transferFrom which handles allowance
      * @param from Sender address
      * @param to Recipient address
      * @param amount Transfer amount
+     * @return success Always returns true if no revert
      */
     function transferFromPublic(address from, address to, uint256 amount) 
         public 
         whenNotPausedAndEnabled 
         returns (bool) 
     {
-        address spender = _msgSender();
-        
         // Convert amount to gtUint64
         gtUint64 gtAmount = gtUint64.wrap(uint64(amount));
         
         // Use the PrivateERC20 transferFrom which handles allowance internally
-        gtBool result = transferFrom(from, to, gtAmount);
+        transferFrom(from, to, gtAmount);
         
         // For public functions, we assume success if no revert
         return true;
     }
     
     /**
-     * @dev TransferFrom with explicit privacy choice
+     * @notice TransferFrom with explicit privacy choice
+     * @dev Allows sender to choose privacy mode, charges fee if privacy enabled
      * @param from Sender address
      * @param to Recipient address
      * @param amount Transfer amount
      * @param usePrivacy Whether to use privacy features (costs extra)
+     * @return success Whether the transfer was successful
      */
     function transferFromWithPrivacy(address from, address to, uint256 amount, bool usePrivacy) 
         external 
@@ -308,10 +378,10 @@ contract OmniCoinCore is PrivateERC20, AccessControl, Pausable, ReentrancyGuard,
             // User explicitly chose privacy - collect fee
             if (!userPrivacyPreference[from]) revert PrivacyNotEnabled();
             
-            address privacyFeeManager = getPrivacyFeeManager();
-            if (privacyFeeManager != address(0)) {
+            address feeManager = getPrivacyFeeManager();
+            if (feeManager != address(0)) {
                 // Collect privacy fee from the sender (from address)
-                IPrivacyFeeManager(privacyFeeManager).collectPrivacyFee(
+                IPrivacyFeeManager(feeManager).collectPrivacyFee(
                     from,
                     keccak256("TRANSFER_FROM"),
                     amount
@@ -329,9 +399,11 @@ contract OmniCoinCore is PrivateERC20, AccessControl, Pausable, ReentrancyGuard,
     }
     
     /**
-     * @dev Standard public approve (no privacy, no extra fees)
+     * @notice Standard public approve (no privacy, no extra fees)
+     * @dev Sets allowance for spender
      * @param spender Address allowed to spend
      * @param amount Amount allowed
+     * @return success Always returns true if no revert
      */
     function approvePublic(address spender, uint256 amount) 
         public 
@@ -351,10 +423,12 @@ contract OmniCoinCore is PrivateERC20, AccessControl, Pausable, ReentrancyGuard,
     }
     
     /**
-     * @dev Approve with explicit privacy choice
+     * @notice Approve with explicit privacy choice
+     * @dev Allows approver to choose privacy mode, charges fee if privacy enabled
      * @param spender Address allowed to spend
      * @param amount Amount allowed
      * @param usePrivacy Whether to use privacy features (costs extra)
+     * @return success Whether the approval was successful
      */
     function approveWithPrivacy(address spender, uint256 amount, bool usePrivacy) 
         external 
@@ -366,10 +440,10 @@ contract OmniCoinCore is PrivateERC20, AccessControl, Pausable, ReentrancyGuard,
             // User explicitly chose privacy - collect fee
             if (!userPrivacyPreference[msg.sender]) revert PrivacyNotEnabled();
             
-            address privacyFeeManager = getPrivacyFeeManager();
-            if (privacyFeeManager != address(0)) {
+            address feeManager = getPrivacyFeeManager();
+            if (feeManager != address(0)) {
                 // Collect privacy fee
-                IPrivacyFeeManager(privacyFeeManager).collectPrivacyFee(
+                IPrivacyFeeManager(feeManager).collectPrivacyFee(
                     msg.sender,
                     keccak256("APPROVE"),
                     amount
@@ -387,10 +461,12 @@ contract OmniCoinCore is PrivateERC20, AccessControl, Pausable, ReentrancyGuard,
     }
     
     /**
-     * @dev Transfer with explicit privacy choice
+     * @notice Transfer with explicit privacy choice
+     * @dev Allows sender to choose privacy mode, charges fee if privacy enabled
      * @param to Recipient address
      * @param amount Transfer amount
      * @param usePrivacy Whether to use privacy features (costs extra)
+     * @return success Whether the transfer was successful
      */
     function transferWithPrivacy(address to, uint256 amount, bool usePrivacy) 
         external 
@@ -402,10 +478,10 @@ contract OmniCoinCore is PrivateERC20, AccessControl, Pausable, ReentrancyGuard,
             // User explicitly chose privacy - collect fee
             if (!userPrivacyPreference[msg.sender]) revert PrivacyNotEnabled();
             
-            address privacyFeeManager = getPrivacyFeeManager();
-            if (privacyFeeManager != address(0)) {
+            address feeManager = getPrivacyFeeManager();
+            if (feeManager != address(0)) {
                 // Collect privacy fee
-                IPrivacyFeeManager(privacyFeeManager).collectPrivacyFee(
+                IPrivacyFeeManager(feeManager).collectPrivacyFee(
                     msg.sender,
                     keccak256("TRANSFER"),
                     amount
@@ -423,9 +499,11 @@ contract OmniCoinCore is PrivateERC20, AccessControl, Pausable, ReentrancyGuard,
     }
     
     /**
-     * @dev Legacy private transfer function (for compatibility)
+     * @notice Legacy private transfer function (for compatibility)
+     * @dev Uses MPC for fully private transfers, requires privacy preference enabled
      * @param to Recipient address
      * @param value Transfer amount (encrypted)
+     * @return result Encrypted boolean result
      */
     function transferPrivate(address to, itUint64 calldata value) 
         external 
@@ -437,11 +515,11 @@ contract OmniCoinCore is PrivateERC20, AccessControl, Pausable, ReentrancyGuard,
         if (!userPrivacyPreference[msg.sender]) revert PrivacyNotEnabled();
         
         // This is the explicit privacy path - always charge fee
-        address privacyFeeManager = getPrivacyFeeManager();
-        if (privacyFeeManager != address(0)) {
+        address feeManager = getPrivacyFeeManager();
+        if (feeManager != address(0)) {
             // For encrypted amounts, we estimate fee based on typical transfer
             uint256 estimatedAmount = 1000 * 10**6; // 1000 OMNI typical transfer
-            IPrivacyFeeManager(privacyFeeManager).collectPrivacyFee(
+            IPrivacyFeeManager(feeManager).collectPrivacyFee(
                 msg.sender,
                 keccak256("TRANSFER"),
                 estimatedAmount
@@ -454,9 +532,11 @@ contract OmniCoinCore is PrivateERC20, AccessControl, Pausable, ReentrancyGuard,
     }
     
     /**
-     * @dev Transfer with garbled circuit value (already encrypted)
+     * @notice Transfer with garbled circuit value (already encrypted)
+     * @dev Uses pre-encrypted values for maximum privacy
      * @param to Recipient address
      * @param value Transfer amount (garbled)
+     * @return result Encrypted boolean result
      */
     function transferGarbled(address to, gtUint64 value) 
         external 
@@ -468,10 +548,10 @@ contract OmniCoinCore is PrivateERC20, AccessControl, Pausable, ReentrancyGuard,
         if (!userPrivacyPreference[msg.sender]) revert PrivacyNotEnabled();
         
         // Charge privacy fee for garbled transfers
-        address privacyFeeManager = getPrivacyFeeManager();
-        if (privacyFeeManager != address(0)) {
+        address feeManager = getPrivacyFeeManager();
+        if (feeManager != address(0)) {
             uint256 estimatedAmount = 1000 * 10**6; // Estimate for fee
-            IPrivacyFeeManager(privacyFeeManager).collectPrivacyFee(
+            IPrivacyFeeManager(feeManager).collectPrivacyFee(
                 msg.sender,
                 keccak256("TRANSFER"),
                 estimatedAmount
@@ -482,9 +562,11 @@ contract OmniCoinCore is PrivateERC20, AccessControl, Pausable, ReentrancyGuard,
     }
     
     /**
-     * @dev Internal private transfer using MPC
+     * @notice Internal private transfer using MPC
+     * @dev Wrapper around PrivateERC20 transfer with garbled types
      * @param to Recipient address
      * @param amount Transfer amount (garbled)
+     * @return result Encrypted boolean result
      */
     function _transferPrivate(address to, gtUint64 amount) internal returns (gtBool) {
         // This calls the PrivateERC20 transfer function with garbled types
@@ -492,10 +574,12 @@ contract OmniCoinCore is PrivateERC20, AccessControl, Pausable, ReentrancyGuard,
     }
     
     /**
-     * @dev Internal private transferFrom using MPC
+     * @notice Internal private transferFrom using MPC
+     * @dev Wrapper around PrivateERC20 transferFrom with garbled types
      * @param from Sender address
      * @param to Recipient address
      * @param amount Transfer amount (garbled)
+     * @return result Encrypted boolean result
      */
     function _transferFromPrivate(address from, address to, gtUint64 amount) internal returns (gtBool) {
         // This calls the PrivateERC20 transferFrom function with garbled types
@@ -507,9 +591,11 @@ contract OmniCoinCore is PrivateERC20, AccessControl, Pausable, ReentrancyGuard,
     // =============================================================================
     
     /**
-     * @dev Mint tokens with privacy support
+     * @notice Mint tokens with privacy support
+     * @dev Requires MINTER_ROLE, validates encrypted amount
      * @param to Recipient address
      * @param amount Amount to mint (encrypted)
+     * @return result Encrypted boolean result
      */
     function mintPrivate(address to, itUint64 calldata amount) 
         external 
@@ -532,9 +618,11 @@ contract OmniCoinCore is PrivateERC20, AccessControl, Pausable, ReentrancyGuard,
     }
     
     /**
-     * @dev Mint tokens with garbled circuit value
+     * @notice Mint tokens with garbled circuit value
+     * @dev Requires MINTER_ROLE, uses pre-encrypted amount
      * @param to Recipient address
      * @param amount Amount to mint (garbled)
+     * @return result Encrypted boolean result
      */
     function mintGarbled(address to, gtUint64 amount) 
         external 
@@ -548,8 +636,10 @@ contract OmniCoinCore is PrivateERC20, AccessControl, Pausable, ReentrancyGuard,
     }
     
     /**
-     * @dev Burn tokens with privacy support
+     * @notice Burn tokens with privacy support
+     * @dev Requires BURNER_ROLE, validates encrypted amount
      * @param amount Amount to burn (encrypted)
+     * @return result Encrypted boolean result
      */
     function burnPrivate(itUint64 calldata amount) 
         external 
@@ -570,8 +660,10 @@ contract OmniCoinCore is PrivateERC20, AccessControl, Pausable, ReentrancyGuard,
     }
     
     /**
-     * @dev Burn tokens with garbled circuit value
+     * @notice Burn tokens with garbled circuit value
+     * @dev Requires BURNER_ROLE, uses pre-encrypted amount
      * @param amount Amount to burn (garbled)
+     * @return result Encrypted boolean result
      */
     function burnGarbled(gtUint64 amount) 
         external 
@@ -588,9 +680,11 @@ contract OmniCoinCore is PrivateERC20, AccessControl, Pausable, ReentrancyGuard,
     // =============================================================================
     
     /**
-     * @dev Submit operation to validator network for business logic processing
+     * @notice Submit operation to validator network for business logic processing
+     * @dev Creates a new validator operation that needs confirmation
      * @param operationData Encoded operation data
      * @param operationType Type of operation (0=transfer, 1=stake, 2=reputation, etc.)
+     * @return operationHash Hash of the submitted operation
      */
     function submitToValidators(bytes calldata operationData, uint256 operationType) 
         external 
@@ -617,7 +711,8 @@ contract OmniCoinCore is PrivateERC20, AccessControl, Pausable, ReentrancyGuard,
     }
     
     /**
-     * @dev Confirm operation by validator
+     * @notice Confirm operation by validator
+     * @dev Validators confirm operations, executes when minimum reached
      * @param operationHash Hash of the operation to confirm
      */
     function confirmValidatorOperation(bytes32 operationHash) 
@@ -638,7 +733,7 @@ contract OmniCoinCore is PrivateERC20, AccessControl, Pausable, ReentrancyGuard,
         ++operation.confirmations;
         
         // Execute if minimum confirmations reached
-        if (operation.confirmations >= minimumValidators) {
+        if (operation.confirmations > minimumValidators - 1) {
             operation.executed = true;
             emit ValidatorOperationExecuted(operationHash, operation.confirmations);
         }
@@ -649,24 +744,27 @@ contract OmniCoinCore is PrivateERC20, AccessControl, Pausable, ReentrancyGuard,
     // =============================================================================
     
     /**
-     * @dev Update minimum validators required
+     * @notice Update minimum validators required
+     * @dev Admin function to set consensus threshold
      * @param newMinimum New minimum validator count
      */
     function setMinimumValidators(uint256 newMinimum) external onlyRole(DEFAULT_ADMIN_ROLE) {
-        require(newMinimum > 0, "OmniCoinCore: Minimum must be > 0");
-        require(newMinimum <= validatorCount, "OmniCoinCore: Minimum cannot exceed current count");
+        if (newMinimum == 0) revert MinimumValidatorsTooLow();
+        if (newMinimum > validatorCount) revert MaxValidatorsTooHigh();
         minimumValidators = newMinimum;
     }
     
     /**
-     * @dev Pause contract
+     * @notice Pause contract
+     * @dev Requires PAUSER_ROLE, stops all token operations
      */
     function pause() external onlyRole(PAUSER_ROLE) {
         _pause();
     }
     
     /**
-     * @dev Unpause contract
+     * @notice Unpause contract
+     * @dev Requires PAUSER_ROLE, resumes all token operations
      */
     function unpause() external onlyRole(PAUSER_ROLE) {
         _unpause();
@@ -677,9 +775,11 @@ contract OmniCoinCore is PrivateERC20, AccessControl, Pausable, ReentrancyGuard,
     // =============================================================================
     
     /**
-     * @dev Internal mint function with privacy
+     * @notice Internal mint function with privacy
+     * @dev Wrapper around PrivateERC20 _mint
      * @param to Recipient address
      * @param amount Amount to mint (garbled)
+     * @return result Encrypted boolean result
      */
     function _mintPrivate(address to, gtUint64 amount) internal returns (gtBool) {
         // Check max supply constraint by temporarily accessing the encrypted total supply
@@ -687,16 +787,23 @@ contract OmniCoinCore is PrivateERC20, AccessControl, Pausable, ReentrancyGuard,
     }
     
     /**
-     * @dev Internal burn function with privacy
+     * @notice Internal burn function with privacy
+     * @dev Wrapper around PrivateERC20 _burn
      * @param from Address to burn from
      * @param amount Amount to burn (garbled)
+     * @return result Encrypted boolean result
      */
     function _burnPrivate(address from, gtUint64 amount) internal returns (gtBool) {
         return _burn(from, amount);
     }
     
     /**
-     * @dev Override _update to add pause functionality and max supply check
+     * @notice Override _update to add pause functionality and max supply check
+     * @dev Tracks public supply for max supply enforcement
+     * @param from Source address (0x0 for minting)
+     * @param to Destination address (0x0 for burning)
+     * @param value Transfer amount (encrypted)
+     * @return result Encrypted boolean result
      */
     function _update(address from, address to, gtUint64 value) 
         internal 
@@ -717,7 +824,7 @@ contract OmniCoinCore is PrivateERC20, AccessControl, Pausable, ReentrancyGuard,
         // Update public supply counter for max supply enforcement
         if (from == address(0)) {
             // Minting - check max supply
-            require(_publicTotalSupply <= MAX_SUPPLY, "OmniCoinCore: Would exceed max supply");
+            if (_publicTotalSupply > MAX_SUPPLY) revert ExceedsMaxSupply();
         } else if (to == address(0)) {
             // Burning - decrease counter
             _publicTotalSupply -= amount;
@@ -732,16 +839,24 @@ contract OmniCoinCore is PrivateERC20, AccessControl, Pausable, ReentrancyGuard,
     // =============================================================================
     
     /**
-     * @dev Check if address is a validator
+     * @notice Check if address is a validator
+     * @dev Public view function to query validator status
      * @param addr Address to check
+     * @return isValid Whether the address is a validator
      */
     function isValidator(address addr) external view returns (bool) {
         return validators[addr];
     }
     
     /**
-     * @dev Get validator operation details
+     * @notice Get validator operation details
+     * @dev Returns all details of a validator operation
      * @param operationHash Hash of the operation
+     * @return operationHashReturn The operation hash
+     * @return validators Array of validators who confirmed
+     * @return confirmations Number of confirmations
+     * @return executed Whether operation was executed
+     * @return timestamp When operation was submitted
      */
     function getValidatorOperation(bytes32 operationHash) 
         external 
@@ -765,17 +880,20 @@ contract OmniCoinCore is PrivateERC20, AccessControl, Pausable, ReentrancyGuard,
     }
     
     /**
-     * @dev Get user's privacy preference
+     * @notice Get user's privacy preference
+     * @dev Returns whether user has opted into privacy features
      * @param user User address
+     * @return privacyEnabled Whether privacy is enabled for user
      */
     function getPrivacyPreference(address user) external view returns (bool) {
         return userPrivacyPreference[user];
     }
     
     /**
-     * @dev Get balance in plain format (for compatibility)
+     * @notice Get balance in plain format (for compatibility)
+     * @dev Returns unencrypted balance for testing/compatibility
      * @param account Account to query
-     * @return Balance as uint256
+     * @return balance Balance as uint256
      */
     function balanceOfPublic(address account) public view returns (uint256) {
         // In production with MPC, this would decrypt the balance
@@ -792,11 +910,13 @@ contract OmniCoinCore is PrivateERC20, AccessControl, Pausable, ReentrancyGuard,
     }
     
     /**
-     * @dev Get balance for testing purposes (only works when MPC is not available)
+     * @notice Get balance for testing purposes (only works when MPC is not available)
+     * @dev Test-only function that reverts in production
      * @param account Account address
+     * @return balance Test balance
      */
     function testBalanceOf(address account) external view returns (uint256) {
-        require(!isMpcAvailable, "OmniCoinCore: Use balanceOf for MPC environments");
+        if (isMpcAvailable) revert TestEnvironmentOnly();
         // In test mode, only the admin has the initial supply
         if (hasRole(DEFAULT_ADMIN_ROLE, account) && _publicTotalSupply > 0) {
             return _publicTotalSupply;
@@ -805,44 +925,48 @@ contract OmniCoinCore is PrivateERC20, AccessControl, Pausable, ReentrancyGuard,
     }
     
     /**
-     * @dev Override decimals to use 6 decimals (matching COTI)
+     * @notice Override decimals to use 6 decimals (matching COTI)
+     * @dev Returns token decimal places
+     * @return decimals Number of decimal places (6)
      */
     function decimals() public view virtual override returns (uint8) {
         return 6;
     }
     
     /**
-     * @dev Get stake amount for address (placeholder)
-     * @param account Account to query
-     * @return Stake amount (always 0 for now)
+     * @notice Get stake amount for address (placeholder)
+     * @dev Placeholder - actual staking in OmniCoinStaking contract
+     * @return stakeAmount Stake amount (always 0 for now)
      */
-    function getStakeAmount(address account) external view returns (uint256) {
+    function getStakeAmount(address /* account */) external pure returns (uint256) {
         // Staking is handled in OmniCoinStaking contract
         return 0;
     }
     
     /**
-     * @dev Get reputation score for address (placeholder)
-     * @param account Account to query
-     * @return Reputation score (always 100 for now)
+     * @notice Get reputation score for address (placeholder)
+     * @dev Placeholder - actual reputation in Reputation contracts
+     * @return reputation Reputation score (always 100 for now)
      */
-    function getReputationScore(address account) external view returns (uint256) {
+    function getReputationScore(address /* account */) external pure returns (uint256) {
         // Reputation is handled in Reputation contracts
         return 100;
     }
     
     /**
-     * @dev Get username for address (placeholder)
-     * @param account Account to query
-     * @return Username (empty string for now)
+     * @notice Get username for address (placeholder)
+     * @dev Placeholder - actual mapping in account management contracts
+     * @return username Username (empty string for now)
      */
-    function addressToUsername(address account) external view returns (string memory) {
+    function addressToUsername(address /* account */) external pure returns (string memory) {
         // Username mapping would be in account management contracts
         return "";
     }
     
     /**
-     * @dev Override totalSupply to return our tracked public supply
+     * @notice Override totalSupply to return our tracked public supply
+     * @dev Returns the total token supply
+     * @return supply Total supply in uint256
      */
     function totalSupply() public view virtual override returns (uint256) {
         return uint256(_publicTotalSupply);
@@ -853,14 +977,16 @@ contract OmniCoinCore is PrivateERC20, AccessControl, Pausable, ReentrancyGuard,
     // =============================================================================
     
     /**
-     * @dev Emergency stop for validator operations
+     * @notice Emergency stop for validator operations
+     * @dev Admin function to pause all operations
      */
     function emergencyStopValidatorOperations() external onlyRole(DEFAULT_ADMIN_ROLE) {
         _pause();
     }
     
     /**
-     * @dev Recovery function for stuck operations (only admin)
+     * @notice Recovery function for stuck operations (only admin)
+     * @dev Force-executes operations stuck for over 24 hours
      * @param operationHash Hash of the stuck operation
      */
     function emergencyExecuteOperation(bytes32 operationHash) 
@@ -870,7 +996,7 @@ contract OmniCoinCore is PrivateERC20, AccessControl, Pausable, ReentrancyGuard,
         ValidatorOperation storage operation = validatorOperations[operationHash];
         if (operation.operationHash == bytes32(0)) revert OperationNotFound();
         if (operation.executed) revert OperationAlreadyExecuted();
-        if (block.timestamp <= operation.timestamp + 24 hours) revert OperationNotFound();
+        if (block.timestamp < operation.timestamp + 24 hours + 1) revert OperationNotFound();
         
         operation.executed = true;
         emit ValidatorOperationExecuted(operationHash, operation.confirmations);
@@ -881,24 +1007,27 @@ contract OmniCoinCore is PrivateERC20, AccessControl, Pausable, ReentrancyGuard,
     // =============================================================================
     
     /**
-     * @dev Get bridge contract (backward compatibility)
-     * @notice Deprecated - use registry directly
+     * @notice Get bridge contract (backward compatibility)
+     * @dev Deprecated - use registry directly
+     * @return bridge Bridge contract address
      */
     function bridgeContract() external returns (address) {
         return getBridgeContract();
     }
     
     /**
-     * @dev Get treasury contract (backward compatibility)
-     * @notice Deprecated - use registry directly
+     * @notice Get treasury contract (backward compatibility)
+     * @dev Deprecated - use registry directly
+     * @return treasury Treasury contract address
      */
     function treasuryContract() external returns (address) {
         return getTreasuryContract();
     }
     
     /**
-     * @dev Get privacy fee manager (backward compatibility)
-     * @notice Deprecated - use registry directly
+     * @notice Get privacy fee manager (backward compatibility)
+     * @dev Deprecated - use registry directly
+     * @return feeManager Privacy fee manager address
      */
     function privacyFeeManager() external returns (address) {
         return getPrivacyFeeManager();

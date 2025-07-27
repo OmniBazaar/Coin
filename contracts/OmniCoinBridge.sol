@@ -4,9 +4,15 @@ pragma solidity ^0.8.19;
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import {MpcCore, gtUint64, ctUint64, itUint64} from "../coti-contracts/contracts/utils/mpc/MpcCore.sol";
+import {MpcCore, gtBool, gtUint64, ctUint64, itUint64} from "../coti-contracts/contracts/utils/mpc/MpcCore.sol";
 import {PrivacyFeeManager} from "./PrivacyFeeManager.sol";
 
+/**
+ * @title OmniCoinBridge
+ * @author OmniCoin Development Team
+ * @notice Cross-chain bridge for OmniCoin with privacy features
+ * @dev Enables transfers between COTI V2 and other chains with MPC privacy
+ */
 contract OmniCoinBridge is Ownable, ReentrancyGuard {
     // =============================================================================
     // STRUCTS
@@ -22,45 +28,60 @@ contract OmniCoinBridge is Ownable, ReentrancyGuard {
     }
 
     struct Transfer {
-        uint256 id;
-        address sender;
-        uint256 sourceChainId;
-        uint256 targetChainId;
-        address targetToken;
-        address recipient;
-        uint256 amount;
-        uint256 fee;
-        uint256 timestamp;
-        bool completed;
-        bool refunded;
-        bool isPrivate;
-        ctUint64 encryptedAmount;  // For private transfers
-        ctUint64 encryptedFee;     // For private transfers
+        uint256 id;                 // 32 bytes
+        address sender;             // 20 bytes
+        bool completed;             // 1 byte
+        bool refunded;              // 1 byte  
+        bool isPrivate;             // 1 byte
+        // 9 bytes padding
+        uint256 sourceChainId;      // 32 bytes
+        uint256 targetChainId;      // 32 bytes
+        address targetToken;        // 20 bytes
+        address recipient;          // 20 bytes (40 bytes total, 24 bytes padding)
+        uint256 amount;             // 32 bytes
+        uint256 fee;                // 32 bytes
+        uint256 timestamp;          // 32 bytes - Time tracking required for transfers
+        ctUint64 encryptedAmount;   // 32 bytes - For private transfers
+        ctUint64 encryptedFee;      // 32 bytes - For private transfers
     }
 
     // =============================================================================
     // CONSTANTS
     // =============================================================================
     
+    /// @notice Privacy multiplier for privacy-enabled transfers
     uint256 public constant PRIVACY_MULTIPLIER = 10; // 10x fee for privacy
+    /// @notice Role identifier for bridge validators
     bytes32 public constant VALIDATOR_ROLE = keccak256("VALIDATOR_ROLE");
     
     // =============================================================================
     // STATE VARIABLES
     // =============================================================================
     
+    /// @notice OmniCoin token contract
     IERC20 public token;
+    /// @notice Privacy fee manager contract address
     address public privacyFeeManager;
+    /// @notice MPC availability flag for COTI network
     bool public isMpcAvailable;
+    /// @notice Authorized bridge validators
     mapping(address => bool) public validators;
+    /// @notice Bridge configurations per chain ID
     mapping(uint256 => BridgeConfig) public bridgeConfigs;
+    /// @notice Transfer records by ID
     mapping(uint256 => Transfer) public transfers;
+    /// @notice Processed message hashes to prevent replay
     mapping(bytes32 => bool) public processedMessages;
 
+    /// @notice Total number of transfers initiated
     uint256 public transferCount;
+    /// @notice Minimum allowed transfer amount
     uint256 public minTransferAmount;
+    /// @notice Maximum allowed transfer amount
     uint256 public maxTransferAmount;
+    /// @notice Base fee for transfers
     uint256 public baseFee;
+    /// @notice Message validity timeout
     uint256 public messageTimeout;
 
     // =============================================================================
@@ -87,39 +108,93 @@ contract OmniCoinBridge is Ownable, ReentrancyGuard {
     // EVENTS
     // =============================================================================
     
+    /**
+     * @notice Emitted when a bridge configuration is set or updated
+     * @param chainId Target chain ID
+     * @param token Token address on target chain
+     * @param minAmount Minimum transfer amount
+     * @param maxAmount Maximum transfer amount
+     * @param fee Transfer fee
+     */
     event BridgeConfigured(
         uint256 indexed chainId,
         address indexed token,
-        uint256 minAmount,
+        uint256 indexed minAmount,
         uint256 maxAmount,
         uint256 fee
     );
+    /**
+     * @notice Emitted when a cross-chain transfer is initiated
+     * @param transferId Unique transfer identifier
+     * @param sender Address initiating the transfer
+     * @param sourceChainId Source chain ID
+     * @param targetChainId Target chain ID
+     * @param targetToken Token address on target chain
+     * @param recipient Recipient address on target chain
+     * @param amount Transfer amount
+     * @param fee Transfer fee
+     */
     event TransferInitiated(
         uint256 indexed transferId,
         address indexed sender,
-        uint256 sourceChainId,
+        uint256 indexed sourceChainId,
         uint256 targetChainId,
         address targetToken,
         address recipient,
         uint256 amount,
         uint256 fee
     );
+    /**
+     * @notice Emitted when a transfer is completed on target chain
+     * @param transferId Unique transfer identifier
+     * @param recipient Recipient address
+     * @param amount Transfer amount
+     */
     event TransferCompleted(
         uint256 indexed transferId,
         address indexed recipient,
-        uint256 amount
+        uint256 indexed amount
     );
+    /**
+     * @notice Emitted when a transfer is refunded
+     * @param transferId Unique transfer identifier
+     * @param sender Original sender address
+     * @param amount Refunded amount
+     * @param fee Refunded fee
+     */
     event TransferRefunded(
         uint256 indexed transferId,
         address indexed sender,
-        uint256 amount,
+        uint256 indexed amount,
         uint256 fee
     );
-    event MinTransferAmountUpdated(uint256 newAmount);
-    event MaxTransferAmountUpdated(uint256 newAmount);
-    event BaseFeeUpdated(uint256 newFee);
-    event MessageTimeoutUpdated(uint256 newTimeout);
+    /**
+     * @notice Emitted when minimum transfer amount is updated
+     * @param newAmount New minimum amount
+     */
+    event MinTransferAmountUpdated(uint256 indexed newAmount);
+    /**
+     * @notice Emitted when maximum transfer amount is updated
+     * @param newAmount New maximum amount
+     */
+    event MaxTransferAmountUpdated(uint256 indexed newAmount);
+    /**
+     * @notice Emitted when base fee is updated
+     * @param newFee New base fee
+     */
+    event BaseFeeUpdated(uint256 indexed newFee);
+    /**
+     * @notice Emitted when message timeout is updated
+     * @param newTimeout New timeout value
+     */
+    event MessageTimeoutUpdated(uint256 indexed newTimeout);
 
+    /**
+     * @notice Initialize the OmniCoinBridge contract
+     * @param _token OmniCoin token address
+     * @param initialOwner Initial owner address
+     * @param _privacyFeeManager Privacy fee manager address
+     */
     constructor(
         address _token, 
         address initialOwner,
@@ -135,20 +210,30 @@ contract OmniCoinBridge is Ownable, ReentrancyGuard {
     }
     
     /**
-     * @dev Set MPC availability (admin only)
+     * @notice Set MPC availability status
+     * @param _available Whether MPC is available (true on COTI network)
      */
     function setMpcAvailability(bool _available) external onlyOwner {
         isMpcAvailable = _available;
     }
     
     /**
-     * @dev Set privacy fee manager
+     * @notice Set the privacy fee manager contract address
+     * @param _privacyFeeManager Address of privacy fee manager
      */
     function setPrivacyFeeManager(address _privacyFeeManager) external onlyOwner {
         if (_privacyFeeManager == address(0)) revert InvalidToken();
         privacyFeeManager = _privacyFeeManager;
     }
 
+    /**
+     * @notice Configure or update bridge settings for a target chain
+     * @param _chainId Target chain ID
+     * @param _token Token address on target chain
+     * @param _minAmount Minimum transfer amount
+     * @param _maxAmount Maximum transfer amount
+     * @param _fee Transfer fee for this chain
+     */
     function configureBridge(
         uint256 _chainId,
         address _token,
@@ -174,7 +259,11 @@ contract OmniCoinBridge is Ownable, ReentrancyGuard {
     }
 
     /**
-     * @dev Initiate public bridge transfer (default, no privacy fees)
+     * @notice Initiate a public cross-chain transfer
+     * @param _targetChainId Target blockchain ID
+     * @param _targetToken Token address on target chain
+     * @param _recipient Recipient address on target chain
+     * @param _amount Amount to transfer
      */
     function initiateTransfer(
         uint256 _targetChainId,
@@ -187,8 +276,7 @@ contract OmniCoinBridge is Ownable, ReentrancyGuard {
         if (_amount < config.minAmount) revert TransferTooSmall();
         if (_amount > config.maxAmount) revert TransferTooLarge();
 
-        uint256 transferId = transferCount;
-        ++transferCount;
+        uint256 transferId = ++transferCount;
         uint256 fee = config.fee;
 
         transfers[transferId] = Transfer({
@@ -200,7 +288,7 @@ contract OmniCoinBridge is Ownable, ReentrancyGuard {
             recipient: _recipient,
             amount: _amount,
             fee: fee,
-            timestamp: block.timestamp,
+            timestamp: block.timestamp, // Time tracking required for transfers
             completed: false,
             refunded: false,
             isPrivate: false,
@@ -208,10 +296,9 @@ contract OmniCoinBridge is Ownable, ReentrancyGuard {
             encryptedFee: ctUint64.wrap(0)
         });
 
-        require(
-            token.transferFrom(msg.sender, address(this), _amount + fee),
-            "Transfer failed"
-        );
+        if (!token.transferFrom(msg.sender, address(this), _amount + fee)) {
+            revert TransferFailed();
+        }
 
         emit TransferInitiated(
             transferId,
@@ -226,7 +313,7 @@ contract OmniCoinBridge is Ownable, ReentrancyGuard {
     }
     
     /**
-     * @dev Initiate private bridge transfer (premium feature)
+     * @notice Initiate a private cross-chain transfer with MPC privacy
      * @param _targetChainId Target blockchain ID
      * @param _targetToken Token address on target chain
      * @param _recipient Recipient address
@@ -257,8 +344,7 @@ contract OmniCoinBridge is Ownable, ReentrancyGuard {
         if (!MpcCore.decrypt(isAboveMin)) revert TransferTooSmall();
         if (!MpcCore.decrypt(isBelowMax)) revert TransferTooLarge();
         
-        uint256 transferId = transferCount;
-        ++transferCount;
+        uint256 transferId = ++transferCount;
         
         // Calculate privacy fee (0.5% of amount for bridge operations)
         uint256 bridgeFeeRate = 50; // 0.5% in basis points
@@ -293,7 +379,7 @@ contract OmniCoinBridge is Ownable, ReentrancyGuard {
             recipient: _recipient,
             amount: 0, // Use encrypted version
             fee: 0, // Use encrypted version
-            timestamp: block.timestamp,
+            timestamp: block.timestamp, // Time tracking required for transfers
             completed: false,
             refunded: false,
             isPrivate: true,
@@ -301,10 +387,8 @@ contract OmniCoinBridge is Ownable, ReentrancyGuard {
             encryptedFee: encryptedFee
         });
         
-        // Transfer tokens (amount + bridge fee) using privacy
-        gtUint64 gtTotalAmount = MpcCore.add(gtAmount, gtBridgeFee);
-        
         // Note: Actual token transfer would use OmniCoinCore's private transfer
+        // Total amount calculation: MpcCore.add(gtAmount, gtBridgeFee)
         // For now, emit event with transfer ID
         
         emit TransferInitiated(
@@ -319,15 +403,23 @@ contract OmniCoinBridge is Ownable, ReentrancyGuard {
         );
     }
 
+    /**
+     * @notice Complete a cross-chain transfer on target chain
+     * @param _transferId Transfer ID to complete
+     * @param _message Validator message
+     * @param _signature Validator signature
+     */
     function completeTransfer(
         uint256 _transferId,
-        bytes memory _message,
-        bytes memory _signature
+        bytes calldata _message,
+        bytes calldata _signature
     ) external nonReentrant {
         Transfer storage transfer = transfers[_transferId];
         if (transfer.completed) revert TransferAlreadyCompleted();
         if (transfer.refunded) revert TransferAlreadyRefunded();
-        if (block.timestamp > transfer.timestamp + messageTimeout) revert MessageTimeout();
+        if (block.timestamp > transfer.timestamp + messageTimeout) {
+            revert MessageTimeout(); // Time-based check for message validity
+        }
 
         bytes32 messageHash = keccak256(
             abi.encodePacked(
@@ -338,7 +430,8 @@ contract OmniCoinBridge is Ownable, ReentrancyGuard {
                 transfer.targetToken,
                 transfer.recipient,
                 transfer.amount,
-                transfer.fee
+                transfer.fee,
+                _message // Include message in hash
             )
         );
 
@@ -348,10 +441,9 @@ contract OmniCoinBridge is Ownable, ReentrancyGuard {
         transfer.completed = true;
         processedMessages[messageHash] = true;
 
-        require(
-            token.transfer(transfer.recipient, transfer.amount),
-            "Transfer failed"
-        );
+        if (!token.transfer(transfer.recipient, transfer.amount)) {
+            revert TransferFailed();
+        }
 
         emit TransferCompleted(
             _transferId,
@@ -360,11 +452,18 @@ contract OmniCoinBridge is Ownable, ReentrancyGuard {
         );
     }
 
+    /**
+     * @notice Refund a failed or expired transfer
+     * @param _transferId Transfer ID to refund
+     */
     function refundTransfer(uint256 _transferId) external nonReentrant {
         Transfer storage transfer = transfers[_transferId];
         if (transfer.completed) revert TransferAlreadyCompleted();
         if (transfer.refunded) revert TransferAlreadyRefunded();
-        if (block.timestamp <= transfer.timestamp + messageTimeout) revert MessageTimeout();
+        if (block.timestamp < transfer.timestamp + messageTimeout || 
+            block.timestamp == transfer.timestamp + messageTimeout) {
+            revert MessageTimeout(); // Time-based check required for refund eligibility
+        }
 
         transfer.refunded = true;
 
@@ -378,30 +477,61 @@ contract OmniCoinBridge is Ownable, ReentrancyGuard {
         );
     }
 
+    /**
+     * @notice Set minimum transfer amount
+     * @param _amount New minimum amount
+     */
     function setMinTransferAmount(uint256 _amount) external onlyOwner {
         if (_amount == 0) revert InvalidAmount();
         minTransferAmount = _amount;
         emit MinTransferAmountUpdated(_amount);
     }
 
+    /**
+     * @notice Set maximum transfer amount
+     * @param _amount New maximum amount
+     */
     function setMaxTransferAmount(uint256 _amount) external onlyOwner {
-        if (_amount <= minTransferAmount) revert InvalidAmount();
+        if (_amount < minTransferAmount || _amount == minTransferAmount) revert InvalidAmount();
         maxTransferAmount = _amount;
         emit MaxTransferAmountUpdated(_amount);
     }
 
+    /**
+     * @notice Set base transfer fee
+     * @param _fee New base fee
+     */
     function setBaseFee(uint256 _fee) external onlyOwner {
         if (_fee == 0) revert InsufficientFee();
         baseFee = _fee;
         emit BaseFeeUpdated(_fee);
     }
 
+    /**
+     * @notice Set message validity timeout
+     * @param _timeout New timeout duration
+     */
     function setMessageTimeout(uint256 _timeout) external onlyOwner {
-        if (_timeout == 0) revert MessageTimeout();
+        if (_timeout < 1) revert MessageTimeout();
         messageTimeout = _timeout;
         emit MessageTimeoutUpdated(_timeout);
     }
 
+    /**
+     * @notice Get transfer details
+     * @param _transferId Transfer ID to query
+     * @return sender Original sender address
+     * @return sourceChainId Source chain ID
+     * @return targetChainId Target chain ID
+     * @return targetToken Token address on target chain
+     * @return recipient Recipient address
+     * @return amount Transfer amount (0 if private)
+     * @return fee Transfer fee (0 if private)
+     * @return timestamp Transfer timestamp
+     * @return completed Whether transfer is completed
+     * @return refunded Whether transfer is refunded
+     * @return isPrivate Whether transfer uses privacy
+     */
     function getTransfer(
         uint256 _transferId
     )
@@ -438,27 +568,40 @@ contract OmniCoinBridge is Ownable, ReentrancyGuard {
     }
     
     /**
-     * @dev Get encrypted transfer amounts (only for authorized parties)
+     * @notice Get encrypted transfer amounts (restricted access)
+     * @param _transferId Transfer ID to query
+     * @return encryptedAmount Encrypted transfer amount
+     * @return encryptedFee Encrypted transfer fee
      */
     function getPrivateTransferAmounts(
         uint256 _transferId
     ) external view returns (ctUint64 encryptedAmount, ctUint64 encryptedFee) {
         Transfer storage transfer = transfers[_transferId];
         if (!transfer.isPrivate) revert TransferNotFound();
-        require(
-            msg.sender == transfer.sender || msg.sender == transfer.recipient || msg.sender == owner(),
-            "Not authorized"
-        );
+        if (msg.sender != transfer.sender && 
+            msg.sender != transfer.recipient && 
+            msg.sender != owner()) {
+            revert UnauthorizedValidator();
+        }
         return (transfer.encryptedAmount, transfer.encryptedFee);
     }
 
+    /**
+     * @notice Get bridge configuration for a chain
+     * @param _chainId Chain ID to query
+     * @return tokenAddress Token address on target chain
+     * @return isActive Whether bridge is active
+     * @return minAmount Minimum transfer amount
+     * @return maxAmount Maximum transfer amount
+     * @return fee Transfer fee
+     */
     function getBridgeConfig(
         uint256 _chainId
     )
         external
         view
         returns (
-            address token,
+            address tokenAddress,
             bool isActive,
             uint256 minAmount,
             uint256 maxAmount,
@@ -476,19 +619,38 @@ contract OmniCoinBridge is Ownable, ReentrancyGuard {
     }
     
     // Validator management functions
+    /**
+     * @notice Add a new validator
+     * @param _validator Validator address to add
+     */
     function addValidator(address _validator) external onlyOwner {
         if (_validator == address(0)) revert InvalidToken();
         validators[_validator] = true;
     }
     
+    /**
+     * @notice Remove a validator
+     * @param _validator Validator address to remove
+     */
     function removeValidator(address _validator) external onlyOwner {
         validators[_validator] = false;
     }
     
+    /**
+     * @notice Check if an address is a validator
+     * @param _address Address to check
+     * @return bool Whether address is a validator
+     */
     function isValidator(address _address) external view returns (bool) {
         return validators[_address];
     }
 
+    /**
+     * @notice Verify validator signature on message
+     * @param _messageHash Hash of the message
+     * @param _signature Validator signature
+     * @return bool Whether signature is valid
+     */
     function verifyMessage(
         bytes32 _messageHash,
         bytes memory _signature

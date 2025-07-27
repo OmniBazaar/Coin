@@ -31,7 +31,7 @@ contract ReputationSystem is ReputationSystemBase, RegistryAware {
     error OnlyAuthorizedContracts();
     error InsufficientPrivileges();
     error InvalidAddress();
-    error InvalidComponent();
+    // error InvalidComponent(); // Already declared in ReputationSystemBase
     error ArrayLengthMismatch();
     
     constructor(

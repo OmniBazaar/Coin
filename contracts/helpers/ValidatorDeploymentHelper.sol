@@ -4,6 +4,7 @@ pragma solidity ^0.8.19;
 import "../OmniCoinRegistry.sol";
 import "../ValidatorSync.sol";
 import "../BatchProcessor.sol";
+import "../OmniCoinCore.sol";
 
 /**
  * @title ValidatorDeploymentHelper

@@ -3,6 +3,7 @@ pragma solidity ^0.8.19;
 
 import {ReputationSystemBase} from "./ReputationSystemBase.sol";
 import {IIdentityVerification} from "./interfaces/IReputationSystem.sol";
+import {MpcCore, gtUint64, ctUint64, itUint64} from "../coti-contracts/contracts/utils/mpc/MpcCore.sol";
 
 /**
  * @title OmniCoinIdentityVerification
@@ -32,6 +33,13 @@ contract OmniCoinIdentityVerification is ReputationSystemBase, IIdentityVerifica
     uint8 public constant override IDENTITY_CORPORATE = 8;
     
     uint8 public constant MAX_IDENTITY_TIERS = 9;
+    
+    // =============================================================================
+    // CUSTOM ERRORS
+    // =============================================================================
+    
+    error NotVerified();
+    error InvalidTier();
     
     // Identity scores by tier (basis points out of 10000)
     uint256[9] public tierScores = [

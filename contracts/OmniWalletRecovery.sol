@@ -522,7 +522,7 @@ contract OmniWalletRecovery is
         external
         view
         returns (
-            address[] memory guardians,
+            address[] memory guardianList,
             uint256 threshold,
             uint256 recoveryDelay,
             bool isActive,

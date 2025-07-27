@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.20;
+pragma solidity ^0.8.19;
 
 import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import {OwnableUpgradeable} from "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
@@ -20,33 +20,38 @@ import {PrivacyFeeManager} from "./PrivacyFeeManager.sol";
 
 /**
  * @title OmniCoinArbitration
- * @dev Custom arbitration system leveraging COTI V2's privacy infrastructure
- * @notice Uses MPC for confidential dispute resolution with OmniBazaar arbitrator network
+ * @author OmniCoin Development Team
+ * @notice Custom arbitration system leveraging COTI V2's privacy infrastructure
+ * @dev Uses MPC for confidential dispute resolution with OmniBazaar arbitrator network
  */
 contract OmniCoinArbitration is
     Initializable,
     OwnableUpgradeable,
     ReentrancyGuardUpgradeable
 {
-    // Structs
+    // =============================================================================
+    // STRUCTS
+    // =============================================================================
+    
     struct OmniBazaarArbitrator {
-        address account;
-        uint256 reputation;              // Public reputation score
-        uint256 participationIndex;      // PoP participation score
-        uint256 totalCases;             // Total cases handled
-        uint256 successfulCases;        // Successfully resolved cases
-        uint256 stakingAmount;          // XOM staked for arbitration eligibility
-        bool isActive;                  // Active status
-        uint256 lastActiveTimestamp;    // Last activity timestamp
-        ctUint64 privateEarnings;       // Private arbitration earnings (MPC)
-        uint256 specializationMask;     // Bitmask for specialization areas
+        address account;                 // 20 bytes
+        bool isActive;                   // 1 byte - Active status
+        // 11 bytes padding
+        ctUint64 privateEarnings;        // 32 bytes - Private arbitration earnings (MPC)
+        uint256 reputation;              // 32 bytes - Public reputation score
+        uint256 participationIndex;      // 32 bytes - PoP participation score
+        uint256 totalCases;              // 32 bytes - Total cases handled
+        uint256 successfulCases;         // 32 bytes - Successfully resolved cases
+        uint256 stakingAmount;           // 32 bytes - XOM staked for arbitration eligibility
+        uint256 lastActiveTimestamp;     // 32 bytes - Last activity timestamp (time tracking required)
+        uint256 specializationMask;      // 32 bytes - Bitmask for specialization areas
     }
 
     struct ConfidentialDispute {
         bytes32 escrowId;               // Public escrow identifier
         address primaryArbitrator;      // Main arbitrator assigned
         address[] panelArbitrators;     // Panel for complex disputes (max 3)
-        uint256 timestamp;              // Dispute creation time
+        uint256 timestamp;              // Dispute creation time (time tracking required)
         uint256 disputeType;            // 1=Simple, 2=Complex, 3=Appeal
         bytes32 evidenceHash;           // Hash of submitted evidence
         
@@ -65,10 +70,13 @@ contract OmniCoinArbitration is
         uint256 sellerRating;           // Public seller rating (1-5)
         uint256 arbitratorRating;       // Public arbitrator rating (1-5)
         bytes32 resolutionHash;         // Hash of resolution reasoning
-        uint256 deadlineTimestamp;      // Resolution deadline
+        uint256 deadlineTimestamp;      // Resolution deadline (time tracking required)
     }
 
-    // Custom errors
+    // =============================================================================
+    // CUSTOM ERRORS
+    // =============================================================================
+    
     error InvalidAddress();
     error AlreadyRegistered();
     error InsufficientStakingAmount();
@@ -97,114 +105,222 @@ contract OmniCoinArbitration is
     error AlreadyRated();
     error OnlyBuyerAndSellerCanRate();
     error NoEarningsToClaim();
-
-    // State variables - OmniBazaar Arbitrator Network
+    
+    // =============================================================================
+    // CONSTANTS
+    // =============================================================================
+    
+    /// @notice Arbitrator specialization: Digital goods
+    uint256 public constant SPEC_DIGITAL_GOODS = 1;       // 2^0
+    /// @notice Arbitrator specialization: Physical goods
+    uint256 public constant SPEC_PHYSICAL_GOODS = 2;      // 2^1  
+    /// @notice Arbitrator specialization: Services
+    uint256 public constant SPEC_SERVICES = 4;            // 2^2
+    /// @notice Arbitrator specialization: High value transactions
+    uint256 public constant SPEC_HIGH_VALUE = 8;          // 2^3 (>10,000 XOM)
+    /// @notice Arbitrator specialization: International trade
+    uint256 public constant SPEC_INTERNATIONAL = 16;      // 2^4
+    /// @notice Arbitrator specialization: Technical disputes
+    uint256 public constant SPEC_TECHNICAL = 32;          // 2^5
+    
+    /// @notice Threshold for simple disputes (1,000 XOM)
+    uint256 public constant SIMPLE_DISPUTE_THRESHOLD = 1000 * 10**18;
+    /// @notice Threshold for complex disputes (10,000 XOM)
+    uint256 public constant COMPLEX_DISPUTE_THRESHOLD = 10000 * 10**18;
+    /// @notice Number of arbitrators in a panel
+    uint256 public constant PANEL_SIZE = 3;
+    /// @notice Time limit for dispute resolution
+    uint256 public constant RESOLUTION_PERIOD = 7 days;
+    
+    /// @notice Privacy fee multiplier (10x normal fee)
+    uint256 public constant PRIVACY_MULTIPLIER = 10;
+    
+    /// @notice Arbitration fee rate (1% of disputed amount)
+    uint256 public constant ARBITRATION_FEE_RATE = 100;
+    /// @notice Arbitrator fee share (70% to arbitrators)
+    uint256 public constant ARBITRATOR_FEE_SHARE = 70;
+    /// @notice Treasury fee share (20% to OmniBazaar treasury)
+    uint256 public constant TREASURY_FEE_SHARE = 20;
+    /// @notice Validator fee share (10% to validator network)
+    uint256 public constant VALIDATOR_FEE_SHARE = 10;
+    
+    // =============================================================================
+    // STATE VARIABLES
+    // =============================================================================
+    
+    /// @notice OmniBazaar arbitrator registry
     mapping(address => OmniBazaarArbitrator) public arbitrators;
-    mapping(bytes32 => ConfidentialDispute) private disputes;      // Private dispute storage
+    
+    /// @notice Private dispute storage
+    mapping(bytes32 => ConfidentialDispute) private disputes;
+    
+    /// @notice Arbitrator's active disputes
     mapping(address => bytes32[]) public arbitratorDisputes;
+    
+    /// @notice User's disputes
     mapping(address => bytes32[]) public userDisputes;
     
     // Private dispute tracking using COTI V2 MPC
     mapping(bytes32 => address[]) private disputeParticipants;     // [buyer, seller, arbitrator(s)]
     mapping(bytes32 => ctUint64) private disputeFeeDistribution;   // Private fee breakdown
-    mapping(address => ctUint64) private arbitratorTotalEarnings;   // Private lifetime earnings
-    
-    // Arbitrator specialization areas (bitmask)
-    uint256 public constant SPEC_DIGITAL_GOODS = 1;       // 2^0
-    uint256 public constant SPEC_PHYSICAL_GOODS = 2;      // 2^1  
-    uint256 public constant SPEC_SERVICES = 4;            // 2^2
-    uint256 public constant SPEC_HIGH_VALUE = 8;          // 2^3 (>10,000 XOM)
-    uint256 public constant SPEC_INTERNATIONAL = 16;      // 2^4
-    uint256 public constant SPEC_TECHNICAL = 32;          // 2^5
-    
-    // Dispute resolution parameters
-    uint256 public constant SIMPLE_DISPUTE_THRESHOLD = 1000 * 10**18;  // 1,000 XOM
-    uint256 public constant COMPLEX_DISPUTE_THRESHOLD = 10000 * 10**18; // 10,000 XOM
-    uint256 public constant PANEL_SIZE = 3;                            // Panel arbitrators
-    uint256 public constant RESOLUTION_PERIOD = 7 days;                // Resolution deadline
+    mapping(address => ctUint64) private arbitratorTotalEarnings;  // Private lifetime earnings
 
-    // Contract integrations
+    /// @notice OmniCoin core contract
     OmniCoinCore public omniCoin;
+    /// @notice Account abstraction contract
     OmniCoinAccount public omniCoinAccount;
+    /// @notice Escrow contract
     OmniCoinEscrow public omniCoinEscrow;
+    /// @notice Configuration contract
     OmniCoinConfig public config;
 
-    // Arbitrator eligibility requirements
-    uint256 public minReputation;           // Minimum reputation score (default: 750)
-    uint256 public minParticipationIndex;   // Minimum PoP score (default: 500)
-    uint256 public minStakingAmount;        // Minimum XOM staked (default: 10,000)
-    uint256 public maxActiveDisputes;       // Max concurrent disputes (default: 5)
-    uint256 public disputeTimeout;          // Resolution timeout (default: 7 days)
-    uint256 public ratingWeight;            // Rating update weight (default: 10%)
+    /// @notice Minimum reputation score required
+    uint256 public minReputation;
+    /// @notice Minimum participation index required
+    uint256 public minParticipationIndex;
+    /// @notice Minimum staking amount required
+    uint256 public minStakingAmount;
+    /// @notice Maximum concurrent disputes per arbitrator
+    uint256 public maxActiveDisputes;
+    /// @notice Dispute resolution timeout
+    uint256 public disputeTimeout;
+    /// @notice Weight for rating updates
+    uint256 public ratingWeight;
     
-    // MPC availability flag (true on COTI testnet/mainnet, false in Hardhat)
+    /// @notice MPC availability flag (true on COTI network)
     bool public isMpcAvailable;
     
-    // Privacy fee configuration
-    uint256 public constant PRIVACY_MULTIPLIER = 10; // 10x fee for privacy
+    /// @notice Privacy fee manager contract address
     address public privacyFeeManager;
-    
-    // Fee structure (aligned with arbitration workload)
-    uint256 public constant ARBITRATION_FEE_RATE = 100;    // 1% of disputed amount
-    uint256 public constant ARBITRATOR_FEE_SHARE = 70;     // 70% to arbitrators (doing the work)
-    uint256 public constant TREASURY_FEE_SHARE = 20;       // 20% to OmniBazaar treasury
-    uint256 public constant VALIDATOR_FEE_SHARE = 10;      // 10% to validator network
 
-    // Events - Privacy-aware arbitration events
+    // =============================================================================
+    // EVENTS
+    // =============================================================================
+    
+    /**
+     * @notice Emitted when an arbitrator registers
+     * @param arbitrator Address of the arbitrator
+     * @param specializations Bitmask of specialization areas
+     * @param stakingAmount Amount of XOM staked
+     */
     event ArbitratorRegistered(
         address indexed arbitrator,
-        uint256 specializations,
-        uint256 stakingAmount
+        uint256 indexed specializations,
+        uint256 indexed stakingAmount
     );
+    /**
+     * @notice Emitted when an arbitrator is removed
+     * @param arbitrator Address of the arbitrator
+     * @param reason Reason for removal
+     */
     event ArbitratorRemoved(
         address indexed arbitrator,
         string reason
     );
+    /**
+     * @notice Emitted when arbitrator stake is updated
+     * @param arbitrator Address of the arbitrator
+     * @param newStakingAmount New staking amount
+     */
     event ArbitratorStakeUpdated(
         address indexed arbitrator,
-        uint256 newStakingAmount
+        uint256 indexed newStakingAmount
     );
+    /**
+     * @notice Emitted when a confidential dispute is created
+     * @param escrowId Escrow contract identifier
+     * @param primaryArbitrator Assigned arbitrator address
+     * @param disputeType Type of dispute (1=Simple, 2=Complex, 3=Appeal)
+     * @param evidenceHash Hash of submitted evidence
+     */
     event ConfidentialDisputeCreated(
         bytes32 indexed escrowId,
         address indexed primaryArbitrator,
-        uint256 disputeType,
+        uint256 indexed disputeType,
         bytes32 evidenceHash
     );
+    /**
+     * @notice Emitted when a dispute panel is formed
+     * @param escrowId Escrow contract identifier
+     * @param panelArbitrators Array of panel arbitrator addresses
+     */
     event DisputePanelFormed(
         bytes32 indexed escrowId,
         address[] panelArbitrators
     );
+    /**
+     * @notice Emitted when a confidential dispute is resolved
+     * @param escrowId Escrow contract identifier
+     * @param resolutionHash Hash of resolution reasoning
+     * @param timestamp Resolution timestamp
+     * @param payoutHash Hash of private payout amounts
+     */
     event ConfidentialDisputeResolved(
         bytes32 indexed escrowId,
         bytes32 resolutionHash,
-        uint256 timestamp,
-        bytes32 payoutHash  // Hash of private payout amounts
+        uint256 indexed timestamp,
+        bytes32 payoutHash
     );
+    /**
+     * @notice Emitted when arbitration fees are distributed
+     * @param escrowId Escrow contract identifier
+     * @param feeDistributionHash Hash of private fee distribution
+     */
     event ArbitrationFeeDistributed(
         bytes32 indexed escrowId,
-        bytes32 feeDistributionHash  // Hash of private fee distribution
+        bytes32 feeDistributionHash
     );
+    /**
+     * @notice Emitted when a rating is submitted
+     * @param escrowId Escrow contract identifier
+     * @param rater Address of the rater
+     * @param rating Rating value (1-5)
+     */
     event RatingSubmitted(
         bytes32 indexed escrowId,
         address indexed rater,
-        uint256 rating
+        uint256 indexed rating
     );
+    /**
+     * @notice Emitted when arbitrator reputation is updated
+     * @param arbitrator Address of the arbitrator
+     * @param newReputation New reputation score
+     */
     event ReputationUpdated(
         address indexed arbitrator,
-        uint256 newReputation
+        uint256 indexed newReputation
     );
+    /**
+     * @notice Emitted when private earnings are updated
+     * @param arbitrator Address of the arbitrator
+     * @param earningsHash Hash of private earnings update
+     */
     event PrivateEarningsUpdated(
         address indexed arbitrator,
-        bytes32 earningsHash  // Hash of private earnings update
+        bytes32 earningsHash
     );
 
     /// @custom:oz-upgrades-unsafe-allow constructor
+    /**
+     * @notice Disables initializers for implementation contract
+     */
     constructor() {
         _disableInitializers();
     }
 
     /**
-     * @dev Initializes the OmniBazaar arbitration system
+     * @notice Initialize the OmniBazaar arbitration system
+     * @dev Sets up all contract references and parameters
+     * @param _omniCoin OmniCoin core contract address
+     * @param _omniCoinAccount Account abstraction contract address
+     * @param _omniCoinEscrow Escrow contract address
+     * @param _config Configuration contract address
+     * @param _minReputation Minimum reputation score required
+     * @param _minParticipationIndex Minimum participation index required
+     * @param _minStakingAmount Minimum staking amount required
+     * @param _maxActiveDisputes Maximum concurrent disputes per arbitrator
+     * @param _disputeTimeout Dispute resolution timeout period
+     * @param _ratingWeight Weight factor for rating updates
      */
     function initialize(
         address _omniCoin,
@@ -238,7 +354,8 @@ contract OmniCoinArbitration is
     }
     
     /**
-     * @dev Set privacy fee manager
+     * @notice Set the privacy fee manager contract address
+     * @param _privacyFeeManager Address of the privacy fee manager contract
      */
     function setPrivacyFeeManager(address _privacyFeeManager) external onlyOwner {
         if (_privacyFeeManager == address(0)) revert InvalidAddress();
@@ -246,14 +363,16 @@ contract OmniCoinArbitration is
     }
     
     /**
-     * @dev Set MPC availability (admin only, called when deploying to COTI testnet/mainnet)
+     * @notice Set MPC availability status for COTI network deployment
+     * @param _available Whether MPC is available (true on COTI network)
      */
     function setMpcAvailability(bool _available) external onlyOwner {
         isMpcAvailable = _available;
     }
 
     /**
-     * @dev Registers a new arbitrator in the OmniBazaar network
+     * @notice Registers a new arbitrator in the OmniBazaar network
+     * @dev Requires minimum staking and reputation (if not in testnet mode)
      * @param _stakingAmount Amount of XOM to stake for arbitration eligibility
      * @param _specializations Bitmask of specialization areas
      */
@@ -300,7 +419,7 @@ contract OmniCoinArbitration is
             successfulCases: 0,
             stakingAmount: _stakingAmount,
             isActive: true,
-            lastActiveTimestamp: block.timestamp,
+            lastActiveTimestamp: block.timestamp, // Time tracking required for arbitrator activity
             privateEarnings: initialEarnings,
             specializationMask: _specializations
         });
@@ -311,7 +430,7 @@ contract OmniCoinArbitration is
     }
 
     /**
-     * @dev Updates arbitrator staking amount
+     * @notice Increases arbitrator's staking amount
      * @param _additionalStake Additional XOM to stake
      */
     function increaseArbitratorStake(uint256 _additionalStake) external {
@@ -328,7 +447,8 @@ contract OmniCoinArbitration is
     }
 
     /**
-     * @dev Creates a public dispute (default, no privacy fees)
+     * @notice Creates a public dispute without privacy features
+     * @dev Default method for dispute creation, no privacy fees
      * @param _escrowId The escrow ID in dispute
      * @param _disputedAmount Amount in dispute
      * @param _buyerClaim Buyer's claimed amount
@@ -396,7 +516,8 @@ contract OmniCoinArbitration is
     }
     
     /**
-     * @dev Creates a confidential dispute with privacy (premium feature)
+     * @notice Creates a confidential dispute with privacy protection
+     * @dev Premium feature requiring privacy fees and MPC
      * @param _escrowId The escrow ID in dispute
      * @param _disputedAmount Private amount in dispute (encrypted)
      * @param _buyerClaim Private buyer's claimed amount (encrypted)
@@ -499,7 +620,7 @@ contract OmniCoinArbitration is
     }
     
     /**
-     * @dev Resolves a dispute with public payouts (default, no privacy fees)
+     * @notice Resolves a dispute with public payouts (no privacy fees)
      * @param _escrowId The dispute to resolve
      * @param _buyerPayout Payout amount for buyer
      * @param _sellerPayout Payout amount for seller
@@ -517,7 +638,7 @@ contract OmniCoinArbitration is
         if (msg.sender != dispute.primaryArbitrator && !_isPanelArbitrator(_escrowId, msg.sender)) {
             revert NotAuthorizedArbitrator();
         }
-        if (block.timestamp > dispute.deadlineTimestamp) revert ResolutionDeadlinePassed();
+        if (block.timestamp > dispute.deadlineTimestamp) revert ResolutionDeadlinePassed(); // Time-based decision required for dispute deadline
         
         // Verify total payouts
         uint256 escrowBalance = ctUint64.unwrap(dispute.escrowBalance);
@@ -542,9 +663,9 @@ contract OmniCoinArbitration is
         _distributeArbitrationFees(_escrowId);
         
         // Update arbitrator success statistics
-        arbitrators[dispute.primaryArbitrator].successfulCases++;
-        for (uint256 i = 0; i < dispute.panelArbitrators.length; i++) {
-            arbitrators[dispute.panelArbitrators[i]].successfulCases++;
+        ++arbitrators[dispute.primaryArbitrator].successfulCases;
+        for (uint256 i = 0; i < dispute.panelArbitrators.length; ++i) {
+            ++arbitrators[dispute.panelArbitrators[i]].successfulCases;
         }
         
         // Execute payouts
@@ -554,14 +675,14 @@ contract OmniCoinArbitration is
         
         // Create verification hash
         bytes32 payoutHash = keccak256(abi.encode(
-            _buyerPayout, _sellerPayout, block.timestamp, _resolutionHash
+            _buyerPayout, _sellerPayout, block.timestamp, _resolutionHash // Time tracking for payout verification
         ));
         
-        emit ConfidentialDisputeResolved(_escrowId, _resolutionHash, block.timestamp, payoutHash);
+        emit ConfidentialDisputeResolved(_escrowId, _resolutionHash, block.timestamp, payoutHash); // Time tracking for resolution event
     }
     
     /**
-     * @dev Resolves a dispute with private payouts (premium feature)
+     * @notice Resolves a dispute with private payouts (premium feature)
      * @param _escrowId The dispute to resolve
      * @param _buyerPayout Private payout amount for buyer (encrypted)
      * @param _sellerPayout Private payout amount for seller (encrypted)
@@ -584,7 +705,7 @@ contract OmniCoinArbitration is
         if (msg.sender != dispute.primaryArbitrator && !_isPanelArbitrator(_escrowId, msg.sender)) {
             revert NotAuthorizedArbitrator();
         }
-        if (block.timestamp > dispute.deadlineTimestamp) revert ResolutionDeadlinePassed();
+        if (block.timestamp > dispute.deadlineTimestamp) revert ResolutionDeadlinePassed(); // Time-based decision required for dispute deadline
         
         // Validate encrypted inputs
         gtUint64 gtBuyerPayout = MpcCore.validateCiphertext(_buyerPayout);
@@ -634,9 +755,9 @@ contract OmniCoinArbitration is
         _distributeArbitrationFees(_escrowId);
         
         // Update arbitrator success statistics
-        arbitrators[dispute.primaryArbitrator].successfulCases++;
-        for (uint256 i = 0; i < dispute.panelArbitrators.length; i++) {
-            arbitrators[dispute.panelArbitrators[i]].successfulCases++;
+        ++arbitrators[dispute.primaryArbitrator].successfulCases;
+        for (uint256 i = 0; i < dispute.panelArbitrators.length; ++i) {
+            ++arbitrators[dispute.panelArbitrators[i]].successfulCases;
         }
         
         // Execute private payouts
@@ -644,14 +765,15 @@ contract OmniCoinArbitration is
         
         // Create verification hash
         bytes32 payoutHash = keccak256(abi.encode(
-            encryptedBuyerPayout, encryptedSellerPayout, block.timestamp, _resolutionHash
+            encryptedBuyerPayout, encryptedSellerPayout, block.timestamp, _resolutionHash // Time tracking for payout verification
         ));
         
-        emit ConfidentialDisputeResolved(_escrowId, _resolutionHash, block.timestamp, payoutHash);
+        emit ConfidentialDisputeResolved(_escrowId, _resolutionHash, block.timestamp, payoutHash); // Time tracking for resolution event
     }
 
     /**
-     * @dev Internal function to distribute arbitration fees using COTI V2 privacy
+     * @notice Distributes arbitration fees privately using COTI V2 MPC
+     * @param _escrowId Escrow identifier for the dispute
      */
     function _distributeArbitrationFees(bytes32 _escrowId) internal {
         ConfidentialDispute storage dispute = disputes[_escrowId];
@@ -714,7 +836,7 @@ contract OmniCoinArbitration is
             arbitratorTotalEarnings[dispute.primaryArbitrator] = MpcCore.offBoard(gtNewTotal);
                 
             // Update panel arbitrators
-            for (uint256 i = 0; i < dispute.panelArbitrators.length; i++) {
+            for (uint256 i = 0; i < dispute.panelArbitrators.length; ++i) {
                 gtUint64 gtPanelCurrentEarnings = MpcCore.onBoard(
                     arbitrators[dispute.panelArbitrators[i]].privateEarnings
                 );
@@ -729,7 +851,7 @@ contract OmniCoinArbitration is
         
         // Store fee distribution hash for transparency
         bytes32 feeDistributionHash = keccak256(abi.encode(
-            arbitratorShare, treasuryShare, validatorShare, block.timestamp
+            arbitratorShare, treasuryShare, validatorShare, block.timestamp // Time tracking for fee distribution
         ));
         disputeFeeDistribution[_escrowId] = totalFee;
         
@@ -737,7 +859,8 @@ contract OmniCoinArbitration is
     }
 
     /**
-     * @dev Internal function to execute private payouts
+     * @notice Executes private payouts to dispute participants
+     * @dev Parameters are unused in current implementation
      */
     function _executePrivatePayouts(
         bytes32, // _escrowId - will be used in full implementation
@@ -761,7 +884,9 @@ contract OmniCoinArbitration is
     }
 
     /**
-     * @dev Submits rating for resolved dispute (only participants)
+     * @notice Submits rating for a resolved dispute
+     * @param _escrowId Escrow identifier for the dispute
+     * @param _rating Rating value (1-5 scale)
      */
     function submitRating(
         bytes32 _escrowId,
@@ -800,7 +925,7 @@ contract OmniCoinArbitration is
             _updateArbitratorReputation(dispute.primaryArbitrator, averageRating);
             
             // Update panel arbitrator reputations
-            for (uint256 i = 0; i < dispute.panelArbitrators.length; i++) {
+            for (uint256 i = 0; i < dispute.panelArbitrators.length; ++i) {
                 _updateArbitratorReputation(dispute.panelArbitrators[i], averageRating);
             }
         }
@@ -809,7 +934,16 @@ contract OmniCoinArbitration is
     }
 
     /**
-     * @dev Gets public arbitrator information
+     * @notice Gets public arbitrator information
+     * @param _arbitrator Address of the arbitrator
+     * @return reputation Arbitrator's reputation score
+     * @return participationIndex Participation index score
+     * @return totalCases Total number of cases handled
+     * @return successfulCases Number of successfully resolved cases
+     * @return stakingAmount Amount of XOM staked
+     * @return isActive Whether arbitrator is currently active
+     * @return lastActiveTimestamp Last activity timestamp
+     * @return specializationMask Bitmask of specialization areas
      */
     function getArbitratorInfo(
         address _arbitrator
@@ -841,7 +975,18 @@ contract OmniCoinArbitration is
     }
 
     /**
-     * @dev Gets public dispute information (private amounts remain confidential)
+     * @notice Gets public dispute information
+     * @param _escrowId Escrow identifier for the dispute
+     * @return primaryArbitrator Address of primary arbitrator
+     * @return panelArbitrators Array of panel arbitrator addresses
+     * @return timestamp Dispute creation timestamp
+     * @return disputeType Type of dispute (1=Simple, 2=Complex, 3=Appeal)
+     * @return evidenceHash Hash of submitted evidence
+     * @return resolutionHash Hash of resolution reasoning
+     * @return deadlineTimestamp Resolution deadline timestamp
+     * @return buyerRating Buyer's rating for arbitrator
+     * @return sellerRating Seller's rating for arbitrator
+     * @return arbitratorRating Average rating for arbitrator
      */
     function getDisputePublicInfo(
         bytes32 _escrowId
@@ -877,7 +1022,9 @@ contract OmniCoinArbitration is
     }
 
     /**
-     * @dev Checks if dispute is resolved (decrypted for verification)
+     * @notice Checks if a dispute is resolved
+     * @param _escrowId Escrow identifier for the dispute
+     * @return bool Whether the dispute is resolved
      */
     function isDisputeResolved(bytes32 _escrowId) external returns (bool) {
         ConfidentialDispute storage dispute = disputes[_escrowId];
@@ -890,7 +1037,12 @@ contract OmniCoinArbitration is
     }
 
     /**
-     * @dev Gets private dispute amounts (only for authorized parties)
+     * @notice Gets private dispute amounts (restricted access)
+     * @param _escrowId Escrow identifier for the dispute
+     * @return disputedAmount Encrypted disputed amount
+     * @return escrowBalance Encrypted escrow balance
+     * @return buyerClaim Encrypted buyer's claim
+     * @return sellerClaim Encrypted seller's claim
      */
     function getDisputePrivateAmounts(
         bytes32 _escrowId
@@ -912,7 +1064,9 @@ contract OmniCoinArbitration is
     }
 
     /**
-     * @dev Gets arbitrator's private earnings (only for arbitrator or owner)
+     * @notice Gets arbitrator's private earnings (restricted access)
+     * @param _arbitrator Address of the arbitrator
+     * @return ctUint64 Encrypted total earnings
      */
     function getArbitratorPrivateEarnings(
         address _arbitrator
@@ -924,7 +1078,7 @@ contract OmniCoinArbitration is
     }
 
     /**
-     * @dev Arbitrator can claim their private earnings
+     * @notice Allows arbitrator to claim their accumulated earnings
      */
     function claimArbitratorEarnings() external {
         if (!arbitrators[msg.sender].isActive) revert NotActiveArbitrator();
@@ -950,12 +1104,14 @@ contract OmniCoinArbitration is
         // In full implementation, would execute private transfer:
         // omniCoin.privateTransfer(address(this), msg.sender, earnings);
         
-        bytes32 earningsHash = keccak256(abi.encode(earnings, msg.sender, block.timestamp));
+        bytes32 earningsHash = keccak256(abi.encode(earnings, msg.sender, block.timestamp)); // Time tracking for earnings claim
         emit PrivateEarningsUpdated(msg.sender, earningsHash);
     }
 
     /**
-     * @dev Gets user's dispute history
+     * @notice Gets user's dispute history
+     * @param _user Address of the user
+     * @return bytes32[] Array of dispute escrow IDs
      */
     function getUserDisputes(
         address _user
@@ -964,7 +1120,9 @@ contract OmniCoinArbitration is
     }
 
     /**
-     * @dev Gets arbitrator's dispute history
+     * @notice Gets arbitrator's dispute history
+     * @param _arbitrator Address of the arbitrator
+     * @return bytes32[] Array of dispute escrow IDs
      */
     function getArbitratorDisputes(
         address _arbitrator
@@ -975,7 +1133,19 @@ contract OmniCoinArbitration is
     // Internal helper functions
     
     /**
-     * @dev Internal function to create dispute
+     * @notice Internal function to create dispute record
+     * @param _escrowId Escrow identifier
+     * @param primaryArbitrator Selected primary arbitrator
+     * @param panelArbitrators Array of panel arbitrators
+     * @param disputeType Type of dispute (1=Simple, 2=Complex, 3=Appeal)
+     * @param _evidenceHash Hash of submitted evidence
+     * @param disputedAmount Encrypted disputed amount
+     * @param escrowBalance Encrypted escrow balance
+     * @param buyerClaim Encrypted buyer claim
+     * @param sellerClaim Encrypted seller claim
+     * @param arbitrationFee Encrypted arbitration fee
+     * @param buyer Buyer address
+     * @param seller Seller address
      */
     function _createDisputeInternal(
         bytes32 _escrowId,
@@ -996,7 +1166,7 @@ contract OmniCoinArbitration is
             escrowId: _escrowId,
             primaryArbitrator: primaryArbitrator,
             panelArbitrators: panelArbitrators,
-            timestamp: block.timestamp,
+            timestamp: block.timestamp, // Time tracking required for dispute creation
             disputeType: disputeType,
             evidenceHash: _evidenceHash,
             disputedAmount: disputedAmount,
@@ -1011,7 +1181,7 @@ contract OmniCoinArbitration is
             sellerRating: 0,
             arbitratorRating: 0,
             resolutionHash: bytes32(0),
-            deadlineTimestamp: block.timestamp + RESOLUTION_PERIOD
+            deadlineTimestamp: block.timestamp + RESOLUTION_PERIOD // Time tracking required for deadline
         });
         
         // Track dispute participants
@@ -1019,7 +1189,7 @@ contract OmniCoinArbitration is
         participants[0] = buyer;
         participants[1] = seller;
         participants[2] = primaryArbitrator;
-        for (uint256 i = 0; i < panelArbitrators.length; i++) {
+        for (uint256 i = 0; i < panelArbitrators.length; ++i) {
             participants[3 + i] = panelArbitrators[i];
         }
         disputeParticipants[_escrowId] = participants;
@@ -1029,14 +1199,16 @@ contract OmniCoinArbitration is
         userDisputes[buyer].push(_escrowId);
         userDisputes[seller].push(_escrowId);
         
-        arbitrators[primaryArbitrator].totalCases++;
-        arbitrators[primaryArbitrator].lastActiveTimestamp = block.timestamp;
+        ++arbitrators[primaryArbitrator].totalCases;
+        arbitrators[primaryArbitrator].lastActiveTimestamp = 
+            block.timestamp; // Time tracking required for activity
         
         // Update panel arbitrators if applicable
-        for (uint256 i = 0; i < panelArbitrators.length; i++) {
+        for (uint256 i = 0; i < panelArbitrators.length; ++i) {
             arbitratorDisputes[panelArbitrators[i]].push(_escrowId);
-            arbitrators[panelArbitrators[i]].totalCases++;
-            arbitrators[panelArbitrators[i]].lastActiveTimestamp = block.timestamp;
+            ++arbitrators[panelArbitrators[i]].totalCases;
+            arbitrators[panelArbitrators[i]].lastActiveTimestamp = 
+                block.timestamp; // Time tracking required for activity
         }
         
         emit ConfidentialDisputeCreated(_escrowId, primaryArbitrator, disputeType, _evidenceHash);
@@ -1046,6 +1218,11 @@ contract OmniCoinArbitration is
         }
     }
     
+    /**
+     * @notice Selects a single arbitrator for simple disputes
+     * @param _escrowId Escrow identifier
+     * @return address Selected arbitrator address
+     */
     function _selectSingleArbitrator(bytes32 _escrowId, ctUint64) internal view returns (address) {
         // Select arbitrator based on reputation, participation index, and availability
         // address bestArbitrator = address(0);
@@ -1077,7 +1254,7 @@ contract OmniCoinArbitration is
             address(0x90F79bf6EB2c4f870365E785982E1f101E93b906)  // Hardhat account #3
         ];
         
-        for (uint256 i = 0; i < testArbitrators.length; i++) {
+        for (uint256 i = 0; i < testArbitrators.length; ++i) {
             if (arbitrators[testArbitrators[i]].isActive && 
                 testArbitrators[i] != seller && 
                 testArbitrators[i] != buyer) {
@@ -1088,6 +1265,13 @@ contract OmniCoinArbitration is
         return address(0); // No suitable arbitrator found
     }
     
+    /**
+     * @notice Selects arbitration panel for complex disputes
+     * @param _escrowId Escrow identifier
+     * @param _disputedAmount Encrypted disputed amount
+     * @return address Primary arbitrator address
+     * @return address[] Panel arbitrator addresses
+     */
     function _selectArbitrationPanel(
         bytes32 _escrowId, 
         ctUint64 _disputedAmount
@@ -1111,6 +1295,11 @@ contract OmniCoinArbitration is
         return (primaryArbitrator, panel);
     }
     
+    /**
+     * @notice Determines dispute type based on amount and complexity
+     * @param _disputedAmount Encrypted disputed amount
+     * @return uint256 Dispute type (1=Simple, 2=Complex, 3=Appeal)
+     */
     function _determineDisputeType(ctUint64 _disputedAmount) internal returns (uint256) {
         // Determine dispute type based on amount and complexity
         // Type 1: Simple - Single arbitrator, amount < 1,000 XOM
@@ -1146,9 +1335,15 @@ contract OmniCoinArbitration is
         }
     }
     
+    /**
+     * @notice Checks if an address is a panel arbitrator for a dispute
+     * @param _escrowId Escrow identifier
+     * @param _arbitrator Address to check
+     * @return bool Whether the address is a panel arbitrator
+     */
     function _isPanelArbitrator(bytes32 _escrowId, address _arbitrator) internal view returns (bool) {
         ConfidentialDispute storage dispute = disputes[_escrowId];
-        for (uint256 i = 0; i < dispute.panelArbitrators.length; i++) {
+        for (uint256 i = 0; i < dispute.panelArbitrators.length; ++i) {
             if (dispute.panelArbitrators[i] == _arbitrator) {
                 return true;
             }
@@ -1156,6 +1351,11 @@ contract OmniCoinArbitration is
         return false;
     }
     
+    /**
+     * @notice Verifies panel consensus for dispute resolution
+     * @param _escrowId Escrow identifier
+     * @return bool Whether consensus is achieved
+     */
     function _verifyPanelConsensus(bytes32 _escrowId, ctUint64, ctUint64) internal view returns (bool) {
         // Verify panel consensus for complex disputes
         // In production, this would:
@@ -1184,9 +1384,15 @@ contract OmniCoinArbitration is
         return true; // Simplified for MVP
     }
     
+    /**
+     * @notice Checks if an address is a dispute participant
+     * @param _escrowId Escrow identifier
+     * @param _caller Address to check
+     * @return bool Whether the address is a participant
+     */
     function _isDisputeParticipant(bytes32 _escrowId, address _caller) internal view returns (bool) {
         address[] memory participants = disputeParticipants[_escrowId];
-        for (uint256 i = 0; i < participants.length; i++) {
+        for (uint256 i = 0; i < participants.length; ++i) {
             if (participants[i] == _caller) {
                 return true;
             }
@@ -1194,6 +1400,11 @@ contract OmniCoinArbitration is
         return false;
     }
     
+    /**
+     * @notice Updates arbitrator reputation based on rating
+     * @param _arbitrator Arbitrator address
+     * @param _rating Rating value (1-5)
+     */
     function _updateArbitratorReputation(address _arbitrator, uint256 _rating) internal {
         OmniBazaarArbitrator storage arbitrator = arbitrators[_arbitrator];
         
@@ -1211,13 +1422,19 @@ contract OmniCoinArbitration is
         emit ReputationUpdated(_arbitrator, newReputation);
     }
     
+    /**
+     * @notice Calculates user's participation index
+     * @param _user User address
+     * @return uint256 Participation index value
+     */
     function _calculateParticipationIndex(address _user) internal view returns (uint256) {
         (, , , , , uint256 reputation) = omniCoinAccount.getAccountStatus(_user);
         return reputation;
     }
 
     /**
-     * @dev Get contract version for upgrades
+     * @notice Get contract version for upgrades
+     * @return string Version identifier
      */
     function getVersion() external pure returns (string memory) {
         return "OmniCoinArbitration v2.0.0 - COTI V2 Privacy Integration";

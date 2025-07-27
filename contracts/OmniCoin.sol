@@ -10,9 +10,9 @@ import {RegistryAware} from "./base/RegistryAware.sol";
 
 /**
  * @title OmniCoin
- * @dev Standard ERC20 token for public transactions on COTI V2
- * 
- * This is the main public token. For privacy features, users bridge to PrivateOmniCoin.
+ * @author OmniCoin Development Team
+ * @notice Standard ERC20 token for public transactions on COTI V2
+ * @dev Main public token - users bridge to PrivateOmniCoin for privacy features
  * 
  * Features:
  * - Standard ERC20 with 6 decimals
@@ -28,20 +28,30 @@ contract OmniCoin is ERC20, ERC20Burnable, ERC20Pausable, AccessControl, Reentra
     // =============================================================================
     
     struct ValidatorOperation {
-        address initiator;
-        uint256 amount;
-        uint256 timestamp;
-        bool executed;
+        address initiator;    // 20 bytes
+        bool executed;        // 1 byte
+        // 11 bytes padding
+        uint256 amount;       // 32 bytes
+        uint256 timestamp;    // 32 bytes - Time tracking required for validator operations
     }
     
     // =============================================================================
     // CONSTANTS & ROLES
     // =============================================================================
     
+    /// @notice Role for minting new tokens
     bytes32 public constant MINTER_ROLE = keccak256("MINTER_ROLE");
+    /// @notice Role for pausing token transfers
     bytes32 public constant PAUSER_ROLE = keccak256("PAUSER_ROLE");
+    /// @notice Role for validator operations
     bytes32 public constant VALIDATOR_ROLE = keccak256("VALIDATOR_ROLE");
+    /// @notice Role for bridge operations
     bytes32 public constant BRIDGE_ROLE = keccak256("BRIDGE_ROLE");
+    
+    /// @notice Initial token supply (100M tokens)
+    uint256 public constant INITIAL_SUPPLY = 100_000_000 * 10**6;
+    /// @notice Maximum token supply (1B tokens)
+    uint256 public constant MAX_SUPPLY = 1_000_000_000 * 10**6;
     
     // =============================================================================
     // CUSTOM ERRORS
@@ -57,30 +67,54 @@ contract OmniCoin is ERC20, ERC20Burnable, ERC20Pausable, AccessControl, Reentra
     error BridgeTransferFailed();
     error InsufficientBalance();
     
-    uint256 public constant INITIAL_SUPPLY = 100_000_000 * 10**6; // 100M tokens
-    uint256 public constant MAX_SUPPLY = 1_000_000_000 * 10**6; // 1B tokens max
-    
     // =============================================================================
     // STATE VARIABLES
     // =============================================================================
     
-    /// @dev Maximum supply cap
+    /// @notice Maximum supply cap (immutable)
     uint256 public immutable MAX_SUPPLY_CAP;
     
-    /// @dev Registry of approved validators
+    /// @notice Registry of approved validators
     mapping(address => bool) public validators;
     
-    /// @dev Validator operation tracking
+    /// @notice Validator operation tracking
     mapping(bytes32 => ValidatorOperation) public validatorOperations;
     
     // =============================================================================
     // EVENTS
     // =============================================================================
     
+    /**
+     * @notice Emitted when a validator is added
+     * @param validator Address of the new validator
+     */
     event ValidatorAdded(address indexed validator);
+    /**
+     * @notice Emitted when a validator is removed
+     * @param validator Address of the removed validator
+     */
     event ValidatorRemoved(address indexed validator);
+    
+    /**
+     * @notice Emitted when a validator operation is initiated
+     * @param operationId Unique operation identifier
+     * @param initiator Address that initiated the operation
+     * @param amount Amount involved in the operation
+     */
     event ValidatorOperationInitiated(bytes32 indexed operationId, address indexed initiator, uint256 amount);
+    
+    /**
+     * @notice Emitted when a validator operation is executed
+     * @param operationId Unique operation identifier
+     */
     event ValidatorOperationExecuted(bytes32 indexed operationId);
+    
+    /**
+     * @notice Emitted when tokens are transferred to bridge
+     * @param from Address sending tokens
+     * @param bridge Bridge contract address
+     * @param amount Amount transferred
+     */
     event BridgeTransferInitiated(address indexed from, address indexed bridge, uint256 amount);
     
     // =============================================================================
@@ -88,7 +122,7 @@ contract OmniCoin is ERC20, ERC20Burnable, ERC20Pausable, AccessControl, Reentra
     // =============================================================================
     
     /**
-     * @dev Constructor initializes the token with initial supply
+     * @notice Initialize the OmniCoin token with initial supply
      * @param _registry Address of the OmniCoinRegistry contract
      */
     constructor(address _registry) 
@@ -113,7 +147,9 @@ contract OmniCoin is ERC20, ERC20Burnable, ERC20Pausable, AccessControl, Reentra
     // =============================================================================
     
     /**
-     * @dev Returns the number of decimals (6 for COTI compatibility)
+     * @notice Get the number of decimal places for the token
+     * @dev Returns 6 for COTI compatibility
+     * @return decimals Number of decimal places (6)
      */
     function decimals() public view virtual override returns (uint8) {
         return 6;
@@ -124,7 +160,8 @@ contract OmniCoin is ERC20, ERC20Burnable, ERC20Pausable, AccessControl, Reentra
     // =============================================================================
     
     /**
-     * @dev Mint new tokens (restricted to MINTER_ROLE)
+     * @notice Mint new tokens
+     * @dev Restricted to MINTER_ROLE, checks max supply cap
      * @param to Address to mint tokens to
      * @param amount Amount to mint
      */
@@ -134,7 +171,8 @@ contract OmniCoin is ERC20, ERC20Burnable, ERC20Pausable, AccessControl, Reentra
     }
     
     /**
-     * @dev Burn tokens from a specific address (restricted to bridge)
+     * @notice Burn tokens from a specific address
+     * @dev Restricted to BRIDGE_ROLE for bridge operations
      * @param from Address to burn tokens from
      * @param amount Amount to burn
      */
@@ -151,7 +189,8 @@ contract OmniCoin is ERC20, ERC20Burnable, ERC20Pausable, AccessControl, Reentra
     // =============================================================================
     
     /**
-     * @dev Add a validator
+     * @notice Add a new validator
+     * @dev Restricted to DEFAULT_ADMIN_ROLE
      * @param validator Address to add as validator
      */
     function addValidator(address validator) external onlyRole(DEFAULT_ADMIN_ROLE) {
@@ -161,7 +200,8 @@ contract OmniCoin is ERC20, ERC20Burnable, ERC20Pausable, AccessControl, Reentra
     }
     
     /**
-     * @dev Remove a validator
+     * @notice Remove an existing validator
+     * @dev Restricted to DEFAULT_ADMIN_ROLE
      * @param validator Address to remove from validators
      */
     function removeValidator(address validator) external onlyRole(DEFAULT_ADMIN_ROLE) {

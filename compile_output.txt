@@ -1,0 +1,286 @@
+Warning: This declaration shadows an existing declaration.
+   --> contracts/OmniCoin.sol:154:63:
+    |
+154 |     function decimals() public view virtual override returns (uint8 decimals) {
+    |                                                               ^^^^^^^^^^^^^^
+Note: The shadowed declaration is here:
+   --> contracts/OmniCoin.sol:154:5:
+    |
+154 |     function decimals() public view virtual override returns (uint8 decimals) {
+    |     ^ (Relevant source part starts here and spans across multiple lines).
+
+
+Warning: This declaration shadows an existing declaration.
+   --> contracts/ListingNFT.sol:287:9:
+    |
+287 |         address from = _ownerOf(tokenId);
+    |         ^^^^^^^^^^^^
+Note: The shadowed declaration is here:
+   --> contracts/ListingNFT.sol:286:34:
+    |
+286 |     ) internal override returns (address from) {
+    |                                  ^^^^^^^^^^^^
+
+
+Warning: This declaration has the same name as another declaration.
+   --> contracts/OmniCoinCore.sol:370:13:
+    |
+370 |             address privacyFeeManager = getPrivacyFeeManager();
+    |             ^^^^^^^^^^^^^^^^^^^^^^^^^
+Note: The other declaration is here:
+   --> contracts/OmniCoinCore.sol:962:5:
+    |
+962 |     function privacyFeeManager() external returns (address) {
+    |     ^ (Relevant source part starts here and spans across multiple lines).
+
+
+Warning: This declaration has the same name as another declaration.
+   --> contracts/OmniCoinCore.sol:428:13:
+    |
+428 |             address privacyFeeManager = getPrivacyFeeManager();
+    |             ^^^^^^^^^^^^^^^^^^^^^^^^^
+Note: The other declaration is here:
+   --> contracts/OmniCoinCore.sol:962:5:
+    |
+962 |     function privacyFeeManager() external returns (address) {
+    |     ^ (Relevant source part starts here and spans across multiple lines).
+
+
+Warning: This declaration has the same name as another declaration.
+   --> contracts/OmniCoinCore.sol:464:13:
+    |
+464 |             address privacyFeeManager = getPrivacyFeeManager();
+    |             ^^^^^^^^^^^^^^^^^^^^^^^^^
+Note: The other declaration is here:
+   --> contracts/OmniCoinCore.sol:962:5:
+    |
+962 |     function privacyFeeManager() external returns (address) {
+    |     ^ (Relevant source part starts here and spans across multiple lines).
+
+
+Warning: This declaration has the same name as another declaration.
+   --> contracts/OmniCoinCore.sol:499:9:
+    |
+499 |         address privacyFeeManager = getPrivacyFeeManager();
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^
+Note: The other declaration is here:
+   --> contracts/OmniCoinCore.sol:962:5:
+    |
+962 |     function privacyFeeManager() external returns (address) {
+    |     ^ (Relevant source part starts here and spans across multiple lines).
+
+
+Warning: This declaration has the same name as another declaration.
+   --> contracts/OmniCoinCore.sol:530:9:
+    |
+530 |         address privacyFeeManager = getPrivacyFeeManager();
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^
+Note: The other declaration is here:
+   --> contracts/OmniCoinCore.sol:962:5:
+    |
+962 |     function privacyFeeManager() external returns (address) {
+    |     ^ (Relevant source part starts here and spans across multiple lines).
+
+
+Warning: This declaration has the same name as another declaration.
+   --> contracts/OmniCoinEscrow.sol:251:9:
+    |
+251 |         OmniCoinCore token = getOmniCoinCore();
+    |         ^^^^^^^^^^^^^^^^^^
+Note: The other declaration is here:
+   --> contracts/OmniCoinEscrow.sol:808:5:
+    |
+808 |     function token() external returns (OmniCoinCore) {
+    |     ^ (Relevant source part starts here and spans across multiple lines).
+
+
+Warning: This declaration has the same name as another declaration.
+   --> contracts/OmniCoinEscrow.sol:298:9:
+    |
+298 |         address privacyFeeManager = getPrivacyFeeManager();
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^
+Note: The other declaration is here:
+   --> contracts/OmniCoinEscrow.sol:816:5:
+    |
+816 |     function privacyFeeManager() external returns (address) {
+    |     ^ (Relevant source part starts here and spans across multiple lines).
+
+
+Warning: This declaration has the same name as another declaration.
+   --> contracts/OmniCoinEscrow.sol:348:9:
+    |
+348 |         OmniCoinCore token = getOmniCoinCore();
+    |         ^^^^^^^^^^^^^^^^^^
+Note: The other declaration is here:
+   --> contracts/OmniCoinEscrow.sol:808:5:
+    |
+808 |     function token() external returns (OmniCoinCore) {
+    |     ^ (Relevant source part starts here and spans across multiple lines).
+
+
+Warning: This declaration has the same name as another declaration.
+   --> contracts/OmniCoinEscrow.sol:379:9:
+    |
+379 |         OmniCoinCore token = getOmniCoinCore();
+    |         ^^^^^^^^^^^^^^^^^^
+Note: The other declaration is here:
+   --> contracts/OmniCoinEscrow.sol:808:5:
+    |
+808 |     function token() external returns (OmniCoinCore) {
+    |     ^ (Relevant source part starts here and spans across multiple lines).
+
+
+Warning: This declaration has the same name as another declaration.
+   --> contracts/OmniCoinEscrow.sol:411:9:
+    |
+411 |         OmniCoinCore token = getOmniCoinCore();
+    |         ^^^^^^^^^^^^^^^^^^
+Note: The other declaration is here:
+   --> contracts/OmniCoinEscrow.sol:808:5:
+    |
+808 |     function token() external returns (OmniCoinCore) {
+    |     ^ (Relevant source part starts here and spans across multiple lines).
+
+
+Warning: This declaration has the same name as another declaration.
+   --> contracts/OmniCoinEscrow.sol:476:9:
+    |
+476 |         address privacyFeeManager = getPrivacyFeeManager();
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^
+Note: The other declaration is here:
+   --> contracts/OmniCoinEscrow.sol:816:5:
+    |
+816 |     function privacyFeeManager() external returns (address) {
+    |     ^ (Relevant source part starts here and spans across multiple lines).
+
+
+Warning: This declaration has the same name as another declaration.
+   --> contracts/OmniCoinEscrow.sol:542:9:
+    |
+542 |         OmniCoinCore token = getOmniCoinCore();
+    |         ^^^^^^^^^^^^^^^^^^
+Note: The other declaration is here:
+   --> contracts/OmniCoinEscrow.sol:808:5:
+    |
+808 |     function token() external returns (OmniCoinCore) {
+    |     ^ (Relevant source part starts here and spans across multiple lines).
+
+
+Warning: This declaration has the same name as another declaration.
+   --> contracts/OmniCoinEscrow.sol:573:9:
+    |
+573 |         address privacyFeeManager = getPrivacyFeeManager();
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^
+Note: The other declaration is here:
+   --> contracts/OmniCoinEscrow.sol:816:5:
+    |
+816 |     function privacyFeeManager() external returns (address) {
+    |     ^ (Relevant source part starts here and spans across multiple lines).
+
+
+Warning: This declaration has the same name as another declaration.
+   --> contracts/OmniCoinEscrow.sol:619:9:
+    |
+619 |         OmniCoinCore token = getOmniCoinCore();
+    |         ^^^^^^^^^^^^^^^^^^
+Note: The other declaration is here:
+   --> contracts/OmniCoinEscrow.sol:808:5:
+    |
+808 |     function token() external returns (OmniCoinCore) {
+    |     ^ (Relevant source part starts here and spans across multiple lines).
+
+
+Warning: This declaration has the same name as another declaration.
+   --> contracts/OmniCoinEscrow.sol:790:17:
+    |
+790 |                 OmniCoinCore token = getOmniCoinCore();
+    |                 ^^^^^^^^^^^^^^^^^^
+Note: The other declaration is here:
+   --> contracts/OmniCoinEscrow.sol:808:5:
+    |
+808 |     function token() external returns (OmniCoinCore) {
+    |     ^ (Relevant source part starts here and spans across multiple lines).
+
+
+Warning: This declaration shadows an existing declaration.
+   --> contracts/OmniCoinBridge.sol:604:13:
+    |
+604 |             address token,
+    |             ^^^^^^^^^^^^^
+Note: The shadowed declaration is here:
+  --> contracts/OmniCoinBridge.sol:62:5:
+   |
+62 |     IERC20 public token;
+   |     ^^^^^^^^^^^^^^^^^^^
+
+
+Warning: This declaration has the same name as another declaration.
+   --> contracts/OmniCoinValidator.sol:232:13:
+    |
+232 |             uint256 stake,
+    |             ^^^^^^^^^^^^^
+Note: The other declaration is here:
+  --> contracts/OmniCoinValidator.sol:95:5:
+   |
+95 |     function stake(uint256 amount) external nonReentrant {
+   |     ^ (Relevant source part starts here and spans across multiple lines).
+
+
+Warning: This declaration shadows an existing declaration.
+   --> contracts/OmniCoinValidator.sol:254:13:
+    |
+254 |             address[] memory validators,
+    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Note: The shadowed declaration is here:
+  --> contracts/OmniCoinValidator.sol:45:5:
+   |
+45 |     mapping(address => Validator) public validators;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+
+Warning: This declaration shadows an existing declaration.
+   --> contracts/OmniCoinValidator.sol:256:13:
+    |
+256 |             uint256 minStake,
+    |             ^^^^^^^^^^^^^^^^
+Note: The shadowed declaration is here:
+  --> contracts/OmniCoinValidator.sol:42:5:
+   |
+42 |     uint256 public minStake;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^
+
+
+Warning: This declaration shadows an existing declaration.
+   --> contracts/OmniCoinValidator.sol:257:13:
+    |
+257 |             uint256 maxValidators
+    |             ^^^^^^^^^^^^^^^^^^^^^
+Note: The shadowed declaration is here:
+  --> contracts/OmniCoinValidator.sol:43:5:
+   |
+43 |     uint256 public maxValidators;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+
+Warning: This declaration shadows an existing declaration.
+   --> contracts/OmniWalletRecovery.sol:525:13:
+    |
+525 |             address[] memory guardians,
+    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^
+Note: The shadowed declaration is here:
+   --> contracts/OmniWalletRecovery.sol:112:5:
+    |
+112 |     mapping(address => GuardianInfo) public guardians;
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+
+DeclarationError: Identifier not found or not unique.
+   --> contracts/OmniCoinPayment.sol:320:9:
+    |
+320 |         gtBool isPositive = MpcCore.gt(gtAmount, MpcCore.setPublic64(0));
+    |         ^^^^^^
+
+
+Error HH600: Compilation failed
+
+For more info go to https://hardhat.org/HH600 or run Hardhat with --show-stack-traces

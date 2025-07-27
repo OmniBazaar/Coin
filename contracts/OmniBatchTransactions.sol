@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.20;
+pragma solidity ^0.8.19;
 
 import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import {OwnableUpgradeable} from "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
@@ -9,8 +9,9 @@ import {OmniCoinCore} from "./OmniCoinCore.sol";
 
 /**
  * @title OmniBatchTransactions
- * @dev Enables efficient batch execution of multiple operations in a single transaction
- * Essential for wallet functionality to reduce gas costs and improve UX
+ * @author OmniCoin Development Team
+ * @notice Enables efficient batch execution of multiple operations in a single transaction
+ * @dev Essential for wallet functionality to reduce gas costs and improve UX
  */
 contract OmniBatchTransactions is
     Initializable,
@@ -18,7 +19,55 @@ contract OmniBatchTransactions is
     ReentrancyGuardUpgradeable,
     PausableUpgradeable
 {
-    // Custom errors
+    // =============================================================================
+    // ENUMS & STRUCTS
+    // =============================================================================
+    
+    enum TransactionType {
+        TRANSFER,
+        APPROVE,
+        NFT_MINT,
+        NFT_TRANSFER,
+        ESCROW_CREATE,
+        ESCROW_RELEASE,
+        BRIDGE_TRANSFER,
+        PRIVACY_DEPOSIT,
+        PRIVACY_WITHDRAW,
+        STAKE,
+        UNSTAKE
+    }
+
+    struct BatchOperation {
+        address target;          // 20 bytes
+        TransactionType opType;  // 1 byte
+        bool critical;           // 1 byte - If true, failure stops batch execution
+        // 10 bytes padding
+        uint256 value;           // 32 bytes
+        bytes data;              // dynamic
+    }
+
+    struct BatchResult {
+        bool success;
+        bytes returnData;
+        uint256 gasUsed;
+        string errorMessage;
+    }
+
+    struct BatchExecution {
+        uint256 batchId;
+        address executor;        // 20 bytes
+        bool completed;          // 1 byte
+        // 11 bytes padding
+        uint256 operationCount;  // 32 bytes
+        uint256 successCount;    // 32 bytes
+        uint256 totalGasUsed;    // 32 bytes
+        uint256 timestamp;       // 32 bytes - Time tracking required for batch history
+    }
+
+    // =============================================================================
+    // CUSTOM ERRORS
+    // =============================================================================
+    
     error EmptyBatch();
     error BatchTooLarge();
     error InsufficientGas();
@@ -35,76 +84,92 @@ contract OmniBatchTransactions is
     error InvalidMaxBatchSize();
     error InvalidMaxGasPerOperation();
     
-    // Transaction types
-    enum TransactionType {
-        TRANSFER,
-        APPROVE,
-        NFT_MINT,
-        NFT_TRANSFER,
-        ESCROW_CREATE,
-        ESCROW_RELEASE,
-        BRIDGE_TRANSFER,
-        PRIVACY_DEPOSIT,
-        PRIVACY_WITHDRAW,
-        STAKE,
-        UNSTAKE
-    }
-
-    // Batch operation structure
-    struct BatchOperation {
-        TransactionType opType;
-        address target;
-        bytes data;
-        uint256 value;
-        bool critical; // If true, failure stops batch execution
-    }
-
-    struct BatchResult {
-        bool success;
-        bytes returnData;
-        uint256 gasUsed;
-        string errorMessage;
-    }
-
-    struct BatchExecution {
-        uint256 batchId;
-        address executor;
-        uint256 operationCount;
-        uint256 successCount;
-        uint256 totalGasUsed;
-        uint256 timestamp;
-        bool completed;
-    }
-
-    // State variables
+    // =============================================================================
+    // STATE VARIABLES
+    // =============================================================================
+    
+    /// @notice OmniCoin core contract instance
     OmniCoinCore public omniCoin;
+    
+    /// @notice Mapping of batch ID to batch execution details
     mapping(uint256 => BatchExecution) public batchExecutions;
+    
+    /// @notice Mapping of user address to their batch IDs
     mapping(address => uint256[]) public userBatches;
+    
+    /// @notice Mapping of authorized batch executors
     mapping(address => bool) public authorizedExecutors;
+    
+    /// @notice Current batch ID counter
     uint256 public batchCounter;
+    
+    /// @notice Maximum number of operations per batch
     uint256 public maxBatchSize;
+    
+    /// @notice Maximum gas allowed per operation
     uint256 public maxGasPerOperation;
 
-    // Events
+    // =============================================================================
+    // EVENTS
+    // =============================================================================
+    
+    /**
+     * @notice Emitted when batch execution starts
+     * @param batchId Unique batch identifier
+     * @param executor Address executing the batch
+     * @param operationCount Number of operations in batch
+     */
     event BatchExecutionStarted(
         uint256 indexed batchId,
         address indexed executor,
-        uint256 operationCount
+        uint256 indexed operationCount
     );
+    /**
+     * @notice Emitted when batch execution completes
+     * @param batchId Unique batch identifier
+     * @param successCount Number of successful operations
+     * @param totalGasUsed Total gas consumed
+     */
     event BatchExecutionCompleted(
         uint256 indexed batchId,
-        uint256 successCount,
-        uint256 totalGasUsed
+        uint256 indexed successCount,
+        uint256 indexed totalGasUsed
     );
+    /**
+     * @notice Emitted for each operation execution
+     * @param batchId Unique batch identifier
+     * @param operationIndex Index of operation in batch
+     * @param success Whether operation succeeded
+     * @param gasUsed Gas consumed by operation
+     */
     event OperationExecuted(
         uint256 indexed batchId,
-        uint256 operationIndex,
-        bool success,
+        uint256 indexed operationIndex,
+        bool indexed success,
         uint256 gasUsed
     );
+    /**
+     * @notice Emitted when an executor is authorized
+     * @param executor Address of the authorized executor
+     */
     event ExecutorAuthorized(address indexed executor);
+    
+    /**
+     * @notice Emitted when an executor is deauthorized
+     * @param executor Address of the deauthorized executor
+     */
     event ExecutorDeauthorized(address indexed executor);
+    
+    /**
+     * @notice Emitted when max batch size is updated
+     * @param newSize New maximum batch size
+     */
     event MaxBatchSizeUpdated(uint256 newSize);
+    
+    /**
+     * @notice Emitted when max gas per operation is updated
+     * @param newGas New maximum gas per operation
+     */
     event MaxGasPerOperationUpdated(uint256 newGas);
 
     /// @custom:oz-upgrades-unsafe-allow constructor
@@ -113,7 +178,9 @@ contract OmniBatchTransactions is
     }
 
     /**
-     * @dev Initializes the batch transaction contract
+     * @notice Initialize the batch transaction contract
+     * @dev Called once during deployment
+     * @param _omniCoin Address of the OmniCoin core contract
      */
     function initialize(address _omniCoin) public initializer {
         __Ownable_init(msg.sender);
@@ -127,7 +194,11 @@ contract OmniBatchTransactions is
     }
 
     /**
-     * @dev Execute a batch of operations
+     * @notice Execute a batch of operations
+     * @dev Executes operations sequentially, stopping on critical failures
+     * @param operations Array of batch operations to execute
+     * @return batchId Unique identifier for this batch
+     * @return results Array of results for each operation
      */
     function executeBatch(
         BatchOperation[] calldata operations
@@ -139,7 +210,8 @@ contract OmniBatchTransactions is
         if (operations.length == 0) revert EmptyBatch();
         if (operations.length > maxBatchSize) revert BatchTooLarge();
 
-        batchId = ++batchCounter;
+        ++batchCounter;
+        batchId = batchCounter;
         results = new BatchResult[](operations.length);
 
         uint256 successCount = 0;
@@ -152,7 +224,7 @@ contract OmniBatchTransactions is
             operationCount: operations.length,
             successCount: 0,
             totalGasUsed: 0,
-            timestamp: block.timestamp,
+            timestamp: block.timestamp,  // Time tracking required for batch history
             completed: false
         });
 

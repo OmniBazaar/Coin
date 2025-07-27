@@ -11,7 +11,9 @@ import {PrivacyFeeManager} from "./PrivacyFeeManager.sol";
 
 /**
  * @title DEXSettlement
- * @dev Enhanced DEX settlement with privacy options
+ * @author OmniCoin Development Team
+ * @notice Enhanced DEX settlement contract with optional privacy features
+ * @dev Implements atomic trade settlement with validator consensus and privacy options
  *
  * Features:
  * - Default: Public trade settlement (no privacy fees)
@@ -66,6 +68,29 @@ contract DEXSettlement is ReentrancyGuard, Pausable, AccessControl {
     }
 
     // =============================================================================
+    // CONSTANTS & ROLES
+    // =============================================================================
+    
+    /// @notice Role for validators who can settle trades
+    bytes32 public constant VALIDATOR_ROLE = keccak256("VALIDATOR_ROLE");
+    /// @notice Role for emergency circuit breakers
+    bytes32 public constant CIRCUIT_BREAKER_ROLE = keccak256("CIRCUIT_BREAKER_ROLE");
+    /// @notice Role for fee configuration management
+    bytes32 public constant FEE_MANAGER_ROLE = keccak256("FEE_MANAGER_ROLE");
+
+    /// @notice Privacy feature multiplier (10x normal fees)
+    uint256 public constant PRIVACY_MULTIPLIER = 10;
+    
+    /// @notice Spot market maker fee (0.1% in basis points)
+    uint256 public constant SPOT_MAKER_FEE = 10;
+    /// @notice Spot market taker fee (0.2% in basis points)
+    uint256 public constant SPOT_TAKER_FEE = 20;
+    /// @notice Perpetual market maker fee (0.05% in basis points)
+    uint256 public constant PERP_MAKER_FEE = 5;
+    /// @notice Perpetual market taker fee (0.15% in basis points)
+    uint256 public constant PERP_TAKER_FEE = 15;
+
+    // =============================================================================
     // CUSTOM ERRORS
     // =============================================================================
     
@@ -83,50 +108,58 @@ contract DEXSettlement is ReentrancyGuard, Pausable, AccessControl {
     error InvalidFeeConfiguration();
 
     // =============================================================================
-    // CONSTANTS & ROLES
-    // =============================================================================
-    
-    // Roles
-    bytes32 public constant VALIDATOR_ROLE = keccak256("VALIDATOR_ROLE");
-    bytes32 public constant CIRCUIT_BREAKER_ROLE = keccak256("CIRCUIT_BREAKER_ROLE");
-    bytes32 public constant FEE_MANAGER_ROLE = keccak256("FEE_MANAGER_ROLE");
-
-    // Privacy configuration
-    uint256 public constant PRIVACY_MULTIPLIER = 10; // 10x fee for privacy
-    
-    // Fee constants (basis points: 10000 = 100%)
-    uint256 public constant SPOT_MAKER_FEE = 10; // 0.1%
-    uint256 public constant SPOT_TAKER_FEE = 20; // 0.2%
-    uint256 public constant PERP_MAKER_FEE = 5; // 0.05%
-    uint256 public constant PERP_TAKER_FEE = 15; // 0.15%
-
-    // =============================================================================
     // STATE VARIABLES
     // =============================================================================
     
+    /// @notice Address of the privacy fee manager contract
     address public privacyFeeManager;
+    /// @notice Whether COTI MPC is available for privacy features
     bool public isMpcAvailable;
     
+    /// @notice Mapping of trade ID to trade data
     mapping(bytes32 => Trade) public trades;
+    /// @notice Mapping of validator address to validator info
     mapping(address => ValidatorInfo) public validators;
+    /// @notice Pending fee amounts for validators
     mapping(address => uint256) public validatorPendingFees;
 
+    /// @notice Fee distribution configuration
     FeeDistribution public feeDistribution;
+    /// @notice Total trading volume processed
     uint256 public totalTradingVolume;
+    /// @notice Total fees collected
     uint256 public totalFeesCollected;
-    uint256 public maxSlippageBasisPoints = 500; // 5% default max slippage
+    /// @notice Maximum allowed slippage in basis points (default 5%)
+    uint256 public maxSlippageBasisPoints = 500;
 
-    // Emergency controls
+    /// @notice Emergency stop flag
     bool public emergencyStop = false;
-    uint256 public maxTradeSize = 1000000 * 10 ** 18; // 1M tokens default
-    uint256 public dailyVolumeLimit = 10000000 * 10 ** 18; // 10M tokens daily
+    /// @notice Maximum trade size allowed (default 1M tokens)
+    uint256 public maxTradeSize = 1000000 * 10 ** 18;
+    /// @notice Daily volume limit (default 10M tokens)
+    uint256 public dailyVolumeLimit = 10000000 * 10 ** 18;
+    /// @notice Daily volume used in current period
     uint256 public dailyVolumeUsed = 0;
+    /// @notice Last day when volume was reset
     uint256 public lastResetDay;
 
     // =============================================================================
     // EVENTS
     // =============================================================================
     
+    /**
+     * @notice Emitted when a trade is settled
+     * @param tradeId Unique identifier of the trade
+     * @param maker Address of the maker
+     * @param taker Address of the taker
+     * @param tokenIn Input token address
+     * @param tokenOut Output token address
+     * @param amountIn Input amount (0 for private trades)
+     * @param amountOut Output amount (0 for private trades)
+     * @param makerFee Maker fee amount (0 for private trades)
+     * @param takerFee Taker fee amount (0 for private trades)
+     * @param validator Address of the settling validator
+     */
     event TradeSettled(
         bytes32 indexed tradeId,
         address indexed maker,
@@ -140,15 +173,43 @@ contract DEXSettlement is ReentrancyGuard, Pausable, AccessControl {
         address validator
     );
 
+    /**
+     * @notice Emitted when validator fees are distributed
+     * @param validator Address of the validator
+     * @param amount Fee amount distributed
+     * @param timestamp Time of distribution
+     */
     event ValidatorFeesDistributed(
         address indexed validator,
-        uint256 amount,
-        uint256 timestamp
+        uint256 indexed amount,
+        uint256 indexed timestamp
     );
 
-    event CompanyFeesCollected(uint256 amount, uint256 timestamp);
-    event DevelopmentFeesCollected(uint256 amount, uint256 timestamp);
+    /**
+     * @notice Emitted when company fees are collected
+     * @param amount Fee amount collected
+     * @param timestamp Time of collection
+     */
+    event CompanyFeesCollected(uint256 indexed amount, uint256 indexed timestamp);
+    
+    /**
+     * @notice Emitted when development fees are collected
+     * @param amount Fee amount collected
+     * @param timestamp Time of collection
+     */
+    event DevelopmentFeesCollected(uint256 indexed amount, uint256 indexed timestamp);
+    
+    /**
+     * @notice Emitted when emergency stop is triggered
+     * @param triggeredBy Address that triggered the stop
+     * @param reason Human-readable reason for the stop
+     */
     event EmergencyStop(address indexed triggeredBy, string reason);
+    
+    /**
+     * @notice Emitted when trading is resumed after emergency
+     * @param triggeredBy Address that resumed trading
+     */
     event TradingResumed(address indexed triggeredBy);
 
     // =============================================================================
@@ -217,7 +278,7 @@ contract DEXSettlement is ReentrancyGuard, Pausable, AccessControl {
         if (trade.maker == trade.taker) revert InvalidTrade();
         if (trade.isPrivate) revert InvalidTrade();
 
-        // Reset daily volume if new day
+        // Reset daily volume if new day (time-based decision required for daily limits)
         _resetDailyVolumeIfNeeded();
 
         // Check volume limits
@@ -297,7 +358,7 @@ contract DEXSettlement is ReentrancyGuard, Pausable, AccessControl {
         uint64 amountInPlain = MpcCore.decrypt(gtAmountIn);
         if (amountInPlain > maxTradeSize) revert InvalidAmount();
         
-        // Reset daily volume if new day
+        // Reset daily volume if new day (time-based decision required for daily limits)
         _resetDailyVolumeIfNeeded();
         
         if (dailyVolumeUsed + amountInPlain > dailyVolumeLimit) {
@@ -461,14 +522,23 @@ contract DEXSettlement is ReentrancyGuard, Pausable, AccessControl {
     // =============================================================================
     
     /**
-     * @dev Get public trade information
+     * @notice Get public trade information
+     * @dev Returns full trade struct including privacy fields
+     * @param tradeId The unique trade identifier
+     * @return trade Trade struct with all trade details
      */
-    function getTrade(bytes32 tradeId) external view returns (Trade memory) {
+    function getTrade(bytes32 tradeId) external view returns (Trade memory trade) {
         return trades[tradeId];
     }
     
     /**
-     * @dev Get encrypted trade amounts (only for authorized parties)
+     * @notice Get encrypted trade amounts for authorized parties
+     * @dev Only accessible by trade participants or admin
+     * @param tradeId The unique trade identifier
+     * @return encryptedAmountIn Encrypted input amount
+     * @return encryptedAmountOut Encrypted output amount  
+     * @return encryptedMakerFee Encrypted maker fee
+     * @return encryptedTakerFee Encrypted taker fee
      */
     function getPrivateTradeAmounts(bytes32 tradeId) external view returns (
         ctUint64 encryptedAmountIn,
@@ -492,14 +562,31 @@ contract DEXSettlement is ReentrancyGuard, Pausable, AccessControl {
         );
     }
 
-    function getValidatorInfo(address validatorAddress) external view returns (ValidatorInfo memory) {
+    /**
+     * @notice Get validator information
+     * @param validatorAddress Address of the validator
+     * @return info ValidatorInfo struct with validator details
+     */
+    function getValidatorInfo(address validatorAddress) external view returns (ValidatorInfo memory info) {
         return validators[validatorAddress];
     }
 
-    function getValidatorPendingFees(address validator) external view returns (uint256) {
+    /**
+     * @notice Get pending fees for a validator
+     * @param validator Address of the validator
+     * @return pendingFees Amount of fees pending distribution
+     */
+    function getValidatorPendingFees(address validator) external view returns (uint256 pendingFees) {
         return validatorPendingFees[validator];
     }
 
+    /**
+     * @notice Get current trading statistics
+     * @return volume Total trading volume processed
+     * @return fees Total fees collected
+     * @return dailyUsed Volume used in current daily period
+     * @return dailyLimit Maximum daily volume allowed
+     */
     function getTradingStats() external view returns (
         uint256 volume,
         uint256 fees,
@@ -509,7 +596,11 @@ contract DEXSettlement is ReentrancyGuard, Pausable, AccessControl {
         return (totalTradingVolume, totalFeesCollected, dailyVolumeUsed, dailyVolumeLimit);
     }
 
-    function getFeeDistribution() external view returns (FeeDistribution memory) {
+    /**
+     * @notice Get fee distribution configuration
+     * @return feeConfig FeeDistribution struct with percentage allocations
+     */
+    function getFeeDistribution() external view returns (FeeDistribution memory feeConfig) {
         return feeDistribution;
     }
 

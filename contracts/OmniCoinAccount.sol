@@ -1,17 +1,18 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.20;
+pragma solidity ^0.8.19;
 
 import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import {OwnableUpgradeable} from "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
 import {ReentrancyGuardUpgradeable} from "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
-import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {ECDSA} from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 import {MessageHashUtils} from "@openzeppelin/contracts/utils/cryptography/MessageHashUtils.sol";
 import {OmniCoin} from "./OmniCoin.sol";
 
 /**
  * @title OmniCoinAccount
- * @dev ERC-4337 compliant account abstraction implementation with payment integration
+ * @author OmniCoin Development Team
+ * @notice ERC-4337 compliant account abstraction implementation
+ * @dev Provides account abstraction with payment integration for OmniCoin ecosystem
  */
 contract OmniCoinAccount is
     Initializable,
@@ -21,19 +22,10 @@ contract OmniCoinAccount is
     using ECDSA for bytes32;
     using MessageHashUtils for bytes32;
 
-    // Custom errors
-    error NotEntryPoint();
-    error AccountAlreadyDeployed();
-    error InvalidSignature();
-    error InvalidNonce();
-    error AccountNotDeployed();
-    error InvalidAddress();
-    error AmountMustBePositive();
-    error TransferFailed();
-    error NotWhitelisted();
-    error InvalidRecipient();
-
-    // Structs
+    // =============================================================================
+    // STRUCTS
+    // =============================================================================
+    
     struct UserOperation {
         address sender;
         uint256 nonce;
@@ -53,28 +45,106 @@ contract OmniCoinAccount is
         bytes returnData;
     }
 
-    // State variables
+    // =============================================================================
+    // CUSTOM ERRORS
+    // =============================================================================
+    
+    error NotEntryPoint();
+    error AccountAlreadyDeployed();
+    error InvalidSignature();
+    error InvalidNonce();
+    error AccountNotDeployed();
+    error InvalidAddress();
+    error AmountMustBePositive();
+    error TransferFailed();
+    error NotWhitelisted();
+    error InvalidRecipient();
+    
+    // =============================================================================
+    // STATE VARIABLES
+    // =============================================================================
+    
+    /// @notice Nonce tracking for user operations
     mapping(address => uint256) public nonces;
+    
+    /// @notice Account deployment status
     mapping(address => bool) public isDeployed;
+    
+    /// @notice Account initialization code storage
     mapping(address => bytes) public initCode;
+    
+    /// @notice Privacy mode status for accounts
     mapping(address => bool) public privacyEnabled;
+    
+    /// @notice Staking amounts per account
     mapping(address => uint256) public stakingAmount;
+    
+    /// @notice Reputation scores per account
     mapping(address => uint256) public reputationScore;
+    
+    /// @notice Gas limit for entry point operations
     uint256 public entryPointGasLimit;
+    
+    /// @notice Entry point contract address
     address public entryPoint;
+    
+    /// @notice OmniCoin token contract
     OmniCoin public omniCoin;
 
-    // Events
+    // =============================================================================
+    // EVENTS
+    // =============================================================================
+    
+    /**
+     * @notice Emitted when an account is deployed
+     * @param account Address of the deployed account
+     * @param initCode Initialization code used
+     */
     event AccountDeployed(address indexed account, bytes initCode);
+    
+    /**
+     * @notice Emitted when an operation is executed
+     * @param account Account that executed the operation
+     * @param nonce Operation nonce
+     * @param success Whether the operation succeeded
+     */
     event OperationExecuted(
         address indexed account,
         uint256 indexed nonce,
-        bool success
+        bool indexed success
     );
+    
+    /**
+     * @notice Emitted when entry point is updated
+     * @param newEntryPoint New entry point address
+     */
     event EntryPointUpdated(address indexed newEntryPoint);
-    event GasLimitUpdated(uint256 newGasLimit);
+    
+    /**
+     * @notice Emitted when gas limit is updated
+     * @param newGasLimit New gas limit value
+     */
+    event GasLimitUpdated(uint256 indexed newGasLimit);
+    
+    /**
+     * @notice Emitted when privacy mode is toggled
+     * @param account Account address
+     * @param enabled Whether privacy is enabled
+     */
     event PrivacyToggled(address indexed account, bool enabled);
+    
+    /**
+     * @notice Emitted when staking amount is updated
+     * @param account Account address
+     * @param amount New staking amount
+     */
     event StakingUpdated(address indexed account, uint256 amount);
+    
+    /**
+     * @notice Emitted when reputation score is updated
+     * @param account Account address
+     * @param score New reputation score
+     */
     event ReputationUpdated(address indexed account, uint256 score);
 
     /// @custom:oz-upgrades-unsafe-allow constructor
@@ -83,7 +153,10 @@ contract OmniCoinAccount is
     }
 
     /**
-     * @dev Initializes the contract
+     * @notice Initialize the account contract
+     * @dev Called once during deployment
+     * @param _entryPoint Entry point contract address
+     * @param _omniCoin OmniCoin token contract address
      */
     function initialize(
         address _entryPoint,
@@ -97,7 +170,12 @@ contract OmniCoinAccount is
     }
 
     /**
-     * @dev Validates a user operation
+     * @notice Validate a user operation for ERC-4337 compliance
+     * @dev Called by the entry point to validate user operations
+     * @param userOp User operation to validate
+     * @param userOpHash Hash of the user operation
+     * @param missingAccountFunds Funds needed for the operation
+     * @return validationData Validation result (0 for success)
      */
     function validateUserOp(
         UserOperation calldata userOp,
@@ -115,7 +193,7 @@ contract OmniCoinAccount is
 
         // Validate nonce
         if (nonces[userOp.sender] != userOp.nonce) revert InvalidNonce();
-        nonces[userOp.sender]++;
+        ++nonces[userOp.sender];
 
         // Handle account deployment
         if (!isDeployed[userOp.sender] && userOp.initCode.length > 0) {

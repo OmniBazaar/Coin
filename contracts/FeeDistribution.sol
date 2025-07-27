@@ -7,11 +7,13 @@ import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
-import {MpcCore, gtUint64, ctUint64} from "../coti-contracts/contracts/utils/mpc/MpcCore.sol";
+import {MpcCore, gtBool, gtUint64, ctBool, ctUint64} from "../coti-contracts/contracts/utils/mpc/MpcCore.sol";
 
 /**
  * @title FeeDistribution
- * @dev Automated fee distribution system for unified validators
+ * @author OmniCoin Development Team
+ * @notice Automated fee distribution system for unified validators
+ * @dev Implements a transparent fee distribution mechanism with privacy options
  *
  * Distribution model:
  * - 70% to validators (based on participation scores)
@@ -94,29 +96,38 @@ contract FeeDistribution is ReentrancyGuard, Pausable, AccessControl {
     }
 
     struct ValidatorInfo {
-        address validatorAddress;
-        uint256 participationScore;
-        uint256 totalEarned;
-        uint256 pendingRewards;
-        bool isActive;
-        uint256 lastUpdateTime;
-        ctUint64 privateRewardBalance; // For privacy mode
-        uint256 totalRewardsClaimed;
-        uint256 lastClaimTime;
-        ctUint64 privateTotalRewards;
-        ctUint64 privateStakeAmount;
+        address validatorAddress;     // 20 bytes
+        bool isActive;                // 1 byte
+        ctUint64 privateRewardBalance; // 32 bytes (packed)
+        ctUint64 privateTotalRewards;  // 32 bytes
+        ctUint64 privateStakeAmount;   // 32 bytes
+        uint256 participationScore;    // 32 bytes
+        uint256 totalEarned;          // 32 bytes
+        uint256 pendingRewards;       // 32 bytes
+        uint256 lastUpdateTime;       // 32 bytes
+        uint256 totalRewardsClaimed;  // 32 bytes
+        uint256 lastClaimTime;        // 32 bytes
         mapping(address => uint256) tokenBalances;
     }
 
-    // Constants
+    // =============================================================================
+    // CONSTANTS & ROLES
+    // =============================================================================
+    
+    /// @notice Basis points for percentage calculations (100% = 10000)
     uint256 public constant BASIS_POINTS = 10000;
     
-    // Roles
+    /// @notice Role for fee collectors
     bytes32 public constant COLLECTOR_ROLE = keccak256("COLLECTOR_ROLE");
+    /// @notice Role for distribution managers
     bytes32 public constant DISTRIBUTOR_ROLE = keccak256("DISTRIBUTOR_ROLE");
+    /// @notice Role for treasury management
     bytes32 public constant TREASURY_ROLE = keccak256("TREASURY_ROLE");
 
-    // Custom Errors
+    // =============================================================================
+    // CUSTOM ERRORS
+    // =============================================================================
+    
     error InvalidAddress();
     error InvalidAmount();
     error InvalidDistribution();
@@ -128,7 +139,18 @@ contract FeeDistribution is ReentrancyGuard, Pausable, AccessControl {
     error NoFundsToWithdraw();
     error InvalidFeeConfiguration();
 
-    // Events
+    // =============================================================================
+    // EVENTS
+    // =============================================================================
+    
+    /**
+     * @notice Emitted when fees are collected
+     * @param source Address that collected the fees
+     * @param token Token address of collected fees
+     * @param amount Amount collected
+     * @param feeSource Source category of the fees
+     * @param timestamp Time of collection
+     */
     event FeesCollected(
         address indexed source,
         address indexed token,
@@ -137,46 +159,92 @@ contract FeeDistribution is ReentrancyGuard, Pausable, AccessControl {
         uint256 timestamp
     );
 
+    /**
+     * @notice Emitted when fees are distributed
+     * @param distributionId Unique distribution identifier
+     * @param totalAmount Total amount distributed
+     * @param validatorShare Amount allocated to validators
+     * @param companyShare Amount allocated to company
+     * @param developmentShare Amount allocated to development
+     * @param timestamp Time of distribution
+     */
     event FeesDistributed(
         uint256 indexed distributionId,
-        uint256 totalAmount,
-        uint256 validatorShare,
+        uint256 indexed totalAmount,
+        uint256 indexed validatorShare,
         uint256 companyShare,
         uint256 developmentShare,
         uint256 timestamp
     );
 
+    /**
+     * @notice Emitted when validator claims rewards
+     * @param validator Address of the validator
+     * @param token Token address of the reward
+     * @param amount Amount claimed
+     * @param distributionId Associated distribution ID
+     */
     event ValidatorRewardClaimed(
         address indexed validator,
         address indexed token,
-        uint256 amount,
+        uint256 indexed amount,
         uint256 distributionId
     );
 
+    /**
+     * @notice Emitted when company withdraws fees
+     * @param token Token address withdrawn
+     * @param amount Amount withdrawn
+     * @param recipient Recipient address
+     */
     event CompanyFeesWithdrawn(
         address indexed token,
-        uint256 amount,
+        uint256 indexed amount,
         address indexed recipient
     );
 
+    /**
+     * @notice Emitted when development fund withdraws fees
+     * @param token Token address withdrawn
+     * @param amount Amount withdrawn
+     * @param recipient Recipient address
+     */
     event DevelopmentFeesWithdrawn(
         address indexed token,
-        uint256 amount,
+        uint256 indexed amount,
         address indexed recipient
     );
 
+    /**
+     * @notice Emitted when distribution ratios are updated
+     * @param validatorShare New validator share percentage
+     * @param companyShare New company share percentage
+     * @param developmentShare New development share percentage
+     */
     event DistributionRatiosUpdated(
         uint256 validatorShare,
         uint256 companyShare,
         uint256 developmentShare
     );
 
+    /**
+     * @notice Emitted when private rewards are distributed
+     * @param validator Address of the validator
+     * @param encryptedAmountHash Hash of encrypted amount
+     * @param distributionId Associated distribution ID
+     */
     event PrivateValidatorRewardDistributed(
         address indexed validator,
         bytes32 encryptedAmountHash,
         uint256 distributionId
     );
 
+    /**
+     * @notice Emitted when private rewards are claimed
+     * @param validator Address of the validator
+     * @param encryptedAmountHash Hash of encrypted amount
+     * @param token Token address of the reward
+     */
     event PrivateRewardsClaimed(
         address indexed validator,
         bytes32 encryptedAmountHash,
@@ -184,41 +252,80 @@ contract FeeDistribution is ReentrancyGuard, Pausable, AccessControl {
     );
 
 
-    // State variables
-    IERC20 public immutable FEE_TOKEN; // Primary fee token (XOM)
+    // =============================================================================
+    // STATE VARIABLES
+    // =============================================================================
+    
+    /// @notice Primary fee token (XOM)
+    IERC20 public immutable FEE_TOKEN;
+    
+    /// @notice Distribution ratio configuration
     DistributionRatio public distributionRatio;
+    
+    /// @notice Treasury addresses for fee recipients
     TreasuryAddresses public treasuryAddresses;
     
-    // MPC availability flag (true on COTI testnet/mainnet, false in Hardhat)
+    /// @notice MPC availability flag (true on COTI testnet/mainnet, false in Hardhat)
     bool public isMpcAvailable;
 
+    /// @notice Validator information mapping
     mapping(address => ValidatorInfo) public validators;
-    mapping(uint256 => Distribution) public distributions;
-    mapping(address => mapping(address => uint256))
-        public validatorPendingRewards; // validator -> token -> amount
-    mapping(address => uint256) public companyPendingWithdrawals; // token -> amount
-    mapping(address => uint256) public developmentPendingWithdrawals; // token -> amount
     
-    // Privacy-enabled mappings using COTI V2 MPC
-    // validator -> token -> encrypted amount
+    /// @notice Distribution records by ID
+    mapping(uint256 => Distribution) public distributions;
+    
+    /// @notice Pending rewards per validator per token
+    mapping(address => mapping(address => uint256))
+        public validatorPendingRewards;
+    
+    /// @notice Company pending withdrawals by token
+    mapping(address => uint256) public companyPendingWithdrawals;
+    
+    /// @notice Development fund pending withdrawals by token
+    mapping(address => uint256) public developmentPendingWithdrawals;
+    
+    /// @notice Privacy-enabled validator rewards (validator -> token -> encrypted amount)
     mapping(address => mapping(address => ctUint64)) private validatorPrivateRewards;
-    mapping(address => ctUint64) private validatorPrivateEarnings; // validator -> total encrypted earnings
+    
+    /// @notice Privacy-enabled validator earnings (validator -> total encrypted earnings)
+    mapping(address => ctUint64) private validatorPrivateEarnings;
 
+    /// @notice Array of all fee collections
     FeeCollection[] public feeCollections;
+    
+    /// @notice Total fees by source type
     mapping(FeeSource => uint256) public feeSourceTotals;
-    mapping(address => uint256) public tokenTotals; // token -> total collected
+    
+    /// @notice Total fees collected by token
+    mapping(address => uint256) public tokenTotals;
 
+    /// @notice Current distribution ID counter
     uint256 public currentDistributionId;
-    uint256 public distributionInterval = 6 hours; // Default distribution every 6 hours
+    
+    /// @notice Time interval between distributions (default 6 hours)
+    uint256 public distributionInterval = 6 hours;
+    
+    /// @notice Timestamp of last distribution
     uint256 public lastDistributionTime;
-    uint256 public minimumDistributionAmount = 1000 * 10 ** 18; // 1000 XOM minimum
+    
+    /// @notice Minimum amount required for distribution (default 1000 XOM)
+    uint256 public minimumDistributionAmount = 1000 * 10 ** 18;
 
+    /// @notice Comprehensive revenue metrics
     RevenueMetrics public revenueMetrics;
 
-    // Fee source configurations
+    /// @notice Enabled fee sources configuration
     mapping(FeeSource => bool) public enabledFeeSources;
-    mapping(FeeSource => uint256) public feeSourceWeights; // For weighted distribution
+    
+    /// @notice Weighted distribution for fee sources
+    mapping(FeeSource => uint256) public feeSourceWeights;
 
+    /**
+     * @notice Initialize the fee distribution contract
+     * @param feeToken_ Address of the primary fee token (XOM)
+     * @param companyTreasury_ Address to receive company fees
+     * @param developmentFund_ Address to receive development fees
+     */
     constructor(
         address feeToken_,
         address companyTreasury_,
@@ -249,21 +356,25 @@ contract FeeDistribution is ReentrancyGuard, Pausable, AccessControl {
         _grantRole(DISTRIBUTOR_ROLE, msg.sender);
         _grantRole(TREASURY_ROLE, msg.sender);
 
-        lastDistributionTime = block.timestamp;
+        lastDistributionTime = block.timestamp; // Time tracking required for periodic distributions
         
         // MPC availability will be set by admin after deployment
         isMpcAvailable = false; // Default to false (Hardhat/testing mode)
     }
 
     /**
-     * @dev Set MPC availability (admin only, called when deploying to COTI testnet/mainnet)
+     * @notice Set MPC availability for privacy features
+     * @dev Admin only, called when deploying to COTI testnet/mainnet
+     * @param _available Whether MPC is available
      */
     function setMpcAvailability(bool _available) external onlyRole(DEFAULT_ADMIN_ROLE) {
         isMpcAvailable = _available;
     }
 
     /**
-     * @dev Initialize validator for private rewards (called when validator is first registered)
+     * @notice Initialize validator for private rewards
+     * @dev Called when validator is first registered
+     * @param validator Address of the validator to initialize
      */
     function initializeValidatorPrivateRewards(address validator) external onlyRole(DISTRIBUTOR_ROLE) {
         if (validator == address(0)) revert InvalidAddress();
@@ -284,7 +395,11 @@ contract FeeDistribution is ReentrancyGuard, Pausable, AccessControl {
     }
 
     /**
-     * @dev Collect fees from various sources
+     * @notice Collect fees from various sources
+     * @dev Transfers fees to the contract and records the collection
+     * @param token Address of the token being collected
+     * @param amount Amount of fees to collect
+     * @param source Source category of the fees
      */
     function collectFees(
         address token,
@@ -546,8 +661,9 @@ contract FeeDistribution is ReentrancyGuard, Pausable, AccessControl {
             // MPC not available - store distribution info without privacy features
             newDistribution.validatorDistributions[validator] = ValidatorDistribution({
                 amount: validatorReward,
-                participationScore: score,
                 claimed: false,
+                claimTime: 0,
+                participationScore: score,
                 privateAmount: ctUint64.wrap(0),
                 privateClaimed: ctBool.wrap(0)
             });
@@ -575,8 +691,9 @@ contract FeeDistribution is ReentrancyGuard, Pausable, AccessControl {
         // Store distribution info
         newDistribution.validatorDistributions[validator] = ValidatorDistribution({
             amount: validatorReward,
-            participationScore: score,
             claimed: false,
+            claimTime: 0,
+            participationScore: score,
             privateAmount: encryptedReward,
             privateClaimed: notClaimed
         });
@@ -638,11 +755,11 @@ contract FeeDistribution is ReentrancyGuard, Pausable, AccessControl {
         revenueMetrics.totalValidatorRewards += validatorShareAmount;
         revenueMetrics.totalCompanyRevenue += companyShareAmount;
         revenueMetrics.totalDevelopmentFunding += developmentShareAmount;
-        revenueMetrics.distributionCount++;
-        revenueMetrics.lastDistributionTime = block.timestamp;
+        ++revenueMetrics.distributionCount;
+        revenueMetrics.lastDistributionTime = block.timestamp; // Time tracking required for revenue metrics
         
         newDistribution.completed = true;
-        lastDistributionTime = block.timestamp;
+        lastDistributionTime = block.timestamp; // Time tracking required for periodic distributions
         
         emit FeesDistributed(
             currentDistributionId,
@@ -871,8 +988,27 @@ contract FeeDistribution is ReentrancyGuard, Pausable, AccessControl {
     // View functions
     function getValidatorInfo(
         address validator
-    ) external view returns (ValidatorInfo memory) {
-        return validators[validator];
+    ) external view returns (
+        address validatorAddress,
+        bool isActive,
+        uint256 participationScore,
+        uint256 totalEarned,
+        uint256 pendingRewards,
+        uint256 lastUpdateTime,
+        uint256 totalRewardsClaimed,
+        uint256 lastClaimTime
+    ) {
+        ValidatorInfo storage info = validators[validator];
+        return (
+            info.validatorAddress,
+            info.isActive,
+            info.participationScore,
+            info.totalEarned,
+            info.pendingRewards,
+            info.lastUpdateTime,
+            info.totalRewardsClaimed,
+            info.lastClaimTime
+        );
     }
 
     function getDistribution(
@@ -999,7 +1135,7 @@ contract FeeDistribution is ReentrancyGuard, Pausable, AccessControl {
 
         return
             totalAmount >= minimumDistributionAmount &&
-            block.timestamp >= lastDistributionTime + distributionInterval;
+            block.timestamp >= lastDistributionTime + distributionInterval; // Time check required for distribution intervals
     }
 
     function getNextDistributionTime() external view returns (uint256) {

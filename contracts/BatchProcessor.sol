@@ -42,6 +42,10 @@ contract BatchProcessor is RegistryAware, AccessControl, Pausable, ReentrancyGua
         PARTIALLY_COMPLETED
     }
     
+    /**
+     * @notice Struct for batch operations with gas-optimized packing
+     * @dev First slot packs address (20 bytes) + enum (1) + 3 bools (3) = 24 bytes
+     */
     struct BatchOperation {
         address target;         // 20 bytes
         OperationType opType;   // 1 byte
@@ -167,8 +171,10 @@ contract BatchProcessor is RegistryAware, AccessControl, Pausable, ReentrancyGua
     // =============================================================================
     
     /**
-     * @dev Create a new batch of operations
+     * @notice Create a new batch of operations
+     * @dev Collects privacy fee if any operations use privacy
      * @param operations Array of operations to execute
+     * @return batchId The ID of the created batch
      */
     function createBatch(
         BatchOperation[] calldata operations
@@ -406,7 +412,7 @@ contract BatchProcessor is RegistryAware, AccessControl, Pausable, ReentrancyGua
             
             if (success) {
                 ++batch.successCount;
-                batch.failureCount--;
+                --batch.failureCount;
             }
             
             emit OperationExecuted(batchId, index, success, result);
@@ -473,8 +479,15 @@ contract BatchProcessor is RegistryAware, AccessControl, Pausable, ReentrancyGua
     // =============================================================================
     
     /**
-     * @dev Get batch details
+     * @notice Get batch details
      * @param batchId The batch ID
+     * @return submitter Address that created the batch
+     * @return status Current status of the batch
+     * @return timestamp When the batch was created
+     * @return operationCount Number of operations in the batch
+     * @return successCount Number of successful operations
+     * @return failureCount Number of failed operations
+     * @return approvalCount Number of validator approvals
      */
     function getBatchDetails(uint256 batchId) external view returns (
         address submitter,

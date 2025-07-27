@@ -228,8 +228,8 @@ contract OmniCoinValidator is Ownable, ReentrancyGuard {
         external
         view
         returns (
-            address validator,
-            uint256 stake,
+            address validatorAddress,
+            uint256 stakeAmount,
             uint256 reputation,
             uint256 lastRewardTime,
             uint256 accumulatedRewards,
@@ -251,10 +251,10 @@ contract OmniCoinValidator is Ownable, ReentrancyGuard {
         external
         view
         returns (
-            address[] memory validators,
+            address[] memory validatorList,
             uint256 totalStake,
-            uint256 minStake,
-            uint256 maxValidators
+            uint256 minimumStake,
+            uint256 maximumValidators
         )
     {
         return (

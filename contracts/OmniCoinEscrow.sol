@@ -11,7 +11,9 @@ import {PrivacyFeeManager} from "./PrivacyFeeManager.sol";
 
 /**
  * @title OmniCoinEscrow
- * @dev Privacy-enabled escrow contract with Registry pattern integration
+ * @author OmniCoin Development Team
+ * @notice Privacy-enabled escrow contract with Registry pattern integration
+ * @dev Provides secure escrow services with privacy features and dispute resolution
  * 
  * Updates:
  * - Extends RegistryAware for dynamic contract resolution
@@ -22,30 +24,22 @@ import {PrivacyFeeManager} from "./PrivacyFeeManager.sol";
 contract OmniCoinEscrow is RegistryAware, AccessControl, ReentrancyGuard, Pausable {
     
     // =============================================================================
-    // CONSTANTS & ROLES
-    // =============================================================================
-    
-    bytes32 public constant ADMIN_ROLE = keccak256("ADMIN_ROLE");
-    bytes32 public constant ARBITRATOR_ROLE = keccak256("ARBITRATOR_ROLE");
-    bytes32 public constant FEE_MANAGER_ROLE = keccak256("FEE_MANAGER_ROLE");
-    
-    // =============================================================================
     // STRUCTS
     // =============================================================================
     
     struct PrivateEscrow {
         uint256 id;
+        uint256 releaseTime;
         address seller;
         address buyer;
         address arbitrator;
-        gtUint64 encryptedAmount;        // Private: actual escrow amount
-        ctUint64 sellerEncryptedAmount;  // Private: amount encrypted for seller
-        ctUint64 buyerEncryptedAmount;   // Private: amount encrypted for buyer
-        uint256 releaseTime;
         bool released;
         bool disputed;
         bool refunded;
+        gtUint64 encryptedAmount;        // Private: actual escrow amount
         gtUint64 encryptedFee;           // Private: escrow fee
+        ctUint64 sellerEncryptedAmount;  // Private: amount encrypted for seller
+        ctUint64 buyerEncryptedAmount;   // Private: amount encrypted for buyer
     }
     
     struct PrivateDispute {
@@ -60,30 +54,126 @@ contract OmniCoinEscrow is RegistryAware, AccessControl, ReentrancyGuard, Pausab
     }
     
     // =============================================================================
+    // CONSTANTS & ROLES
+    // =============================================================================
+    
+    /// @notice Admin role for contract management
+    bytes32 public constant ADMIN_ROLE = keccak256("ADMIN_ROLE");
+    /// @notice Arbitrator role for dispute resolution
+    bytes32 public constant ARBITRATOR_ROLE = keccak256("ARBITRATOR_ROLE");
+    /// @notice Fee manager role for fee distribution
+    bytes32 public constant FEE_MANAGER_ROLE = keccak256("FEE_MANAGER_ROLE");
+    
+    /// @notice Fee configuration (basis points)
+    uint256 public constant FEE_RATE = 50; // 0.5%
+    /// @notice Basis points denominator
+    uint256 public constant BASIS_POINTS = 10000;
+    
+    /// @notice Privacy fee multiplier
+    uint256 public constant PRIVACY_MULTIPLIER = 10; // 10x fee for privacy
+    
+    // =============================================================================
     // STATE VARIABLES
     // =============================================================================
     
-    /// @dev Escrow mappings
+    /// @notice Mapping of escrow IDs to escrow details
     mapping(uint256 => PrivateEscrow) public escrows;
+    /// @notice Mapping of dispute IDs to dispute details
     mapping(uint256 => PrivateDispute) public disputes;
+    /// @notice Mapping of user addresses to their escrow IDs
     mapping(address => uint256[]) public userEscrows;
     
-    /// @dev Counters and limits
+    /// @notice Total number of escrows created
     uint256 public escrowCount;
+    /// @notice Total number of disputes created
     uint256 public disputeCount;
-    gtUint64 public minEscrowAmount;      // Private minimum
+    /// @notice Minimum escrow amount (encrypted)
+    gtUint64 public minEscrowAmount;
+    /// @notice Maximum escrow duration in seconds
     uint256 public maxEscrowDuration;
-    gtUint64 public arbitrationFee;       // Private fee
+    /// @notice Arbitration fee amount (encrypted)
+    gtUint64 public arbitrationFee;
     
-    /// @dev Fee configuration (basis points)
-    uint256 public constant FEE_RATE = 50; // 0.5%
-    uint256 public constant BASIS_POINTS = 10000;
-    
-    /// @dev Privacy fee configuration
-    uint256 public constant PRIVACY_MULTIPLIER = 10; // 10x fee for privacy
-    
-    /// @dev MPC availability flag (true on COTI testnet/mainnet, false in Hardhat)
+    /// @notice MPC availability flag (true on COTI testnet/mainnet, false in Hardhat)
     bool public isMpcAvailable;
+    
+    // =============================================================================
+    // EVENTS
+    // =============================================================================
+    
+    /**
+     * @notice Emitted when a new escrow is created
+     * @param escrowId Unique identifier for the escrow
+     * @param seller Address of the seller
+     * @param buyer Address of the buyer
+     * @param arbitrator Address of the arbitrator
+     * @param releaseTime Time when funds can be released
+     */
+    event EscrowCreated(
+        uint256 indexed escrowId,
+        address indexed seller,
+        address indexed buyer,
+        address arbitrator,
+        uint256 releaseTime
+    );
+    
+    /**
+     * @notice Emitted when escrow funds are released to seller
+     * @param escrowId Unique identifier for the escrow
+     * @param timestamp Time of release
+     */
+    event EscrowReleased(uint256 indexed escrowId, uint256 indexed timestamp);
+    
+    /**
+     * @notice Emitted when escrow funds are refunded to buyer
+     * @param escrowId Unique identifier for the escrow
+     * @param timestamp Time of refund
+     */
+    event EscrowRefunded(uint256 indexed escrowId, uint256 indexed timestamp);
+    
+    /**
+     * @notice Emitted when a dispute is created for an escrow
+     * @param escrowId Unique identifier for the escrow
+     * @param disputeId Unique identifier for the dispute
+     * @param reporter Address that created the dispute
+     * @param reason Reason for the dispute
+     */
+    event DisputeCreated(
+        uint256 indexed escrowId,
+        uint256 indexed disputeId,
+        address indexed reporter,
+        string reason
+    );
+    
+    /**
+     * @notice Emitted when a dispute is resolved
+     * @param escrowId Unique identifier for the escrow
+     * @param disputeId Unique identifier for the dispute
+     * @param resolver Address that resolved the dispute
+     * @param timestamp Time of resolution
+     */
+    event DisputeResolved(
+        uint256 indexed escrowId,
+        uint256 indexed disputeId,
+        address indexed resolver,
+        uint256 timestamp
+    );
+    
+    /**
+     * @notice Emitted when minimum escrow amount is updated
+     */
+    event MinEscrowAmountUpdated();
+    
+    /**
+     * @notice Emitted when maximum escrow duration is updated
+     * @param newDuration New maximum duration in seconds
+     */
+    event MaxEscrowDurationUpdated(uint256 indexed newDuration);
+    
+    /**
+     * @notice Emitted when arbitration fee is updated
+     */
+    event ArbitrationFeeUpdated();
     
     // =============================================================================
     // CUSTOM ERRORS
@@ -106,35 +196,6 @@ contract OmniCoinEscrow is RegistryAware, AccessControl, ReentrancyGuard, Pausab
     error TransferFailed();
     
     // =============================================================================
-    // EVENTS
-    // =============================================================================
-    
-    event EscrowCreated(
-        uint256 indexed escrowId,
-        address indexed seller,
-        address indexed buyer,
-        address arbitrator,
-        uint256 releaseTime
-    );
-    event EscrowReleased(uint256 indexed escrowId, uint256 timestamp);
-    event EscrowRefunded(uint256 indexed escrowId, uint256 timestamp);
-    event DisputeCreated(
-        uint256 indexed escrowId,
-        uint256 indexed disputeId,
-        address indexed reporter,
-        string reason
-    );
-    event DisputeResolved(
-        uint256 indexed escrowId,
-        uint256 indexed disputeId,
-        address indexed resolver,
-        uint256 timestamp
-    );
-    event MinEscrowAmountUpdated();
-    event MaxEscrowDurationUpdated(uint256 newDuration);
-    event ArbitrationFeeUpdated();
-    
-    // =============================================================================
     // MODIFIERS
     // =============================================================================
     
@@ -155,6 +216,11 @@ contract OmniCoinEscrow is RegistryAware, AccessControl, ReentrancyGuard, Pausab
     // CONSTRUCTOR
     // =============================================================================
     
+    /**
+     * @notice Initialize the OmniCoinEscrow contract
+     * @param _registry Address of the OmniCoinRegistry contract
+     * @param _admin Admin address for initial setup
+     */
     constructor(
         address _registry,
         address _admin
@@ -183,39 +249,47 @@ contract OmniCoinEscrow is RegistryAware, AccessControl, ReentrancyGuard, Pausab
     }
     
     // =============================================================================
+    // MPC AVAILABILITY MANAGEMENT
+    // =============================================================================
+    
+    /**
+     * @notice Set MPC availability (admin only, called when deploying to COTI testnet/mainnet)
+     * @dev Enables privacy features when on COTI network
+     * @param _available Whether MPC is available
+     */
+    function setMpcAvailability(bool _available) external onlyRole(ADMIN_ROLE) {
+        isMpcAvailable = _available;
+    }
+    
+    // =============================================================================
     // REGISTRY INTEGRATION HELPERS
     // =============================================================================
     
     /**
-     * @dev Get OmniCoin contract from registry
+     * @notice Get OmniCoin contract from registry
+     * @dev Returns the OmniCoinCore contract instance
+     * @return OmniCoinCore The OmniCoinCore contract instance
      */
     function getOmniCoinCore() public returns (OmniCoinCore) {
         return OmniCoinCore(_getContract(registry.OMNICOIN_CORE()));
     }
     
     /**
-     * @dev Get PrivacyFeeManager from registry
+     * @notice Get PrivacyFeeManager from registry
+     * @dev Returns the PrivacyFeeManager contract address
+     * @return feeManager PrivacyFeeManager address
      */
-    function getPrivacyFeeManager() public returns (address) {
+    function getPrivacyFeeManager() public returns (address feeManager) {
         return _getContract(registry.FEE_MANAGER());
     }
     
     /**
-     * @dev Get Treasury from registry
+     * @notice Get Treasury from registry
+     * @dev Returns the treasury address for fee distribution
+     * @return treasury Treasury address
      */
-    function getTreasury() public returns (address) {
+    function getTreasury() public returns (address treasury) {
         return _getContract(registry.TREASURY());
-    }
-    
-    // =============================================================================
-    // MPC AVAILABILITY MANAGEMENT
-    // =============================================================================
-    
-    /**
-     * @dev Set MPC availability (admin only, called when deploying to COTI testnet/mainnet)
-     */
-    function setMpcAvailability(bool _available) external onlyRole(ADMIN_ROLE) {
-        isMpcAvailable = _available;
     }
     
     // =============================================================================
@@ -223,11 +297,13 @@ contract OmniCoinEscrow is RegistryAware, AccessControl, ReentrancyGuard, Pausab
     // =============================================================================
     
     /**
-     * @dev Create standard public escrow (default, no privacy fees)
+     * @notice Create standard public escrow (default, no privacy fees)
+     * @dev Creates an escrow with public amounts, charges standard fee
      * @param _buyer Buyer address
      * @param _arbitrator Arbitrator address
      * @param _amount Escrow amount
      * @param _duration Escrow duration in seconds
+     * @return escrowId Unique identifier for the created escrow
      */
     function createEscrow(
         address _buyer,
@@ -238,7 +314,17 @@ contract OmniCoinEscrow is RegistryAware, AccessControl, ReentrancyGuard, Pausab
         if (_buyer == address(0)) revert InvalidAddress();
         if (_arbitrator == address(0)) revert InvalidAddress();
         if (_duration > maxEscrowDuration) revert InvalidDuration();
-        if (_amount < uint64(gtUint64.unwrap(minEscrowAmount))) revert InvalidAmount();
+        // Check minimum amount
+        if (isMpcAvailable) {
+            // Use gt or eq since gte doesn't exist
+            gtUint64 gtAmount = MpcCore.setPublic64(uint64(_amount));
+            gtBool isGreater = MpcCore.gt(gtAmount, minEscrowAmount);
+            gtBool isEqual = MpcCore.eq(gtAmount, minEscrowAmount);
+            gtBool isEnough = MpcCore.or(isGreater, isEqual);
+            if (!MpcCore.decrypt(isEnough)) revert InvalidAmount();
+        } else {
+            if (_amount < uint64(gtUint64.unwrap(minEscrowAmount))) revert InvalidAmount();
+        }
         
         uint256 escrowId = escrowCount;
         ++escrowCount;
@@ -248,8 +334,8 @@ contract OmniCoinEscrow is RegistryAware, AccessControl, ReentrancyGuard, Pausab
         uint256 totalAmount = _amount + feeAmount;
         
         // Transfer tokens to escrow (standard transfer)
-        OmniCoinCore token = getOmniCoinCore();
-        bool transferResult = token.transferFromPublic(msg.sender, address(this), totalAmount);
+        OmniCoinCore omniToken = getOmniCoinCore();
+        bool transferResult = omniToken.transferFromPublic(msg.sender, address(this), totalAmount);
         if (!transferResult) revert TransferFailed();
         
         // Create escrow with public amounts wrapped as encrypted
@@ -280,12 +366,14 @@ contract OmniCoinEscrow is RegistryAware, AccessControl, ReentrancyGuard, Pausab
     }
     
     /**
-     * @dev Create escrow with privacy (premium feature)
+     * @notice Create escrow with privacy (premium feature)
+     * @dev Creates an escrow with encrypted amounts, charges privacy fee
      * @param _buyer Buyer address
      * @param _arbitrator Arbitrator address
      * @param amount Encrypted amount
      * @param _duration Escrow duration in seconds
      * @param usePrivacy Whether to use privacy features
+     * @return escrowId Unique identifier for the created escrow
      */
     function createEscrowWithPrivacy(
         address _buyer,
@@ -295,8 +383,8 @@ contract OmniCoinEscrow is RegistryAware, AccessControl, ReentrancyGuard, Pausab
         bool usePrivacy
     ) external whenNotPaused nonReentrant returns (uint256) {
         if (!usePrivacy || !isMpcAvailable) revert MpcNotAvailable();
-        address privacyFeeManager = getPrivacyFeeManager();
-        if (privacyFeeManager == address(0)) revert InvalidAddress();
+        address feeManager = getPrivacyFeeManager();
+        if (feeManager == address(0)) revert InvalidAddress();
         if (_buyer == address(0)) revert InvalidAddress();
         if (_arbitrator == address(0)) revert InvalidAddress();
         if (_duration > maxEscrowDuration) revert InvalidDuration();
@@ -304,7 +392,9 @@ contract OmniCoinEscrow is RegistryAware, AccessControl, ReentrancyGuard, Pausab
         gtUint64 gtAmount = MpcCore.validateCiphertext(amount);
         
         // Check minimum amount
-        gtBool isEnough = MpcCore.ge(gtAmount, minEscrowAmount);
+        gtBool isGreater = MpcCore.gt(gtAmount, minEscrowAmount);
+        gtBool isEqual = MpcCore.eq(gtAmount, minEscrowAmount);
+        gtBool isEnough = MpcCore.or(isGreater, isEqual);
         if (!MpcCore.decrypt(isEnough)) revert InvalidAmount();
         
         uint256 escrowId = escrowCount;
@@ -316,7 +406,7 @@ contract OmniCoinEscrow is RegistryAware, AccessControl, ReentrancyGuard, Pausab
         // Collect privacy fee (10x normal fee)
         uint256 normalFee = uint64(gtUint64.unwrap(fee));
         uint256 privacyFee = normalFee * PRIVACY_MULTIPLIER;
-        PrivacyFeeManager(privacyFeeManager).collectPrivacyFee(
+        PrivacyFeeManager(feeManager).collectPrivacyFee(
             msg.sender,
             keccak256("ESCROW_CREATE"),
             privacyFee
@@ -345,9 +435,9 @@ contract OmniCoinEscrow is RegistryAware, AccessControl, ReentrancyGuard, Pausab
         userEscrows[_buyer].push(escrowId);
         
         // Transfer tokens to escrow (including fee)
-        OmniCoinCore token = getOmniCoinCore();
+        OmniCoinCore omniToken = getOmniCoinCore();
         gtUint64 totalAmount = MpcCore.add(gtAmount, fee);
-        gtBool transferResult = token.transferFrom(msg.sender, address(this), totalAmount);
+        gtBool transferResult = omniToken.transferFrom(msg.sender, address(this), totalAmount);
         if (!MpcCore.decrypt(transferResult)) revert TransferFailed();
         
         emit EscrowCreated(escrowId, msg.sender, _buyer, _arbitrator, block.timestamp + _duration);
@@ -360,7 +450,8 @@ contract OmniCoinEscrow is RegistryAware, AccessControl, ReentrancyGuard, Pausab
     // =============================================================================
     
     /**
-     * @dev Release funds to buyer (seller action)
+     * @notice Release funds to buyer (seller action)
+     * @dev Transfers escrowed funds to buyer after seller confirms receipt
      * @param escrowId Escrow ID
      */
     function releaseEscrow(uint256 escrowId) 
@@ -376,9 +467,9 @@ contract OmniCoinEscrow is RegistryAware, AccessControl, ReentrancyGuard, Pausab
         escrow.released = true;
         
         // Transfer to buyer (minus fee)
-        OmniCoinCore token = getOmniCoinCore();
+        OmniCoinCore omniToken = getOmniCoinCore();
         if (isMpcAvailable) {
-            gtBool transferResult = token.transferGarbled(escrow.buyer, escrow.encryptedAmount);
+            gtBool transferResult = omniToken.transferGarbled(escrow.buyer, escrow.encryptedAmount);
             if (!MpcCore.decrypt(transferResult)) revert TransferFailed();
         } else {
             // Fallback - assume transfer succeeds in test mode
@@ -391,7 +482,8 @@ contract OmniCoinEscrow is RegistryAware, AccessControl, ReentrancyGuard, Pausab
     }
     
     /**
-     * @dev Request refund (buyer action after release time)
+     * @notice Request refund (buyer action after release time)
+     * @dev Allows buyer to reclaim funds if seller doesn't deliver
      * @param escrowId Escrow ID
      */
     function requestRefund(uint256 escrowId) 
@@ -408,9 +500,9 @@ contract OmniCoinEscrow is RegistryAware, AccessControl, ReentrancyGuard, Pausab
         escrow.refunded = true;
         
         // Refund to seller (minus fee)
-        OmniCoinCore token = getOmniCoinCore();
+        OmniCoinCore omniToken = getOmniCoinCore();
         if (isMpcAvailable) {
-            gtBool transferResult = token.transferGarbled(escrow.seller, escrow.encryptedAmount);
+            gtBool transferResult = omniToken.transferGarbled(escrow.seller, escrow.encryptedAmount);
             if (!MpcCore.decrypt(transferResult)) revert TransferFailed();
         } else {
             // Fallback - assume transfer succeeds in test mode
@@ -427,7 +519,8 @@ contract OmniCoinEscrow is RegistryAware, AccessControl, ReentrancyGuard, Pausab
     // =============================================================================
     
     /**
-     * @dev Create standard dispute for escrow (public)
+     * @notice Create standard dispute for escrow (public)
+     * @dev Creates a dispute that requires arbitrator intervention
      * @param escrowId Escrow ID
      * @param reason Dispute reason
      */
@@ -462,7 +555,8 @@ contract OmniCoinEscrow is RegistryAware, AccessControl, ReentrancyGuard, Pausab
     }
     
     /**
-     * @dev Create dispute with privacy (encrypted reason, premium fees)
+     * @notice Create dispute with privacy (encrypted reason, premium fees)
+     * @dev Creates a private dispute with encrypted reason
      * @param escrowId Escrow ID
      * @param reason Dispute reason (will be encrypted)
      * @param usePrivacy Whether to use privacy features
@@ -473,16 +567,16 @@ contract OmniCoinEscrow is RegistryAware, AccessControl, ReentrancyGuard, Pausab
         bool usePrivacy
     ) external whenNotPaused onlyEscrowParty(escrowId) escrowNotReleased(escrowId) {
         if (!usePrivacy || !isMpcAvailable) revert MpcNotAvailable();
-        address privacyFeeManager = getPrivacyFeeManager();
-        if (privacyFeeManager == address(0)) revert InvalidAddress();
+        address feeManager = getPrivacyFeeManager();
+        if (feeManager == address(0)) revert InvalidAddress();
         
         PrivateEscrow storage escrow = escrows[escrowId];
         if (escrow.disputed) revert EscrowDisputed();
         
         // Collect privacy fee for dispute creation
-        uint256 baseFee = uint64(gtUint64.unwrap(arbitrationFee));
+        uint256 baseFee = isMpcAvailable ? MpcCore.decrypt(arbitrationFee) : uint64(gtUint64.unwrap(arbitrationFee));
         uint256 privacyFee = baseFee * PRIVACY_MULTIPLIER;
-        PrivacyFeeManager(privacyFeeManager).collectPrivacyFee(
+        PrivacyFeeManager(feeManager).collectPrivacyFee(
             msg.sender,
             keccak256("ESCROW_DISPUTE"),
             privacyFee
@@ -513,7 +607,8 @@ contract OmniCoinEscrow is RegistryAware, AccessControl, ReentrancyGuard, Pausab
     }
     
     /**
-     * @dev Resolve dispute with public amounts (standard)
+     * @notice Resolve dispute with public amounts (standard)
+     * @dev Arbitrator resolves dispute by splitting escrow between parties
      * @param disputeId Dispute ID
      * @param buyerRefundAmount Amount to refund buyer
      * @param sellerPayoutAmount Amount to pay seller
@@ -539,14 +634,14 @@ contract OmniCoinEscrow is RegistryAware, AccessControl, ReentrancyGuard, Pausab
         escrow.released = true;
         
         // Transfer amounts
-        OmniCoinCore token = getOmniCoinCore();
+        OmniCoinCore omniToken = getOmniCoinCore();
         if (buyerRefundAmount > 0) {
-            bool buyerTransferResult = token.transferPublic(escrow.buyer, buyerRefundAmount);
+            bool buyerTransferResult = omniToken.transferPublic(escrow.buyer, buyerRefundAmount);
             if (!buyerTransferResult) revert TransferFailed();
         }
         
         if (sellerPayoutAmount > 0) {
-            bool sellerTransferResult = token.transferPublic(escrow.seller, sellerPayoutAmount);
+            bool sellerTransferResult = omniToken.transferPublic(escrow.seller, sellerPayoutAmount);
             if (!sellerTransferResult) revert TransferFailed();
         }
         
@@ -557,7 +652,8 @@ contract OmniCoinEscrow is RegistryAware, AccessControl, ReentrancyGuard, Pausab
     }
     
     /**
-     * @dev Resolve dispute with encrypted payout amounts (privacy)
+     * @notice Resolve dispute with encrypted payout amounts (privacy)
+     * @dev Arbitrator resolves dispute using encrypted amounts
      * @param disputeId Dispute ID
      * @param buyerRefund Encrypted amount to refund buyer
      * @param sellerPayout Encrypted amount to pay seller
@@ -570,8 +666,8 @@ contract OmniCoinEscrow is RegistryAware, AccessControl, ReentrancyGuard, Pausab
         bool usePrivacy
     ) external whenNotPaused nonReentrant onlyRole(ARBITRATOR_ROLE) {
         if (!usePrivacy || !isMpcAvailable) revert MpcNotAvailable();
-        address privacyFeeManager = getPrivacyFeeManager();
-        if (privacyFeeManager == address(0)) revert InvalidAddress();
+        address feeManager = getPrivacyFeeManager();
+        if (feeManager == address(0)) revert InvalidAddress();
         
         PrivateDispute storage dispute = disputes[disputeId];
         if (dispute.resolved) revert DisputeAlreadyResolved();
@@ -579,9 +675,9 @@ contract OmniCoinEscrow is RegistryAware, AccessControl, ReentrancyGuard, Pausab
         PrivateEscrow storage escrow = escrows[dispute.escrowId];
         
         // Collect privacy fee for dispute resolution
-        uint256 baseFee = uint64(gtUint64.unwrap(arbitrationFee));
+        uint256 baseFee = isMpcAvailable ? MpcCore.decrypt(arbitrationFee) : uint64(gtUint64.unwrap(arbitrationFee));
         uint256 privacyFee = baseFee * PRIVACY_MULTIPLIER;
-        PrivacyFeeManager(privacyFeeManager).collectPrivacyFee(
+        PrivacyFeeManager(feeManager).collectPrivacyFee(
             msg.sender,
             keccak256("DISPUTE_RESOLUTION"),
             privacyFee
@@ -616,20 +712,20 @@ contract OmniCoinEscrow is RegistryAware, AccessControl, ReentrancyGuard, Pausab
         escrow.released = true;
         
         // Transfer amounts
-        OmniCoinCore token = getOmniCoinCore();
+        OmniCoinCore omniToken = getOmniCoinCore();
         if (isMpcAvailable) {
             // Transfer to buyer
             gtBool buyerHasRefund = MpcCore.gt(gtBuyerRefund, MpcCore.setPublic64(0));
             if (MpcCore.decrypt(buyerHasRefund)) {
-                gtBool transferResult = token.transferGarbled(escrow.buyer, gtBuyerRefund);
-                require(MpcCore.decrypt(transferResult), "OmniCoinEscrow: Buyer transfer failed");
+                gtBool transferResult = omniToken.transferGarbled(escrow.buyer, gtBuyerRefund);
+                if (!MpcCore.decrypt(transferResult)) revert TransferFailed();
             }
             
             // Transfer to seller
             gtBool sellerHasPayout = MpcCore.gt(gtSellerPayout, MpcCore.setPublic64(0));
             if (MpcCore.decrypt(sellerHasPayout)) {
-                gtBool transferResult = token.transferGarbled(escrow.seller, gtSellerPayout);
-                require(MpcCore.decrypt(transferResult), "OmniCoinEscrow: Seller transfer failed");
+                gtBool transferResult = omniToken.transferGarbled(escrow.seller, gtSellerPayout);
+                if (!MpcCore.decrypt(transferResult)) revert TransferFailed();
             }
         } else {
             // Fallback - assume transfers succeed in test mode
@@ -646,7 +742,16 @@ contract OmniCoinEscrow is RegistryAware, AccessControl, ReentrancyGuard, Pausab
     // =============================================================================
     
     /**
-     * @dev Get escrow details (public parts only)
+     * @notice Get escrow details (public parts only)
+     * @dev Returns public escrow information
+     * @param escrowId ID of the escrow to query
+     * @return seller Address of the seller
+     * @return buyer Address of the buyer
+     * @return arbitrator Address of the arbitrator
+     * @return releaseTime Time when funds can be released
+     * @return released Whether escrow has been released
+     * @return disputed Whether escrow is disputed
+     * @return refunded Whether escrow has been refunded
      */
     function getEscrowDetails(uint256 escrowId) 
         external 
@@ -674,7 +779,10 @@ contract OmniCoinEscrow is RegistryAware, AccessControl, ReentrancyGuard, Pausab
     }
     
     /**
-     * @dev Get encrypted escrow amount for authorized party
+     * @notice Get encrypted escrow amount for authorized party
+     * @dev Returns encrypted amount visible only to escrow participants
+     * @param escrowId ID of the escrow to query
+     * @return ctUint64 Encrypted amount for the caller
      */
     function getEncryptedAmount(uint256 escrowId) 
         external 
@@ -695,7 +803,10 @@ contract OmniCoinEscrow is RegistryAware, AccessControl, ReentrancyGuard, Pausab
     }
     
     /**
-     * @dev Get user's escrow IDs
+     * @notice Get user's escrow IDs
+     * @dev Returns all escrow IDs where user is participant
+     * @param user Address to query
+     * @return uint256[] Array of escrow IDs
      */
     function getUserEscrows(address user) external view returns (uint256[] memory) {
         return userEscrows[user];
@@ -706,7 +817,9 @@ contract OmniCoinEscrow is RegistryAware, AccessControl, ReentrancyGuard, Pausab
     // =============================================================================
     
     /**
-     * @dev Update minimum escrow amount (encrypted)
+     * @notice Update minimum escrow amount (encrypted)
+     * @dev Admin function to set minimum escrow threshold
+     * @param newAmount New minimum amount (encrypted)
      */
     function updateMinEscrowAmount(itUint64 calldata newAmount) 
         external 
@@ -722,7 +835,9 @@ contract OmniCoinEscrow is RegistryAware, AccessControl, ReentrancyGuard, Pausab
     }
     
     /**
-     * @dev Update maximum escrow duration
+     * @notice Update maximum escrow duration
+     * @dev Admin function to set maximum escrow time limit
+     * @param newDuration New maximum duration in seconds
      */
     function updateMaxEscrowDuration(uint256 newDuration) external onlyRole(ADMIN_ROLE) {
         maxEscrowDuration = newDuration;
@@ -730,7 +845,9 @@ contract OmniCoinEscrow is RegistryAware, AccessControl, ReentrancyGuard, Pausab
     }
     
     /**
-     * @dev Update arbitration fee (encrypted)
+     * @notice Update arbitration fee (encrypted)
+     * @dev Fee manager function to set arbitration costs
+     * @param newFee New arbitration fee (encrypted)
      */
     function updateArbitrationFee(itUint64 calldata newFee) 
         external 
@@ -746,14 +863,16 @@ contract OmniCoinEscrow is RegistryAware, AccessControl, ReentrancyGuard, Pausab
     }
     
     /**
-     * @dev Emergency pause
+     * @notice Emergency pause
+     * @dev Pauses all escrow operations in case of emergency
      */
     function pause() external onlyRole(ADMIN_ROLE) {
         _pause();
     }
     
     /**
-     * @dev Unpause
+     * @notice Unpause contract operations
+     * @dev Resumes normal escrow operations after pause
      */
     function unpause() external onlyRole(ADMIN_ROLE) {
         _unpause();
@@ -764,7 +883,10 @@ contract OmniCoinEscrow is RegistryAware, AccessControl, ReentrancyGuard, Pausab
     // =============================================================================
     
     /**
-     * @dev Calculate escrow fee (0.5% of amount)
+     * @notice Calculate escrow fee (0.5% of amount)
+     * @dev Internal function to compute fee based on escrow amount
+     * @param amount Escrow amount to calculate fee from
+     * @return gtUint64 Calculated fee amount
      */
     function _calculateFee(gtUint64 amount) internal returns (gtUint64) {
         if (isMpcAvailable) {
@@ -781,16 +903,18 @@ contract OmniCoinEscrow is RegistryAware, AccessControl, ReentrancyGuard, Pausab
     }
     
     /**
-     * @dev Distribute fee to treasury
+     * @notice Distribute fee to treasury
+     * @dev Internal function to transfer collected fees
+     * @param fee Fee amount to distribute
      */
     function _distributeFee(gtUint64 fee) internal {
         if (isMpcAvailable) {
             gtBool hasFee = MpcCore.gt(fee, MpcCore.setPublic64(0));
             if (MpcCore.decrypt(hasFee)) {
-                OmniCoinCore token = getOmniCoinCore();
+                OmniCoinCore omniToken = getOmniCoinCore();
                 address treasury = getTreasury();
-                gtBool transferResult = token.transferGarbled(treasury, fee);
-                require(MpcCore.decrypt(transferResult), "OmniCoinEscrow: Fee transfer failed");
+                gtBool transferResult = omniToken.transferGarbled(treasury, fee);
+                if (!MpcCore.decrypt(transferResult)) revert TransferFailed();
             }
         } else {
             // Fallback - assume fee transfer succeeds in test mode
@@ -804,6 +928,7 @@ contract OmniCoinEscrow is RegistryAware, AccessControl, ReentrancyGuard, Pausab
     /**
      * @dev Get token contract (backward compatibility)
      * @notice Deprecated - use registry directly
+     * @return OmniCoinCore The OmniCoinCore contract instance
      */
     function token() external returns (OmniCoinCore) {
         return getOmniCoinCore();
@@ -812,6 +937,7 @@ contract OmniCoinEscrow is RegistryAware, AccessControl, ReentrancyGuard, Pausab
     /**
      * @dev Get privacy fee manager (backward compatibility)
      * @notice Deprecated - use registry directly
+     * @return address The privacy fee manager address
      */
     function privacyFeeManager() external returns (address) {
         return getPrivacyFeeManager();
