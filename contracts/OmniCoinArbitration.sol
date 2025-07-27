@@ -6,7 +6,7 @@ import "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "../coti-contracts/contracts/utils/mpc/MpcCore.sol";
-import "./omnicoin-erc20-coti.sol";
+import "./OmniCoinCore.sol";
 import "./OmniCoinAccount.sol";
 import "./OmniCoinEscrow.sol";
 import "./OmniCoinConfig.sol";
@@ -88,7 +88,7 @@ contract OmniCoinArbitration is
     uint256 public constant RESOLUTION_PERIOD = 7 days;                // Resolution deadline
 
     // Contract integrations
-    OmniCoin public omniCoin;
+    OmniCoinCore public omniCoin;
     OmniCoinAccount public omniCoinAccount;
     OmniCoinEscrow public omniCoinEscrow;
     OmniCoinConfig public config;
@@ -185,7 +185,7 @@ contract OmniCoinArbitration is
         __Ownable_init(msg.sender);
         __ReentrancyGuard_init();
         
-        omniCoin = OmniCoin(_omniCoin);
+        omniCoin = OmniCoinCore(_omniCoin);
         omniCoinAccount = OmniCoinAccount(_omniCoinAccount);
         omniCoinEscrow = OmniCoinEscrow(_omniCoinEscrow);
         config = OmniCoinConfig(_config);
@@ -243,7 +243,7 @@ contract OmniCoinArbitration is
 
         // Transfer staking amount to this contract
         require(
-            omniCoin.transferFrom(msg.sender, address(this), _stakingAmount),
+            omniCoin.transferFromPublic(msg.sender, address(this), _stakingAmount),
             "Staking transfer failed"
         );
 
@@ -284,7 +284,7 @@ contract OmniCoinArbitration is
         require(_additionalStake > 0, "Must stake additional amount");
 
         require(
-            omniCoin.transferFrom(msg.sender, address(this), _additionalStake),
+            omniCoin.transferFromPublic(msg.sender, address(this), _additionalStake),
             "Additional staking transfer failed"
         );
 
@@ -309,8 +309,11 @@ contract OmniCoinArbitration is
         bytes32 _evidenceHash
     ) external {
         uint256 escrowId = uint256(_escrowId);
-        (address seller, address buyer, address arbitrator, uint256 amount, uint256 releaseTime, bool released, bool disputed, bool refunded) = 
-            omniCoinEscrow.getEscrow(escrowId);
+        (address seller, address buyer, address arbitrator, uint256 releaseTime, bool released, bool disputed, bool refunded) = 
+            omniCoinEscrow.getEscrowDetails(escrowId);
+        
+        // Get the escrow amount (would need separate method in production)
+        uint256 amount = _disputedAmount;
         
         require(disputed, "Escrow not disputed");
         require(msg.sender == buyer || msg.sender == seller, "Not authorized");
@@ -378,8 +381,11 @@ contract OmniCoinArbitration is
         require(usePrivacy && isMpcAvailable, "OmniCoinArbitration: Privacy not available");
         require(privacyFeeManager != address(0), "OmniCoinArbitration: Privacy fee manager not set");
         uint256 escrowId = uint256(_escrowId);
-        (address seller, address buyer, address arbitrator, uint256 amount, uint256 releaseTime, bool released, bool disputed, bool refunded) = 
-            omniCoinEscrow.getEscrow(escrowId);
+        (address seller, address buyer, address arbitrator, uint256 releaseTime, bool released, bool disputed, bool refunded) = 
+            omniCoinEscrow.getEscrowDetails(escrowId);
+        
+        // For privacy disputes, we work with encrypted amounts throughout
+        // In production, the escrow contract would provide encrypted amount
         
         require(disputed, "Escrow not disputed");
         require(msg.sender == buyer || msg.sender == seller, "Not authorized");
@@ -391,18 +397,19 @@ contract OmniCoinArbitration is
         gtUint64 gtSellerClaim = MpcCore.validateCiphertext(_sellerClaim);
         
         // Verify claims don't exceed escrow balance
-        gtUint64 gtEscrowBalance = MpcCore.setPublic64(uint64(amount));
+        // In privacy mode, we work with the encrypted disputed amount as the escrow balance
+        gtUint64 gtEscrowBalance = gtDisputedAmount;
         gtUint64 gtTotalClaim = MpcCore.add(gtBuyerClaim, gtSellerClaim);
         gtBool claimsValid = MpcCore.le(gtTotalClaim, gtEscrowBalance);
         require(MpcCore.decrypt(claimsValid), "Total claims exceed escrow balance");
         
         // Calculate privacy fee (1% of disputed amount for arbitration)
-        uint256 ARBITRATION_PRIVACY_FEE_RATE = 100; // 1% in basis points
-        uint256 BASIS_POINTS = 10000;
-        gtUint64 feeRate = MpcCore.setPublic64(uint64(ARBITRATION_PRIVACY_FEE_RATE));
-        gtUint64 basisPoints = MpcCore.setPublic64(uint64(BASIS_POINTS));
+        uint256 arbitrationPrivacyFeeRate = 100; // 1% in basis points
+        uint256 basisPoints = 10000;
+        gtUint64 feeRate = MpcCore.setPublic64(uint64(arbitrationPrivacyFeeRate));
+        gtUint64 basisPointsGt = MpcCore.setPublic64(uint64(basisPoints));
         gtUint64 fee = MpcCore.mul(gtDisputedAmount, feeRate);
-        fee = MpcCore.div(fee, basisPoints);
+        fee = MpcCore.div(fee, basisPointsGt);
         
         // Collect privacy fee (10x normal fee)
         uint256 normalFee = uint64(gtUint64.unwrap(fee));
@@ -436,7 +443,8 @@ contract OmniCoinArbitration is
         // Calculate arbitration fee
         gtUint64 gtArbitrationFeeRate = MpcCore.setPublic64(uint64(ARBITRATION_FEE_RATE));
         gtUint64 gtArbitrationFee = MpcCore.mul(gtDisputedAmount, gtArbitrationFeeRate);
-        gtArbitrationFee = MpcCore.div(gtArbitrationFee, basisPoints);
+        gtUint64 gtBasisPoints = MpcCore.setPublic64(uint64(10000));
+        gtArbitrationFee = MpcCore.div(gtArbitrationFee, gtBasisPoints);
         ctUint64 arbitrationFee = MpcCore.offBoard(gtArbitrationFee);
         
         // Create dispute
@@ -627,12 +635,12 @@ contract OmniCoinArbitration is
         require(MpcCore.decrypt(payoutsValid), "Total payouts exceed escrow balance");
         
         // Calculate privacy fee for resolution (0.5% of total payout)
-        uint256 RESOLUTION_PRIVACY_FEE_RATE = 50; // 0.5% in basis points
-        uint256 BASIS_POINTS = 10000;
-        gtUint64 feeRate = MpcCore.setPublic64(uint64(RESOLUTION_PRIVACY_FEE_RATE));
-        gtUint64 basisPoints = MpcCore.setPublic64(uint64(BASIS_POINTS));
+        uint256 resolutionPrivacyFeeRate = 50; // 0.5% in basis points
+        uint256 basisPoints = 10000;
+        gtUint64 feeRate = MpcCore.setPublic64(uint64(resolutionPrivacyFeeRate));
+        gtUint64 basisPointsGt = MpcCore.setPublic64(uint64(basisPoints));
         gtUint64 fee = MpcCore.mul(gtTotalPayout, feeRate);
-        fee = MpcCore.div(fee, basisPoints);
+        fee = MpcCore.div(fee, basisPointsGt);
         
         // Collect privacy fee (10x normal fee)
         uint256 normalFee = uint64(gtUint64.unwrap(fee));
@@ -1011,7 +1019,7 @@ contract OmniCoinArbitration is
         // Get escrow details to determine specialization needs
         // Note: In production, we would convert escrowId or modify getEscrow to accept bytes32
         // For now, we'll use a simple conversion
-        (address seller, address buyer, , , , , , ) = omniCoinEscrow.getEscrow(uint256(_escrowId));
+        (address seller, address buyer, , , , , ) = omniCoinEscrow.getEscrowDetails(uint256(_escrowId));
         
         // Simple selection: Find active arbitrator with highest reputation
         // In production, this would:

@@ -39,13 +39,13 @@ contract DeploymentHelper {
         address admin,
         address cotiToken,
         uint256 minimumValidators
-    ) external returns (
+    ) public returns (
         address core,
         address config,
         address privacyFeeManager
     ) {
         // Deploy Config
-        config = address(new OmniCoinConfig());
+        config = address(new OmniCoinConfig(admin));
         registry.registerContract(registry.OMNICOIN_CONFIG(), config, "Configuration contract");
         emit ContractDeployed("OmniCoinConfig", config);
         
@@ -76,7 +76,7 @@ contract DeploymentHelper {
      */
     function deployFinancialContracts(
         address admin
-    ) external returns (
+    ) public returns (
         address escrow,
         address payment,
         address staking
@@ -122,7 +122,7 @@ contract DeploymentHelper {
      */
     function deployBridgeContracts(
         address admin
-    ) external returns (address bridge) {
+    ) public returns (address bridge) {
         address token = registry.getContract(registry.OMNICOIN_CORE());
         address privacyFeeManager = registry.getContract(registry.FEE_MANAGER());
         
@@ -138,7 +138,7 @@ contract DeploymentHelper {
      */
     function deployGovernanceContracts(
         address admin
-    ) external returns (address arbitration) {
+    ) public returns (address arbitration) {
         // Note: This is a simplified deployment
         // In production, these contracts would be properly initialized
         
@@ -152,7 +152,7 @@ contract DeploymentHelper {
     /**
      * @dev Complete deployment by setting up cross-contract references
      */
-    function finalizeDeployment() external {
+    function finalizeDeployment() public {
         // This would set up any remaining cross-contract references
         // that couldn't be done during initial deployment
         
@@ -166,7 +166,7 @@ contract DeploymentHelper {
         address admin,
         address companyTreasury,
         address developmentFund
-    ) external returns (address dexSettlement) {
+    ) public returns (address dexSettlement) {
         address privacyFeeManager = registry.getContract(registry.FEE_MANAGER());
         
         dexSettlement = address(new DEXSettlement(

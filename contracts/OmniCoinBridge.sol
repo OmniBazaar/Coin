@@ -12,6 +12,10 @@ contract OmniCoinBridge is Ownable, ReentrancyGuard {
     uint256 public constant PRIVACY_MULTIPLIER = 10; // 10x fee for privacy
     address public privacyFeeManager;
     bool public isMpcAvailable;
+    
+    // Role for validators
+    bytes32 public constant VALIDATOR_ROLE = keccak256("VALIDATOR_ROLE");
+    mapping(address => bool) public validators;
     struct BridgeConfig {
         uint256 chainId;
         address token;
@@ -222,12 +226,12 @@ contract OmniCoinBridge is Ownable, ReentrancyGuard {
         uint256 transferId = transferCount++;
         
         // Calculate privacy fee (0.5% of amount for bridge operations)
-        uint256 BRIDGE_FEE_RATE = 50; // 0.5% in basis points
-        uint256 BASIS_POINTS = 10000;
-        gtUint64 feeRate = MpcCore.setPublic64(uint64(BRIDGE_FEE_RATE));
-        gtUint64 basisPoints = MpcCore.setPublic64(uint64(BASIS_POINTS));
+        uint256 bridgeFeeRate = 50; // 0.5% in basis points
+        uint256 basisPoints = 10000;
+        gtUint64 feeRate = MpcCore.setPublic64(uint64(bridgeFeeRate));
+        gtUint64 basisPointsGt = MpcCore.setPublic64(uint64(basisPoints));
         gtUint64 privacyFeeBase = MpcCore.mul(gtAmount, feeRate);
-        privacyFeeBase = MpcCore.div(privacyFeeBase, basisPoints);
+        privacyFeeBase = MpcCore.div(privacyFeeBase, basisPointsGt);
         
         // Collect privacy fee (10x normal fee)
         uint256 normalFee = uint64(gtUint64.unwrap(privacyFeeBase));
@@ -444,13 +448,48 @@ contract OmniCoinBridge is Ownable, ReentrancyGuard {
             config.fee
         );
     }
+    
+    // Validator management functions
+    function addValidator(address _validator) external onlyOwner {
+        require(_validator != address(0), "Invalid validator address");
+        validators[_validator] = true;
+    }
+    
+    function removeValidator(address _validator) external onlyOwner {
+        validators[_validator] = false;
+    }
+    
+    function isValidator(address _address) external view returns (bool) {
+        return validators[_address];
+    }
 
     function verifyMessage(
         bytes32 _messageHash,
         bytes memory _signature
     ) internal view returns (bool) {
-        // TODO: Implement message verification
-        // This is a placeholder that should be replaced with actual verification
-        return true;
+        // Verify signature length
+        if (_signature.length != 65) {
+            return false;
+        }
+        
+        // Extract signature components
+        bytes32 r;
+        bytes32 s;
+        uint8 v;
+        
+        assembly ("memory-safe") {
+            r := mload(add(_signature, 32))
+            s := mload(add(_signature, 64))
+            v := byte(0, mload(add(_signature, 96)))
+        }
+        
+        // Adjust v for Ethereum's ecrecover
+        if (v < 27) {
+            v += 27;
+        }
+        
+        // Verify the signature is from an authorized validator
+        address signer = ecrecover(_messageHash, v, r, s);
+        return validators[signer];
     }
 }

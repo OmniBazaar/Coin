@@ -7,7 +7,7 @@ import "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol
 import "@openzeppelin/contracts/token/ERC721/IERC721.sol";
 import "@openzeppelin/contracts/token/ERC721/IERC721Receiver.sol";
 import "../coti-contracts/contracts/utils/mpc/MpcCore.sol";
-import "./omnicoin-erc20-coti.sol";
+import "./OmniCoinCore.sol";
 import "./OmniCoinEscrow.sol";
 import "./ListingNFT.sol";
 import "./PrivacyFeeManager.sol";
@@ -124,7 +124,7 @@ contract OmniNFTMarketplace is
     // STATE VARIABLES
     // =============================================================================
     
-    OmniCoin public omniCoin;
+    OmniCoinCore public omniCoin;
     OmniCoinEscrow public escrowContract;
     ListingNFT public listingNFT;
     address public privacyFeeManager;
@@ -215,7 +215,7 @@ contract OmniNFTMarketplace is
         __Ownable_init(msg.sender);
         __ReentrancyGuard_init();
 
-        omniCoin = OmniCoin(_omniCoin);
+        omniCoin = OmniCoinCore(_omniCoin);
         escrowContract = OmniCoinEscrow(_escrowContract);
         listingNFT = ListingNFT(_listingNFT);
         privacyFeeManager = _privacyFeeManager;
@@ -295,12 +295,12 @@ contract OmniNFTMarketplace is
 
         // Transfer payment
         require(
-            omniCoin.transferFrom(msg.sender, listing.seller, sellerAmount),
+            omniCoin.transferFromPublic(msg.sender, listing.seller, sellerAmount),
             "Payment failed"
         );
         if (fee > 0) {
             require(
-                omniCoin.transferFrom(msg.sender, feeRecipient, fee),
+                omniCoin.transferFromPublic(msg.sender, feeRecipient, fee),
                 "Fee payment failed"
             );
         }
@@ -378,10 +378,10 @@ contract OmniNFTMarketplace is
         }
 
         // Collect privacy fee for listing creation
-        uint256 CREATE_FEE_RATE = 5; // 0.05% of listing price
-        uint256 BASIS_POINTS = 10000;
+        uint256 createFeeRate = 5; // 0.05% of listing price
+        uint256 basisPoints = 10000;
         uint64 priceDecrypted = MpcCore.decrypt(gtPrice);
-        uint256 privacyFee = (uint256(priceDecrypted) * CREATE_FEE_RATE * PRIVACY_MULTIPLIER) / BASIS_POINTS;
+        uint256 privacyFee = (uint256(priceDecrypted) * createFeeRate * PRIVACY_MULTIPLIER) / basisPoints;
         
         PrivacyFeeManager(privacyFeeManager).collectPrivacyFee(
             msg.sender,
@@ -461,9 +461,9 @@ contract OmniNFTMarketplace is
         uint256 sellerAmount = totalPrice - fee;
         
         // Collect privacy fee (0.2% of sale price)
-        uint256 SALE_FEE_RATE = 20; // 0.2% in basis points
-        uint256 BASIS_POINTS = 10000;
-        uint256 privacyFee = (totalPrice * SALE_FEE_RATE * PRIVACY_MULTIPLIER) / BASIS_POINTS;
+        uint256 saleFeeRate = 20; // 0.2% in basis points
+        uint256 basisPoints = 10000;
+        uint256 privacyFee = (totalPrice * saleFeeRate * PRIVACY_MULTIPLIER) / basisPoints;
         
         PrivacyFeeManager(privacyFeeManager).collectPrivacyFee(
             msg.sender,
@@ -473,12 +473,12 @@ contract OmniNFTMarketplace is
 
         // Transfer payment
         require(
-            omniCoin.transferFrom(msg.sender, listing.seller, sellerAmount),
+            omniCoin.transferFromPublic(msg.sender, listing.seller, sellerAmount),
             "Payment failed"
         );
         if (fee > 0) {
             require(
-                omniCoin.transferFrom(msg.sender, feeRecipient, fee),
+                omniCoin.transferFromPublic(msg.sender, feeRecipient, fee),
                 "Fee payment failed"
             );
         }
@@ -519,9 +519,9 @@ contract OmniNFTMarketplace is
         uint64 bidDecrypted = MpcCore.decrypt(gtBidAmount);
         
         // Collect privacy fee (0.1% of bid)
-        uint256 BID_FEE_RATE = 10; // 0.1% in basis points
-        uint256 BASIS_POINTS = 10000;
-        uint256 privacyFee = (uint256(bidDecrypted) * BID_FEE_RATE * PRIVACY_MULTIPLIER) / BASIS_POINTS;
+        uint256 bidFeeRate = 10; // 0.1% in basis points
+        uint256 basisPoints = 10000;
+        uint256 privacyFee = (uint256(bidDecrypted) * bidFeeRate * PRIVACY_MULTIPLIER) / basisPoints;
         
         PrivacyFeeManager(privacyFeeManager).collectPrivacyFee(
             msg.sender,
@@ -548,9 +548,9 @@ contract OmniNFTMarketplace is
         uint64 amountDecrypted = MpcCore.decrypt(gtAmount);
         
         // Collect privacy fee (0.1% of offer)
-        uint256 OFFER_FEE_RATE = 10; // 0.1% in basis points
-        uint256 BASIS_POINTS = 10000;
-        uint256 privacyFee = (uint256(amountDecrypted) * OFFER_FEE_RATE * PRIVACY_MULTIPLIER) / BASIS_POINTS;
+        uint256 offerFeeRate = 10; // 0.1% in basis points
+        uint256 basisPoints = 10000;
+        uint256 privacyFee = (uint256(amountDecrypted) * offerFeeRate * PRIVACY_MULTIPLIER) / basisPoints;
         
         PrivacyFeeManager(privacyFeeManager).collectPrivacyFee(
             msg.sender,
@@ -651,14 +651,14 @@ contract OmniNFTMarketplace is
         // Refund previous highest bidder
         if (auction.highestBidder != address(0)) {
             require(
-                omniCoin.transfer(auction.highestBidder, auction.highestBid),
+                omniCoin.transferPublic(auction.highestBidder, auction.highestBid),
                 "Refund failed"
             );
         }
 
         // Transfer new bid amount
         require(
-            omniCoin.transferFrom(msg.sender, address(this), bidAmount),
+            omniCoin.transferFromPublic(msg.sender, address(this), bidAmount),
             "Bid transfer failed"
         );
 
@@ -717,14 +717,14 @@ contract OmniNFTMarketplace is
             // Refund previous bidder
             uint64 previousBid = MpcCore.decrypt(gtHighest);
             require(
-                omniCoin.transfer(auction.highestBidder, uint256(previousBid)),
+                omniCoin.transferPublic(auction.highestBidder, uint256(previousBid)),
                 "Refund failed"
             );
         }
 
         // Transfer new bid amount
         require(
-            omniCoin.transferFrom(msg.sender, address(this), uint256(bidDecrypted)),
+            omniCoin.transferFromPublic(msg.sender, address(this), uint256(bidDecrypted)),
             "Bid transfer failed"
         );
 
@@ -769,7 +769,7 @@ contract OmniNFTMarketplace is
 
         // Transfer offer amount to escrow
         require(
-            omniCoin.transferFrom(msg.sender, address(this), amount),
+            omniCoin.transferFromPublic(msg.sender, address(this), amount),
             "Offer transfer failed"
         );
 
@@ -806,7 +806,7 @@ contract OmniNFTMarketplace is
 
         // Transfer offer amount to escrow
         require(
-            omniCoin.transferFrom(msg.sender, address(this), uint256(amountDecrypted)),
+            omniCoin.transferFromPublic(msg.sender, address(this), uint256(amountDecrypted)),
             "Offer transfer failed"
         );
 
@@ -888,12 +888,12 @@ contract OmniNFTMarketplace is
 
             // Transfer payment to seller
             require(
-                omniCoin.transfer(listing.seller, sellerAmount),
+                omniCoin.transferPublic(listing.seller, sellerAmount),
                 "Payment failed"
             );
             if (fee > 0) {
                 require(
-                    omniCoin.transfer(feeRecipient, fee),
+                    omniCoin.transferPublic(feeRecipient, fee),
                     "Fee payment failed"
                 );
             }
@@ -952,11 +952,11 @@ contract OmniNFTMarketplace is
 
         // Transfer payment
         require(
-            omniCoin.transfer(listing.seller, sellerAmount),
+            omniCoin.transferPublic(listing.seller, sellerAmount),
             "Payment failed"
         );
         if (fee > 0) {
-            require(omniCoin.transfer(feeRecipient, fee), "Fee payment failed");
+            require(omniCoin.transferPublic(feeRecipient, fee), "Fee payment failed");
         }
 
         // Transfer NFT
@@ -1084,7 +1084,7 @@ contract OmniNFTMarketplace is
      * @dev Emergency withdrawal (owner only)
      */
     function emergencyWithdraw() external onlyOwner {
-        uint256 balance = omniCoin.balanceOf(address(this));
-        require(omniCoin.transfer(owner(), balance), "Withdrawal failed");
+        uint256 balance = omniCoin.balanceOfPublic(address(this));
+        require(omniCoin.transferPublic(owner(), balance), "Withdrawal failed");
     }
 }

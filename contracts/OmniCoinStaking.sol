@@ -204,12 +204,12 @@ contract OmniCoinStaking is AccessControl, ReentrancyGuard, Pausable {
         require(MpcCore.decrypt(isPositive), "OmniCoinStaking: Amount must be > 0");
         
         // Calculate privacy fee (0.2% of stake amount for staking operations)
-        uint256 STAKING_FEE_RATE = 20; // 0.2% in basis points
-        uint256 BASIS_POINTS = 10000;
-        gtUint64 feeRate = MpcCore.setPublic64(uint64(STAKING_FEE_RATE));
-        gtUint64 basisPoints = MpcCore.setPublic64(uint64(BASIS_POINTS));
+        uint256 stakingFeeRate = 20; // 0.2% in basis points
+        uint256 basisPoints = 10000;
+        gtUint64 feeRate = MpcCore.setPublic64(uint64(stakingFeeRate));
+        gtUint64 basisPointsGt = MpcCore.setPublic64(uint64(basisPoints));
         gtUint64 fee = MpcCore.mul(gtAmount, feeRate);
-        fee = MpcCore.div(fee, basisPoints);
+        fee = MpcCore.div(fee, basisPointsGt);
         
         // Collect privacy fee (10x normal fee)
         uint256 normalFee = uint64(gtUint64.unwrap(fee));
@@ -386,12 +386,12 @@ contract OmniCoinStaking is AccessControl, ReentrancyGuard, Pausable {
         require(MpcCore.decrypt(isPositive), "OmniCoinStaking: Amount must be > 0");
         
         // Calculate privacy fee for unstaking
-        uint256 STAKING_FEE_RATE = 20; // 0.2% in basis points
-        uint256 BASIS_POINTS = 10000;
-        gtUint64 feeRate = MpcCore.setPublic64(uint64(STAKING_FEE_RATE));
-        gtUint64 basisPoints = MpcCore.setPublic64(uint64(BASIS_POINTS));
+        uint256 stakingFeeRate = 20; // 0.2% in basis points
+        uint256 basisPoints = 10000;
+        gtUint64 feeRate = MpcCore.setPublic64(uint64(stakingFeeRate));
+        gtUint64 basisPointsGt = MpcCore.setPublic64(uint64(basisPoints));
         gtUint64 fee = MpcCore.mul(gtAmount, feeRate);
-        fee = MpcCore.div(fee, basisPoints);
+        fee = MpcCore.div(fee, basisPointsGt);
         
         // Collect privacy fee (10x normal fee)
         uint256 normalFee = uint64(gtUint64.unwrap(fee));

@@ -291,12 +291,12 @@ contract DEXSettlement is ReentrancyGuard, Pausable, AccessControl {
         );
         
         // Calculate privacy fee (0.1% of trade volume for DEX)
-        uint256 DEX_FEE_RATE = 10; // 0.1% in basis points
-        uint256 BASIS_POINTS = 10000;
-        gtUint64 feeRate = MpcCore.setPublic64(uint64(DEX_FEE_RATE));
-        gtUint64 basisPoints = MpcCore.setPublic64(uint64(BASIS_POINTS));
+        uint256 dexFeeRate = 10; // 0.1% in basis points
+        uint256 basisPoints = 10000;
+        gtUint64 feeRate = MpcCore.setPublic64(uint64(dexFeeRate));
+        gtUint64 basisPointsGt = MpcCore.setPublic64(uint64(basisPoints));
         gtUint64 privacyFeeBase = MpcCore.mul(gtAmountIn, feeRate);
-        privacyFeeBase = MpcCore.div(privacyFeeBase, basisPoints);
+        privacyFeeBase = MpcCore.div(privacyFeeBase, basisPointsGt);
         
         // Collect privacy fee (10x normal fee)
         uint256 normalFee = uint64(gtUint64.unwrap(privacyFeeBase));
@@ -309,9 +309,9 @@ contract DEXSettlement is ReentrancyGuard, Pausable, AccessControl {
         
         // Calculate fees (encrypted)
         gtUint64 gtMakerFee = MpcCore.mul(gtAmountIn, MpcCore.setPublic64(uint64(SPOT_MAKER_FEE)));
-        gtMakerFee = MpcCore.div(gtMakerFee, basisPoints);
+        gtMakerFee = MpcCore.div(gtMakerFee, basisPointsGt);
         gtUint64 gtTakerFee = MpcCore.mul(gtAmountOut, MpcCore.setPublic64(uint64(SPOT_TAKER_FEE)));
-        gtTakerFee = MpcCore.div(gtTakerFee, basisPoints);
+        gtTakerFee = MpcCore.div(gtTakerFee, basisPointsGt);
         
         // Store trade with encrypted amounts
         trades[id] = Trade({

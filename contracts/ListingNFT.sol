@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.0;
+pragma solidity ^0.8.19;
 
 import "@openzeppelin/contracts/token/ERC721/ERC721.sol";
 import "@openzeppelin/contracts/token/ERC721/extensions/ERC721URIStorage.sol";
@@ -9,11 +9,33 @@ import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
 contract ListingNFT is ERC721URIStorage, Ownable, ReentrancyGuard {
     uint256 private _tokenIds;
+    mapping(address => bool) public approvedMinters;
+
+    event MinterApprovalChanged(address indexed minter, bool approved);
 
     constructor(
         address initialOwner
     ) ERC721("OmniBazaar Listing", "OBL") Ownable(initialOwner) {
         _tokenIds = 0;
+    }
+
+    /**
+     * @dev Set or revoke minter approval
+     * @param minter Address to approve/revoke
+     * @param approved Whether to approve or revoke
+     */
+    function setApprovedMinter(address minter, bool approved) external onlyOwner {
+        approvedMinters[minter] = approved;
+        emit MinterApprovalChanged(minter, approved);
+    }
+
+    /**
+     * @dev Check if an address is an approved minter
+     * @param minter Address to check
+     * @return Whether the address is approved
+     */
+    function isApprovedMinter(address minter) public view returns (bool) {
+        return approvedMinters[minter];
     }
 
     struct Transaction {
@@ -53,6 +75,11 @@ contract ListingNFT is ERC721URIStorage, Ownable, ReentrancyGuard {
     );
 
     function mint(address to, string memory tokenURI) public returns (uint256) {
+        require(
+            approvedMinters[msg.sender] || msg.sender == owner(),
+            "ListingNFT: Not authorized to mint"
+        );
+        
         _tokenIds++;
         uint256 newTokenId = _tokenIds;
 

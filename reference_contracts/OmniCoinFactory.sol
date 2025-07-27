@@ -3,10 +3,10 @@ pragma solidity ^0.8.20;
 
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
-import "./OmniCoinCoreFactory.sol";
-import "./OmniCoinSecurityFactory.sol";
-import "./OmniCoinDefiFactory.sol";
-import "./OmniCoinBridgeFactory.sol";
+import "../OmniCoinCoreFactory.sol";
+import "../OmniCoinSecurityFactory.sol";
+import "../OmniCoinDefiFactory.sol";
+import "../OmniCoinBridgeFactory.sol";
 
 /**
  * @title OmniCoinFactory

@@ -4,8 +4,8 @@ pragma solidity ^0.8.19;
 import "@openzeppelin/contracts/access/AccessControl.sol";
 import "@openzeppelin/contracts/utils/Pausable.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
-import "../coti-contracts/contracts/token/PrivateERC20/PrivateERC20.sol";
-import "../coti-contracts/contracts/utils/mpc/MpcCore.sol";
+import "../../coti-contracts/contracts/token/PrivateERC20/PrivateERC20.sol";
+import "../../coti-contracts/contracts/utils/mpc/MpcCore.sol";
 
 interface IPrivacyFeeManager {
     function collectPrivacyFee(address user, bytes32 operationType, uint256 amount) external returns (bool);

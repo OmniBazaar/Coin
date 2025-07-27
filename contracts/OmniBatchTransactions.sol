@@ -5,7 +5,7 @@ import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol";
-import "./omnicoin-erc20-coti.sol";
+import "./OmniCoinCore.sol";
 
 /**
  * @title OmniBatchTransactions
@@ -60,7 +60,7 @@ contract OmniBatchTransactions is
     }
 
     // State variables
-    OmniCoin public omniCoin;
+    OmniCoinCore public omniCoin;
     mapping(uint256 => BatchExecution) public batchExecutions;
     mapping(address => uint256[]) public userBatches;
     mapping(address => bool) public authorizedExecutors;
@@ -103,7 +103,7 @@ contract OmniBatchTransactions is
         __ReentrancyGuard_init();
         __Pausable_init();
 
-        omniCoin = OmniCoin(_omniCoin);
+        omniCoin = OmniCoinCore(_omniCoin);
         maxBatchSize = 50; // Maximum 50 operations per batch
         maxGasPerOperation = 500000; // 500k gas per operation max
         batchCounter = 0;
@@ -243,7 +243,7 @@ contract OmniBatchTransactions is
             operation.data,
             (address, uint256)
         );
-        require(omniCoin.transfer(recipient, amount), "Transfer failed");
+        require(omniCoin.transferPublic(recipient, amount), "Transfer failed");
         return abi.encode(true);
     }
 
@@ -257,7 +257,7 @@ contract OmniBatchTransactions is
             operation.data,
             (address, uint256)
         );
-        require(omniCoin.approve(spender, amount), "Approval failed");
+        require(omniCoin.approvePublic(spender, amount), "Approval failed");
         return abi.encode(true);
     }
 
@@ -267,12 +267,8 @@ contract OmniBatchTransactions is
     function _executeStake(
         BatchOperation calldata operation
     ) internal returns (bytes memory) {
-        (uint256 amount, uint256 lockPeriod) = abi.decode(
-            operation.data,
-            (uint256, uint256)
-        );
-        omniCoin.stake(amount, lockPeriod);
-        return abi.encode(true);
+        // Staking functionality would be in OmniCoinStaking contract
+        revert("Use OmniCoinStaking contract for stake operations");
     }
 
     /**
@@ -281,8 +277,8 @@ contract OmniBatchTransactions is
     function _executeUnstake(
         BatchOperation calldata operation
     ) internal returns (bytes memory) {
-        omniCoin.unstake();
-        return abi.encode(true);
+        // Unstaking functionality would be in OmniCoinStaking contract
+        revert("Use OmniCoinStaking contract for unstake operations");
     }
 
     /**

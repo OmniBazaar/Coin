@@ -172,7 +172,7 @@ contract OmniCoinEscrow is RegistryAware, AccessControl, ReentrancyGuard, Pausab
     /**
      * @dev Get OmniCoin contract from registry
      */
-    function getOmniCoin() public returns (OmniCoinCore) {
+    function getOmniCoinCore() public returns (OmniCoinCore) {
         return OmniCoinCore(_getContract(registry.OMNICOIN_CORE()));
     }
     
@@ -230,7 +230,7 @@ contract OmniCoinEscrow is RegistryAware, AccessControl, ReentrancyGuard, Pausab
         uint256 totalAmount = _amount + feeAmount;
         
         // Transfer tokens to escrow (standard transfer)
-        OmniCoinCore token = getOmniCoin();
+        OmniCoinCore token = getOmniCoinCore();
         bool transferResult = token.transferFromPublic(msg.sender, address(this), totalAmount);
         require(transferResult, "OmniCoinEscrow: Transfer failed");
         
@@ -326,7 +326,7 @@ contract OmniCoinEscrow is RegistryAware, AccessControl, ReentrancyGuard, Pausab
         userEscrows[_buyer].push(escrowId);
         
         // Transfer tokens to escrow (including fee)
-        OmniCoinCore token = getOmniCoin();
+        OmniCoinCore token = getOmniCoinCore();
         gtUint64 totalAmount = MpcCore.add(gtAmount, fee);
         gtBool transferResult = token.transferFrom(msg.sender, address(this), totalAmount);
         require(MpcCore.decrypt(transferResult), "OmniCoinEscrow: Transfer failed");
@@ -357,7 +357,7 @@ contract OmniCoinEscrow is RegistryAware, AccessControl, ReentrancyGuard, Pausab
         escrow.released = true;
         
         // Transfer to buyer (minus fee)
-        OmniCoinCore token = getOmniCoin();
+        OmniCoinCore token = getOmniCoinCore();
         if (isMpcAvailable) {
             gtBool transferResult = token.transferGarbled(escrow.buyer, escrow.encryptedAmount);
             require(MpcCore.decrypt(transferResult), "OmniCoinEscrow: Transfer failed");
@@ -389,7 +389,7 @@ contract OmniCoinEscrow is RegistryAware, AccessControl, ReentrancyGuard, Pausab
         escrow.refunded = true;
         
         // Refund to seller (minus fee)
-        OmniCoinCore token = getOmniCoin();
+        OmniCoinCore token = getOmniCoinCore();
         if (isMpcAvailable) {
             gtBool transferResult = token.transferGarbled(escrow.seller, escrow.encryptedAmount);
             require(MpcCore.decrypt(transferResult), "OmniCoinEscrow: Transfer failed");
@@ -518,7 +518,7 @@ contract OmniCoinEscrow is RegistryAware, AccessControl, ReentrancyGuard, Pausab
         escrow.released = true;
         
         // Transfer amounts
-        OmniCoinCore token = getOmniCoin();
+        OmniCoinCore token = getOmniCoinCore();
         if (buyerRefundAmount > 0) {
             bool buyerTransferResult = token.transferPublic(escrow.buyer, buyerRefundAmount);
             require(buyerTransferResult, "OmniCoinEscrow: Buyer transfer failed");
@@ -595,7 +595,7 @@ contract OmniCoinEscrow is RegistryAware, AccessControl, ReentrancyGuard, Pausab
         escrow.released = true;
         
         // Transfer amounts
-        OmniCoinCore token = getOmniCoin();
+        OmniCoinCore token = getOmniCoinCore();
         if (isMpcAvailable) {
             // Transfer to buyer
             gtBool buyerHasRefund = MpcCore.gt(gtBuyerRefund, MpcCore.setPublic64(0));
@@ -766,7 +766,7 @@ contract OmniCoinEscrow is RegistryAware, AccessControl, ReentrancyGuard, Pausab
         if (isMpcAvailable) {
             gtBool hasFee = MpcCore.gt(fee, MpcCore.setPublic64(0));
             if (MpcCore.decrypt(hasFee)) {
-                OmniCoinCore token = getOmniCoin();
+                OmniCoinCore token = getOmniCoinCore();
                 address treasury = getTreasury();
                 gtBool transferResult = token.transferGarbled(treasury, fee);
                 require(MpcCore.decrypt(transferResult), "OmniCoinEscrow: Fee transfer failed");
@@ -785,7 +785,7 @@ contract OmniCoinEscrow is RegistryAware, AccessControl, ReentrancyGuard, Pausab
      * @notice Deprecated - use registry directly
      */
     function token() external returns (OmniCoinCore) {
-        return getOmniCoin();
+        return getOmniCoinCore();
     }
     
     /**

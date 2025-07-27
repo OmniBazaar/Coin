@@ -3,9 +3,9 @@ pragma solidity ^0.8.20;
 
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
-import "./OmniCoinStaking.sol";
-import "./OmniCoinValidator.sol";
-import "./OmniCoinGovernor.sol";
+import "../OmniCoinStaking.sol";
+import "../OmniCoinValidator.sol";
+import "../OmniCoinGovernor.sol";
 
 contract OmniCoinDefiFactory is Ownable, ReentrancyGuard {
     struct DefiDeployment {

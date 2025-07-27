@@ -5,16 +5,16 @@ import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import "@openzeppelin/contracts/access/AccessControl.sol";
 import "@openzeppelin/contracts/utils/Pausable.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
-import "./OmniCoinConfig.sol";
+import "../OmniCoinConfig.sol";
 import "./OmniCoinReputation.sol";
-import "./OmniCoinStaking.sol";
-import "./OmniCoinValidator.sol";
-import "./OmniCoinMultisig.sol";
-import "./OmniCoinPrivacy.sol";
-import "./OmniCoinGarbledCircuit.sol";
-import "./OmniCoinGovernor.sol";
-import "./OmniCoinEscrow.sol";
-import "./OmniCoinBridge.sol";
+import "../OmniCoinStaking.sol";
+import "../OmniCoinValidator.sol";
+import "../OmniCoinMultisig.sol";
+import "../OmniCoinPrivacy.sol";
+import "../OmniCoinGarbledCircuit.sol";
+import "../OmniCoinGovernor.sol";
+import "../OmniCoinEscrow.sol";
+import "../OmniCoinBridge.sol";
 
 /**
  * @title OmniCoin

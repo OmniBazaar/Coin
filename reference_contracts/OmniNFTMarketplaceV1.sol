@@ -6,9 +6,9 @@ import "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
 import "@openzeppelin/contracts/token/ERC721/IERC721.sol";
 import "@openzeppelin/contracts/token/ERC721/IERC721Receiver.sol";
-import "./omnicoin-erc20-coti.sol";
-import "./OmniCoinEscrow.sol";
-import "./ListingNFT.sol";
+import "../OmniCoinCore.sol";
+import "../OmniCoinEscrow.sol";
+import "../ListingNFT.sol";
 
 /**
  * @title OmniNFTMarketplace

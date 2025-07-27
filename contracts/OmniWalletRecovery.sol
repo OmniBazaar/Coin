@@ -5,7 +5,7 @@ import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
 import "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
-import "./omnicoin-erc20-coti.sol";
+import "./OmniCoinCore.sol";
 
 /**
  * @title OmniWalletRecovery
@@ -80,7 +80,7 @@ contract OmniWalletRecovery is
     }
 
     // State variables
-    OmniCoin public omniCoin;
+    OmniCoinCore public omniCoin;
 
     mapping(address => WalletRecoveryConfig) public walletConfigs;
     mapping(uint256 => RecoveryRequest) public recoveryRequests;
@@ -138,7 +138,7 @@ contract OmniWalletRecovery is
         __Ownable_init(msg.sender);
         __ReentrancyGuard_init();
 
-        omniCoin = OmniCoin(_omniCoin);
+        omniCoin = OmniCoinCore(_omniCoin);
         requestCounter = 0;
         minGuardians = 2;
         maxGuardians = 10;

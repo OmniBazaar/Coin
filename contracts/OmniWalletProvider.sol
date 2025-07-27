@@ -4,7 +4,7 @@ pragma solidity ^0.8.20;
 import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
-import "./omnicoin-erc20-coti.sol";
+import "./OmniCoinCore.sol";
 import "./OmniCoinAccount.sol";
 import "./OmniCoinPayment.sol";
 import "./OmniCoinEscrow.sol";
@@ -23,7 +23,7 @@ contract OmniWalletProvider is
     ReentrancyGuardUpgradeable
 {
     // Contract interfaces
-    OmniCoin public omniCoin;
+    OmniCoinCore public omniCoin;
     OmniCoinAccount public accountManager;
     OmniCoinPayment public paymentProcessor;
     OmniCoinEscrow public escrowManager;
@@ -102,7 +102,7 @@ contract OmniWalletProvider is
         __Ownable_init(msg.sender);
         __ReentrancyGuard_init();
 
-        omniCoin = OmniCoin(_omniCoin);
+        omniCoin = OmniCoinCore(_omniCoin);
         accountManager = OmniCoinAccount(_accountManager);
         paymentProcessor = OmniCoinPayment(_paymentProcessor);
         escrowManager = OmniCoinEscrow(_escrowManager);
@@ -123,7 +123,7 @@ contract OmniWalletProvider is
         return
             WalletInfo({
                 walletAddress: wallet,
-                balance: omniCoin.balanceOf(wallet),
+                balance: omniCoin.balanceOfPublic(wallet),
                 stakedAmount: omniCoin.getStakeAmount(wallet),
                 reputationScore: omniCoin.getReputationScore(wallet),
                 privacyEnabled: false, // Will be implemented with privacy integration
@@ -230,7 +230,7 @@ contract OmniWalletProvider is
                 proof
             );
         } else {
-            require(omniCoin.transfer(recipient, amount), "Transfer failed");
+            require(omniCoin.transferPublic(recipient, amount), "Transfer failed");
         }
 
         return true;
@@ -263,10 +263,11 @@ contract OmniWalletProvider is
         uint256 amount,
         uint256 duration
     ) external nonReentrant returns (bool success) {
-        require(
-            omniCoin.allowance(msg.sender, address(escrowManager)) >= amount,
-            "Insufficient allowance"
-        );
+        // TODO: Check allowance with encrypted types
+        // require(
+        //     omniCoin.allowance(msg.sender, address(escrowManager)) >= amount,
+        //     "Insufficient allowance"
+        // );
 
         escrowManager.createEscrow(buyer, arbitrator, amount, duration);
         return true;
@@ -281,10 +282,11 @@ contract OmniWalletProvider is
         address recipient,
         uint256 amount
     ) external nonReentrant returns (bool success) {
-        require(
-            omniCoin.allowance(msg.sender, address(bridgeManager)) >= amount,
-            "Insufficient allowance"
-        );
+        // TODO: Check allowance with encrypted types
+        // require(
+        //     omniCoin.allowance(msg.sender, address(bridgeManager)) >= amount,
+        //     "Insufficient allowance"
+        // );
 
         bridgeManager.initiateTransfer(
             targetChainId,

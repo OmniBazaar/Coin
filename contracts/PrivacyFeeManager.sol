@@ -5,7 +5,7 @@ import "@openzeppelin/contracts/access/AccessControl.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/utils/Pausable.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import "./OmniCoinCore.sol";
+import "./OmniCoin.sol";
 
 /**
  * @title PrivacyFeeManager
@@ -37,7 +37,7 @@ contract PrivacyFeeManager is AccessControl, ReentrancyGuard, Pausable {
     // STATE VARIABLES
     // =============================================================================
     
-    OmniCoinCore public immutable omniCoin;
+    OmniCoin public immutable omniCoin;
     address public cotiToken;
     address public dexRouter;
     
@@ -53,6 +53,11 @@ contract PrivacyFeeManager is AccessControl, ReentrancyGuard, Pausable {
     uint256 public totalFeesCollected;
     uint256 public totalPrivacyTransactions;
     mapping(address => uint256) public userPrivacyUsage;
+    
+    // Privacy Credit System
+    mapping(address => uint256) public userPrivacyCredits;
+    uint256 public totalCreditsDeposited;
+    uint256 public totalCreditsUsed;
     
     // =============================================================================
     // EVENTS
@@ -83,6 +88,20 @@ contract PrivacyFeeManager is AccessControl, ReentrancyGuard, Pausable {
         string reason
     );
     
+    event PrivacyCreditsDeposited(
+        address indexed user,
+        uint256 amount,
+        uint256 newBalance
+    );
+    
+    event PrivacyCreditsUsed(
+        address indexed user,
+        bytes32 indexed operationType,
+        uint256 amount,
+        uint256 remainingBalance
+    );
+    event BridgeUsageRecorded(address indexed user, uint256 amount);
+    
     // =============================================================================
     // CONSTRUCTOR
     // =============================================================================
@@ -98,7 +117,7 @@ contract PrivacyFeeManager is AccessControl, ReentrancyGuard, Pausable {
         require(_dexRouter != address(0), "Invalid DEX router");
         require(_admin != address(0), "Invalid admin address");
         
-        omniCoin = OmniCoinCore(_omniCoin);
+        omniCoin = OmniCoin(_omniCoin);
         cotiToken = _cotiToken;
         dexRouter = _dexRouter;
         
@@ -108,6 +127,68 @@ contract PrivacyFeeManager is AccessControl, ReentrancyGuard, Pausable {
         
         // Initialize default privacy fees
         _initializeDefaultFees();
+    }
+    
+    // =============================================================================
+    // PRIVACY CREDITS
+    // =============================================================================
+    
+    /**
+     * @dev Deposit privacy credits for future use
+     * @param amount Amount of OMNI tokens to deposit as credits
+     * @notice Users pre-fund their privacy operations to avoid timing correlation
+     */
+    function depositPrivacyCredits(uint256 amount) external nonReentrant whenNotPaused {
+        require(amount > 0, "Must deposit credits");
+        
+        // Transfer OMNI tokens from user
+        require(
+            IERC20(address(omniCoin)).transferFrom(msg.sender, address(this), amount),
+            "Credit deposit failed"
+        );
+        
+        userPrivacyCredits[msg.sender] += amount;
+        totalCreditsDeposited += amount;
+        omniCoinReserve += amount;
+        
+        emit PrivacyCreditsDeposited(
+            msg.sender, 
+            amount, 
+            userPrivacyCredits[msg.sender]
+        );
+    }
+    
+    /**
+     * @dev Withdraw unused privacy credits
+     * @param amount Amount to withdraw
+     */
+    function withdrawPrivacyCredits(uint256 amount) external nonReentrant whenNotPaused {
+        require(amount > 0, "Invalid amount");
+        require(userPrivacyCredits[msg.sender] >= amount, "Insufficient credits");
+        
+        userPrivacyCredits[msg.sender] -= amount;
+        omniCoinReserve -= amount;
+        
+        // Transfer OMNI back to user
+        require(
+            IERC20(address(omniCoin)).transfer(msg.sender, amount),
+            "Credit withdrawal failed"
+        );
+        
+        emit PrivacyCreditsDeposited(
+            msg.sender, 
+            0, 
+            userPrivacyCredits[msg.sender]
+        );
+    }
+    
+    /**
+     * @dev Check user's privacy credit balance
+     * @param user User address
+     * @return creditBalance Current credit balance
+     */
+    function getPrivacyCredits(address user) external view returns (uint256) {
+        return userPrivacyCredits[user];
     }
     
     // =============================================================================
@@ -161,11 +242,12 @@ contract PrivacyFeeManager is AccessControl, ReentrancyGuard, Pausable {
     }
     
     /**
-     * @dev Collect privacy fee from user
+     * @dev Collect privacy fee from user's pre-deposited credits
      * @param user User paying the fee
      * @param operationType Type of operation
      * @param amount Transaction amount
      * @return success Whether fee collection succeeded
+     * @notice This function now uses pre-deposited credits instead of direct transfers
      */
     function collectPrivacyFee(
         address user,
@@ -175,15 +257,64 @@ contract PrivacyFeeManager is AccessControl, ReentrancyGuard, Pausable {
         // Only registered contracts can collect fees
         require(
             hasRole(FEE_MANAGER_ROLE, msg.sender) || 
-            omniCoin.hasRole(omniCoin.BRIDGE_ROLE(), msg.sender),
+            omniCoin.hasRole(keccak256("BRIDGE_ROLE"), msg.sender),
             "Unauthorized fee collector"
         );
         
         uint256 feeAmount = calculatePrivacyFee(operationType, amount);
         require(feeAmount > 0, "No fee required");
         
-        // Transfer fee from user to this contract
-        // Note: User must approve this contract first
+        // Deduct from user's privacy credits (no visible transaction)
+        require(userPrivacyCredits[user] >= feeAmount, "Insufficient privacy credits");
+        userPrivacyCredits[user] -= feeAmount;
+        
+        // Update statistics
+        totalCreditsUsed += feeAmount;
+        totalFeesCollected += feeAmount;
+        totalPrivacyTransactions++;
+        userPrivacyUsage[user]++;
+        
+        emit PrivacyCreditsUsed(
+            user, 
+            operationType, 
+            feeAmount, 
+            userPrivacyCredits[user]
+        );
+        
+        // Note: No PrivacyFeeCollected event to avoid timing correlation
+        
+        // Check if we need to rebalance reserves
+        if (cotiReserve < MIN_COTI_RESERVE) {
+            _rebalanceReserves();
+        }
+        
+        return true;
+    }
+    
+    /**
+     * @dev Legacy fee collection with direct transfer (for backward compatibility)
+     * @param user User paying the fee
+     * @param operationType Type of operation
+     * @param amount Transaction amount
+     * @return success Whether fee collection succeeded
+     * @notice This creates a visible transaction - use depositPrivacyCredits() instead
+     */
+    function collectPrivacyFeeDirect(
+        address user,
+        bytes32 operationType,
+        uint256 amount
+    ) external nonReentrant whenNotPaused returns (bool success) {
+        // Only registered contracts can collect fees
+        require(
+            hasRole(FEE_MANAGER_ROLE, msg.sender) || 
+            omniCoin.hasRole(keccak256("BRIDGE_ROLE"), msg.sender),
+            "Unauthorized fee collector"
+        );
+        
+        uint256 feeAmount = calculatePrivacyFee(operationType, amount);
+        require(feeAmount > 0, "No fee required");
+        
+        // Transfer fee from user to this contract (VISIBLE TRANSACTION)
         require(
             IERC20(address(omniCoin)).transferFrom(user, address(this), feeAmount),
             "Fee transfer failed"
@@ -235,6 +366,23 @@ contract PrivacyFeeManager is AccessControl, ReentrancyGuard, Pausable {
      */
     function rebalanceReserves() external onlyRole(TREASURY_ROLE) {
         _rebalanceReserves();
+    }
+    
+    /**
+     * @dev Record bridge usage for rewards/tracking
+     * @param user User who used the bridge
+     * @param amount Amount bridged
+     */
+    function recordBridgeUsage(address user, uint256 amount) external {
+        // Only authorized contracts can record usage
+        require(
+            msg.sender == address(omniCoin) || 
+            hasRole(FEE_MANAGER_ROLE, msg.sender),
+            "PrivacyFeeManager: Unauthorized"
+        );
+        
+        // Could track usage for rewards/analytics
+        emit BridgeUsageRecorded(user, amount);
     }
     
     /**
@@ -308,15 +456,18 @@ contract PrivacyFeeManager is AccessControl, ReentrancyGuard, Pausable {
      * @param user User address
      * @return usage Number of privacy transactions
      * @return estimatedFeesPaid Estimated fees paid (based on average)
+     * @return creditBalance Current privacy credit balance
      */
     function getUserPrivacyStats(address user) external view returns (
         uint256 usage,
-        uint256 estimatedFeesPaid
+        uint256 estimatedFeesPaid,
+        uint256 creditBalance
     ) {
         usage = userPrivacyUsage[user];
         if (totalPrivacyTransactions > 0) {
             estimatedFeesPaid = (totalFeesCollected * usage) / totalPrivacyTransactions;
         }
+        creditBalance = userPrivacyCredits[user];
     }
     
     /**
@@ -333,6 +484,30 @@ contract PrivacyFeeManager is AccessControl, ReentrancyGuard, Pausable {
         omniReserve = omniCoinReserve;
         cotiReserveAmount = cotiReserve;
         needsRebalance = cotiReserve < MIN_COTI_RESERVE;
+    }
+    
+    /**
+     * @dev Get privacy credit system statistics
+     * @return totalDeposited Total credits deposited
+     * @return totalUsed Total credits used
+     * @return totalActive Total active credits in system
+     * @return averageBalance Average credit balance per user
+     */
+    function getCreditSystemStats() external view returns (
+        uint256 totalDeposited,
+        uint256 totalUsed,
+        uint256 totalActive,
+        uint256 averageBalance
+    ) {
+        totalDeposited = totalCreditsDeposited;
+        totalUsed = totalCreditsUsed;
+        totalActive = totalCreditsDeposited - totalCreditsUsed;
+        
+        // Calculate average (simplified - in production would track active users)
+        if (totalPrivacyTransactions > 0) {
+            // Rough estimate based on total transactions
+            averageBalance = totalActive / (totalPrivacyTransactions / 10 + 1);
+        }
     }
     
     // =============================================================================

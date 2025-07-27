@@ -5,8 +5,8 @@ import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import "./omnicoin-erc20-coti.sol";
-import "./OmniCoinAccount.sol";
+import "../OmniCoinCore.sol";
+import "../OmniCoinAccount.sol";
 
 /**
  * @title OmniCoinPayment

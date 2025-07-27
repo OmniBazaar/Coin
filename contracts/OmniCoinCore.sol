@@ -312,6 +312,64 @@ contract OmniCoinCore is PrivateERC20, AccessControl, Pausable, ReentrancyGuard,
     }
     
     /**
+     * @dev Standard public approve (no privacy, no extra fees)
+     * @param spender Address allowed to spend
+     * @param amount Amount allowed
+     */
+    function approvePublic(address spender, uint256 amount) 
+        public 
+        whenNotPausedAndEnabled 
+        returns (bool) 
+    {
+        // Convert to encrypted type for internal use
+        if (isMpcAvailable) {
+            gtUint64 gtAmount = MpcCore.setPublic64(uint64(amount));
+            _approve(msg.sender, spender, gtAmount);
+        } else {
+            // In test mode, create a wrapped value
+            gtUint64 gtAmount = gtUint64.wrap(uint64(amount));
+            _approve(msg.sender, spender, gtAmount);
+        }
+        return true;
+    }
+    
+    /**
+     * @dev Approve with explicit privacy choice
+     * @param spender Address allowed to spend
+     * @param amount Amount allowed
+     * @param usePrivacy Whether to use privacy features (costs extra)
+     */
+    function approveWithPrivacy(address spender, uint256 amount, bool usePrivacy) 
+        external 
+        whenNotPausedAndEnabled 
+        nonReentrant 
+        returns (bool) 
+    {
+        if (usePrivacy && isMpcAvailable) {
+            // User explicitly chose privacy - collect fee
+            require(userPrivacyPreference[msg.sender], "OmniCoinCore: Enable privacy preference first");
+            
+            address privacyFeeManager = getPrivacyFeeManager();
+            if (privacyFeeManager != address(0)) {
+                // Collect privacy fee
+                IPrivacyFeeManager(privacyFeeManager).collectPrivacyFee(
+                    msg.sender,
+                    keccak256("APPROVE"),
+                    amount
+                );
+            }
+            
+            // Use MPC for private approval
+            gtUint64 gtAmount = MpcCore.setPublic64(uint64(amount));
+            _approve(msg.sender, spender, gtAmount);
+            return true;
+        } else {
+            // Standard public approve
+            return approvePublic(spender, amount);
+        }
+    }
+    
+    /**
      * @dev Transfer with explicit privacy choice
      * @param to Recipient address
      * @param amount Transfer amount
@@ -698,6 +756,25 @@ contract OmniCoinCore is PrivateERC20, AccessControl, Pausable, ReentrancyGuard,
     }
     
     /**
+     * @dev Get balance in plain format (for compatibility)
+     * @param account Account to query
+     * @return Balance as uint256
+     */
+    function balanceOfPublic(address account) public view returns (uint256) {
+        // In production with MPC, this would decrypt the balance
+        // For now, return test balance or 0
+        if (!isMpcAvailable) {
+            // In test mode, only the admin has the initial supply
+            if (hasRole(DEFAULT_ADMIN_ROLE, account) && _publicTotalSupply > 0) {
+                return _publicTotalSupply;
+            }
+            return 0;
+        }
+        // In MPC mode, would need to handle encrypted balance
+        return 0;
+    }
+    
+    /**
      * @dev Get balance for testing purposes (only works when MPC is not available)
      * @param account Account address
      */
@@ -715,6 +792,36 @@ contract OmniCoinCore is PrivateERC20, AccessControl, Pausable, ReentrancyGuard,
      */
     function decimals() public view virtual override returns (uint8) {
         return 6;
+    }
+    
+    /**
+     * @dev Get stake amount for address (placeholder)
+     * @param account Account to query
+     * @return Stake amount (always 0 for now)
+     */
+    function getStakeAmount(address account) external view returns (uint256) {
+        // Staking is handled in OmniCoinStaking contract
+        return 0;
+    }
+    
+    /**
+     * @dev Get reputation score for address (placeholder)
+     * @param account Account to query
+     * @return Reputation score (always 100 for now)
+     */
+    function getReputationScore(address account) external view returns (uint256) {
+        // Reputation is handled in Reputation contracts
+        return 100;
+    }
+    
+    /**
+     * @dev Get username for address (placeholder)
+     * @param account Account to query
+     * @return Username (empty string for now)
+     */
+    function addressToUsername(address account) external view returns (string memory) {
+        // Username mapping would be in account management contracts
+        return "";
     }
     
     /**

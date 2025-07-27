@@ -4,7 +4,7 @@ pragma solidity ^0.8.19;
 import "../OmniCoinRegistry.sol";
 import "../OmniNFTMarketplace.sol";
 import "../ListingNFT.sol";
-import "../ReputationSystemBase.sol";
+import "../ReputationSystem.sol";
 
 /**
  * @title MarketplaceDeploymentHelper
@@ -40,7 +40,7 @@ contract MarketplaceDeploymentHelper {
         address reputation
     ) {
         // Deploy ListingNFT contract
-        listingNFT = address(new ListingNFT(listingNFTName, listingNFTSymbol));
+        listingNFT = address(new ListingNFT(admin));
         registry.registerContract(
             keccak256("LISTING_NFT"),
             listingNFT,
@@ -49,12 +49,12 @@ contract MarketplaceDeploymentHelper {
         emit ContractDeployed("ListingNFT", listingNFT);
         
         // Deploy ReputationSystem
-        reputation = address(new ReputationSystemBase(
+        reputation = address(new ReputationSystem(
             address(registry),
             admin
         ));
         registry.registerContract(
-            registry.REPUTATION(),
+            registry.REPUTATION_CORE(),
             reputation,
             "Reputation System V2"
         );
@@ -146,7 +146,7 @@ contract MarketplaceDeploymentHelper {
      */
     function verifyMarketplaceDeployment() external view returns (bool) {
         address marketplace = registry.getContract(registry.NFT_MARKETPLACE());
-        address reputation = registry.getContract(registry.REPUTATION());
+        address reputation = registry.getContract(registry.REPUTATION_CORE());
         address listingNFT = registry.getContract(keccak256("LISTING_NFT"));
         
         return (

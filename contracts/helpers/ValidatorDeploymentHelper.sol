@@ -137,7 +137,7 @@ contract ValidatorDeploymentHelper {
         require(core != address(0), "Core not deployed");
         
         // Add validator to core contract
-        OmniCoinCoreV2(core).addValidator(validator);
+        OmniCoinCore(core).addValidator(validator);
         
         // Register validator metadata
         _storeValidatorMetadata(validator, nodeUrl, publicKey, stake);
@@ -227,7 +227,7 @@ contract ValidatorDeploymentHelper {
         require(initialValidators.length >= 3, "Need at least 3 validators");
         
         address core = registry.getContract(registry.OMNICOIN_CORE());
-        OmniCoinCoreV2 coreContract = OmniCoinCoreV2(core);
+        OmniCoinCore coreContract = OmniCoinCore(core);
         
         // Add all initial validators
         for (uint256 i = 0; i < initialValidators.length; i++) {
@@ -246,7 +246,7 @@ contract ValidatorDeploymentHelper {
         
         // Check that core has validators
         if (core != address(0)) {
-            OmniCoinCoreV2 coreContract = OmniCoinCoreV2(core);
+            OmniCoinCore coreContract = OmniCoinCore(core);
             return (
                 validatorSync != address(0) &&
                 batchProcessor != address(0) &&

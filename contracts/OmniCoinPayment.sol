@@ -75,7 +75,7 @@ contract OmniCoinPayment is AccessControl, ReentrancyGuard, Pausable {
     
     OmniCoinCore public token;
     OmniCoinAccount public accountContract;
-    OmniCoinStakingV2 public stakingContract;
+    OmniCoinStaking public stakingContract;
     
     /// @dev Payment mappings
     mapping(bytes32 => PrivatePayment) public payments;
@@ -161,7 +161,7 @@ contract OmniCoinPayment is AccessControl, ReentrancyGuard, Pausable {
         
         token = OmniCoinCore(_token);
         accountContract = OmniCoinAccount(_accountContract);
-        stakingContract = OmniCoinStakingV2(_stakingContract);
+        stakingContract = OmniCoinStaking(_stakingContract);
         privacyFeeManager = _privacyFeeManager;
         
         // Setup roles

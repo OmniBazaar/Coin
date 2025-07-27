@@ -30,6 +30,9 @@ contract OmniCoinRegistry is AccessControl, Pausable {
     
     // Core contracts
     bytes32 public constant OMNICOIN_CORE = keccak256("OMNICOIN_CORE");
+    bytes32 public constant OMNICOIN = keccak256("OMNICOIN");
+    bytes32 public constant PRIVATE_OMNICOIN = keccak256("PRIVATE_OMNICOIN");
+    bytes32 public constant OMNICOIN_BRIDGE = keccak256("OMNICOIN_BRIDGE");
     bytes32 public constant OMNICOIN_CONFIG = keccak256("OMNICOIN_CONFIG");
     bytes32 public constant FEE_DISTRIBUTION = keccak256("FEE_DISTRIBUTION");
     
@@ -57,6 +60,9 @@ contract OmniCoinRegistry is AccessControl, Pausable {
     bytes32 public constant VALIDATOR_MANAGER = keccak256("VALIDATOR_MANAGER");
     bytes32 public constant GAS_RELAYER = keccak256("GAS_RELAYER");
     bytes32 public constant FEE_MANAGER = keccak256("FEE_MANAGER");
+    bytes32 public constant TREASURY = keccak256("TREASURY");
+    bytes32 public constant DEX_SETTLEMENT = keccak256("DEX_SETTLEMENT");
+    bytes32 public constant NFT_MARKETPLACE = keccak256("NFT_MARKETPLACE");
     
     // =============================================================================
     // STRUCTS

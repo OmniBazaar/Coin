@@ -6,6 +6,7 @@ import "@openzeppelin/contracts/utils/Pausable.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import "./base/RegistryAware.sol";
 import "./OmniCoinCore.sol";
+import "./PrivacyFeeManager.sol";
 
 /**
  * @title BatchProcessor

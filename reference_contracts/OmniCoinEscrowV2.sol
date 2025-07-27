@@ -4,9 +4,9 @@ pragma solidity ^0.8.20;
 import "@openzeppelin/contracts/access/AccessControl.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/utils/Pausable.sol";
-import "../coti-contracts/contracts/utils/mpc/MpcCore.sol";
-import "./OmniCoinCore.sol";
-import "./PrivacyFeeManager.sol";
+import "../../coti-contracts/contracts/utils/mpc/MpcCore.sol";
+import "../OmniCoinCore.sol";
+import "../PrivacyFeeManager.sol";
 
 /**
  * @title OmniCoinEscrowV2
