@@ -7,54 +7,59 @@ describe("OmniCoinBridge Privacy Functions", function () {
   async function deployBridgeFixture() {
     const [owner, user1, user2, validator, treasury, development] = await ethers.getSigners();
 
-    // Deploy mock tokens
-    const MockERC20 = await ethers.getContractFactory("contracts/MockERC20.sol:MockERC20");
-    const omniToken = await MockERC20.deploy("OmniCoin", "OMNI", 6);
-    const cotiToken = await MockERC20.deploy("COTI", "COTI", 18);
+    // Deploy actual OmniCoinRegistry first
+    const OmniCoinRegistry = await ethers.getContractFactory("OmniCoinRegistry");
+    const registry = await OmniCoinRegistry.deploy(await owner.getAddress());
+    await registry.waitForDeployment();
+
+    // Deploy actual OmniCoin
+    const OmniCoin = await ethers.getContractFactory("OmniCoin");
+    const omniToken = await OmniCoin.deploy(await registry.getAddress());
     await omniToken.waitForDeployment();
+
+    // For COTI token, use StandardERC20Test
+    const StandardERC20Test = await ethers.getContractFactory("contracts/test/StandardERC20Test.sol:StandardERC20Test");
+    const cotiToken = await StandardERC20Test.deploy();
     await cotiToken.waitForDeployment();
+
+    // Set up registry
+    await registry.setContract(
+      ethers.keccak256(ethers.toUtf8Bytes("OMNICOIN")),
+      await omniToken.getAddress()
+    );
+    await registry.setContract(
+      ethers.keccak256(ethers.toUtf8Bytes("OMNIBAZAAR_TREASURY")),
+      await treasury.getAddress()
+    );
 
     // Deploy PrivacyFeeManager
     const PrivacyFeeManager = await ethers.getContractFactory("PrivacyFeeManager");
     const privacyFeeManager = await PrivacyFeeManager.deploy(
       await omniToken.getAddress(),
       await cotiToken.getAddress(),
-      owner.address, // Mock DEX router
-      owner.address
+      await owner.getAddress(), // DEX router address
+      await owner.getAddress()
     );
     await privacyFeeManager.waitForDeployment();
-
-    // Deploy Registry
-    const OmniCoinRegistry = await ethers.getContractFactory("OmniCoinRegistry");
-    const registry = await OmniCoinRegistry.deploy(owner.address);
-    await registry.waitForDeployment();
 
     // Deploy OmniCoinBridge
     const OmniCoinBridge = await ethers.getContractFactory("OmniCoinBridge");
     const bridge = await OmniCoinBridge.deploy(
-      await omniToken.getAddress(),
       await registry.getAddress(),
+      await omniToken.getAddress(),
+      await owner.getAddress(),
       await privacyFeeManager.getAddress()
     );
     await bridge.waitForDeployment();
 
-    // Set up fee distribution
-    await bridge.setFeeDistribution(
-      treasury.address,
-      development.address,
-      7000, // 70% validators
-      2000, // 20% treasury
-      1000  // 10% development
-    );
-
     // Grant necessary roles
-    await bridge.grantRole(await bridge.BRIDGE_VALIDATOR_ROLE(), validator.address);
+    await bridge.grantRole(await bridge.VALIDATOR_ROLE(), await validator.getAddress());
     await privacyFeeManager.grantRole(await privacyFeeManager.FEE_MANAGER_ROLE(), await bridge.getAddress());
 
     // Mint tokens
     const mintAmount = ethers.parseUnits("100000", 6);
-    await omniToken.mint(user1.address, mintAmount);
-    await omniToken.mint(user2.address, mintAmount);
+    await omniToken.mint(await user1.getAddress(), mintAmount);
+    await omniToken.mint(await user2.getAddress(), mintAmount);
 
     // Approve bridge and fee manager
     await omniToken.connect(user1).approve(await bridge.getAddress(), ethers.MaxUint256);
@@ -62,9 +67,8 @@ describe("OmniCoinBridge Privacy Functions", function () {
     await omniToken.connect(user1).approve(await privacyFeeManager.getAddress(), ethers.MaxUint256);
     await omniToken.connect(user2).approve(await privacyFeeManager.getAddress(), ethers.MaxUint256);
 
-    // Enable privacy preferences
-    await omniToken.connect(user1).setPrivacyPreference(true);
-    await omniToken.connect(user2).setPrivacyPreference(true);
+    // Note: Privacy preferences would be set on actual PrivateOmniCoin with MPC
+    // For testing with standard tokens, we skip this step
 
     return {
       bridge,
@@ -88,7 +92,7 @@ describe("OmniCoinBridge Privacy Functions", function () {
       const targetChain = 137; // Polygon
       const targetAddress = "0x1234567890123456789012345678901234567890";
 
-      const initialBalance = await omniToken.balanceOf(user1.address);
+      const initialBalance = await omniToken.balanceOf(await user1.getAddress());
 
       // Bridge tokens publicly
       await expect(bridge.connect(user1).bridgeTokens(
@@ -96,10 +100,10 @@ describe("OmniCoinBridge Privacy Functions", function () {
         targetChain,
         targetAddress
       )).to.emit(bridge, "TokensBridged")
-        .withArgs(user1.address, bridgeAmount, targetChain, targetAddress, false);
+        .withArgs(await user1.getAddress(), bridgeAmount, targetChain, targetAddress, false);
 
       // Verify tokens were locked
-      const finalBalance = await omniToken.balanceOf(user1.address);
+      const finalBalance = await omniToken.balanceOf(await user1.getAddress());
       expect(initialBalance - finalBalance).to.equal(bridgeAmount);
     });
 
@@ -158,7 +162,7 @@ describe("OmniCoinBridge Privacy Functions", function () {
       expect(initialCredits - finalCredits).to.equal(privacyFee);
 
       // Verify tokens were locked
-      const finalBalance = await omniToken.balanceOf(user1.address);
+      const finalBalance = await omniToken.balanceOf(await user1.getAddress());
       expect(initialBalance - finalBalance).to.equal(bridgeAmount);
     });
 

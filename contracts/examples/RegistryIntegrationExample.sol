@@ -2,9 +2,11 @@
 pragma solidity ^0.8.19;
 
 import "../base/RegistryAware.sol";
-import "../OmniCoinCore.sol";
+import "../OmniCoin.sol";
+import "../PrivateOmniCoin.sol";
 import "../OmniCoinReputationCore.sol";
 import "../OmniCoinEscrow.sol";
+import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
 /**
  * @title RegistryIntegrationExample
@@ -47,8 +49,9 @@ contract RegistryIntegrationExample is RegistryAware {
      */
     function transferTokens(address to, uint256 amount) external {
         // Get token contract
-        address tokenAddr = _getContract(registry.OMNICOIN_CORE());
-        OmniCoinCore token = OmniCoinCore(tokenAddr);
+        address tokenAddr = _getContract(registry.OMNICOIN());
+        // OmniCoinCore is deprecated - use standard ERC20 interface
+        IERC20 token = IERC20(tokenAddr);
         
         // Perform transfer (example - actual implementation would need proper interface)
         // token.transferFrom(msg.sender, to, amount);
@@ -64,13 +67,13 @@ contract RegistryIntegrationExample is RegistryAware {
     ) external returns (uint256) {
         // Batch get contracts for efficiency
         bytes32[] memory identifiers = new bytes32[](3);
-        identifiers[0] = registry.OMNICOIN_CORE();
+        identifiers[0] = registry.OMNICOIN();
         identifiers[1] = registry.REPUTATION_CORE();
         identifiers[2] = registry.ESCROW();
         
         address[] memory contracts = _getContracts(identifiers);
         
-        OmniCoinCore token = OmniCoinCore(contracts[0]);
+        IERC20 token = IERC20(contracts[0]);
         OmniCoinReputationCore reputation = OmniCoinReputationCore(contracts[1]);
         OmniCoinEscrow escrow = OmniCoinEscrow(contracts[2]);
         

@@ -434,7 +434,7 @@ contract OmniCoinPayment is RegistryAware, AccessControl, ReentrancyGuard, Pausa
         uint256 privacyFee = plainFee * PRIVACY_MULTIPLIER;
         
         // Collect privacy fee
-        PrivacyFeeManager(privacyFeeManager).collectPrivacyFee(
+        PrivacyFeeManager(privacyFeeManager).collectPrivateFee(
             msg.sender,
             keccak256("PAYMENT_PROCESS"),
             privacyFee
@@ -577,7 +577,7 @@ contract OmniCoinPayment is RegistryAware, AccessControl, ReentrancyGuard, Pausa
         uint256 privacyFee = plainFee * PRIVACY_MULTIPLIER;
         
         // Collect privacy fee
-        PrivacyFeeManager(privacyFeeManager).collectPrivacyFee(
+        PrivacyFeeManager(privacyFeeManager).collectPrivateFee(
             msg.sender,
             keccak256("STREAM_CREATE"),
             privacyFee
@@ -611,8 +611,8 @@ contract OmniCoinPayment is RegistryAware, AccessControl, ReentrancyGuard, Pausa
         if (privateToken == address(0)) revert InvalidReceiver();
         
         gtUint64 totalWithFee = MpcCore.add(gtTotalAmount, fee);
-        uint256 totalAmount = uint256(gtUint64.unwrap(totalWithFee));
-        if (!IERC20(privateToken).transferFrom(msg.sender, address(this), totalAmount)) {
+        uint256 totalAmountWithFee = uint256(gtUint64.unwrap(totalWithFee));
+        if (!IERC20(privateToken).transferFrom(msg.sender, address(this), totalAmountWithFee)) {
             revert TransferFailed();
         }
         
@@ -901,7 +901,6 @@ contract OmniCoinPayment is RegistryAware, AccessControl, ReentrancyGuard, Pausa
     /**
      * @notice Execute payment transfers internally
      * @dev Handles transfers between sender, receiver, and treasury
-     * @param paymentId Unique payment identifier
      * @param sender Payment sender address
      * @param receiver Payment receiver address
      * @param totalAmount Total payment amount before fees
@@ -944,18 +943,16 @@ contract OmniCoinPayment is RegistryAware, AccessControl, ReentrancyGuard, Pausa
             // Transfer fee if applicable
             gtBool hasFee = MpcCore.gt(fee, MpcCore.setPublic64(0));
             if (MpcCore.decrypt(hasFee)) {
-                address privateToken = _getContract(registry.PRIVATE_OMNICOIN());
+                address feeToken = _getContract(registry.PRIVATE_OMNICOIN());
                 address treasury = _getContract(registry.TREASURY());
-                if (privateToken != address(0) && treasury != address(0)) {
+                if (feeToken != address(0) && treasury != address(0)) {
                     uint256 feeAmount = uint256(gtUint64.unwrap(fee));
-                    if (!IERC20(privateToken).transfer(treasury, feeAmount)) {
+                    if (!IERC20(feeToken).transfer(treasury, feeAmount)) {
                         revert TransferFailed();
                     }
                 } else {
                     revert InvalidReceiver();
                 }
-                );
-                if (!MpcCore.decrypt(feeTransferResult)) revert TransferFailed();
             }
         } else {
             // Fallback - assume transfers succeed in test mode
@@ -981,7 +978,7 @@ contract OmniCoinPayment is RegistryAware, AccessControl, ReentrancyGuard, Pausa
         
         // Forward to staking contract
         if (isMpcAvailable) {
-            stakingContract.stakeGarbled(stakeAmount);
+            stakingContract.stakeGarbled(stakeAmount, true); // true = use privacy
         } else {
             // In test mode, assume staking succeeds
         }

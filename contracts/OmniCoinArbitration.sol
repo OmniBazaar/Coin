@@ -12,15 +12,13 @@ import {
     ctUint64, 
     itUint64
 } from "../coti-contracts/contracts/utils/mpc/MpcCore.sol";
-import {OmniCoinCore} from "./OmniCoinCore.sol";
-import {OmniCoin} from "./OmniCoin.sol";
-import {PrivateOmniCoin} from "./PrivateOmniCoin.sol";
 import {OmniCoinAccount} from "./OmniCoinAccount.sol";
 import {OmniCoinEscrow} from "./OmniCoinEscrow.sol";
 import {OmniCoinConfig} from "./OmniCoinConfig.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {PrivacyFeeManager} from "./PrivacyFeeManager.sol";
 import {RegistryAware} from "./base/RegistryAware.sol";
-import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {OmniCoinRegistry} from "./OmniCoinRegistry.sol";
 
 /**
  * @title OmniCoinArbitration
@@ -30,7 +28,6 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
  */
 contract OmniCoinArbitration is
     Initializable,
-    RegistryAware,
     OwnableUpgradeable,
     ReentrancyGuardUpgradeable
 {
@@ -171,7 +168,7 @@ contract OmniCoinArbitration is
     mapping(address => ctUint64) private arbitratorTotalEarnings;  // Private lifetime earnings
 
     /// @notice OmniCoin core contract
-    OmniCoinCore public omniCoin;
+    // @deprecated - Use registry to get token contracts dynamically
     /// @notice Account abstraction contract
     OmniCoinAccount public omniCoinAccount;
     /// @notice Escrow contract
@@ -197,6 +194,9 @@ contract OmniCoinArbitration is
     
     /// @notice Privacy fee manager contract address
     address public privacyFeeManager;
+    
+    /// @notice Registry contract reference
+    OmniCoinRegistry public registry;
 
     // =============================================================================
     // EVENTS
@@ -344,12 +344,12 @@ contract OmniCoinArbitration is
         __Ownable_init(msg.sender);
         __ReentrancyGuard_init();
         
-        // Initialize registry
-        _initializeRegistry(_registry);
+        // Store registry reference directly
+        registry = OmniCoinRegistry(_registry);
         
         // For backwards compatibility
         if (_omniCoin != address(0)) {
-            omniCoin = OmniCoinCore(_omniCoin);
+            // @deprecated - _omniCoin parameter kept for backwards compatibility
         }
         
         omniCoinAccount = OmniCoinAccount(_omniCoinAccount);
@@ -365,6 +365,15 @@ contract OmniCoinArbitration is
         
         // MPC availability will be set by admin after deployment
         isMpcAvailable = false; // Default to false (Hardhat/testing mode)
+    }
+    
+    /**
+     * @notice Get contract address from registry
+     * @param identifier The contract identifier
+     * @return The contract address
+     */
+    function _getContract(bytes32 identifier) internal view returns (address) {
+        return registry.getContract(identifier);
     }
     
     /**
@@ -412,9 +421,8 @@ contract OmniCoinArbitration is
 
         // Transfer staking amount to this contract (always use public OmniCoin for staking)
         address publicToken = _getContract(registry.OMNICOIN());
-        if (publicToken == address(0) && address(omniCoin) != address(0)) {
-            // Backwards compatibility
-            if (!omniCoin.transferFromPublic(msg.sender, address(this), _stakingAmount)) {
+        if (publicToken != address(0)) {
+            if (!IERC20(publicToken).transferFrom(msg.sender, address(this), _stakingAmount)) {
                 revert StakingTransferFailed();
             }
         } else {
@@ -461,9 +469,8 @@ contract OmniCoinArbitration is
 
         // Transfer additional stake (always use public OmniCoin for staking)
         address publicToken = _getContract(registry.OMNICOIN());
-        if (publicToken == address(0) && address(omniCoin) != address(0)) {
-            // Backwards compatibility
-            if (!omniCoin.transferFromPublic(msg.sender, address(this), _additionalStake)) {
+        if (publicToken != address(0)) {
+            if (!IERC20(publicToken).transferFrom(msg.sender, address(this), _additionalStake)) {
                 revert AdditionalStakingTransferFailed();
             }
         } else {
@@ -600,7 +607,7 @@ contract OmniCoinArbitration is
         // Collect privacy fee (10x normal fee)
         uint256 normalFee = uint64(gtUint64.unwrap(fee));
         uint256 privacyFee = normalFee * PRIVACY_MULTIPLIER;
-        PrivacyFeeManager(privacyFeeManager).collectPrivacyFee(
+        PrivacyFeeManager(privacyFeeManager).collectPrivateFee(
             msg.sender,
             keccak256("ARBITRATION_DISPUTE"),
             privacyFee
@@ -767,7 +774,7 @@ contract OmniCoinArbitration is
         // Collect privacy fee (10x normal fee)
         uint256 normalFee = uint64(gtUint64.unwrap(fee));
         uint256 privacyFee = normalFee * PRIVACY_MULTIPLIER;
-        PrivacyFeeManager(privacyFeeManager).collectPrivacyFee(
+        PrivacyFeeManager(privacyFeeManager).collectPrivateFee(
             msg.sender,
             keccak256("ARBITRATION_RESOLUTION"),
             privacyFee
@@ -907,9 +914,9 @@ contract OmniCoinArbitration is
      * @dev Parameters are unused in current implementation
      */
     function _executePrivatePayouts(
-        bytes32, // _escrowId - will be used in full implementation
-        ctUint64, // _buyerPayout - will be used in full implementation 
-        ctUint64 // _sellerPayout - will be used in full implementation
+        bytes32 _escrowId, // will be used in full implementation
+        ctUint64 _buyerPayout, // will be used in full implementation 
+        ctUint64 _sellerPayout // will be used in full implementation
     ) internal view {
         // Get participants - will be used in full implementation
         // address[] memory participants = disputeParticipants[_escrowId];
@@ -920,9 +927,6 @@ contract OmniCoinArbitration is
         address[] memory participants = disputeParticipants[_escrowId];
         address buyer = participants[0];
         address seller = participants[1];
-        
-        // Get dispute to check if privacy was used
-        ConfidentialDispute storage dispute = disputes[_escrowId];
         
         // For arbitration payouts, use public tokens by default
         address publicToken = _getContract(registry.OMNICOIN());
@@ -1504,7 +1508,7 @@ contract OmniCoinArbitration is
      * @return uint256 Participation index value
      */
     function _calculateParticipationIndex(address _user) internal view returns (uint256) {
-        (, , , , , uint256 reputation) = omniCoinAccount.getAccountStatus(_user);
+        (, , , , , , uint256 reputation) = omniCoinAccount.getAccountStatus(_user);
         return reputation;
     }
 

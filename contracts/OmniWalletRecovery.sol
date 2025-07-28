@@ -5,7 +5,7 @@ import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Ini
 import {OwnableUpgradeable} from "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
 import {ReentrancyGuardUpgradeable} from "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
 import {ECDSA} from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
-import {RegistryAware} from "./base/RegistryAware.sol";
+import {OmniCoinRegistry} from "./OmniCoinRegistry.sol";
 
 /**
  * @title OmniWalletRecovery
@@ -16,8 +16,7 @@ import {RegistryAware} from "./base/RegistryAware.sol";
 contract OmniWalletRecovery is
     Initializable,
     OwnableUpgradeable,
-    ReentrancyGuardUpgradeable,
-    RegistryAware
+    ReentrancyGuardUpgradeable
 {
     using ECDSA for bytes32;
 
@@ -199,8 +198,22 @@ contract OmniWalletRecovery is
 
     /// @custom:oz-upgrades-unsafe-allow constructor
     /// @notice Disables initializers to ensure the contract can only be initialized through a proxy
-    constructor() RegistryAware(address(0)) {
+    // State variables
+    OmniCoinRegistry public registry;
+    
+    /// @custom:oz-upgrades-unsafe-allow constructor
+    /// @notice Disables initializers to ensure the contract can only be initialized through a proxy
+    constructor() {
         _disableInitializers();
+    }
+    
+    /**
+     * @notice Get contract address from registry
+     * @param identifier The contract identifier
+     * @return The contract address
+     */
+    function _getContract(bytes32 identifier) internal view returns (address) {
+        return registry.getContract(identifier);
     }
 
     /**
@@ -211,7 +224,8 @@ contract OmniWalletRecovery is
     function initialize(address _registry) external initializer {
         __Ownable_init(msg.sender);
         __ReentrancyGuard_init();
-        __RegistryAware_init(_registry);
+        // Store registry reference
+        registry = OmniCoinRegistry(_registry);
 
         requestCounter = 0;
         minGuardians = 2;

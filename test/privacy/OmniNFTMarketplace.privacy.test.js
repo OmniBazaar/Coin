@@ -7,32 +7,52 @@ describe("OmniNFTMarketplace Privacy Functions", function () {
   async function deployMarketplaceFixture() {
     const [owner, seller, buyer, bidder1, bidder2, treasury, development] = await ethers.getSigners();
 
-    // Deploy mock tokens
-    const MockERC20 = await ethers.getContractFactory("contracts/MockERC20.sol:MockERC20");
-    const omniToken = await MockERC20.deploy("OmniCoin", "OMNI", 6);
-    const cotiToken = await MockERC20.deploy("COTI", "COTI", 18);
+    // Deploy actual OmniCoinRegistry first
+    const OmniCoinRegistry = await ethers.getContractFactory("OmniCoinRegistry");
+    const registry = await OmniCoinRegistry.deploy(await owner.getAddress());
+    await registry.waitForDeployment();
+
+    // Deploy actual OmniCoin
+    const OmniCoin = await ethers.getContractFactory("OmniCoin");
+    const omniToken = await OmniCoin.deploy(await registry.getAddress());
     await omniToken.waitForDeployment();
+
+    // For COTI token, use StandardERC20Test
+    const StandardERC20Test = await ethers.getContractFactory("contracts/test/StandardERC20Test.sol:StandardERC20Test");
+    const cotiToken = await StandardERC20Test.deploy();
     await cotiToken.waitForDeployment();
 
-    // Deploy mock NFT
-    const MockERC721 = await ethers.getContractFactory("MockERC721");
-    const nftCollection = await MockERC721.deploy("Test NFT", "TNFT");
+    // Deploy actual ListingNFT
+    const ListingNFT = await ethers.getContractFactory("ListingNFT");
+    const nftCollection = await ListingNFT.deploy(
+        await registry.getAddress(),
+        await owner.getAddress()
+    );
     await nftCollection.waitForDeployment();
+
+    // Set up registry
+    await registry.setContract(
+      ethers.keccak256(ethers.toUtf8Bytes("OMNICOIN")),
+      await omniToken.getAddress()
+    );
+    await registry.setContract(
+      ethers.keccak256(ethers.toUtf8Bytes("LISTING_NFT")),
+      await nftCollection.getAddress()
+    );
+    await registry.setContract(
+      ethers.keccak256(ethers.toUtf8Bytes("OMNIBAZAAR_TREASURY")),
+      await treasury.getAddress()
+    );
 
     // Deploy PrivacyFeeManager
     const PrivacyFeeManager = await ethers.getContractFactory("PrivacyFeeManager");
     const privacyFeeManager = await PrivacyFeeManager.deploy(
       await omniToken.getAddress(),
       await cotiToken.getAddress(),
-      owner.address, // Mock DEX router
-      owner.address
+      await owner.getAddress(), // DEX router address
+      await owner.getAddress()
     );
     await privacyFeeManager.waitForDeployment();
-
-    // Deploy Registry
-    const OmniCoinRegistry = await ethers.getContractFactory("OmniCoinRegistry");
-    const registry = await OmniCoinRegistry.deploy(owner.address);
-    await registry.waitForDeployment();
 
     // Deploy OmniNFTMarketplace
     const OmniNFTMarketplace = await ethers.getContractFactory("OmniNFTMarketplace");
@@ -45,8 +65,8 @@ describe("OmniNFTMarketplace Privacy Functions", function () {
 
     // Set up fee distribution
     await marketplace.setFeeDistribution(
-      treasury.address,
-      development.address,
+      await treasury.getAddress(),
+      await development.getAddress(),
       7000, // 70% validators
       2000, // 20% treasury
       1000  // 10% development
@@ -57,15 +77,18 @@ describe("OmniNFTMarketplace Privacy Functions", function () {
 
     // Mint tokens
     const mintAmount = ethers.parseUnits("100000", 6);
-    await omniToken.mint(seller.address, mintAmount);
-    await omniToken.mint(buyer.address, mintAmount);
-    await omniToken.mint(bidder1.address, mintAmount);
-    await omniToken.mint(bidder2.address, mintAmount);
+    await omniToken.mint(await seller.getAddress(), mintAmount);
+    await omniToken.mint(await buyer.getAddress(), mintAmount);
+    await omniToken.mint(await bidder1.getAddress(), mintAmount);
+    await omniToken.mint(await bidder2.getAddress(), mintAmount);
 
-    // Mint NFTs to seller
+    // Mint NFTs to seller and get token IDs
+    const tokenIds = [];
     for (let i = 1; i <= 5; i++) {
-      await nftCollection.mint(seller.address, i);
-      await nftCollection.connect(seller).approve(await marketplace.getAddress(), i);
+      await nftCollection.mint(await seller.getAddress(), "https://example.com/token/" + i);
+      const currentTokenId = await nftCollection.currentTokenId();
+      tokenIds.push(currentTokenId);
+      await nftCollection.connect(seller).approve(await marketplace.getAddress(), currentTokenId);
     }
 
     // Approve marketplace and fee manager
@@ -79,11 +102,8 @@ describe("OmniNFTMarketplace Privacy Functions", function () {
     await omniToken.connect(bidder1).approve(await privacyFeeManager.getAddress(), ethers.MaxUint256);
     await omniToken.connect(bidder2).approve(await privacyFeeManager.getAddress(), ethers.MaxUint256);
 
-    // Enable privacy preferences
-    await omniToken.connect(seller).setPrivacyPreference(true);
-    await omniToken.connect(buyer).setPrivacyPreference(true);
-    await omniToken.connect(bidder1).setPrivacyPreference(true);
-    await omniToken.connect(bidder2).setPrivacyPreference(true);
+    // Note: Privacy preferences would be set on actual PrivateOmniCoin with MPC
+    // For testing with standard tokens, we skip this step
 
     return {
       marketplace,
@@ -97,7 +117,8 @@ describe("OmniNFTMarketplace Privacy Functions", function () {
       bidder1,
       bidder2,
       treasury,
-      development
+      development,
+      tokenIds
     };
   }
 

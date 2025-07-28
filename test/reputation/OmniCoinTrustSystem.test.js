@@ -4,6 +4,7 @@ const { ethers } = require("hardhat");
 describe("OmniCoinTrustSystem", function () {
     let trustModule;
     let reputationCore;
+    let registry;
     let owner, trustManager, cotiOracle, voter1, voter2, candidate1, candidate2;
 
     const MIN_VOTE_AMOUNT = ethers.parseUnits("100", 6); // 100 tokens
@@ -12,25 +13,32 @@ describe("OmniCoinTrustSystem", function () {
     beforeEach(async function () {
         [owner, trustManager, cotiOracle, voter1, voter2, candidate1, candidate2] = await ethers.getSigners();
 
-        // Deploy mock reputation core
-        const MockCore = await ethers.getContractFactory("OmniCoinReputationCore");
-        const config = await ethers.getContractFactory("OmniCoinConfig");
-        const configContract = await config.deploy(owner.address);
-        
-        reputationCore = await MockCore.deploy(
-            owner.address,
-            await configContract.getAddress(),
-            ethers.ZeroAddress,
-            ethers.ZeroAddress,
-            ethers.ZeroAddress
+        // Deploy actual OmniCoinRegistry
+        const OmniCoinRegistry = await ethers.getContractFactory("OmniCoinRegistry");
+        registry = await OmniCoinRegistry.deploy(await owner.getAddress());
+        await registry.waitForDeployment();
+
+        // Deploy actual OmniCoinReputationCore
+        const ReputationCore = await ethers.getContractFactory("OmniCoinReputationCore");
+        reputationCore = await ReputationCore.deploy(
+            await registry.getAddress(),
+            await owner.getAddress()
+        );
+        await reputationCore.waitForDeployment();
+
+        // Set up registry
+        await registry.setContract(
+            ethers.keccak256(ethers.toUtf8Bytes("REPUTATION_CORE")),
+            await reputationCore.getAddress()
         );
 
         // Deploy trust module
         const Trust = await ethers.getContractFactory("OmniCoinTrustSystem");
         trustModule = await Trust.deploy(
-            owner.address,
+            await owner.getAddress(),
             await reputationCore.getAddress()
         );
+        await trustModule.waitForDeployment();
 
         // Grant MODULE_ROLE on reputation core
         const MODULE_ROLE = await reputationCore.MODULE_ROLE();
@@ -40,14 +48,14 @@ describe("OmniCoinTrustSystem", function () {
         const TRUST_MANAGER_ROLE = await trustModule.TRUST_MANAGER_ROLE();
         const COTI_ORACLE_ROLE = await trustModule.COTI_ORACLE_ROLE();
         
-        await trustModule.grantRole(TRUST_MANAGER_ROLE, trustManager.address);
-        await trustModule.grantRole(COTI_ORACLE_ROLE, cotiOracle.address);
+        await trustModule.grantRole(TRUST_MANAGER_ROLE, await trustManager.getAddress());
+        await trustModule.grantRole(COTI_ORACLE_ROLE, await cotiOracle.getAddress());
     });
 
     describe("Deployment", function () {
         it("Should set correct admin", async function () {
             const ADMIN_ROLE = await trustModule.ADMIN_ROLE();
-            expect(await trustModule.hasRole(ADMIN_ROLE, owner.address)).to.be.true;
+            expect(await trustModule.hasRole(ADMIN_ROLE, await owner.getAddress())).to.be.true;
         });
 
         it("Should set correct reputation core", async function () {
@@ -80,15 +88,15 @@ describe("OmniCoinTrustSystem", function () {
             const voteInput = createVoteInput(voteAmount);
 
             await trustModule.connect(voter1).castDPoSVote(
-                candidate1.address,
+                await candidate1.getAddress(),
                 voteInput
             );
 
             // Check voter count increased
-            expect(await trustModule.getVoterCount(candidate1.address)).to.equal(1);
+            expect(await trustModule.getVoterCount(await candidate1.getAddress())).to.equal(1);
             
             // Check delegation count
-            expect(await trustModule.voterDelegationCount(voter1.address)).to.equal(1);
+            expect(await trustModule.voterDelegationCount(await voter1.getAddress())).to.equal(1);
         });
 
         it("Should prevent self-voting", async function () {
@@ -96,7 +104,7 @@ describe("OmniCoinTrustSystem", function () {
 
             await expect(
                 trustModule.connect(voter1).castDPoSVote(
-                    voter1.address,
+                    await voter1.getAddress(),
                     voteInput
                 )
             ).to.be.revertedWith("TrustSystem: Cannot vote for self");
@@ -108,7 +116,7 @@ describe("OmniCoinTrustSystem", function () {
 
             await expect(
                 trustModule.connect(voter1).castDPoSVote(
-                    candidate1.address,
+                    await candidate1.getAddress(),
                     voteInput
                 )
             ).to.be.revertedWith("TrustSystem: Insufficient vote amount");
@@ -129,7 +137,7 @@ describe("OmniCoinTrustSystem", function () {
             // 11th vote should fail
             await expect(
                 trustModule.connect(voter1).castDPoSVote(
-                    candidate2.address,
+                    await candidate2.getAddress(),
                     voteInput
                 )
             ).to.be.revertedWith("TrustSystem: Too many delegations");
@@ -141,37 +149,37 @@ describe("OmniCoinTrustSystem", function () {
 
             // First vote
             await trustModule.connect(voter1).castDPoSVote(
-                candidate1.address,
+                await candidate1.getAddress(),
                 voteInput1
             );
 
             // Second vote to same candidate
             await trustModule.connect(voter1).castDPoSVote(
-                candidate1.address,
+                await candidate1.getAddress(),
                 voteInput2
             );
 
             // Voter count should remain 1
             expect(await trustModule.getVoterCount(candidate1.address)).to.equal(1);
             // Delegation count should remain 1
-            expect(await trustModule.voterDelegationCount(voter1.address)).to.equal(1);
+            expect(await trustModule.voterDelegationCount(await voter1.getAddress())).to.equal(1);
         });
 
         it("Should track voter's candidates", async function () {
             const voteInput = createVoteInput(MIN_VOTE_AMOUNT);
 
             await trustModule.connect(voter1).castDPoSVote(
-                candidate1.address,
+                await candidate1.getAddress(),
                 voteInput
             );
             await trustModule.connect(voter1).castDPoSVote(
-                candidate2.address,
+                await candidate2.getAddress(),
                 voteInput
             );
 
-            const candidates = await trustModule.getVoterCandidates(voter1.address);
+            const candidates = await trustModule.getVoterCandidates(await voter1.getAddress());
             expect(candidates).to.include(candidate1.address);
-            expect(candidates).to.include(candidate2.address);
+            expect(candidates).to.include(await candidate2.getAddress());
             expect(candidates.length).to.equal(2);
         });
     });
@@ -186,7 +194,7 @@ describe("OmniCoinTrustSystem", function () {
             };
             
             await trustModule.connect(voter1).castDPoSVote(
-                candidate1.address,
+                await candidate1.getAddress(),
                 voteInput
             );
         });
@@ -199,13 +207,13 @@ describe("OmniCoinTrustSystem", function () {
             };
 
             await trustModule.connect(voter1).withdrawDPoSVote(
-                candidate1.address,
+                await candidate1.getAddress(),
                 withdrawInput
             );
 
             // Should still have active vote
             const voteRecord = await trustModule.connect(voter1).getVoteRecord(
-                voter1.address,
+                await voter1.getAddress(),
                 candidate1.address
             );
             expect(voteRecord.isActive).to.be.true;
@@ -218,20 +226,20 @@ describe("OmniCoinTrustSystem", function () {
             };
 
             await trustModule.connect(voter1).withdrawDPoSVote(
-                candidate1.address,
+                await candidate1.getAddress(),
                 withdrawInput
             );
 
             // Vote should be inactive
             const voteRecord = await trustModule.connect(voter1).getVoteRecord(
-                voter1.address,
+                await voter1.getAddress(),
                 candidate1.address
             );
             expect(voteRecord.isActive).to.be.false;
 
             // Counts should be updated
             expect(await trustModule.getVoterCount(candidate1.address)).to.equal(0);
-            expect(await trustModule.voterDelegationCount(voter1.address)).to.equal(0);
+            expect(await trustModule.voterDelegationCount(await voter1.getAddress())).to.equal(0);
         });
 
         it("Should prevent withdrawal of more than voted", async function () {
@@ -243,7 +251,7 @@ describe("OmniCoinTrustSystem", function () {
 
             await expect(
                 trustModule.connect(voter1).withdrawDPoSVote(
-                    candidate1.address,
+                    await candidate1.getAddress(),
                     withdrawInput
                 )
             ).to.be.revertedWith("TrustSystem: Insufficient votes");
@@ -257,7 +265,7 @@ describe("OmniCoinTrustSystem", function () {
 
             await expect(
                 trustModule.connect(voter2).withdrawDPoSVote(
-                    candidate1.address,
+                    await candidate1.getAddress(),
                     withdrawInput
                 )
             ).to.be.revertedWith("TrustSystem: No active vote");
@@ -273,7 +281,7 @@ describe("OmniCoinTrustSystem", function () {
         it("Should update COTI PoT score", async function () {
             const score = 7500;
             await trustModule.connect(cotiOracle).updateCotiPoTScore(
-                candidate1.address,
+                await candidate1.getAddress(),
                 score
             );
 
@@ -283,7 +291,7 @@ describe("OmniCoinTrustSystem", function () {
         it("Should require COTI oracle role", async function () {
             await expect(
                 trustModule.connect(voter1).updateCotiPoTScore(
-                    candidate1.address,
+                    await candidate1.getAddress(),
                     7500
                 )
             ).to.be.revertedWithCustomError(trustModule, "AccessControlUnauthorizedAccount");
@@ -294,7 +302,7 @@ describe("OmniCoinTrustSystem", function () {
             
             await expect(
                 trustModule.connect(cotiOracle).updateCotiPoTScore(
-                    candidate1.address,
+                    await candidate1.getAddress(),
                     7500
                 )
             ).to.be.revertedWith("TrustSystem: COTI PoT not enabled");
@@ -302,7 +310,7 @@ describe("OmniCoinTrustSystem", function () {
 
         it("Should set user preference for COTI PoT", async function () {
             await trustModule.connect(trustManager).setUseCotiPoT(
-                candidate1.address,
+                await candidate1.getAddress(),
                 true
             );
 
@@ -315,13 +323,13 @@ describe("OmniCoinTrustSystem", function () {
             
             // Set COTI score
             await trustModule.connect(cotiOracle).updateCotiPoTScore(
-                candidate1.address,
+                await candidate1.getAddress(),
                 cotiScore
             );
             
             // Set preference to use COTI
             await trustModule.connect(trustManager).setUseCotiPoT(
-                candidate1.address,
+                await candidate1.getAddress(),
                 true
             );
 
@@ -340,7 +348,7 @@ describe("OmniCoinTrustSystem", function () {
 
             // Cast vote
             await trustModule.connect(voter1).castDPoSVote(
-                candidate1.address,
+                await candidate1.getAddress(),
                 voteInput
             );
 
@@ -360,7 +368,7 @@ describe("OmniCoinTrustSystem", function () {
             };
 
             await trustModule.connect(voter1).castDPoSVote(
-                candidate1.address,
+                await candidate1.getAddress(),
                 voteInput
             );
 
@@ -411,12 +419,12 @@ describe("OmniCoinTrustSystem", function () {
             };
 
             await trustModule.connect(voter1).castDPoSVote(
-                candidate1.address,
+                await candidate1.getAddress(),
                 voteInput
             );
 
             const voteRecord = await trustModule.connect(voter1).getVoteRecord(
-                voter1.address,
+                await voter1.getAddress(),
                 candidate1.address
             );
 
@@ -427,7 +435,7 @@ describe("OmniCoinTrustSystem", function () {
         it("Should reject vote record view from unauthorized", async function () {
             await expect(
                 trustModule.connect(voter2).getVoteRecord(
-                    voter1.address,
+                    await voter1.getAddress(),
                     candidate1.address
                 )
             ).to.be.revertedWith("TrustSystem: Not authorized");
@@ -440,7 +448,7 @@ describe("OmniCoinTrustSystem", function () {
             };
 
             await trustModule.connect(voter1).castDPoSVote(
-                candidate1.address,
+                await candidate1.getAddress(),
                 voteInput
             );
 
@@ -470,7 +478,7 @@ describe("OmniCoinTrustSystem", function () {
             
             await expect(
                 trustModule.connect(voter1).castDPoSVote(
-                    candidate1.address,
+                    await candidate1.getAddress(),
                     voteInput
                 )
             ).to.be.revertedWithCustomError(trustModule, "EnforcedPause");

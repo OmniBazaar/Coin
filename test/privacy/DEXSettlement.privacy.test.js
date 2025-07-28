@@ -7,58 +7,66 @@ describe("DEXSettlement Privacy Functions", function () {
   async function deployDEXFixture() {
     const [owner, maker, taker, validator, treasury, development] = await ethers.getSigners();
 
-    // Deploy mock tokens
-    const MockERC20 = await ethers.getContractFactory("contracts/MockERC20.sol:MockERC20");
-    const omniToken = await MockERC20.deploy("OmniCoin", "OMNI", 6);
-    const usdcToken = await MockERC20.deploy("USDC", "USDC", 6);
-    const cotiToken = await MockERC20.deploy("COTI", "COTI", 18);
+    // Deploy actual OmniCoinRegistry first
+    const OmniCoinRegistry = await ethers.getContractFactory("OmniCoinRegistry");
+    const registry = await OmniCoinRegistry.deploy(await owner.getAddress());
+    await registry.waitForDeployment();
+
+    // Deploy actual OmniCoin
+    const OmniCoin = await ethers.getContractFactory("OmniCoin");
+    const omniToken = await OmniCoin.deploy(await registry.getAddress());
     await omniToken.waitForDeployment();
+
+    // For other tokens, use StandardERC20Test
+    const StandardERC20Test = await ethers.getContractFactory("contracts/test/StandardERC20Test.sol:StandardERC20Test");
+    const usdcToken = await StandardERC20Test.deploy();
     await usdcToken.waitForDeployment();
+    
+    const StandardERC20Test2 = await ethers.getContractFactory("contracts/test/StandardERC20Test.sol:StandardERC20Test");
+    const cotiToken = await StandardERC20Test2.deploy();
     await cotiToken.waitForDeployment();
+
+    // Set up registry
+    await registry.setContract(
+      ethers.keccak256(ethers.toUtf8Bytes("OMNICOIN")),
+      await omniToken.getAddress()
+    );
+    await registry.setContract(
+      ethers.keccak256(ethers.toUtf8Bytes("OMNIBAZAAR_TREASURY")),
+      await treasury.getAddress()
+    );
 
     // Deploy PrivacyFeeManager
     const PrivacyFeeManager = await ethers.getContractFactory("PrivacyFeeManager");
     const privacyFeeManager = await PrivacyFeeManager.deploy(
       await omniToken.getAddress(),
       await cotiToken.getAddress(),
-      owner.address, // Mock DEX router
-      owner.address
+      await owner.getAddress(), // DEX router address
+      await owner.getAddress()
     );
     await privacyFeeManager.waitForDeployment();
-
-    // Deploy Registry
-    const OmniCoinRegistry = await ethers.getContractFactory("OmniCoinRegistry");
-    const registry = await OmniCoinRegistry.deploy(owner.address);
-    await registry.waitForDeployment();
 
     // Deploy DEXSettlement
     const DEXSettlement = await ethers.getContractFactory("DEXSettlement");
     const dexSettlement = await DEXSettlement.deploy(
-      await omniToken.getAddress(),
       await registry.getAddress(),
-      await privacyFeeManager.getAddress()
+      await owner.getAddress()
     );
     await dexSettlement.waitForDeployment();
 
     // Set up fee distribution
-    await dexSettlement.setFeeDistribution(
-      treasury.address,
-      development.address,
-      7000, // 70% validators
-      2000, // 20% treasury
-      1000  // 10% development
-    );
+    await dexSettlement.setFeeBasisPoints(30); // 0.3%
 
     // Grant necessary roles
-    await dexSettlement.grantRole(await dexSettlement.VALIDATOR_ROLE(), validator.address);
+    await dexSettlement.grantRole(await dexSettlement.MATCHER_ROLE(), await validator.getAddress());
     await privacyFeeManager.grantRole(await privacyFeeManager.FEE_MANAGER_ROLE(), await dexSettlement.getAddress());
 
     // Mint tokens
     const mintAmount = ethers.parseUnits("100000", 6);
-    await omniToken.mint(maker.address, mintAmount);
-    await omniToken.mint(taker.address, mintAmount);
-    await usdcToken.mint(maker.address, mintAmount);
-    await usdcToken.mint(taker.address, mintAmount);
+    await omniToken.mint(await maker.getAddress(), mintAmount);
+    await omniToken.mint(await taker.getAddress(), mintAmount);
+    await usdcToken.mint(await maker.getAddress(), mintAmount);
+    await usdcToken.mint(await taker.getAddress(), mintAmount);
 
     // Approve DEX and fee manager
     await omniToken.connect(maker).approve(await dexSettlement.getAddress(), ethers.MaxUint256);
@@ -69,13 +77,15 @@ describe("DEXSettlement Privacy Functions", function () {
     await omniToken.connect(maker).approve(await privacyFeeManager.getAddress(), ethers.MaxUint256);
     await omniToken.connect(taker).approve(await privacyFeeManager.getAddress(), ethers.MaxUint256);
 
-    // Enable privacy preferences
-    await omniToken.connect(maker).setPrivacyPreference(true);
-    await omniToken.connect(taker).setPrivacyPreference(true);
+    // Note: Privacy preferences would be set on actual PrivateOmniCoin with MPC
+    // For testing with standard tokens, we skip this step
 
-    // Whitelist tokens
-    await dexSettlement.whitelistToken(await omniToken.getAddress());
-    await dexSettlement.whitelistToken(await usdcToken.getAddress());
+    // Add supported tokens
+    await dexSettlement.addSupportedToken(await omniToken.getAddress());
+    await dexSettlement.addSupportedToken(await usdcToken.getAddress());
+    
+    // Create trading pair
+    await dexSettlement.createTradingPair(await omniToken.getAddress(), await usdcToken.getAddress());
 
     return {
       dexSettlement,

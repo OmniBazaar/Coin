@@ -1398,8 +1398,30 @@ contract FeeDistribution is RegistryAware, ReentrancyGuard, Pausable, AccessCont
             }
         }
         
-        // Use existing collectFees function
-        collectFees(token, amount, source);
+        // Collect fees logic
+        if (amount == 0) revert InvalidAmount();
+        if (!enabledFeeSources[source]) revert InvalidToken();
+
+        // Transfer fees to this contract
+        IERC20(token).safeTransferFrom(msg.sender, address(this), amount);
+
+        // Track collected fees
+        tokenTotals[token] += amount;
+        feeSourceTotals[source] += amount;
+
+        // Add to fee collections array
+        feeCollections.push(FeeCollection({
+            token: token,
+            amount: amount,
+            source: source,
+            collector: msg.sender,
+            timestamp: block.timestamp
+        }));
+
+        // Update revenue metrics
+        revenueMetrics.totalFeesCollected += amount;
+
+        emit FeesCollected(msg.sender, token, amount, source, block.timestamp);
     }
     
     /**

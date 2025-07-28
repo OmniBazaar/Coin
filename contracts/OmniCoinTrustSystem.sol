@@ -359,7 +359,7 @@ contract OmniCoinTrustSystem is ReputationSystemBase, ITrustSystem {
      * @dev Checks if vote amount is above minimum threshold
      * @param gtVotes Encrypted vote amount
      */
-    function _validateVoteAmount(gtUint64 gtVotes) internal view {
+    function _validateVoteAmount(gtUint64 gtVotes) internal {
         if (isMpcAvailable) {
             gtBool isEnough = MpcCore.ge(gtVotes, MpcCore.setPublic64(uint64(MIN_VOTE_AMOUNT)));
             if (!MpcCore.decrypt(isEnough)) revert InsufficientVoteAmount();
@@ -449,7 +449,7 @@ contract OmniCoinTrustSystem is ReputationSystemBase, ITrustSystem {
     function _validateWithdrawalAmount(
         Vote storage record,
         gtUint64 gtVotes
-    ) internal view {
+    ) internal {
         if (isMpcAvailable) {
             gtBool hasEnough = MpcCore.ge(record.encryptedAmount, gtVotes);
             if (!MpcCore.decrypt(hasEnough)) revert InsufficientVoteAmount();
@@ -555,7 +555,7 @@ contract OmniCoinTrustSystem is ReputationSystemBase, ITrustSystem {
     function _calculateDecayedVotes(
         gtUint64 votes,
         uint256 timeSinceUpdate
-    ) internal view returns (gtUint64) {
+    ) internal returns (gtUint64) {
         if (timeSinceUpdate > VOTE_DECAY_PERIOD - 1) {
             // Apply full decay
             return gtUint64.wrap(0);

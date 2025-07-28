@@ -5,12 +5,8 @@ import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Ini
 import {OwnableUpgradeable} from "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
 import {ReentrancyGuardUpgradeable} from "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
 import {PausableUpgradeable} from "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol";
-import {OmniCoinCore} from "./OmniCoinCore.sol";
-import {OmniCoin} from "./OmniCoin.sol";
-import {PrivateOmniCoin} from "./PrivateOmniCoin.sol";
-import {OmniCoinPrivacyBridge} from "./OmniCoinPrivacyBridge.sol";
-import {RegistryAware} from "./base/RegistryAware.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {OmniCoinRegistry} from "./OmniCoinRegistry.sol";
 
 /**
  * @title OmniBatchTransactions
@@ -20,7 +16,6 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
  */
 contract OmniBatchTransactions is
     Initializable,
-    RegistryAware,
     OwnableUpgradeable,
     ReentrancyGuardUpgradeable,
     PausableUpgradeable
@@ -75,8 +70,8 @@ contract OmniBatchTransactions is
     // STATE VARIABLES
     // =============================================================================
     
-    /// @notice OmniCoin core contract instance
-    OmniCoinCore public omniCoin;
+    /// @notice Registry contract for dynamic lookups
+    OmniCoinRegistry public registry;
     
     // =============================================================================
     // CUSTOM ERRORS
@@ -97,6 +92,10 @@ contract OmniBatchTransactions is
     error InvalidWhitelistRequest();
     error InvalidMaxBatchSize();
     error InvalidMaxGasPerOperation();
+    
+    // =============================================================================
+    // STATE VARIABLES
+    // =============================================================================
     
     /// @notice Mapping of batch ID to batch execution details
     mapping(uint256 => BatchExecution) public batchExecutions;
@@ -187,25 +186,28 @@ contract OmniBatchTransactions is
     constructor() {
         _disableInitializers();
     }
+    
+    /**
+     * @notice Get contract address from registry
+     * @param identifier The contract identifier
+     * @return The contract address
+     */
+    function _getContract(bytes32 identifier) internal view returns (address) {
+        return registry.getContract(identifier);
+    }
 
     /**
      * @notice Initialize the batch transaction contract
      * @dev Called once during deployment
      * @param _registry Address of the registry contract
-     * @param _omniCoin Address of the OmniCoin core contract (deprecated, use registry)
      */
-    function initialize(address _registry, address _omniCoin) public initializer {
+    function initialize(address _registry, address /* initialOwner */) public initializer {
         __Ownable_init(msg.sender);
         __ReentrancyGuard_init();
         __Pausable_init();
         
-        // Initialize registry
-        _initializeRegistry(_registry);
-
-        // For backwards compatibility
-        if (_omniCoin != address(0)) {
-            omniCoin = OmniCoinCore(_omniCoin);
-        }
+        // Store registry address directly since RegistryAware uses constructor
+        registry = OmniCoinRegistry(_registry);
         
         maxBatchSize = 50; // Maximum 50 operations per batch
         maxGasPerOperation = 500000; // 500k gas per operation max
@@ -326,6 +328,7 @@ contract OmniBatchTransactions is
      * @param operation The operation to execute
      * @return Data returned from the operation
      */
+    // solhint-disable-next-line code-complexity
     function _performOperation(
         BatchOperation calldata operation
     ) external returns (bytes memory) {
@@ -378,10 +381,8 @@ contract OmniBatchTransactions is
             address publicToken = _getContract(registry.OMNICOIN());
             if (publicToken != address(0)) {
                 if (!IERC20(publicToken).transfer(recipient, amount)) revert TransferFailed();
-            } else if (address(omniCoin) != address(0)) {
-                // Fallback to legacy OmniCoinCore
-                if (!omniCoin.transferPublic(recipient, amount)) revert TransferFailed();
             } else {
+                // No token available
                 revert TransferFailed();
             }
         }
@@ -412,10 +413,8 @@ contract OmniBatchTransactions is
             address publicToken = _getContract(registry.OMNICOIN());
             if (publicToken != address(0)) {
                 if (!IERC20(publicToken).approve(spender, amount)) revert ApprovalFailed();
-            } else if (address(omniCoin) != address(0)) {
-                // Fallback to legacy OmniCoinCore
-                if (!omniCoin.approvePublic(spender, amount)) revert ApprovalFailed();
             } else {
+                // No token available
                 revert ApprovalFailed();
             }
         }
@@ -454,7 +453,7 @@ contract OmniBatchTransactions is
      * @return Encoded amount output
      */
     function _executeBridgeTransfer(
-        BatchOperation calldata operation
+        BatchOperation memory operation
     ) internal returns (bytes memory) {
         (uint256 amount, bool toPrivate) = abi.decode(
             operation.data,
@@ -466,9 +465,21 @@ contract OmniBatchTransactions is
         
         uint256 amountOut;
         if (toPrivate) {
-            amountOut = OmniCoinPrivacyBridge(bridge).convertToPrivate(amount);
+            // Call convertToPrivate
+            // solhint-disable-next-line avoid-low-level-calls
+            (bool success, bytes memory data) = bridge.call(
+                abi.encodeWithSignature("convertToPrivate(uint256)", amount)
+            );
+            if (!success) revert OperationFailed();
+            amountOut = abi.decode(data, (uint256));
         } else {
-            amountOut = OmniCoinPrivacyBridge(bridge).convertToPublic(amount);
+            // Call convertToPublic  
+            // solhint-disable-next-line avoid-low-level-calls
+            (bool success, bytes memory data) = bridge.call(
+                abi.encodeWithSignature("convertToPublic(uint256)", amount)
+            );
+            if (!success) revert OperationFailed();
+            amountOut = abi.decode(data, (uint256));
         }
         
         return abi.encode(amountOut);
@@ -485,9 +496,17 @@ contract OmniBatchTransactions is
     ) internal returns (bytes memory) {
         uint256 amount = abi.decode(operation.data, (uint256));
         
-        // Create bridge operation data
-        operation.data = abi.encode(amount, true); // true = convert to private
-        return _executeBridgeTransfer(operation);
+        // Create new operation with bridge data
+        BatchOperation memory bridgeOp = BatchOperation({
+            target: operation.target,
+            opType: operation.opType,
+            critical: operation.critical,
+            usePrivacy: operation.usePrivacy,
+            gasLimit: operation.gasLimit,
+            value: operation.value,
+            data: abi.encode(amount, true) // true = convert to private
+        });
+        return _executeBridgeTransfer(bridgeOp);
     }
     
     /**
@@ -501,9 +520,17 @@ contract OmniBatchTransactions is
     ) internal returns (bytes memory) {
         uint256 amount = abi.decode(operation.data, (uint256));
         
-        // Create bridge operation data
-        operation.data = abi.encode(amount, false); // false = convert to public
-        return _executeBridgeTransfer(operation);
+        // Create new operation with bridge data
+        BatchOperation memory bridgeOp = BatchOperation({
+            target: operation.target,
+            opType: operation.opType,
+            critical: operation.critical,
+            usePrivacy: operation.usePrivacy,
+            gasLimit: operation.gasLimit,
+            value: operation.value,
+            data: abi.encode(amount, false) // false = convert to public
+        });
+        return _executeBridgeTransfer(bridgeOp);
     }
 
     /**

@@ -8,8 +8,8 @@ import {ECDSA} from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 import {MessageHashUtils} from "@openzeppelin/contracts/utils/cryptography/MessageHashUtils.sol";
 import {OmniCoin} from "./OmniCoin.sol";
 import {PrivateOmniCoin} from "./PrivateOmniCoin.sol";
-import {RegistryAware} from "./base/RegistryAware.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {OmniCoinRegistry} from "./OmniCoinRegistry.sol";
 
 /**
  * @title OmniCoinAccount
@@ -19,7 +19,6 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
  */
 contract OmniCoinAccount is
     Initializable,
-    RegistryAware,
     OwnableUpgradeable,
     ReentrancyGuardUpgradeable
 {
@@ -70,6 +69,9 @@ contract OmniCoinAccount is
     error TransferFailed();
     error NotWhitelisted();
     error InvalidRecipient();
+    
+    /// @notice Registry contract for dynamic lookups
+    OmniCoinRegistry public registry;
     
     /// @notice Account deployment status
     mapping(address => bool) public isDeployed;
@@ -162,6 +164,15 @@ contract OmniCoinAccount is
     constructor() {
         _disableInitializers();
     }
+    
+    /**
+     * @notice Get contract address from registry
+     * @param identifier The contract identifier
+     * @return The contract address
+     */
+    function _getContract(bytes32 identifier) internal view returns (address) {
+        return registry.getContract(identifier);
+    }
 
     /**
      * @notice Initialize the account contract
@@ -178,8 +189,8 @@ contract OmniCoinAccount is
         __Ownable_init(msg.sender);
         __ReentrancyGuard_init();
         
-        // Initialize registry
-        _initializeRegistry(_registry);
+        // Store registry address
+        registry = OmniCoinRegistry(_registry);
         
         entryPoint = _entryPoint;
         

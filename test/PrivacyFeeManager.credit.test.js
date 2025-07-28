@@ -7,22 +7,35 @@ describe("PrivacyFeeManager Credit System", function () {
   async function deployPrivacyFeeManagerFixture() {
     const [owner, user1, user2, treasury, development] = await ethers.getSigners();
 
-    // Deploy mock tokens
-    const MockERC20 = await ethers.getContractFactory("contracts/MockERC20.sol:MockERC20");
-    const omniToken = await MockERC20.deploy("OmniCoin", "OMNI", 6);
-    const cotiToken = await MockERC20.deploy("COTI", "COTI", 18);
+    // Deploy actual OmniCoinRegistry
+    const OmniCoinRegistry = await ethers.getContractFactory("OmniCoinRegistry");
+    const registry = await OmniCoinRegistry.deploy(await owner.getAddress());
+    await registry.waitForDeployment();
+    
+    // Deploy actual OmniCoin
+    const OmniCoin = await ethers.getContractFactory("OmniCoin");
+    const omniToken = await OmniCoin.deploy(await registry.getAddress());
     await omniToken.waitForDeployment();
+    
+    // For COTI token, use StandardERC20Test
+    const StandardERC20Test = await ethers.getContractFactory("contracts/test/StandardERC20Test.sol:StandardERC20Test");
+    const cotiToken = await StandardERC20Test.deploy();
     await cotiToken.waitForDeployment();
-
-    // Deploy mock DEX router
-    const mockDexRouter = await ethers.getSigners().then(signers => signers[9].address);
+    
+    // Set up registry
+    await registry.setContract(
+      ethers.keccak256(ethers.toUtf8Bytes("OMNICOIN")),
+      await omniToken.getAddress()
+    );
+    await registry.setContract(
+      ethers.keccak256(ethers.toUtf8Bytes("OMNIBAZAAR_TREASURY")),
+      await treasury.getAddress()
+    );
 
     // Deploy PrivacyFeeManager
     const PrivacyFeeManager = await ethers.getContractFactory("PrivacyFeeManager");
     const privacyFeeManager = await PrivacyFeeManager.deploy(
-      await omniToken.getAddress(),
-      await cotiToken.getAddress(),
-      mockDexRouter,
+      await registry.getAddress(),
       await owner.getAddress()
     );
     await privacyFeeManager.waitForDeployment();

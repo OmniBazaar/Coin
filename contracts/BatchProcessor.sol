@@ -280,7 +280,7 @@ contract BatchProcessor is RegistryAware, AccessControl, Pausable, ReentrancyGua
         if (hasPrivacyOps) {
             address privacyFeeManager = _getContract(registry.FEE_MANAGER());
             if (privacyFeeManager != address(0)) {
-                PrivacyFeeManager(privacyFeeManager).collectPrivacyFee(
+                PrivacyFeeManager(privacyFeeManager).collectPrivateFee(
                     msg.sender,
                     keccak256("BATCH_PROCESS"),
                     batchPrivacyFee
@@ -403,7 +403,7 @@ contract BatchProcessor is RegistryAware, AccessControl, Pausable, ReentrancyGua
     
     /**
      * @notice Execute batch transfer operation
-     * @dev Placeholder for transfer execution logic
+     * @dev Executes token transfers using either standard ERC20 or private transfers
      * @return success Whether the transfer succeeded
      * @return result Return data from the transfer
      */
@@ -430,7 +430,8 @@ contract BatchProcessor is RegistryAware, AccessControl, Pausable, ReentrancyGua
                 return (false, "Privacy transfer requires PrivateOmniCoin");
             }
             
-            try PrivateOmniCoin(privateToken).transferPrivate(to, amount) returns (bool transferSuccess) {
+            // Use PrivateOmniCoin's private transfer method
+            try PrivateOmniCoin(privateToken).transferFromPrivate(op.target, to, amount) returns (bool transferSuccess) {
                 return (transferSuccess, "");
             } catch Error(string memory reason) {
                 return (false, bytes(reason));
@@ -451,7 +452,7 @@ contract BatchProcessor is RegistryAware, AccessControl, Pausable, ReentrancyGua
     
     /**
      * @notice Execute batch mint operation
-     * @dev Placeholder for mint execution logic
+     * @dev Executes token minting for authorized processors (public tokens only)
      * @return success Whether the mint succeeded
      * @return result Return data from the mint
      */
@@ -493,7 +494,7 @@ contract BatchProcessor is RegistryAware, AccessControl, Pausable, ReentrancyGua
     
     /**
      * @notice Execute batch burn operation
-     * @dev Placeholder for burn execution logic
+     * @dev Executes token burning (public tokens only, private burns not supported)
      * @return success Whether the burn succeeded
      * @return result Return data from the burn
      */
@@ -519,13 +520,9 @@ contract BatchProcessor is RegistryAware, AccessControl, Pausable, ReentrancyGua
                 return (false, "Privacy burn requires PrivateOmniCoin");
             }
             
-            try PrivateOmniCoin(privateToken).burnPrivate(amount) {
-                return (true, "");
-            } catch Error(string memory reason) {
-                return (false, bytes(reason));
-            } catch {
-                return (false, "Private burn failed");
-            }
+            // PrivateOmniCoin burning requires bridge role
+            // For batch processing, we can't burn private tokens directly
+            return (false, "Private token burning not supported in batch operations");
         } else {
             // Standard burn
             try OmniCoin(tokenAddress).burnFrom(op.target, amount) {
@@ -587,8 +584,8 @@ contract BatchProcessor is RegistryAware, AccessControl, Pausable, ReentrancyGua
         }
         
         // Execute bridge operation
-        try OmniCoinPrivacyBridge(bridge).convertToPublic(amount) returns (uint256 amountOut) {
-            return (true, abi.encode(amountOut));
+        try OmniCoinPrivacyBridge(bridge).convertToPublic(amount) {
+            return (true, abi.encode(amount)); // Return the amount that was converted
         } catch Error(string memory reason) {
             return (false, bytes(reason));
         } catch {

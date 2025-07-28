@@ -71,6 +71,10 @@ contract OmniCoinRegistry is AccessControl, Pausable {
     bytes32 public constant OMNICOIN_BRIDGE = keccak256("OMNICOIN_BRIDGE");
     /// @notice Identifier for OmniCoin Config contract
     bytes32 public constant OMNICOIN_CONFIG = keccak256("OMNICOIN_CONFIG");
+    /// @notice Identifier for OmniCoin Privacy module
+    bytes32 public constant OMNICOIN_PRIVACY = keccak256("OMNICOIN_PRIVACY");
+    /// @notice Identifier for OmniCoin Account contract
+    bytes32 public constant OMNICOIN_ACCOUNT = keccak256("OMNICOIN_ACCOUNT");
     /// @notice Identifier for Fee Distribution contract
     bytes32 public constant FEE_DISTRIBUTION = keccak256("FEE_DISTRIBUTION");
     
@@ -119,6 +123,24 @@ contract OmniCoinRegistry is AccessControl, Pausable {
     bytes32 public constant DEX_SETTLEMENT = keccak256("DEX_SETTLEMENT");
     /// @notice Identifier for NFT Marketplace contract
     bytes32 public constant NFT_MARKETPLACE = keccak256("NFT_MARKETPLACE");
+    /// @notice Identifier for Listing NFT contract
+    bytes32 public constant LISTING_NFT = keccak256("LISTING_NFT");
+    
+    // ERC-1155 Support
+    /// @notice Identifier for OmniERC1155 contract (multi-token standard)
+    bytes32 public constant OMNI_ERC1155 = keccak256("OMNI_ERC1155");
+    /// @notice Identifier for Unified NFT Marketplace (ERC-721 & ERC-1155)
+    bytes32 public constant UNIFIED_NFT_MARKETPLACE = keccak256("UNIFIED_NFT_MARKETPLACE");
+    /// @notice Identifier for ERC-1155 Bridge contract
+    bytes32 public constant ERC1155_BRIDGE = keccak256("ERC1155_BRIDGE");
+    /// @notice Identifier for Service Token Examples contract
+    bytes32 public constant SERVICE_TOKEN_EXAMPLES = keccak256("SERVICE_TOKEN_EXAMPLES");
+    
+    // Common treasury identifiers
+    /// @notice Identifier for OmniBazaar Treasury
+    bytes32 public constant OMNIBAZAAR_TREASURY = keccak256("OMNIBAZAAR_TREASURY");
+    /// @notice Identifier for Fee Recipient
+    bytes32 public constant FEE_RECIPIENT = keccak256("FEE_RECIPIENT");
     
     // =============================================================================
     // STATE VARIABLES

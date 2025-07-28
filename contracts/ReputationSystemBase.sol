@@ -211,7 +211,6 @@ abstract contract ReputationSystemBase is IReputationSystem, AccessControl, Reen
      * @dev Update reputation in core contract with memory parameter
      * @param user Address of the user whose reputation is being updated
      * @param componentId The ID of the component being updated
-     * @param  Unused encrypted reputation value parameter
      */
     function _updateReputationInCoreMemory(
         address user,

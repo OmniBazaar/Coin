@@ -4,6 +4,7 @@ const { ethers } = require("hardhat");
 describe("FeeDistribution Privacy Integration", function () {
   let feeDistribution;
   let feeToken;
+  let registry;
   
   let owner;
   let companyTreasury;
@@ -25,17 +26,31 @@ describe("FeeDistribution Privacy Integration", function () {
     [owner, companyTreasury, developmentFund, validator1, validator2, validator3, collector, distributor] = 
       await ethers.getSigners();
 
-    // Deploy mock fee token
-    const MockERC20Factory = await ethers.getContractFactory("MockERC20");
-    feeToken = await MockERC20Factory.deploy("XOM Token", "XOM", INITIAL_SUPPLY);
+    // Deploy actual OmniCoinRegistry
+    const OmniCoinRegistry = await ethers.getContractFactory("OmniCoinRegistry");
+    registry = await OmniCoinRegistry.deploy(await owner.getAddress());
+    await registry.waitForDeployment();
+
+    // Deploy actual OmniCoin as fee token
+    const OmniCoin = await ethers.getContractFactory("OmniCoin");
+    feeToken = await OmniCoin.deploy(await registry.getAddress());
     await feeToken.waitForDeployment();
+
+    // Set up registry
+    await registry.setContract(
+      ethers.keccak256(ethers.toUtf8Bytes("OMNICOIN")),
+      await feeToken.getAddress()
+    );
+
+    // Mint initial supply
+    await feeToken.mint(await owner.getAddress(), INITIAL_SUPPLY);
 
     // Deploy FeeDistribution contract
     const FeeDistributionFactory = await ethers.getContractFactory("FeeDistribution");
     feeDistribution = await FeeDistributionFactory.deploy(
       await feeToken.getAddress(),
-      companyTreasury.address,
-      developmentFund.address
+      await companyTreasury.getAddress(),
+      await developmentFund.getAddress()
     );
     await feeDistribution.waitForDeployment();
 
@@ -44,20 +59,20 @@ describe("FeeDistribution Privacy Integration", function () {
     const DISTRIBUTOR_ROLE = await feeDistribution.DISTRIBUTOR_ROLE();
     const TREASURY_ROLE = await feeDistribution.TREASURY_ROLE();
 
-    await feeDistribution.grantRole(COLLECTOR_ROLE, collector.address);
-    await feeDistribution.grantRole(DISTRIBUTOR_ROLE, distributor.address);
-    await feeDistribution.grantRole(TREASURY_ROLE, owner.address);
+    await feeDistribution.grantRole(COLLECTOR_ROLE, await collector.getAddress());
+    await feeDistribution.grantRole(DISTRIBUTOR_ROLE, await distributor.getAddress());
+    await feeDistribution.grantRole(TREASURY_ROLE, await owner.getAddress());
 
     // Transfer tokens to collector for fee collection
-    await feeToken.transfer(collector.address, ethers.parseEther("100000"));
+    await feeToken.transfer(await collector.getAddress(), ethers.parseEther("100000"));
     await feeToken.connect(collector).approve(await feeDistribution.getAddress(), ethers.parseEther("100000"));
   });
 
   describe("Deployment and Initialization", function () {
     it("Should initialize with correct parameters", async function () {
       expect(await feeDistribution.feeToken()).to.equal(await feeToken.getAddress());
-      expect(await feeDistribution.companyTreasury()).to.equal(companyTreasury.address);
-      expect(await feeDistribution.developmentFund()).to.equal(developmentFund.address);
+      expect(await feeDistribution.companyTreasury()).to.equal(await companyTreasury.getAddress());
+      expect(await feeDistribution.developmentFund()).to.equal(await developmentFund.getAddress());
 
       const distributionRatio = await feeDistribution.getDistributionRatio();
       expect(distributionRatio.validatorShare).to.equal(VALIDATOR_SHARE);
@@ -82,13 +97,13 @@ describe("FeeDistribution Privacy Integration", function () {
   describe("Privacy-Enabled Validator Initialization", function () {
     it("Should initialize validator private rewards", async function () {
       await expect(
-        feeDistribution.connect(distributor).initializeValidatorPrivateRewards(validator1.address)
+        feeDistribution.connect(distributor).initializeValidatorPrivateRewards(await validator1.getAddress())
       ).to.not.be.reverted;
 
       // Verify validator can access their private earnings (should be zero initially)
       // Note: In a real test environment with COTI V2, this would return an encrypted zero
       await expect(
-        feeDistribution.connect(validator1).getValidatorPrivateEarnings(validator1.address)
+        feeDistribution.connect(validator1).getValidatorPrivateEarnings(await validator1.getAddress())
       ).to.not.be.reverted;
     });
 
@@ -100,7 +115,7 @@ describe("FeeDistribution Privacy Integration", function () {
 
     it("Should fail to initialize without distributor role", async function () {
       await expect(
-        feeDistribution.connect(validator1).initializeValidatorPrivateRewards(validator1.address)
+        feeDistribution.connect(validator1).initializeValidatorPrivateRewards(await validator1.getAddress())
       ).to.be.reverted;
     });
   });
@@ -154,13 +169,13 @@ describe("FeeDistribution Privacy Integration", function () {
       await feeDistribution.updateDistributionParameters(3600, ethers.parseEther("1000"));
 
       // Initialize validators for private rewards
-      await feeDistribution.connect(distributor).initializeValidatorPrivateRewards(validator1.address);
-      await feeDistribution.connect(distributor).initializeValidatorPrivateRewards(validator2.address);
-      await feeDistribution.connect(distributor).initializeValidatorPrivateRewards(validator3.address);
+      await feeDistribution.connect(distributor).initializeValidatorPrivateRewards(await validator1.getAddress());
+      await feeDistribution.connect(distributor).initializeValidatorPrivateRewards(await validator2.getAddress());
+      await feeDistribution.connect(distributor).initializeValidatorPrivateRewards(await validator3.getAddress());
     });
 
     it("Should distribute fees with privacy features", async function () {
-      const validators = [validator1.address, validator2.address, validator3.address];
+      const validators = [await validator1.getAddress(), await validator2.getAddress(), await validator3.getAddress()];
       const participationScores = [1000, 800, 600]; // Different participation scores
 
       await expect(
@@ -175,13 +190,13 @@ describe("FeeDistribution Privacy Integration", function () {
 
       // Verify each validator got their private reward event
       const validatorAddresses = events.map(e => e.args?.validator);
-      expect(validatorAddresses).to.include(validator1.address);
-      expect(validatorAddresses).to.include(validator2.address);
-      expect(validatorAddresses).to.include(validator3.address);
+      expect(validatorAddresses).to.include(await validator1.getAddress());
+      expect(validatorAddresses).to.include(await validator2.getAddress());
+      expect(validatorAddresses).to.include(await validator3.getAddress());
     });
 
     it("Should calculate correct distribution amounts", async function () {
-      const validators = [validator1.address, validator2.address];
+      const validators = [await validator1.getAddress(), await validator2.getAddress()];
       const participationScores = [600, 400]; // 60% and 40% split
       const totalFees = ethers.parseEther("10000");
 
@@ -206,7 +221,7 @@ describe("FeeDistribution Privacy Integration", function () {
     });
 
     it("Should fail distribution with mismatched arrays", async function () {
-      const validators = [validator1.address, validator2.address];
+      const validators = [await validator1.getAddress(), await validator2.getAddress()];
       const participationScores = [1000]; // Mismatched length
 
       await expect(
@@ -222,7 +237,7 @@ describe("FeeDistribution Privacy Integration", function () {
         0
       );
 
-      const validators = [validator1.address];
+      const validators = [await validator1.getAddress()];
       const participationScores = [1000];
 
       await expect(
@@ -240,34 +255,34 @@ describe("FeeDistribution Privacy Integration", function () {
       // Set distribution interval to 0 for testing
       await feeDistribution.updateDistributionParameters(3600, ethers.parseEther("1000"));
       
-      await feeDistribution.connect(distributor).initializeValidatorPrivateRewards(validator1.address);
-      await feeDistribution.connect(distributor).distributeFees([validator1.address], [1000]);
+      await feeDistribution.connect(distributor).initializeValidatorPrivateRewards(await validator1.getAddress());
+      await feeDistribution.connect(distributor).distributeFees([await validator1.getAddress()], [1000]);
     });
 
     it("Should allow validators to claim public rewards", async function () {
-      const initialBalance = await feeToken.balanceOf(validator1.address);
+      const initialBalance = await feeToken.balanceOf(await validator1.getAddress());
       
       await expect(
         feeDistribution.connect(validator1).claimValidatorRewards(await feeToken.getAddress())
       ).to.emit(feeDistribution, "ValidatorRewardClaimed");
 
-      const finalBalance = await feeToken.balanceOf(validator1.address);
+      const finalBalance = await feeToken.balanceOf(await validator1.getAddress());
       expect(finalBalance).to.be.gt(initialBalance);
 
       // Check that pending rewards are reset
-      expect(await feeDistribution.getValidatorPendingRewards(validator1.address, await feeToken.getAddress()))
+      expect(await feeDistribution.getValidatorPendingRewards(await validator1.getAddress(), await feeToken.getAddress()))
         .to.equal(0);
     });
 
     it("Should allow validators to claim private rewards", async function () {
-      const initialBalance = await feeToken.balanceOf(validator1.address);
+      const initialBalance = await feeToken.balanceOf(await validator1.getAddress());
 
       // Note: In actual COTI testnet, this would handle encrypted amounts properly
       await expect(
         feeDistribution.connect(validator1).claimPrivateValidatorRewards(await feeToken.getAddress())
       ).to.emit(feeDistribution, "PrivateRewardsClaimed");
 
-      const finalBalance = await feeToken.balanceOf(validator1.address);
+      const finalBalance = await feeToken.balanceOf(await validator1.getAddress());
       expect(finalBalance).to.be.gte(initialBalance); // Should be >= due to potential rewards
     });
 
@@ -283,13 +298,13 @@ describe("FeeDistribution Privacy Integration", function () {
 
   describe("Privacy Access Control", function () {
     beforeEach(async function () {
-      await feeDistribution.connect(distributor).initializeValidatorPrivateRewards(validator1.address);
+      await feeDistribution.connect(distributor).initializeValidatorPrivateRewards(await validator1.getAddress());
     });
 
     it("Should allow validator to access their private rewards", async function () {
       await expect(
         feeDistribution.connect(validator1).getValidatorPrivatePendingRewards(
-          validator1.address, 
+          await validator1.getAddress(), 
           await feeToken.getAddress()
         )
       ).to.not.be.reverted;
@@ -298,7 +313,7 @@ describe("FeeDistribution Privacy Integration", function () {
     it("Should allow admin to access validator private rewards", async function () {
       await expect(
         feeDistribution.connect(owner).getValidatorPrivatePendingRewards(
-          validator1.address, 
+          await validator1.getAddress(), 
           await feeToken.getAddress()
         )
       ).to.not.be.reverted;
@@ -307,7 +322,7 @@ describe("FeeDistribution Privacy Integration", function () {
     it("Should deny unauthorized access to private rewards", async function () {
       await expect(
         feeDistribution.connect(validator2).getValidatorPrivatePendingRewards(
-          validator1.address, 
+          await validator1.getAddress(), 
           await feeToken.getAddress()
         )
       ).to.be.revertedWith("Access denied: private rewards");
@@ -315,13 +330,13 @@ describe("FeeDistribution Privacy Integration", function () {
 
     it("Should allow validator to access their private earnings", async function () {
       await expect(
-        feeDistribution.connect(validator1).getValidatorPrivateEarnings(validator1.address)
+        feeDistribution.connect(validator1).getValidatorPrivateEarnings(await validator1.getAddress())
       ).to.not.be.reverted;
     });
 
     it("Should deny unauthorized access to private earnings", async function () {
       await expect(
-        feeDistribution.connect(validator2).getValidatorPrivateEarnings(validator1.address)
+        feeDistribution.connect(validator2).getValidatorPrivateEarnings(await validator1.getAddress())
       ).to.be.revertedWith("Access denied: private earnings");
     });
   });
@@ -335,21 +350,21 @@ describe("FeeDistribution Privacy Integration", function () {
       // Set distribution interval to 0 for testing
       await feeDistribution.updateDistributionParameters(3600, ethers.parseEther("1000"));
       
-      await feeDistribution.connect(distributor).initializeValidatorPrivateRewards(validator1.address);
-      await feeDistribution.connect(distributor).distributeFees([validator1.address], [1000]);
+      await feeDistribution.connect(distributor).initializeValidatorPrivateRewards(await validator1.getAddress());
+      await feeDistribution.connect(distributor).distributeFees([await validator1.getAddress()], [1000]);
     });
 
     it("Should allow treasury role to withdraw company fees", async function () {
       const pendingAmount = await feeDistribution.getCompanyPendingWithdrawals(await feeToken.getAddress());
       expect(pendingAmount).to.be.gt(0);
 
-      const initialBalance = await feeToken.balanceOf(companyTreasury.address);
+      const initialBalance = await feeToken.balanceOf(await companyTreasury.getAddress());
 
       await expect(
         feeDistribution.connect(owner).withdrawCompanyFees(await feeToken.getAddress(), pendingAmount)
       ).to.emit(feeDistribution, "CompanyFeesWithdrawn");
 
-      const finalBalance = await feeToken.balanceOf(companyTreasury.address);
+      const finalBalance = await feeToken.balanceOf(await companyTreasury.getAddress());
       expect(finalBalance.sub(initialBalance)).to.equal(pendingAmount);
     });
 
@@ -357,13 +372,13 @@ describe("FeeDistribution Privacy Integration", function () {
       const pendingAmount = await feeDistribution.getDevelopmentPendingWithdrawals(await feeToken.getAddress());
       expect(pendingAmount).to.be.gt(0);
 
-      const initialBalance = await feeToken.balanceOf(developmentFund.address);
+      const initialBalance = await feeToken.balanceOf(await developmentFund.getAddress());
 
       await expect(
         feeDistribution.connect(owner).withdrawDevelopmentFees(await feeToken.getAddress(), pendingAmount)
       ).to.emit(feeDistribution, "DevelopmentFeesWithdrawn");
 
-      const finalBalance = await feeToken.balanceOf(developmentFund.address);
+      const finalBalance = await feeToken.balanceOf(await developmentFund.getAddress());
       expect(finalBalance.sub(initialBalance)).to.equal(pendingAmount);
     });
   });
@@ -422,8 +437,8 @@ describe("FeeDistribution Privacy Integration", function () {
       await feeDistribution.updateDistributionParameters(3600, ethers.parseEther("1000"));
       
       // Distribute fees
-      await feeDistribution.connect(distributor).initializeValidatorPrivateRewards(validator1.address);
-      await feeDistribution.connect(distributor).distributeFees([validator1.address], [1000]);
+      await feeDistribution.connect(distributor).initializeValidatorPrivateRewards(await validator1.getAddress());
+      await feeDistribution.connect(distributor).distributeFees([await validator1.getAddress()], [1000]);
 
       const metrics = await feeDistribution.getRevenueMetrics();
       expect(metrics.totalFeesCollected).to.equal(feeAmount);
@@ -479,11 +494,11 @@ describe("FeeDistribution Privacy Integration", function () {
       // Set distribution interval to 0 for testing
       await feeDistribution.updateDistributionParameters(3600, ethers.parseEther("1000"));
 
-      await feeDistribution.connect(distributor).initializeValidatorPrivateRewards(validator1.address);
+      await feeDistribution.connect(distributor).initializeValidatorPrivateRewards(await validator1.getAddress());
       
       // All validators have zero scores - should not revert but no rewards distributed
       await expect(
-        feeDistribution.connect(distributor).distributeFees([validator1.address], [0])
+        feeDistribution.connect(distributor).distributeFees([await validator1.getAddress()], [0])
       ).to.not.be.reverted;
     });
 
@@ -494,11 +509,11 @@ describe("FeeDistribution Privacy Integration", function () {
     });
 
     it("Should prevent double initialization of validator private rewards", async function () {
-      await feeDistribution.connect(distributor).initializeValidatorPrivateRewards(validator1.address);
+      await feeDistribution.connect(distributor).initializeValidatorPrivateRewards(await validator1.getAddress());
       
       // Second initialization should be safe (no-op)
       await expect(
-        feeDistribution.connect(distributor).initializeValidatorPrivateRewards(validator1.address)
+        feeDistribution.connect(distributor).initializeValidatorPrivateRewards(await validator1.getAddress())
       ).to.not.be.reverted;
     });
   });

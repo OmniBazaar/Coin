@@ -197,7 +197,7 @@ contract ValidatorRegistry is ReentrancyGuard, Pausable, AccessControl, Registry
         address indexed validator,
         uint256 indexed slashedAmount,
         uint256 indexed remainingStake,
-        string indexed reason
+        string reason
     );
 
     /// @notice Emitted when rewards are distributed to a validator

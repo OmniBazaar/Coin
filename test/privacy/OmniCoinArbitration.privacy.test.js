@@ -1,5 +1,5 @@
 const { expect } = require("chai");
-const { ethers } = require("hardhat");
+const { ethers, upgrades } = require("hardhat");
 const { loadFixture } = require("@nomicfoundation/hardhat-network-helpers");
 
 describe("OmniCoinArbitration Privacy Functions", function () {
@@ -7,51 +7,86 @@ describe("OmniCoinArbitration Privacy Functions", function () {
   async function deployArbitrationFixture() {
     const [owner, user1, user2, arbitrator1, arbitrator2, arbitrator3] = await ethers.getSigners();
 
-    // Deploy mock tokens
-    const MockERC20 = await ethers.getContractFactory("contracts/MockERC20.sol:MockERC20");
-    const omniToken = await MockERC20.deploy("OmniCoin", "OMNI", 6);
-    const cotiToken = await MockERC20.deploy("COTI", "COTI", 18);
+    // Deploy actual OmniCoinRegistry first
+    const OmniCoinRegistry = await ethers.getContractFactory("OmniCoinRegistry");
+    const registry = await OmniCoinRegistry.deploy(await owner.getAddress());
+    await registry.waitForDeployment();
+
+    // Deploy actual OmniCoin
+    const OmniCoin = await ethers.getContractFactory("OmniCoin");
+    const omniToken = await OmniCoin.deploy(await registry.getAddress());
     await omniToken.waitForDeployment();
+
+    // For COTI token, use StandardERC20Test
+    const StandardERC20Test = await ethers.getContractFactory("contracts/test/StandardERC20Test.sol:StandardERC20Test");
+    const cotiToken = await StandardERC20Test.deploy();
     await cotiToken.waitForDeployment();
+
+    // Deploy actual OmniCoinAccount
+    const OmniCoinAccount = await ethers.getContractFactory("OmniCoinAccount");
+    const omniCoinAccount = await upgrades.deployProxy(
+      OmniCoinAccount,
+      [await registry.getAddress()],
+      { initializer: "initialize" }
+    );
+    await omniCoinAccount.waitForDeployment();
+
+    // Deploy actual OmniCoinEscrow
+    const OmniCoinEscrow = await ethers.getContractFactory("OmniCoinEscrow");
+    const omniCoinEscrow = await OmniCoinEscrow.deploy(
+      await registry.getAddress(),
+      await owner.getAddress()
+    );
+    await omniCoinEscrow.waitForDeployment();
+
+    // Set up registry
+    await registry.setContract(
+      ethers.keccak256(ethers.toUtf8Bytes("OMNICOIN")),
+      await omniToken.getAddress()
+    );
+    await registry.setContract(
+      ethers.keccak256(ethers.toUtf8Bytes("OMNICOIN_ACCOUNT")),
+      await omniCoinAccount.getAddress()
+    );
+    await registry.setContract(
+      ethers.keccak256(ethers.toUtf8Bytes("ESCROW")),
+      await omniCoinEscrow.getAddress()
+    );
 
     // Deploy PrivacyFeeManager
     const PrivacyFeeManager = await ethers.getContractFactory("PrivacyFeeManager");
     const privacyFeeManager = await PrivacyFeeManager.deploy(
       await omniToken.getAddress(),
       await cotiToken.getAddress(),
-      owner.address, // Mock DEX router
-      owner.address
+      await owner.getAddress(), // DEX router address
+      await owner.getAddress()
     );
     await privacyFeeManager.waitForDeployment();
 
-    // Deploy mock contracts
-    const MockOmniCoinAccount = await ethers.getContractFactory("MockOmniCoinAccount");
-    const mockAccount = await MockOmniCoinAccount.deploy();
-    await mockAccount.waitForDeployment();
-
-    const MockOmniCoinEscrow = await ethers.getContractFactory("MockOmniCoinEscrow");
-    const mockEscrow = await MockOmniCoinEscrow.deploy();
-    await mockEscrow.waitForDeployment();
-
-    // Deploy Registry
-    const OmniCoinRegistry = await ethers.getContractFactory("OmniCoinRegistry");
-    const registry = await OmniCoinRegistry.deploy(owner.address);
-    await registry.waitForDeployment();
-
-    // Deploy OmniCoinConfig
-    const OmniCoinConfig = await ethers.getContractFactory("OmniCoinConfig");
-    const config = await OmniCoinConfig.deploy();
-    await config.waitForDeployment();
-
-    // Deploy OmniCoinArbitration
+    // Deploy OmniCoinArbitration as upgradeable proxy
     const OmniCoinArbitration = await ethers.getContractFactory("OmniCoinArbitration");
-    const arbitration = await OmniCoinArbitration.deploy(
-      await omniToken.getAddress(),
-      await mockAccount.getAddress(),
-      await mockEscrow.getAddress(),
-      await config.getAddress(),
-      await registry.getAddress(),
-      await privacyFeeManager.getAddress()
+    
+    const MIN_REPUTATION = 750;
+    const MIN_PARTICIPATION_INDEX = 500;
+    const MIN_STAKING_AMOUNT = ethers.parseUnits("10000", 6);
+    const MAX_ACTIVE_DISPUTES = 5;
+    const DISPUTE_TIMEOUT = 7 * 24 * 60 * 60;
+    const RATING_WEIGHT = 10;
+    
+    const arbitration = await upgrades.deployProxy(
+      OmniCoinArbitration,
+      [
+        await omniToken.getAddress(),
+        await omniCoinAccount.getAddress(),
+        await omniCoinEscrow.getAddress(),
+        MIN_REPUTATION,
+        MIN_PARTICIPATION_INDEX,
+        MIN_STAKING_AMOUNT,
+        MAX_ACTIVE_DISPUTES,
+        DISPUTE_TIMEOUT,
+        RATING_WEIGHT,
+      ],
+      { initializer: "initialize" }
     );
     await arbitration.waitForDeployment();
 
@@ -60,11 +95,11 @@ describe("OmniCoinArbitration Privacy Functions", function () {
 
     // Mint tokens
     const mintAmount = ethers.parseUnits("100000", 6);
-    await omniToken.mint(user1.address, mintAmount);
-    await omniToken.mint(user2.address, mintAmount);
-    await omniToken.mint(arbitrator1.address, mintAmount);
-    await omniToken.mint(arbitrator2.address, mintAmount);
-    await omniToken.mint(arbitrator3.address, mintAmount);
+    await omniToken.mint(await user1.getAddress(), mintAmount);
+    await omniToken.mint(await user2.getAddress(), mintAmount);
+    await omniToken.mint(await arbitrator1.getAddress(), mintAmount);
+    await omniToken.mint(await arbitrator2.getAddress(), mintAmount);
+    await omniToken.mint(await arbitrator3.getAddress(), mintAmount);
 
     // Approve arbitration contract
     await omniToken.connect(user1).approve(await arbitration.getAddress(), ethers.MaxUint256);
@@ -85,15 +120,14 @@ describe("OmniCoinArbitration Privacy Functions", function () {
     await arbitration.connect(arbitrator2).registerArbitrator(minStake, specializations);
     await arbitration.connect(arbitrator3).registerArbitrator(minStake, specializations);
 
-    // Enable privacy preferences
-    await omniToken.connect(user1).setPrivacyPreference(true);
-    await omniToken.connect(user2).setPrivacyPreference(true);
+    // Note: Privacy preferences would be set on actual PrivateOmniCoin with MPC
+    // For testing with standard tokens, we skip this step
 
     return {
       arbitration,
       omniToken,
       privacyFeeManager,
-      mockEscrow,
+      omniCoinEscrow,
       owner,
       user1,
       user2,
@@ -105,14 +139,14 @@ describe("OmniCoinArbitration Privacy Functions", function () {
 
   describe("Public Dispute Creation (No Privacy)", function () {
     it("Should create public dispute without privacy fees", async function () {
-      const { arbitration, user1, user2, mockEscrow } = await loadFixture(deployArbitrationFixture);
+      const { arbitration, user1, user2, omniCoinEscrow } = await loadFixture(deployArbitrationFixture);
 
       const disputeAmount = ethers.parseUnits("1000", 6);
       const escrowId = ethers.keccak256(ethers.toUtf8Bytes("ESCROW_001"));
 
       // Create public dispute (no privacy)
       await expect(arbitration.connect(user1).createDispute(
-        user2.address,
+        await user2.getAddress(),
         disputeAmount,
         1, // ESCROW type
         escrowId,
@@ -121,7 +155,7 @@ describe("OmniCoinArbitration Privacy Functions", function () {
 
       // Verify no privacy fee was collected
       const dispute = await arbitration.disputes(0);
-      expect(dispute.plaintiff).to.equal(user1.address);
+      expect(dispute.plaintiff).to.equal(await user1.getAddress());
       expect(dispute.isPrivate).to.be.false;
     });
 
@@ -134,7 +168,7 @@ describe("OmniCoinArbitration Privacy Functions", function () {
       // Create multiple public disputes
       for (let i = 0; i < 3; i++) {
         await arbitration.connect(user1).createDispute(
-          user2.address,
+          await user2.getAddress(),
           disputeAmount,
           1, // ESCROW type
           escrowId,
@@ -162,11 +196,11 @@ describe("OmniCoinArbitration Privacy Functions", function () {
       const operationType = ethers.keccak256(ethers.toUtf8Bytes("ARBITRATION"));
       const expectedFee = await privacyFeeManager.calculatePrivacyFee(operationType, disputeAmount);
 
-      const initialCredits = await privacyFeeManager.getPrivacyCredits(user1.address);
+      const initialCredits = await privacyFeeManager.getPrivacyCredits(await user1.getAddress());
 
       // Create private dispute
       await expect(arbitration.connect(user1).createDisputeWithPrivacy(
-        user2.address,
+        await user2.getAddress(),
         disputeAmount,
         1, // ESCROW type
         escrowId,
@@ -175,7 +209,7 @@ describe("OmniCoinArbitration Privacy Functions", function () {
       )).to.emit(arbitration, "DisputeCreated");
 
       // Verify privacy credits were deducted
-      const finalCredits = await privacyFeeManager.getPrivacyCredits(user1.address);
+      const finalCredits = await privacyFeeManager.getPrivacyCredits(await user1.getAddress());
       expect(initialCredits - finalCredits).to.equal(expectedFee);
 
       // Verify dispute is marked as private
@@ -195,7 +229,7 @@ describe("OmniCoinArbitration Privacy Functions", function () {
       // Attempt to create private dispute
       await expect(
         arbitration.connect(user1).createDisputeWithPrivacy(
-          user2.address,
+          await user2.getAddress(),
           disputeAmount,
           1,
           escrowId,
@@ -216,7 +250,7 @@ describe("OmniCoinArbitration Privacy Functions", function () {
 
       // Create private dispute
       await arbitration.connect(user1).createDisputeWithPrivacy(
-        user2.address,
+        await user2.getAddress(),
         disputeAmount,
         1,
         escrowId,
@@ -225,10 +259,10 @@ describe("OmniCoinArbitration Privacy Functions", function () {
       );
 
       // Assign arbitrator (should maintain privacy)
-      await arbitration.assignArbitrator(0, arbitrator1.address);
+      await arbitration.assignArbitrator(0, await arbitrator1.getAddress());
 
       const dispute = await arbitration.disputes(0);
-      expect(dispute.arbitrator).to.equal(arbitrator1.address);
+      expect(dispute.arbitrator).to.equal(await arbitrator1.getAddress());
       expect(dispute.isPrivate).to.be.true;
     });
   });
@@ -241,7 +275,7 @@ describe("OmniCoinArbitration Privacy Functions", function () {
 
       // Create dispute with zero amount (should still work)
       await expect(arbitration.connect(user1).createDispute(
-        user2.address,
+        await user2.getAddress(),
         0,
         1,
         escrowId,
@@ -260,7 +294,7 @@ describe("OmniCoinArbitration Privacy Functions", function () {
       // Try to create dispute while paused
       await expect(
         arbitration.connect(user1).createDispute(
-          user2.address,
+          await user2.getAddress(),
           ethers.parseUnits("1000", 6),
           1,
           escrowId,
@@ -280,7 +314,7 @@ describe("OmniCoinArbitration Privacy Functions", function () {
 
       // Create private dispute
       await arbitration.connect(user1).createDisputeWithPrivacy(
-        user2.address,
+        await user2.getAddress(),
         disputeAmount,
         1,
         escrowId,
@@ -289,7 +323,7 @@ describe("OmniCoinArbitration Privacy Functions", function () {
       );
 
       // Assign arbitrator
-      await arbitration.assignArbitrator(0, arbitrator1.address);
+      await arbitration.assignArbitrator(0, await arbitrator1.getAddress());
 
       // Submit confidential decision
       const encryptedDecision = ethers.keccak256(ethers.toUtf8Bytes("CONFIDENTIAL_DECISION"));
@@ -315,7 +349,7 @@ describe("OmniCoinArbitration Privacy Functions", function () {
         if (i % 2 === 0) {
           // Public dispute
           await arbitration.connect(user1).createDispute(
-            user2.address,
+            await user2.getAddress(),
             ethers.parseUnits("500", 6),
             1,
             escrowId,
@@ -324,7 +358,7 @@ describe("OmniCoinArbitration Privacy Functions", function () {
         } else {
           // Private dispute
           await arbitration.connect(user1).createDisputeWithPrivacy(
-            user2.address,
+            await user2.getAddress(),
             ethers.parseUnits("500", 6),
             1,
             escrowId,
@@ -335,7 +369,7 @@ describe("OmniCoinArbitration Privacy Functions", function () {
       }
 
       // Check privacy statistics
-      const stats = await privacyFeeManager.getUserPrivacyStats(user1.address);
+      const stats = await privacyFeeManager.getUserPrivacyStats(await user1.getAddress());
       expect(stats.usage).to.be.gt(0); // Should have used privacy at least once
     });
   });
@@ -353,7 +387,7 @@ describe("OmniCoinArbitration Privacy Functions", function () {
 
       // Create private complex dispute
       await arbitration.connect(user1).createDisputeWithPrivacy(
-        user2.address,
+        await user2.getAddress(),
         disputeAmount,
         1,
         escrowId,
@@ -364,7 +398,7 @@ describe("OmniCoinArbitration Privacy Functions", function () {
       // Assign panel for complex dispute
       await arbitration.connect(owner).assignArbitrationPanel(
         0,
-        [arbitrator1.address, arbitrator2.address, arbitrator3.address]
+        [await arbitrator1.getAddress(), await arbitrator2.getAddress(), await arbitrator3.getAddress()]
       );
 
       const dispute = await arbitration.disputes(0);

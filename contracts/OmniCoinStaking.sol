@@ -279,7 +279,7 @@ contract OmniCoinStaking is AccessControl, ReentrancyGuard, Pausable, RegistryAw
      * @param usePrivacy Whether to use private token
      * @return Token contract address
      */
-    function _getTokenContract(bool usePrivacy) internal view returns (address) {
+    function _getTokenContract(bool usePrivacy) internal returns (address) {
         if (usePrivacy) {
             return _getContract(registry.PRIVATE_OMNICOIN());
         } else {
@@ -346,7 +346,7 @@ contract OmniCoinStaking is AccessControl, ReentrancyGuard, Pausable, RegistryAw
         // Collect privacy fee (10x normal fee)
         uint256 normalFee = uint64(gtUint64.unwrap(fee));
         uint256 privacyFee = normalFee * PRIVACY_MULTIPLIER;
-        PrivacyFeeManager(privacyFeeManager).collectPrivacyFee(
+        PrivacyFeeManager(privacyFeeManager).collectPrivateFee(
             msg.sender,
             keccak256("STAKING"),
             privacyFee
@@ -552,7 +552,7 @@ contract OmniCoinStaking is AccessControl, ReentrancyGuard, Pausable, RegistryAw
         // Collect privacy fee (10x normal fee)
         uint256 normalFee = uint64(gtUint64.unwrap(fee));
         uint256 privacyFee = normalFee * PRIVACY_MULTIPLIER;
-        PrivacyFeeManager(privacyFeeManager).collectPrivacyFee(
+        PrivacyFeeManager(privacyFeeManager).collectPrivateFee(
             msg.sender,
             keccak256("STAKING"),
             privacyFee
@@ -695,8 +695,8 @@ contract OmniCoinStaking is AccessControl, ReentrancyGuard, Pausable, RegistryAw
             userStake.userEncryptedRewards = MpcCore.offBoardToUser(MpcCore.setPublic64(0), msg.sender);
         } else {
             // Fallback - check rewards
-            uint64 rewardAmount = uint64(gtUint64.unwrap(rewards));
-            if (rewardAmount == 0) revert InvalidStakeAmount();
+            uint64 rewardAmountCheck = uint64(gtUint64.unwrap(rewards));
+            if (rewardAmountCheck == 0) revert InvalidStakeAmount();
             
             // Reset rewards
             userStake.encryptedRewards = gtUint64.wrap(0);

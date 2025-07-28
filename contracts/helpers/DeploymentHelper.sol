@@ -2,13 +2,15 @@
 pragma solidity ^0.8.19;
 
 import "../OmniCoinRegistry.sol";
-import "../OmniCoinCore.sol";
+import "../OmniCoin.sol";
+import "../PrivateOmniCoin.sol";
 import "../OmniCoinConfig.sol";
 import "../OmniCoinEscrow.sol";
 import "../OmniCoinPayment.sol";
 import "../OmniCoinStaking.sol";
 import "../OmniCoinArbitration.sol";
 import "../OmniCoinBridge.sol";
+import "../OmniCoinPrivacyBridge.sol";
 import "../PrivacyFeeManager.sol";
 import "../DEXSettlement.sol";
 import "../OmniNFTMarketplace.sol";
@@ -45,24 +47,24 @@ contract DeploymentHelper {
         address privacyFeeManager
     ) {
         // Deploy Config
-        config = address(new OmniCoinConfig(admin));
+        config = address(new OmniCoinConfig(address(registry), admin));
         registry.registerContract(registry.OMNICOIN_CONFIG(), config, "Configuration contract");
         emit ContractDeployed("OmniCoinConfig", config);
         
-        // Deploy Core V2 (token with registry integration)
-        core = address(new OmniCoinCore(
-            address(registry),
-            admin,
-            minimumValidators
-        ));
-        registry.registerContract(registry.OMNICOIN_CORE(), core, "Core token contract V2");
-        emit ContractDeployed("OmniCoinCore", core);
+        // Deploy OmniCoin (public token)
+        core = address(new OmniCoin(address(registry)));
+        registry.registerContract(registry.OMNICOIN(), core, "OmniCoin public token");
+        emit ContractDeployed("OmniCoin", core);
+        
+        // Deploy PrivateOmniCoin
+        address privateToken = address(new PrivateOmniCoin(address(registry)));
+        registry.registerContract(registry.PRIVATE_OMNICOIN(), privateToken, "PrivateOmniCoin privacy token");
+        emit ContractDeployed("PrivateOmniCoin", privateToken);
         
         // Deploy PrivacyFeeManager
         privacyFeeManager = address(new PrivacyFeeManager(
-            core,
-            cotiToken,
-            address(0), // DEX router to be set later
+            address(registry),
+            cotiToken, // Using cotiToken as treasury
             admin
         ));
         registry.registerContract(registry.FEE_MANAGER(), privacyFeeManager, "Privacy fee manager");
@@ -95,6 +97,7 @@ contract DeploymentHelper {
         
         // Deploy PaymentV2  
         payment = address(new OmniCoinPayment(
+            address(registry),
             token,
             address(0), // Account contract to be set
             address(0), // Staking contract to be set
@@ -126,7 +129,7 @@ contract DeploymentHelper {
         address token = registry.getContract(registry.OMNICOIN_CORE());
         address privacyFeeManager = registry.getContract(registry.FEE_MANAGER());
         
-        bridge = address(new OmniCoinBridge(token, admin, privacyFeeManager));
+        bridge = address(new OmniCoinBridge(address(registry), token, admin, privacyFeeManager));
         registry.registerContract(registry.BRIDGE(), bridge, "Bridge contract");
         emit ContractDeployed("OmniCoinBridge", bridge);
         
@@ -170,6 +173,7 @@ contract DeploymentHelper {
         address privacyFeeManager = registry.getContract(registry.FEE_MANAGER());
         
         dexSettlement = address(new DEXSettlement(
+            address(registry),
             companyTreasury,
             developmentFund,
             privacyFeeManager

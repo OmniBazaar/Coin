@@ -116,7 +116,6 @@ contract OmniCoinGarbledCircuit is RegistryAware, Ownable, ReentrancyGuard {
 
     /**
      * @notice Create a new garbled circuit
-     * @param _creator Address creating the circuit (unused in current implementation)
      * @param circuit Circuit data to store
      * @return circuitId Unique identifier for the created circuit
      */

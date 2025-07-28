@@ -1,5 +1,7 @@
 # IMPORTANT NOTES FOR CLAUDE
 
+IMPORTANT: Use "solhint" instead of compile to find errors and warnings. It is faster and less prone to issues.
+
 ## Hardhat Compilation
 
 1. **NEVER use pipes or additional commands with `npx hardhat compile`**
@@ -20,9 +22,12 @@
 
 ## Working Pattern
 
-1. Run compilation: `npx hardhat compile`
+0. Use "solhint" instead of compile to find errors and warnings.
+1. Run compilation: `npx hardhat compile` if the purpose is actually to compile
 2. Wait for completion (2-3 minutes)
 3. If errors appear, fix them
 4. Run compilation again to verify
 
 This is the ONLY reliable way to compile and check for errors.
+
+IMPORTANT: Fix all warnings in addition to fixing the errors. Add NatSpec documentation, fix sequencing issues, complexity, line length, and shadow declarations. Check all "not-rely-on-time" instances to be sure the business case really needs them. If so, you may disable the warning with solhint-disable-line comments. Fix every warning you can. Don't put it off for "later".

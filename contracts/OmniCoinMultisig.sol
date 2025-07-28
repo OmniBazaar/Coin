@@ -407,9 +407,8 @@ contract OmniCoinMultisig is RegistryAware, Ownable, ReentrancyGuard {
     }
 
     /**
-     * @notice Check if a transfer is approved (placeholder)
-     * @param from Source address (unused)
-     * @param to Destination address (unused)
+     * @notice Check if a transfer is approved
+     * @dev Simplified implementation - small amounts auto-approved, large amounts need explicit multisig
      * @param amount Transfer amount
      * @return Whether the transfer is approved
      */

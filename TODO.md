@@ -1,171 +1,265 @@
 # OmniCoin Smart Contract Development Plan
 
-**Last Updated:** 2025-07-27 16:15 UTC
+**Last Updated:** 2025-07-28 15:49 UTC
 
 ## Overview
 
 OmniCoin is being deployed on the COTI V2 platform with a dual-token architecture that provides both public and private transaction capabilities. This implementation leverages COTI V2's privacy features while maintaining public operations as the default for performance.
 
-## 🎯 CURRENT STATUS: All Contracts Compile Successfully!
+## 🎯 CURRENT STATUS: Test Mocking Removed, Compilation Fixed!
 
-### Major Progress (2025-07-27)
-- ✅ **0 Compilation Errors** across entire codebase
-- ✅ Fixed all shadow declaration warnings
-- ✅ Fixed all unused parameter warnings  
-- ✅ Reduced warnings by 90%+ in major contracts
-- ✅ Added comprehensive NatSpec documentation
+### Major Progress Update (2025-07-28 Afternoon)
+- ✅ **ALL Mock Contracts Removed from Tests** - 23 test files updated
+- ✅ **Compilation Errors Fixed** - Contracts now compile successfully
+- ✅ **Registry Pattern Fully Implemented** - All tests use real contracts
+- ✅ **New Test Files Created** - ValidatorSync and OmniNFTMarketplace
+- 🔄 **324 Solhint Warnings Remaining** - Style and documentation issues
 
-### Warning Reduction Summary
-- **OmniCoinCore.sol**: 120 → 4 warnings (97% reduction)
-- **OmniCoinEscrow.sol**: 129 → 15 warnings (88% reduction)
-- **OmniCoinConfig.sol**: 113 → 0 warnings (100% reduction)
+### Architecture Implementation Summary
+- **Public Token**: OmniCoin.sol (XOM) - Standard ERC20
+- **Private Token**: PrivateOmniCoin.sol (pXOM) - COTI PrivateERC20
+- **Registry**: OmniCoinRegistry.sol - Central contract discovery
+- **Bridge**: OmniCoinPrivacyBridge.sol - XOM ↔ pXOM conversion
+- **Multi-Token NFT**: OmniERC1155.sol - Fungible/Non-fungible support
+- **Unified Marketplace**: OmniUnifiedMarketplace.sol - ERC-721 & ERC-1155
 
 ## 🚀 IMMEDIATE NEXT STEPS
 
-### Continue Solhint Fixes (Alphabetical Order)
-1. **BatchProcessor.sol** - Apply NatSpec, gas optimizations, custom errors
-2. **DEXSettlement.sol** - Fix remaining warnings
-3. **FeeDistribution.sol** - Add documentation, fix warnings
-4. **ListingNFT.sol** - Apply standard fixes
-5. **OmniBatchTransactions.sol** - Fix warnings
-6. **OmniCoin.sol** - Review and fix warnings
-7. **OmniCoinAccount.sol** - Continue warning fixes
-8. **OmniCoinArbitration.sol** - Fix remaining warnings
-9. **OmniCoinBridge.sol** - Apply fixes
-10. **OmniCoinGarbledCircuit.sol** - Review MPC usage
+### 1. Fix Remaining Solhint Warnings (Priority: Critical)
+- [ ] **NatSpec Documentation** (~100 warnings)
+  - [ ] Add @notice tags to all contracts
+  - [ ] Add @param tags to all functions
+  - [ ] Add @return tags where needed
+  - [ ] Add @dev tags for complex logic
 
-### Standard Fix Patterns to Apply
+- [ ] **Code Quality Issues** (~150 warnings)
+  - [ ] Fix function ordering violations
+  - [ ] Address line length issues (>120 chars)
+  - [ ] Comment out unused parameters
+  - [ ] Fix variable shadowing
 
-#### 1. NatSpec Documentation
-```solidity
-/**
- * @notice [Function purpose]
- * @param paramName [Description]
- * @return returnName [Description]
- */
-```
+- [ ] **Gas Optimizations** (~50 warnings)
+  - [ ] Use ++i instead of i++
+  - [ ] Use custom errors instead of require
+  - [ ] Optimize string lengths
+  - [ ] Pack structs efficiently
 
-#### 2. Gas Optimizations
-```solidity
-// Change: if (x >= y)
-// To: if (x > y - 1)
-```
+- [ ] **Time-Based Logic** (~24 warnings)
+  - [ ] Review each not-rely-on-time warning
+  - [ ] Add solhint-disable-line where business logic requires
+  - [ ] Document why time is needed
 
-#### 3. Unused Parameters
-```solidity
-// Change: function foo(address account)
-// To: function foo(address /* account */)
-```
+### 2. Run Full Test Suite (Priority: Critical) 
+- [x] **Test Environment Setup** ✅
+  - [x] All tests use actual contracts
+  - [x] OmniCoinRegistry pattern established
+  - [x] StandardERC20Test for PrivateOmniCoin
+  - [x] Ethers.js v6 syntax updated
 
-#### 4. Custom Errors
-```solidity
-error CustomError();
-// Change: require(condition, "message");
-// To: if (!condition) revert CustomError();
-```
+- [ ] **Execute Tests**
+  - [ ] Run `npm test` after warnings fixed
+  - [ ] Document any failures
+  - [ ] Debug failing tests
+  - [ ] Ensure 100% pass rate
+
+- [ ] **Test Coverage Analysis**
+  - [ ] Run coverage report
+  - [ ] Identify gaps
+  - [ ] Add missing tests
+  - [ ] Achieve 90%+ coverage
+
+### 3. Prepare for Testnet Deployment (Priority: High)
+- [ ] **Pre-Deployment Checklist**
+  - [ ] All tests passing
+  - [ ] All warnings resolved
+  - [ ] Gas optimization complete
+  - [ ] Security review done
+
+- [ ] **Deployment Scripts**
+  - [ ] Create deployment order script
+  - [ ] Set up registry initialization
+  - [ ] Configure contract permissions
+  - [ ] Test deployment locally
+
+### 4. Complete Remaining Features (Priority: Medium)
+- [ ] **OmniNFTMarketplace Enhancement**
+  - [ ] Add batch listing support
+  - [ ] Implement royalty distribution
+  - [ ] Add collection offers
+  - [ ] Test with ERC-1155 tokens
+
+- [ ] **ValidatorSync Enhancement**
+  - [ ] Add slashing conditions
+  - [ ] Implement reward distribution
+  - [ ] Add performance metrics
+  - [ ] Test consensus mechanisms
+
+## Test Suite Status
+
+### Tests Updated (Mock Removal Complete) ✅
+1. All core contract tests (23 files)
+2. Reputation system tests (3 files)
+3. Security tests (2 files)
+4. New comprehensive tests (2 files)
+
+### Test Patterns Established
+- Deploy OmniCoinRegistry first
+- Deploy contracts with registry reference
+- Set up registry mappings
+- Use StandardERC20Test for privacy token testing
+- All Ethers.js v6 syntax
+
+## Technical Decisions Made
+
+### Today's Session
+1. **No More Mocking** - All tests use real contracts for deployment readiness
+2. **Registry-First Pattern** - Every test deploys and configures registry
+3. **StandardERC20Test Usage** - Consistent stand-in for PrivateOmniCoin
+4. **Function State Fixes** - Properly handle _getContract state modifications
+
+### Previous Decisions
+1. **6 Decimal Places** - Standardized across all tokens
+2. **Dual-Token Default** - Users choose privacy level
+3. **Backward Compatibility** - Helper functions for legacy code
+
+### 4. Complete OmniNFTMarketplace (Priority: High)
+- [ ] Finish dual-token payment integration
+- [ ] Implement payment splitting for multiple tokens
+- [ ] Add auction support for both XOM and pXOM
+- [ ] Test all marketplace functions
+
+### 5. Post-Deployment Test Regimen (Priority: High)
+- [ ] **Testnet Monitoring Scripts**
+  - [ ] Transaction volume tracking
+  - [ ] Gas usage analysis
+  - [ ] Privacy feature usage metrics
+  - [ ] Contract interaction patterns
+
+- [ ] **Admin Tools**
+  - [ ] Registry management interface
+  - [ ] Emergency pause controls
+  - [ ] Fee adjustment mechanisms
+  - [ ] MPC availability toggles
+
+- [ ] **User Testing Procedures**
+  - [ ] Wallet integration tests
+  - [ ] Cross-contract operation tests
+  - [ ] Privacy feature validation
+  - [ ] Performance benchmarks
 
 ## Technical Architecture
 
-### Dual-Token System ✅
+### Dual-Token System ✅ IMPLEMENTED
 1. **OmniCoin (XOM)** - Standard ERC20 for public transactions
 2. **PrivateOmniCoin (pXOM)** - COTI PrivateERC20 for private transactions
 3. **OmniCoinPrivacyBridge** - Converts between public/private tokens
 
-### Privacy Pattern (Implemented)
+### Registry Pattern ✅ IMPLEMENTED
 ```solidity
-function doSomethingWithPrivacy(params, bool usePrivacy) {
-    if (usePrivacy && isMpcAvailable) {
-        // Privacy path with fees
-    } else {
-        // Standard public operation (default)
+// All contracts now use:
+contract Example is RegistryAware {
+    function getToken(bool usePrivacy) internal view returns (address) {
+        return usePrivacy ? 
+            _getContract(registry.PRIVATE_OMNICOIN()) : 
+            _getContract(registry.OMNICOIN());
     }
 }
 ```
 
 ## Testing Requirements
 
-### High Priority Tests Needed
-1. **Registry Integration Tests**
-   - Verify all contracts resolve addresses correctly
-   - Test registry updates propagate properly
+### Critical Test Coverage Needed
+1. **Registry Tests**
+   - Contract registration and updates
+   - Emergency fallback mechanisms
+   - Version management
+   - Access control
 
-2. **Privacy Mode Tests**
-   - Test opt-in privacy for each operation
-   - Verify privacy fees collected correctly
-   - Test MPC availability checks
+2. **Dual-Token Tests**
+   - Token selection logic
+   - Privacy mode operations
+   - Fee collection in both tokens
+   - Balance tracking
 
-3. **Time-Based Operations**
-   - Test escrow timeouts
-   - Test validator operation delays
-   - Test emergency time locks
+3. **Integration Tests**
+   - Cross-contract calls
+   - Multi-signature operations
+   - Time-based functions
+   - Emergency procedures
 
-4. **Multi-Signature Tests**
-   - Test validator consensus operations
-   - Test multi-sig wallet functions
+4. **Gas Optimization Tests**
+   - Transaction cost analysis
+   - Batch operation efficiency
+   - Storage optimization verification
 
 ## Deployment Checklist
 
 ### Pre-Deployment
-- [ ] Complete solhint fixes for all contracts
+- [x] Implement dual-token architecture
+- [x] Integrate registry pattern
 - [ ] Write comprehensive test suite
 - [ ] Run all tests on local hardhat
 - [ ] Gas optimization pass
 - [ ] Security review
 
 ### COTI Testnet Deployment
-- [ ] Deploy Registry first
-- [ ] Deploy core contracts (OmniCoin, PrivateOmniCoin)
-- [ ] Deploy bridge and fee manager
-- [ ] Deploy supporting contracts
+- [ ] Deploy OmniCoinRegistry first
+- [ ] Deploy token contracts (OmniCoin, PrivateOmniCoin)
+- [ ] Deploy OmniCoinPrivacyBridge
+- [ ] Deploy all supporting contracts
+- [ ] Register all contracts in registry
+- [ ] Initialize cross-contract permissions
 - [ ] Enable MPC on testnet
-- [ ] Test all privacy features
+- [ ] Run integration test suite
 
 ### Production Deployment
-- [ ] External audit
-- [ ] Update documentation
-- [ ] Deploy to mainnet
-- [ ] Verify all contracts
+- [ ] External security audit
+- [ ] Update all documentation
+- [ ] Deploy contracts in correct order
+- [ ] Verify all contracts on explorer
+- [ ] Initialize with production parameters
 - [ ] Enable features gradually
+- [ ] Monitor initial transactions
 
-## Known Issues & Decisions
+## Contract Deployment Order
+1. OmniCoinRegistry
+2. OmniCoin
+3. PrivateOmniCoin
+4. OmniCoinConfig
+5. OmniCoinPrivacyBridge
+6. OmniCoinStaking
+7. OmniCoinValidator
+8. OmniCoinEscrow
+9. OmniCoinPayment
+10. [Other contracts...]
 
-### Design Decisions Made
-1. **Time-based logic retained** - Required for business logic
-2. **Function ordering by feature** - Better readability than visibility ordering
-3. **Complex functions retained** - Privacy checks add necessary complexity
+## Known Issues & Next Priorities
 
-### Technical Limitations
-1. **MpcCore missing gte/lte** - Use gt + eq combinations
-2. **Compilation timeouts** - Compile contracts individually if needed
-3. **VS Code auto-formatting** - Can break import statements
+### To Be Completed
+1. **OmniNFTMarketplace** - Finish dual-token payment functions
+2. **ERC-1155 Support** - Multi-token standard for NFTs
+3. **Test Coverage** - No tests written for new architecture
+4. **Gas Optimization** - Needs analysis after testing
 
-## Task Priority Matrix
-
-### Critical (Do First)
-- Complete solhint fixes for remaining contracts
-- Write core functionality tests
-- Deploy to COTI testnet
-
-### Important (Do Next)
-- Integration tests
-- Gas optimizations
-- Documentation updates
-
-### Nice to Have (Do Later)
-- Further warning reductions
-- Code coverage 100%
-- Deployment automation scripts
+### Technical Decisions Made
+1. **6 Decimal Places** - Standardized across all tokens
+2. **Registry Pattern** - Dynamic contract discovery
+3. **Dual-Token Default** - Users choose privacy level
+4. **Backward Compatibility** - Helper functions for legacy code
 
 ## Success Metrics
-- ✅ All contracts compile (ACHIEVED!)
+- ✅ All contracts compile
+- ✅ Dual-token architecture implemented
+- ✅ Registry pattern integrated
 - [ ] 90%+ test coverage
-- [ ] All critical warnings addressed
 - [ ] Successful testnet deployment
-- [ ] Privacy features working on COTI
+- [ ] Gas costs optimized
+- [ ] Security audit passed
 
 ## Notes for Next Developer
-- Start with BatchProcessor.sol and continue alphabetically
-- Apply the fix patterns documented above
-- Time-based warnings are mostly legitimate - don't remove business logic
-- Test thoroughly before any contract changes
-- MPC must be enabled by admin on COTI networks
+- Start with ERC-1155 implementation for NFT marketplace
+- Write tests as you go - don't defer testing
+- Use existing test patterns from coti-contracts where applicable
+- Ensure all privacy features are properly tested
+- Document any new patterns or architectural decisions
+- Keep CURRENT_STATUS.md updated with progress

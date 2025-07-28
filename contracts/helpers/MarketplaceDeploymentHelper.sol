@@ -40,7 +40,7 @@ contract MarketplaceDeploymentHelper {
         address reputation
     ) {
         // Deploy ListingNFT contract
-        listingNFT = address(new ListingNFT(admin));
+        listingNFT = address(new ListingNFT(address(registry), admin));
         registry.registerContract(
             keccak256("LISTING_NFT"),
             listingNFT,

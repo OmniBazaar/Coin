@@ -324,9 +324,9 @@ contract OmniCoinEscrow is RegistryAware, AccessControl, ReentrancyGuard, Pausab
         // Check minimum amount
         if (isMpcAvailable) {
             // Use gt or eq since gte doesn't exist
-            gtUint64 gtAmount = MpcCore.setPublic64(uint64(_amount));
-            gtBool isGreater = MpcCore.gt(gtAmount, minEscrowAmount);
-            gtBool isEqual = MpcCore.eq(gtAmount, minEscrowAmount);
+            gtUint64 gtAmountCheck = MpcCore.setPublic64(uint64(_amount));
+            gtBool isGreater = MpcCore.gt(gtAmountCheck, minEscrowAmount);
+            gtBool isEqual = MpcCore.eq(gtAmountCheck, minEscrowAmount);
             gtBool isEnough = MpcCore.or(isGreater, isEqual);
             if (!MpcCore.decrypt(isEnough)) revert InvalidAmount();
         } else {
@@ -415,7 +415,7 @@ contract OmniCoinEscrow is RegistryAware, AccessControl, ReentrancyGuard, Pausab
         // Collect privacy fee (10x normal fee)
         uint256 normalFee = uint64(gtUint64.unwrap(fee));
         uint256 privacyFee = normalFee * PRIVACY_MULTIPLIER;
-        PrivacyFeeManager(feeManager).collectPrivacyFee(
+        PrivacyFeeManager(feeManager).collectPrivateFee(
             msg.sender,
             keccak256("ESCROW_CREATE"),
             privacyFee
@@ -450,7 +450,6 @@ contract OmniCoinEscrow is RegistryAware, AccessControl, ReentrancyGuard, Pausab
         if (!IERC20(tokenContract).transferFrom(msg.sender, address(this), totalAmountPlain)) {
             revert TransferFailed();
         }
-        if (!MpcCore.decrypt(transferResult)) revert TransferFailed();
         
         // solhint-disable-next-line not-rely-on-time
         emit EscrowCreated(escrowId, msg.sender, _buyer, _arbitrator, block.timestamp + _duration);
@@ -480,13 +479,12 @@ contract OmniCoinEscrow is RegistryAware, AccessControl, ReentrancyGuard, Pausab
         escrow.released = true;
         
         // Transfer to buyer (minus fee)
-        address tokenContract = getTokenContract(escrow.encryptedAmount.unwrap() != 0);
-        if (isMpcAvailable && escrow.encryptedAmount.unwrap() != 0) {
+        address tokenContract = getTokenContract(gtUint64.unwrap(escrow.encryptedAmount) != 0);
+        if (isMpcAvailable && gtUint64.unwrap(escrow.encryptedAmount) != 0) {
             uint256 amount = uint256(gtUint64.unwrap(escrow.encryptedAmount));
             if (!IERC20(tokenContract).transfer(escrow.buyer, amount)) {
                 revert TransferFailed();
             }
-            if (!MpcCore.decrypt(transferResult)) revert TransferFailed();
         } else {
             // Fallback - assume transfer succeeds in test mode
         }
@@ -518,13 +516,12 @@ contract OmniCoinEscrow is RegistryAware, AccessControl, ReentrancyGuard, Pausab
         escrow.refunded = true;
         
         // Refund to seller (minus fee)
-        address tokenContract = getTokenContract(escrow.encryptedAmount.unwrap() != 0);
-        if (isMpcAvailable && escrow.encryptedAmount.unwrap() != 0) {
+        address tokenContract = getTokenContract(gtUint64.unwrap(escrow.encryptedAmount) != 0);
+        if (isMpcAvailable && gtUint64.unwrap(escrow.encryptedAmount) != 0) {
             uint256 amount = uint256(gtUint64.unwrap(escrow.encryptedAmount));
             if (!IERC20(tokenContract).transfer(escrow.seller, amount)) {
                 revert TransferFailed();
             }
-            if (!MpcCore.decrypt(transferResult)) revert TransferFailed();
         } else {
             // Fallback - assume transfer succeeds in test mode
         }
@@ -598,7 +595,7 @@ contract OmniCoinEscrow is RegistryAware, AccessControl, ReentrancyGuard, Pausab
         // Collect privacy fee for dispute creation
         uint256 baseFee = isMpcAvailable ? MpcCore.decrypt(arbitrationFee) : uint64(gtUint64.unwrap(arbitrationFee));
         uint256 privacyFee = baseFee * PRIVACY_MULTIPLIER;
-        PrivacyFeeManager(feeManager).collectPrivacyFee(
+        PrivacyFeeManager(feeManager).collectPrivateFee(
             msg.sender,
             keccak256("ESCROW_DISPUTE"),
             privacyFee
@@ -702,7 +699,7 @@ contract OmniCoinEscrow is RegistryAware, AccessControl, ReentrancyGuard, Pausab
         // Collect privacy fee for dispute resolution
         uint256 baseFee = isMpcAvailable ? MpcCore.decrypt(arbitrationFee) : uint64(gtUint64.unwrap(arbitrationFee));
         uint256 privacyFee = baseFee * PRIVACY_MULTIPLIER;
-        PrivacyFeeManager(feeManager).collectPrivacyFee(
+        PrivacyFeeManager(feeManager).collectPrivateFee(
             msg.sender,
             keccak256("DISPUTE_RESOLUTION"),
             privacyFee
@@ -742,14 +739,16 @@ contract OmniCoinEscrow is RegistryAware, AccessControl, ReentrancyGuard, Pausab
             // Transfer to buyer
             gtBool buyerHasRefund = MpcCore.gt(gtBuyerRefund, MpcCore.setPublic64(0));
             if (MpcCore.decrypt(buyerHasRefund)) {
-                gtBool transferResult = omniToken.transferGarbled(escrow.buyer, gtBuyerRefund);
+                PrivateOmniCoin privateToken = PrivateOmniCoin(tokenContract);
+                gtBool transferResult = privateToken.transfer(escrow.buyer, gtBuyerRefund);
                 if (!MpcCore.decrypt(transferResult)) revert TransferFailed();
             }
             
             // Transfer to seller
             gtBool sellerHasPayout = MpcCore.gt(gtSellerPayout, MpcCore.setPublic64(0));
             if (MpcCore.decrypt(sellerHasPayout)) {
-                gtBool transferResult = omniToken.transferGarbled(escrow.seller, gtSellerPayout);
+                PrivateOmniCoin privateToken = PrivateOmniCoin(tokenContract);
+                gtBool transferResult = privateToken.transfer(escrow.seller, gtSellerPayout);
                 if (!MpcCore.decrypt(transferResult)) revert TransferFailed();
             }
         } else {
@@ -937,13 +936,13 @@ contract OmniCoinEscrow is RegistryAware, AccessControl, ReentrancyGuard, Pausab
         if (isMpcAvailable) {
             gtBool hasFee = MpcCore.gt(fee, MpcCore.setPublic64(0));
             if (MpcCore.decrypt(hasFee)) {
-                address tokenContract = getTokenContract(escrow.encryptedAmount.unwrap() != 0);
+                // Always use privacy token for fee distribution since fees are encrypted
+                address tokenContract = getTokenContract(true);
                 address treasury = getTreasury();
                 uint256 feeAmount = uint256(gtUint64.unwrap(fee));
                 if (!IERC20(tokenContract).transfer(treasury, feeAmount)) {
                     revert TransferFailed();
                 }
-                if (!MpcCore.decrypt(transferResult)) revert TransferFailed();
             }
         } else {
             // Fallback - assume fee transfer succeeds in test mode

@@ -14,13 +14,14 @@ import {RegistryAware} from "./base/RegistryAware.sol";
  */
 contract OmniCoinValidator is Ownable, ReentrancyGuard, RegistryAware {
     struct Validator {
-        address account;
-        bool isActive;
-        uint256 stake;
-        uint256 reputation;
-        uint256 lastRewardTime;
-        uint256 accumulatedRewards;
-        bool usePrivacy;  // Whether using PrivateOmniCoin
+        address account;              // 20 bytes
+        bool isActive;                // 1 byte
+        bool usePrivacy;              // 1 byte - packed with isActive
+        // 10 bytes padding
+        uint256 stake;                // 32 bytes
+        uint256 reputation;           // 32 bytes
+        uint256 lastRewardTime;       // 32 bytes
+        uint256 accumulatedRewards;   // 32 bytes
     }
 
     struct ValidatorSet {
@@ -138,20 +139,6 @@ contract OmniCoinValidator is Ownable, ReentrancyGuard, RegistryAware {
         activeSet.maxValidators = maxValidators;
     }
 
-    /**
-     * @notice Get token contract based on privacy preference
-     * @dev Helper to get appropriate token contract
-     * @param usePrivacy Whether to use private token
-     * @return Token contract address
-     */
-    function _getTokenContract(bool usePrivacy) internal view returns (address) {
-        if (usePrivacy) {
-            return _getContract(registry.PRIVATE_OMNICOIN());
-        } else {
-            return _getContract(registry.OMNICOIN());
-        }
-    }
-    
     /**
      * @notice Registers the caller as a validator
      * @dev Requires the caller to have at least minStake tokens
@@ -402,6 +389,20 @@ contract OmniCoinValidator is Ownable, ReentrancyGuard, RegistryAware {
         );
     }
 
+    /**
+     * @notice Get token contract based on privacy preference
+     * @dev Helper to get appropriate token contract
+     * @param usePrivacy Whether to use private token
+     * @return Token contract address
+     */
+    function _getTokenContract(bool usePrivacy) internal view returns (address) {
+        if (usePrivacy) {
+            return _getContract(registry.PRIVATE_OMNICOIN());
+        } else {
+            return _getContract(registry.OMNICOIN());
+        }
+    }
+    
     /**
      * @notice Removes a validator from the active set
      * @param validator The validator address to remove

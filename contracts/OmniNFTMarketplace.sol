@@ -11,7 +11,7 @@ import {MpcCore, gtUint64, gtBool, ctUint64, itUint64} from "../coti-contracts/c
 import {OmniCoinEscrow} from "./OmniCoinEscrow.sol";
 import {ListingNFT} from "./ListingNFT.sol";
 import {PrivacyFeeManager} from "./PrivacyFeeManager.sol";
-import {RegistryAware} from "./base/RegistryAware.sol";
+import {OmniCoinRegistry} from "./OmniCoinRegistry.sol";
 
 /**
  * @title OmniNFTMarketplace
@@ -30,8 +30,7 @@ contract OmniNFTMarketplace is
     Initializable,
     OwnableUpgradeable,  
     ReentrancyGuardUpgradeable,
-    IERC721Receiver,
-    RegistryAware
+    IERC721Receiver
 {
     // =============================================================================
     // ENUMS
@@ -219,6 +218,9 @@ contract OmniNFTMarketplace is
 
     /// @notice Global marketplace statistics
     MarketplaceStats public stats;
+    
+    /// @notice Registry contract reference
+    OmniCoinRegistry public registry;
 
     // =============================================================================
     // EVENTS
@@ -356,8 +358,8 @@ contract OmniNFTMarketplace is
         __Ownable_init(msg.sender);
         __ReentrancyGuard_init();
         
-        // Initialize registry
-        _initializeRegistry(_registry);
+        // Store registry reference directly
+        registry = OmniCoinRegistry(_registry);
 
         // Keep for backwards compatibility
         if (_escrowContract != address(0)) {
@@ -376,6 +378,15 @@ contract OmniNFTMarketplace is
         offerCounter = 0;
         bundleCounter = 0;
         isMpcAvailable = false; // Default to false, set by admin when on COTI
+    }
+    
+    /**
+     * @notice Get contract address from registry
+     * @param identifier The contract identifier
+     * @return The contract address
+     */
+    function _getContract(bytes32 identifier) internal view returns (address) {
+        return registry.getContract(identifier);
     }
 
     // =============================================================================
@@ -577,7 +588,7 @@ contract OmniNFTMarketplace is
         uint64 priceDecrypted = MpcCore.decrypt(gtPrice);
         uint256 privacyFee = (uint256(priceDecrypted) * createFeeRate * PRIVACY_MULTIPLIER) / basisPoints;
         
-        PrivacyFeeManager(privacyFeeManager).collectPrivacyFee(
+        PrivacyFeeManager(privacyFeeManager).collectPrivateFee(
             msg.sender,
             keccak256("NFT_CREATE_LISTING"),
             privacyFee
@@ -665,7 +676,7 @@ contract OmniNFTMarketplace is
         uint256 basisPoints = 10000;
         uint256 privacyFee = (totalPrice * saleFeeRate * PRIVACY_MULTIPLIER) / basisPoints;
         
-        PrivacyFeeManager(privacyFeeManager).collectPrivacyFee(
+        PrivacyFeeManager(privacyFeeManager).collectPrivateFee(
             msg.sender,
             keccak256("NFT_PURCHASE"),
             privacyFee
@@ -724,7 +735,7 @@ contract OmniNFTMarketplace is
         uint256 basisPoints = 10000;
         uint256 privacyFee = (uint256(bidDecrypted) * bidFeeRate * PRIVACY_MULTIPLIER) / basisPoints;
         
-        PrivacyFeeManager(privacyFeeManager).collectPrivacyFee(
+        PrivacyFeeManager(privacyFeeManager).collectPrivateFee(
             msg.sender,
             keccak256("NFT_BID"),
             privacyFee
@@ -759,7 +770,7 @@ contract OmniNFTMarketplace is
         uint256 basisPoints = 10000;
         uint256 privacyFee = (uint256(amountDecrypted) * offerFeeRate * PRIVACY_MULTIPLIER) / basisPoints;
         
-        PrivacyFeeManager(privacyFeeManager).collectPrivacyFee(
+        PrivacyFeeManager(privacyFeeManager).collectPrivateFee(
             msg.sender,
             keccak256("NFT_OFFER"),
             privacyFee
@@ -855,13 +866,13 @@ contract OmniNFTMarketplace is
      * @dev Handles bid validation, refunds, and state updates
      * @param listingId Unique identifier of the auction listing
      * @param bidAmount Amount to bid in wei
-     * @param  Unused parameter for consistency with private bid function
      */
     function _placeBidInternal(
         uint256 listingId,
         uint256 bidAmount,
         bool // isPrivate
     ) internal {
+        address publicToken = _getContract(registry.OMNICOIN());
         Listing storage listing = listings[listingId];
         Auction storage auction = auctions[listingId];
 
@@ -875,12 +886,12 @@ contract OmniNFTMarketplace is
 
         // Refund previous highest bidder
         if (auction.highestBidder != address(0)) {
-            if (!omniCoin.transferPublic(auction.highestBidder, auction.highestBid))
+            if (!IERC20(publicToken).transfer(auction.highestBidder, auction.highestBid))
                 revert RefundFailed();
         }
 
         // Transfer new bid amount
-        if (!omniCoin.transferFromPublic(msg.sender, address(this), bidAmount))
+        if (!IERC20(publicToken).transferFrom(msg.sender, address(this), bidAmount))
             revert BidTransferFailed();
 
         auction.highestBid = bidAmount;
@@ -922,6 +933,7 @@ contract OmniNFTMarketplace is
         gtUint64 bidAmount,
         uint64 bidDecrypted
     ) internal {
+        address publicToken = _getContract(registry.OMNICOIN());
         Listing storage listing = listings[listingId];
         Auction storage auction = auctions[listingId];
 
@@ -945,12 +957,12 @@ contract OmniNFTMarketplace is
             
             // Refund previous bidder
             uint64 previousBid = MpcCore.decrypt(gtHighest);
-            if (!omniCoin.transferPublic(auction.highestBidder, uint256(previousBid)))
+            if (!IERC20(publicToken).transfer(auction.highestBidder, uint256(previousBid)))
                 revert RefundFailed();
         }
 
         // Transfer new bid amount
-        if (!omniCoin.transferFromPublic(msg.sender, address(this), uint256(bidDecrypted)))
+        if (!IERC20(publicToken).transferFrom(msg.sender, address(this), uint256(bidDecrypted)))
             revert BidTransferFailed();
 
         // Update auction state
@@ -996,6 +1008,7 @@ contract OmniNFTMarketplace is
         uint256 expiry,
         bool isPrivate
     ) internal returns (uint256 offerId) {
+        address publicToken = _getContract(registry.OMNICOIN());
         Listing storage listing = listings[listingId];
         if (listing.status != ListingStatus.ACTIVE) revert ListingNotActive();
         if (msg.sender == listing.seller) revert CannotOfferOwnItem();
@@ -1003,7 +1016,7 @@ contract OmniNFTMarketplace is
         if (expiry < block.timestamp + 1) revert InvalidExpiry(); // solhint-disable-line not-rely-on-time
 
         // Transfer offer amount to escrow
-        if (!omniCoin.transferFromPublic(msg.sender, address(this), amount))
+        if (!IERC20(publicToken).transferFrom(msg.sender, address(this), amount))
             revert OfferTransferFailed();
 
         unchecked { ++offerCounter; }
@@ -1041,6 +1054,7 @@ contract OmniNFTMarketplace is
         uint64 amountDecrypted,
         uint256 expiry
     ) internal returns (uint256 offerId) {
+        address publicToken = _getContract(registry.OMNICOIN());
         Listing storage listing = listings[listingId];
         if (listing.status != ListingStatus.ACTIVE) revert ListingNotActive();
         if (msg.sender == listing.seller) revert CannotOfferOwnItem();
@@ -1048,7 +1062,7 @@ contract OmniNFTMarketplace is
         if (expiry < block.timestamp + 1) revert InvalidExpiry(); // solhint-disable-line not-rely-on-time
 
         // Transfer offer amount to escrow
-        if (!omniCoin.transferFromPublic(msg.sender, address(this), uint256(amountDecrypted)))
+        if (!IERC20(publicToken).transferFrom(msg.sender, address(this), uint256(amountDecrypted)))
             revert OfferTransferFailed();
 
         unchecked { ++offerCounter; }
@@ -1110,6 +1124,7 @@ contract OmniNFTMarketplace is
      * @param listingId Unique identifier of the auction to finalize
      */
     function finalizeAuction(uint256 listingId) external nonReentrant {
+        address publicToken = _getContract(registry.OMNICOIN());
         Listing storage listing = listings[listingId];
         Auction storage auction = auctions[listingId];
 
@@ -1131,10 +1146,10 @@ contract OmniNFTMarketplace is
             uint256 sellerAmount = totalPrice - fee;
 
             // Transfer payment to seller
-            if (!omniCoin.transferPublic(listing.seller, sellerAmount))
+            if (!IERC20(publicToken).transfer(listing.seller, sellerAmount))
                 revert PaymentFailed();
             if (fee > 0) {
-                if (!omniCoin.transferPublic(feeRecipient, fee))
+                if (!IERC20(publicToken).transfer(feeRecipient, fee))
                     revert FeePaymentFailed();
             }
 
@@ -1173,6 +1188,7 @@ contract OmniNFTMarketplace is
      * @param offerId Unique identifier of the offer to accept
      */
     function acceptOffer(uint256 offerId) external nonReentrant {
+        address publicToken = _getContract(registry.OMNICOIN());
         Offer storage offer = offers[offerId];
         Listing storage listing = listings[offer.listingId];
 
@@ -1193,10 +1209,10 @@ contract OmniNFTMarketplace is
         uint256 sellerAmount = amount - fee;
 
         // Transfer payment
-        if (!omniCoin.transferPublic(listing.seller, sellerAmount))
+        if (!IERC20(publicToken).transfer(listing.seller, sellerAmount))
             revert PaymentFailed();
         if (fee > 0) {
-            if (!omniCoin.transferPublic(feeRecipient, fee)) revert FeePaymentFailed();
+            if (!IERC20(publicToken).transfer(feeRecipient, fee)) revert FeePaymentFailed();
         }
 
         // Transfer NFT
@@ -1329,10 +1345,6 @@ contract OmniNFTMarketplace is
     /**
      * @notice Handles receipt of NFTs sent to this contract
      * @dev IERC721Receiver implementation
-     * @param  Address that initiated the transfer
-     * @param  Address that previously owned the token
-     * @param  NFT identifier  
-     * @param  Additional data with no specified format
      * @return bytes4 selector confirming token transfer acceptance
      */
     function onERC721Received(
@@ -1349,7 +1361,8 @@ contract OmniNFTMarketplace is
      * @dev Admin only function for emergency situations
      */
     function emergencyWithdraw() external onlyOwner {
-        uint256 balance = omniCoin.balanceOfPublic(address(this));
-        if (!omniCoin.transferPublic(owner(), balance)) revert WithdrawalFailed();
+        address publicToken = _getContract(registry.OMNICOIN());
+        uint256 balance = IERC20(publicToken).balanceOf(address(this));
+        if (!IERC20(publicToken).transfer(owner(), balance)) revert WithdrawalFailed();
     }
 }

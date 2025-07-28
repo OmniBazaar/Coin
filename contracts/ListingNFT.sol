@@ -60,6 +60,43 @@ contract ListingNFT is ERC721URIStorage, RegistryAware, Ownable, ReentrancyGuard
     // EVENTS
     // =============================================================================
     
+    /**
+     * @notice Emitted when minter approval status changes
+     * @param minter Address of the minter
+     * @param approved Whether the minter is approved
+     */
+    event MinterApprovalChanged(address indexed minter, bool indexed approved);
+    
+    /**
+     * @notice Emitted when a new transaction is created
+     * @param tokenId The NFT token ID
+     * @param seller Address of the seller
+     * @param buyer Address of the buyer
+     * @param price Transaction price
+     * @param quantity Number of items (always 1 for NFTs)
+     */
+    event TransactionCreated(
+        uint256 indexed tokenId,
+        address indexed seller,
+        address indexed buyer,
+        uint256 price,
+        uint256 quantity
+    );
+
+    /**
+     * @notice Emitted when transaction status changes
+     * @param tokenId The NFT token ID
+     * @param seller Address of the seller
+     * @param buyer Address of the buyer
+     * @param status New transaction status
+     */
+    event TransactionStatusChanged(
+        uint256 indexed tokenId,
+        address indexed seller,
+        address indexed buyer,
+        TransactionStatus status
+    );
+
     // =============================================================================
     // CUSTOM ERRORS
     // =============================================================================
@@ -71,13 +108,10 @@ contract ListingNFT is ERC721URIStorage, RegistryAware, Ownable, ReentrancyGuard
     error NotAuthorized();
     error CannotTransferPendingTransaction();
     
-    /**
-     * @notice Emitted when minter approval status changes
-     * @param minter Address of the minter
-     * @param approved Whether the minter is approved
-     */
-    event MinterApprovalChanged(address indexed minter, bool indexed approved);
-
+    // =============================================================================
+    // CONSTRUCTOR
+    // =============================================================================
+    
     /**
      * @notice Initialize the ListingNFT contract
      * @param registry Address of the registry contract
@@ -112,35 +146,6 @@ contract ListingNFT is ERC721URIStorage, RegistryAware, Ownable, ReentrancyGuard
         return approvedMinters[minter];
     }
 
-    /**
-     * @notice Emitted when a new transaction is created
-     * @param tokenId The NFT token ID
-     * @param seller Address of the seller
-     * @param buyer Address of the buyer
-     * @param price Transaction price
-     * @param quantity Number of items (always 1 for NFTs)
-     */
-    event TransactionCreated(
-        uint256 indexed tokenId,
-        address indexed seller,
-        address indexed buyer,
-        uint256 price,
-        uint256 quantity
-    );
-
-    /**
-     * @notice Emitted when transaction status changes
-     * @param tokenId The NFT token ID
-     * @param seller Address of the seller
-     * @param buyer Address of the buyer
-     * @param status New transaction status
-     */
-    event TransactionStatusChanged(
-        uint256 indexed tokenId,
-        address indexed seller,
-        address indexed buyer,
-        TransactionStatus status
-    );
 
     /**
      * @notice Mint a new listing NFT

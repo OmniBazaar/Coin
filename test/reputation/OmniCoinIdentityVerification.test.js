@@ -4,6 +4,7 @@ const { ethers } = require("hardhat");
 describe("OmniCoinIdentityVerification", function () {
     let identityModule;
     let reputationCore;
+    let registry;
     let owner, verifier, kycProvider, user1, user2;
 
     const IDENTITY_TIERS = {
@@ -21,25 +22,32 @@ describe("OmniCoinIdentityVerification", function () {
     beforeEach(async function () {
         [owner, verifier, kycProvider, user1, user2] = await ethers.getSigners();
 
-        // Deploy mock reputation core
-        const MockCore = await ethers.getContractFactory("OmniCoinReputationCore");
-        const config = await ethers.getContractFactory("OmniCoinConfig");
-        const configContract = await config.deploy(owner.address);
-        
-        reputationCore = await MockCore.deploy(
-            owner.address,
-            await configContract.getAddress(),
-            ethers.ZeroAddress,
-            ethers.ZeroAddress,
-            ethers.ZeroAddress
+        // Deploy actual OmniCoinRegistry
+        const OmniCoinRegistry = await ethers.getContractFactory("OmniCoinRegistry");
+        registry = await OmniCoinRegistry.deploy(await owner.getAddress());
+        await registry.waitForDeployment();
+
+        // Deploy actual OmniCoinReputationCore
+        const ReputationCore = await ethers.getContractFactory("OmniCoinReputationCore");
+        reputationCore = await ReputationCore.deploy(
+            await registry.getAddress(),
+            await owner.getAddress()
+        );
+        await reputationCore.waitForDeployment();
+
+        // Set up registry
+        await registry.setContract(
+            ethers.keccak256(ethers.toUtf8Bytes("REPUTATION_CORE")),
+            await reputationCore.getAddress()
         );
 
         // Deploy identity module
         const Identity = await ethers.getContractFactory("OmniCoinIdentityVerification");
         identityModule = await Identity.deploy(
-            owner.address,
+            await owner.getAddress(),
             await reputationCore.getAddress()
         );
+        await identityModule.waitForDeployment();
 
         // Grant MODULE_ROLE on reputation core
         const MODULE_ROLE = await reputationCore.MODULE_ROLE();
@@ -49,14 +57,14 @@ describe("OmniCoinIdentityVerification", function () {
         const IDENTITY_VERIFIER_ROLE = await identityModule.IDENTITY_VERIFIER_ROLE();
         const KYC_PROVIDER_ROLE = await identityModule.KYC_PROVIDER_ROLE();
         
-        await identityModule.grantRole(IDENTITY_VERIFIER_ROLE, verifier.address);
-        await identityModule.grantRole(KYC_PROVIDER_ROLE, kycProvider.address);
+        await identityModule.grantRole(IDENTITY_VERIFIER_ROLE, await verifier.getAddress());
+        await identityModule.grantRole(KYC_PROVIDER_ROLE, await kycProvider.getAddress());
     });
 
     describe("Deployment", function () {
         it("Should set correct admin", async function () {
             const ADMIN_ROLE = await identityModule.ADMIN_ROLE();
-            expect(await identityModule.hasRole(ADMIN_ROLE, owner.address)).to.be.true;
+            expect(await identityModule.hasRole(ADMIN_ROLE, await owner.getAddress())).to.be.true;
         });
 
         it("Should set correct reputation core", async function () {
@@ -82,20 +90,20 @@ describe("OmniCoinIdentityVerification", function () {
 
         it("Should verify identity at different tiers", async function () {
             await identityModule.connect(verifier).verifyIdentity(
-                user1.address,
+                await user1.getAddress(),
                 IDENTITY_TIERS.BASIC_ID,
                 proofHash,
                 dummyScore
             );
 
-            const tier = await identityModule.getIdentityTier(user1.address);
+            const tier = await identityModule.getIdentityTier(await user1.getAddress());
             expect(tier).to.equal(IDENTITY_TIERS.BASIC_ID);
         });
 
         it("Should update user counts correctly", async function () {
             // Verify first user
             await identityModule.connect(verifier).verifyIdentity(
-                user1.address,
+                await user1.getAddress(),
                 IDENTITY_TIERS.BASIC_ID,
                 proofHash,
                 dummyScore
@@ -103,7 +111,7 @@ describe("OmniCoinIdentityVerification", function () {
 
             // Verify second user at same tier
             await identityModule.connect(verifier).verifyIdentity(
-                user2.address,
+                await user2.getAddress(),
                 IDENTITY_TIERS.BASIC_ID,
                 proofHash,
                 dummyScore
@@ -117,7 +125,7 @@ describe("OmniCoinIdentityVerification", function () {
         it("Should handle tier upgrades", async function () {
             // Start with EMAIL tier
             await identityModule.connect(verifier).verifyIdentity(
-                user1.address,
+                await user1.getAddress(),
                 IDENTITY_TIERS.EMAIL,
                 proofHash,
                 dummyScore
@@ -128,7 +136,7 @@ describe("OmniCoinIdentityVerification", function () {
 
             // Upgrade to ENHANCED_ID
             await identityModule.connect(verifier).verifyIdentity(
-                user1.address,
+                await user1.getAddress(),
                 IDENTITY_TIERS.ENHANCED_ID,
                 proofHash,
                 dummyScore
@@ -142,7 +150,7 @@ describe("OmniCoinIdentityVerification", function () {
         it("Should reject invalid tiers", async function () {
             await expect(
                 identityModule.connect(verifier).verifyIdentity(
-                    user1.address,
+                    await user1.getAddress(),
                     0, // UNVERIFIED - invalid
                     proofHash,
                     dummyScore
@@ -151,7 +159,7 @@ describe("OmniCoinIdentityVerification", function () {
 
             await expect(
                 identityModule.connect(verifier).verifyIdentity(
-                    user1.address,
+                    await user1.getAddress(),
                     9, // Beyond max
                     proofHash,
                     dummyScore
@@ -162,7 +170,7 @@ describe("OmniCoinIdentityVerification", function () {
         it("Should reject non-verifier calls", async function () {
             await expect(
                 identityModule.connect(user1).verifyIdentity(
-                    user1.address,
+                    await user1.getAddress(),
                     IDENTITY_TIERS.BASIC_ID,
                     proofHash,
                     dummyScore
@@ -181,7 +189,7 @@ describe("OmniCoinIdentityVerification", function () {
             };
             
             await identityModule.connect(verifier).verifyIdentity(
-                user1.address,
+                await user1.getAddress(),
                 IDENTITY_TIERS.BASIC_ID,
                 proofHash,
                 dummyScore
@@ -190,11 +198,11 @@ describe("OmniCoinIdentityVerification", function () {
 
         it("Should downgrade identity", async function () {
             await identityModule.connect(verifier).downgradeIdentity(
-                user1.address,
+                await user1.getAddress(),
                 "Fraudulent documents"
             );
 
-            const tier = await identityModule.getIdentityTier(user1.address);
+            const tier = await identityModule.getIdentityTier(await user1.getAddress());
             expect(tier).to.equal(IDENTITY_TIERS.UNVERIFIED);
         });
 
@@ -203,7 +211,7 @@ describe("OmniCoinIdentityVerification", function () {
             expect(countsBefore[IDENTITY_TIERS.BASIC_ID]).to.equal(1);
 
             await identityModule.connect(verifier).downgradeIdentity(
-                user1.address,
+                await user1.getAddress(),
                 "Fraudulent documents"
             );
 
@@ -215,11 +223,11 @@ describe("OmniCoinIdentityVerification", function () {
         it("Should emit downgrade event", async function () {
             await expect(
                 identityModule.connect(verifier).downgradeIdentity(
-                    user1.address,
+                    await user1.getAddress(),
                     "Fraudulent documents"
                 )
             ).to.emit(identityModule, "IdentityDowngraded")
-            .withArgs(user1.address, "Fraudulent documents", await ethers.provider.getBlock('latest').then(b => b.timestamp + 1));
+            .withArgs(await user1.getAddress(), "Fraudulent documents", await ethers.provider.getBlock('latest').then(b => b.timestamp + 1));
         });
     });
 
@@ -234,7 +242,7 @@ describe("OmniCoinIdentityVerification", function () {
             };
             
             await identityModule.connect(verifier).verifyIdentity(
-                user1.address,
+                await user1.getAddress(),
                 IDENTITY_TIERS.BASIC_ID,
                 proofHash,
                 dummyScore
@@ -243,28 +251,28 @@ describe("OmniCoinIdentityVerification", function () {
 
         it("Should renew identity", async function () {
             await identityModule.connect(verifier).renewIdentity(
-                user1.address,
+                await user1.getAddress(),
                 newProofHash
             );
 
-            const details = await identityModule.getIdentityDetails(user1.address);
+            const details = await identityModule.getIdentityDetails(await user1.getAddress());
             expect(details.tier).to.equal(IDENTITY_TIERS.BASIC_ID);
             expect(details.isActive).to.be.true;
         });
 
         it("Should update timestamps on renewal", async function () {
-            const detailsBefore = await identityModule.getIdentityDetails(user1.address);
+            const detailsBefore = await identityModule.getIdentityDetails(await user1.getAddress());
             
             // Wait a bit
             await ethers.provider.send("evm_increaseTime", [100]);
             await ethers.provider.send("evm_mine");
 
             await identityModule.connect(verifier).renewIdentity(
-                user1.address,
+                await user1.getAddress(),
                 newProofHash
             );
 
-            const detailsAfter = await identityModule.getIdentityDetails(user1.address);
+            const detailsAfter = await identityModule.getIdentityDetails(await user1.getAddress());
             expect(detailsAfter.verificationTime).to.be.gt(detailsBefore.verificationTime);
             expect(detailsAfter.expirationTime).to.be.gt(detailsBefore.expirationTime);
         });
@@ -272,7 +280,7 @@ describe("OmniCoinIdentityVerification", function () {
         it("Should reject renewal of unverified users", async function () {
             await expect(
                 identityModule.connect(verifier).renewIdentity(
-                    user2.address, // Never verified
+                    await user2.getAddress(), // Never verified
                     newProofHash
                 )
             ).to.be.revertedWith("IdentityVerification: Not verified");
@@ -289,19 +297,19 @@ describe("OmniCoinIdentityVerification", function () {
             
             // Verify with EMAIL tier (180 days expiration)
             await identityModule.connect(verifier).verifyIdentity(
-                user1.address,
+                await user1.getAddress(),
                 IDENTITY_TIERS.EMAIL,
                 proofHash,
                 dummyScore
             );
 
-            expect(await identityModule.isIdentityExpired(user1.address)).to.be.false;
+            expect(await identityModule.isIdentityExpired(await user1.getAddress())).to.be.false;
 
             // Fast forward 181 days
             await ethers.provider.send("evm_increaseTime", [181 * 24 * 60 * 60]);
             await ethers.provider.send("evm_mine");
 
-            expect(await identityModule.isIdentityExpired(user1.address)).to.be.true;
+            expect(await identityModule.isIdentityExpired(await user1.getAddress())).to.be.true;
         });
 
         it("Should return unverified tier for expired identities", async function () {
@@ -312,7 +320,7 @@ describe("OmniCoinIdentityVerification", function () {
             };
             
             await identityModule.connect(verifier).verifyIdentity(
-                user1.address,
+                await user1.getAddress(),
                 IDENTITY_TIERS.EMAIL,
                 proofHash,
                 dummyScore
@@ -322,7 +330,7 @@ describe("OmniCoinIdentityVerification", function () {
             await ethers.provider.send("evm_increaseTime", [181 * 24 * 60 * 60]);
             await ethers.provider.send("evm_mine");
 
-            const tier = await identityModule.getIdentityTier(user1.address);
+            const tier = await identityModule.getIdentityTier(await user1.getAddress());
             expect(tier).to.equal(IDENTITY_TIERS.UNVERIFIED);
         });
     });
@@ -403,7 +411,7 @@ describe("OmniCoinIdentityVerification", function () {
             
             await expect(
                 identityModule.connect(verifier).verifyIdentity(
-                    user1.address,
+                    await user1.getAddress(),
                     IDENTITY_TIERS.BASIC_ID,
                     proofHash,
                     dummyScore

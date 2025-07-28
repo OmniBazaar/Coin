@@ -272,6 +272,7 @@ contract OmniCoinBridge is RegistryAware, Ownable, ReentrancyGuard {
      * @param _recipient Recipient address on target chain
      * @param _amount Amount to transfer
      */
+    // solhint-disable-next-line code-complexity
     function initiateTransfer(
         uint256 _targetChainId,
         address _targetToken,
@@ -375,7 +376,7 @@ contract OmniCoinBridge is RegistryAware, Ownable, ReentrancyGuard {
         // Collect privacy fee (10x normal fee)
         uint256 normalFee = uint64(gtUint64.unwrap(privacyFeeBase));
         uint256 privacyFee = normalFee * PRIVACY_MULTIPLIER;
-        PrivacyFeeManager(privacyFeeManager).collectPrivacyFee(
+        PrivacyFeeManager(privacyFeeManager).collectPrivateFee(
             msg.sender,
             keccak256("BRIDGE_TRANSFER"),
             privacyFee

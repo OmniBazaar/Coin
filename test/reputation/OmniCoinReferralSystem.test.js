@@ -4,6 +4,7 @@ const { ethers } = require("hardhat");
 describe("OmniCoinReferralSystem", function () {
     let referralModule;
     let reputationCore;
+    let registry;
     let owner, referralManager, referrer1, referrer2, referee1, referee2, referee3;
 
     const MIN_REFERRAL_SCORE = 100;
@@ -14,25 +15,32 @@ describe("OmniCoinReferralSystem", function () {
     beforeEach(async function () {
         [owner, referralManager, referrer1, referrer2, referee1, referee2, referee3] = await ethers.getSigners();
 
-        // Deploy mock reputation core
-        const MockCore = await ethers.getContractFactory("OmniCoinReputationCore");
-        const config = await ethers.getContractFactory("OmniCoinConfig");
-        const configContract = await config.deploy(owner.address);
-        
-        reputationCore = await MockCore.deploy(
-            owner.address,
-            await configContract.getAddress(),
-            ethers.ZeroAddress,
-            ethers.ZeroAddress,
-            ethers.ZeroAddress
+        // Deploy actual OmniCoinRegistry
+        const OmniCoinRegistry = await ethers.getContractFactory("OmniCoinRegistry");
+        registry = await OmniCoinRegistry.deploy(await owner.getAddress());
+        await registry.waitForDeployment();
+
+        // Deploy actual OmniCoinReputationCore
+        const ReputationCore = await ethers.getContractFactory("OmniCoinReputationCore");
+        reputationCore = await ReputationCore.deploy(
+            await registry.getAddress(),
+            await owner.getAddress()
+        );
+        await reputationCore.waitForDeployment();
+
+        // Set up registry
+        await registry.setContract(
+            ethers.keccak256(ethers.toUtf8Bytes("REPUTATION_CORE")),
+            await reputationCore.getAddress()
         );
 
         // Deploy referral module
         const Referral = await ethers.getContractFactory("OmniCoinReferralSystem");
         referralModule = await Referral.deploy(
-            owner.address,
+            await owner.getAddress(),
             await reputationCore.getAddress()
         );
+        await referralModule.waitForDeployment();
 
         // Grant MODULE_ROLE on reputation core
         const MODULE_ROLE = await reputationCore.MODULE_ROLE();
@@ -40,13 +48,13 @@ describe("OmniCoinReferralSystem", function () {
 
         // Grant roles
         const REFERRAL_MANAGER_ROLE = await referralModule.REFERRAL_MANAGER_ROLE();
-        await referralModule.grantRole(REFERRAL_MANAGER_ROLE, referralManager.address);
+        await referralModule.grantRole(REFERRAL_MANAGER_ROLE, await referralManager.getAddress());
     });
 
     describe("Deployment", function () {
         it("Should set correct admin", async function () {
             const ADMIN_ROLE = await referralModule.ADMIN_ROLE();
-            expect(await referralModule.hasRole(ADMIN_ROLE, owner.address)).to.be.true;
+            expect(await referralModule.hasRole(ADMIN_ROLE, await owner.getAddress())).to.be.true;
         });
 
         it("Should set correct reputation core", async function () {
@@ -75,38 +83,38 @@ describe("OmniCoinReferralSystem", function () {
             const activityScore = createActivityScore(1000n);
 
             await referralModule.connect(referralManager).recordReferral(
-                referrer1.address,
-                referee1.address,
+                await referrer1.getAddress(),
+                await referee1.getAddress(),
                 activityScore
             );
 
             // Check referral data
-            const referrerData = await referralModule.referralData(referrer1.address);
+            const referrerData = await referralModule.referralData(await referrer1.getAddress());
             expect(referrerData.directReferralCount).to.equal(1);
             expect(referrerData.totalReferralCount).to.equal(1);
             expect(referrerData.isActiveReferrer).to.be.true;
 
             // Check referral record
-            const record = await referralModule.referralRecords(referee1.address);
-            expect(record.referrer).to.equal(referrer1.address);
+            const record = await referralModule.referralRecords(await referee1.getAddress());
+            expect(record.referrer).to.equal(await referrer1.getAddress());
             expect(record.level).to.equal(1);
             expect(record.isActive).to.be.true;
 
             // Check reverse lookup
-            expect(await referralModule.referrerOf(referee1.address)).to.equal(referrer1.address);
+            expect(await referralModule.referrerOf(await referee1.getAddress())).to.equal(await referrer1.getAddress());
         });
 
         it("Should update referral tree", async function () {
             const activityScore = createActivityScore(1000n);
 
             await referralModule.connect(referralManager).recordReferral(
-                referrer1.address,
-                referee1.address,
+                await referrer1.getAddress(),
+                await referee1.getAddress(),
                 activityScore
             );
 
-            const level1Referrals = await referralModule.getReferralTree(referrer1.address, 1);
-            expect(level1Referrals).to.include(referee1.address);
+            const level1Referrals = await referralModule.getReferralTree(await referrer1.getAddress(), 1);
+            expect(level1Referrals).to.include(await referee1.getAddress());
             expect(level1Referrals.length).to.equal(1);
         });
 
@@ -115,8 +123,8 @@ describe("OmniCoinReferralSystem", function () {
 
             await expect(
                 referralModule.connect(referralManager).recordReferral(
-                    referrer1.address,
-                    referrer1.address,
+                    await referrer1.getAddress(),
+                    await referrer1.getAddress(),
                     activityScore
                 )
             ).to.be.revertedWith("ReferralSystem: Cannot refer self");
@@ -126,15 +134,15 @@ describe("OmniCoinReferralSystem", function () {
             const activityScore = createActivityScore(1000n);
 
             await referralModule.connect(referralManager).recordReferral(
-                referrer1.address,
-                referee1.address,
+                await referrer1.getAddress(),
+                await referee1.getAddress(),
                 activityScore
             );
 
             await expect(
                 referralModule.connect(referralManager).recordReferral(
-                    referrer2.address,
-                    referee1.address,
+                    await referrer2.getAddress(),
+                    await referee1.getAddress(),
                     activityScore
                 )
             ).to.be.revertedWith("ReferralSystem: Already referred");
@@ -146,8 +154,8 @@ describe("OmniCoinReferralSystem", function () {
             const before = await referralModule.totalSystemReferrals();
             
             await referralModule.connect(referralManager).recordReferral(
-                referrer1.address,
-                referee1.address,
+                await referrer1.getAddress(),
+                await referee1.getAddress(),
                 activityScore
             );
 
@@ -166,49 +174,49 @@ describe("OmniCoinReferralSystem", function () {
             // Create 3-level referral chain
             // referrer1 -> referee1 -> referee2 -> referee3
             await referralModule.connect(referralManager).recordReferral(
-                referrer1.address,
-                referee1.address,
+                await referrer1.getAddress(),
+                await referee1.getAddress(),
                 activityScore
             );
             
             await referralModule.connect(referralManager).recordReferral(
-                referee1.address,
-                referee2.address,
+                await referee1.getAddress(),
+                await referee2.getAddress(),
                 activityScore
             );
         });
 
         it("Should track level 2 referrals", async function () {
-            const level2Referrals = await referralModule.getReferralTree(referrer1.address, 2);
-            expect(level2Referrals).to.include(referee2.address);
+            const level2Referrals = await referralModule.getReferralTree(await referrer1.getAddress(), 2);
+            expect(level2Referrals).to.include(await referee2.getAddress());
             expect(level2Referrals.length).to.equal(1);
         });
 
         it("Should track level 3 referrals", async function () {
             await referralModule.connect(referralManager).recordReferral(
-                referee2.address,
-                referee3.address,
+                await referee2.getAddress(),
+                await referee3.getAddress(),
                 activityScore
             );
 
-            const level3Referrals = await referralModule.getReferralTree(referrer1.address, 3);
-            expect(level3Referrals).to.include(referee3.address);
+            const level3Referrals = await referralModule.getReferralTree(await referrer1.getAddress(), 3);
+            expect(level3Referrals).to.include(await referee3.getAddress());
             expect(level3Referrals.length).to.equal(1);
         });
 
         it("Should update total counts for multi-level", async function () {
-            const referrerData = await referralModule.referralData(referrer1.address);
+            const referrerData = await referralModule.referralData(await referrer1.getAddress());
             expect(referrerData.directReferralCount).to.equal(1); // Only direct
             expect(referrerData.totalReferralCount).to.equal(2); // Direct + level 2
         });
 
         it("Should get referral chain", async function () {
-            const result = await referralModule.getReferralChain(referee2.address);
+            const result = await referralModule.getReferralChain(await referee2.getAddress());
             const chain = result.chain;
             const levels = result.levels;
 
-            expect(chain[0]).to.equal(referee1.address);
-            expect(chain[1]).to.equal(referrer1.address);
+            expect(chain[0]).to.equal(await referee1.getAddress());
+            expect(chain[1]).to.equal(await referrer1.getAddress());
             expect(levels[0]).to.equal(1);
             expect(levels[1]).to.equal(2);
         });
@@ -223,17 +231,17 @@ describe("OmniCoinReferralSystem", function () {
 
             // First make referrer active
             await referralModule.connect(referralManager).recordReferral(
-                referrer1.address,
-                referee1.address,
+                await referrer1.getAddress(),
+                await referee1.getAddress(),
                 { ciphertext: 1000n, signature: ethers.randomBytes(32) }
             );
 
             await referralModule.connect(referralManager).processReferralReward(
-                referrer1.address,
+                await referrer1.getAddress(),
                 rewardAmount
             );
 
-            const referrerData = await referralModule.referralData(referrer1.address);
+            const referrerData = await referralModule.referralData(await referrer1.getAddress());
             expect(referrerData.lastActivityTimestamp).to.be.gt(0);
         });
 
@@ -245,7 +253,7 @@ describe("OmniCoinReferralSystem", function () {
 
             await expect(
                 referralModule.connect(referralManager).processReferralReward(
-                    referrer1.address, // Never referred anyone
+                    await referrer1.getAddress(), // Never referred anyone
                     rewardAmount
                 )
             ).to.be.revertedWith("ReferralSystem: Not active referrer");
@@ -254,13 +262,13 @@ describe("OmniCoinReferralSystem", function () {
         it("Should get total referral rewards", async function () {
             // Make referrer active
             await referralModule.connect(referralManager).recordReferral(
-                referrer1.address,
-                referee1.address,
+                await referrer1.getAddress(),
+                await referee1.getAddress(),
                 { ciphertext: 1000n, signature: ethers.randomBytes(32) }
             );
 
             // getTotalReferralRewards returns gtUint64 - can't check value directly in test mode
-            await referralModule.getTotalReferralRewards(referrer1.address);
+            await referralModule.getTotalReferralRewards(await referrer1.getAddress());
             // Should have base reward from referral but can't verify without MPC
         });
     });
@@ -273,45 +281,45 @@ describe("OmniCoinReferralSystem", function () {
             };
             
             await referralModule.connect(referralManager).recordReferral(
-                referrer1.address,
-                referee1.address,
+                await referrer1.getAddress(),
+                await referee1.getAddress(),
                 activityScore
             );
         });
 
         it("Should deactivate referral", async function () {
             await referralModule.connect(referralManager).deactivateReferral(
-                referee1.address,
+                await referee1.getAddress(),
                 "Fraud detected"
             );
 
-            const record = await referralModule.referralRecords(referee1.address);
+            const record = await referralModule.referralRecords(await referee1.getAddress());
             expect(record.isActive).to.be.false;
         });
 
         it("Should update referrer counts on deactivation", async function () {
-            const before = await referralModule.referralData(referrer1.address);
+            const before = await referralModule.referralData(await referrer1.getAddress());
             expect(before.directReferralCount).to.equal(1);
 
             await referralModule.connect(referralManager).deactivateReferral(
-                referee1.address,
+                await referee1.getAddress(),
                 "Fraud detected"
             );
 
-            const after = await referralModule.referralData(referrer1.address);
+            const after = await referralModule.referralData(await referrer1.getAddress());
             expect(after.directReferralCount).to.equal(0);
         });
 
         it("Should emit deactivation event", async function () {
             await expect(
                 referralModule.connect(referralManager).deactivateReferral(
-                    referee1.address,
+                    await referee1.getAddress(),
                     "Fraud detected"
                 )
             ).to.emit(referralModule, "ReferralDeactivated")
             .withArgs(
-                referee1.address,
-                referrer1.address,
+                await referee1.getAddress(),
+                await referrer1.getAddress(),
                 "Fraud detected",
                 await ethers.provider.getBlock('latest').then(b => b.timestamp + 1)
             );
@@ -321,33 +329,33 @@ describe("OmniCoinReferralSystem", function () {
     describe("Referral Eligibility", function () {
         it("Should check referrer eligibility", async function () {
             // Not eligible initially
-            expect(await referralModule.isEligibleReferrer(referrer1.address)).to.be.false;
+            expect(await referralModule.isEligibleReferrer(await referrer1.getAddress())).to.be.false;
 
             // Make active by referring someone
             await referralModule.connect(referralManager).recordReferral(
-                referrer1.address,
-                referee1.address,
+                await referrer1.getAddress(),
+                await referee1.getAddress(),
                 { ciphertext: 1000n, signature: ethers.randomBytes(32) }
             );
 
-            expect(await referralModule.isEligibleReferrer(referrer1.address)).to.be.true;
+            expect(await referralModule.isEligibleReferrer(await referrer1.getAddress())).to.be.true;
         });
 
         it("Should set referrer eligibility manually", async function () {
             await referralModule.connect(referralManager).setReferrerEligibility(
-                referrer1.address,
+                await referrer1.getAddress(),
                 true
             );
 
-            const data = await referralModule.referralData(referrer1.address);
+            const data = await referralModule.referralData(await referrer1.getAddress());
             expect(data.isActiveReferrer).to.be.true;
         });
 
         it("Should consider decay period for eligibility", async function () {
             // Make active
             await referralModule.connect(referralManager).recordReferral(
-                referrer1.address,
-                referee1.address,
+                await referrer1.getAddress(),
+                await referee1.getAddress(),
                 { ciphertext: 1000n, signature: ethers.randomBytes(32) }
             );
 
@@ -355,15 +363,15 @@ describe("OmniCoinReferralSystem", function () {
             await ethers.provider.send("evm_increaseTime", [REFERRAL_DECAY_PERIOD + 1]);
             await ethers.provider.send("evm_mine");
 
-            expect(await referralModule.isEligibleReferrer(referrer1.address)).to.be.false;
+            expect(await referralModule.isEligibleReferrer(await referrer1.getAddress())).to.be.false;
         });
     });
 
     describe("Referral Score Decay", function () {
         it("Should apply full decay after period", async function () {
             await referralModule.connect(referralManager).recordReferral(
-                referrer1.address,
-                referee1.address,
+                await referrer1.getAddress(),
+                await referee1.getAddress(),
                 { ciphertext: 1000n, signature: ethers.randomBytes(32) }
             );
 
@@ -372,15 +380,15 @@ describe("OmniCoinReferralSystem", function () {
             await ethers.provider.send("evm_mine");
 
             // getReferralScore returns gtUint64, in test mode it's just wrapped uint64
-            const scoreTx = await referralModule.getReferralScore(referrer1.address);
+            const scoreTx = await referralModule.getReferralScore(await referrer1.getAddress());
             // Since MPC is disabled, the score should be 0 after decay
             // This would need to be tested differently on COTI testnet
         });
 
         it("Should return referral count regardless of decay", async function () {
             await referralModule.connect(referralManager).recordReferral(
-                referrer1.address,
-                referee1.address,
+                await referrer1.getAddress(),
+                await referee1.getAddress(),
                 { ciphertext: 1000n, signature: ethers.randomBytes(32) }
             );
 
@@ -389,28 +397,28 @@ describe("OmniCoinReferralSystem", function () {
             await ethers.provider.send("evm_mine");
 
             // Count should remain
-            expect(await referralModule.getReferralCount(referrer1.address)).to.equal(1);
+            expect(await referralModule.getReferralCount(await referrer1.getAddress())).to.equal(1);
         });
     });
 
     describe("Quality Score", function () {
         it("Should update quality score", async function () {
             await referralModule.connect(referralManager).updateQualityScore(
-                referrer1.address,
+                await referrer1.getAddress(),
                 85
             );
 
-            expect(await referralModule.referralQualityScore(referrer1.address)).to.equal(85);
+            expect(await referralModule.referralQualityScore(await referrer1.getAddress())).to.equal(85);
         });
 
         it("Should emit quality score event", async function () {
             await expect(
                 referralModule.connect(referralManager).updateQualityScore(
-                    referrer1.address,
+                    await referrer1.getAddress(),
                     85
                 )
             ).to.emit(referralModule, "QualityScoreUpdated")
-            .withArgs(referrer1.address, 85);
+            .withArgs(await referrer1.getAddress(), 85);
         });
     });
 
@@ -445,15 +453,15 @@ describe("OmniCoinReferralSystem", function () {
     describe("View Functions", function () {
         beforeEach(async function () {
             await referralModule.connect(referralManager).recordReferral(
-                referrer1.address,
-                referee1.address,
+                await referrer1.getAddress(),
+                await referee1.getAddress(),
                 { ciphertext: 1000n, signature: ethers.randomBytes(32) }
             );
         });
 
         it("Should get user encrypted data for authorized user", async function () {
             const data = await referralModule.connect(referrer1).getUserEncryptedData(
-                referrer1.address
+                await referrer1.getAddress()
             );
 
             expect(data.score).to.be.gt(0);
@@ -463,24 +471,24 @@ describe("OmniCoinReferralSystem", function () {
         it("Should reject unauthorized access to encrypted data", async function () {
             await expect(
                 referralModule.connect(referrer2).getUserEncryptedData(
-                    referrer1.address
+                    await referrer1.getAddress()
                 )
             ).to.be.revertedWith("ReferralSystem: Not authorized");
         });
 
         it("Should get referral tree at specific level", async function () {
-            const tree = await referralModule.getReferralTree(referrer1.address, 1);
-            expect(tree).to.include(referee1.address);
+            const tree = await referralModule.getReferralTree(await referrer1.getAddress(), 1);
+            expect(tree).to.include(await referee1.getAddress());
             expect(tree.length).to.equal(1);
         });
 
         it("Should reject invalid referral tree level", async function () {
             await expect(
-                referralModule.getReferralTree(referrer1.address, 0)
+                referralModule.getReferralTree(await referrer1.getAddress(), 0)
             ).to.be.revertedWith("ReferralSystem: Invalid level");
 
             await expect(
-                referralModule.getReferralTree(referrer1.address, 4)
+                referralModule.getReferralTree(await referrer1.getAddress(), 4)
             ).to.be.revertedWith("ReferralSystem: Invalid level");
         });
     });
@@ -499,8 +507,8 @@ describe("OmniCoinReferralSystem", function () {
             
             await expect(
                 referralModule.connect(referralManager).recordReferral(
-                    referrer1.address,
-                    referee1.address,
+                    await referrer1.getAddress(),
+                    await referee1.getAddress(),
                     { ciphertext: 1000n, signature: ethers.randomBytes(32) }
                 )
             ).to.be.revertedWithCustomError(referralModule, "EnforcedPause");

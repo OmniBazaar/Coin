@@ -11,6 +11,7 @@ import {PrivacyFeeManager} from "./PrivacyFeeManager.sol";
 import {RegistryAware} from "./base/RegistryAware.sol";
 import {OmniCoin} from "./OmniCoin.sol";
 import {PrivateOmniCoin} from "./PrivateOmniCoin.sol";
+import {OmniCoinValidator} from "./OmniCoinValidator.sol";
 
 /**
  * @title DEXSettlement
@@ -532,7 +533,7 @@ contract DEXSettlement is RegistryAware, ReentrancyGuard, Pausable, AccessContro
         uint256 normalFee = uint64(gtUint64.unwrap(privacyFeeBase));
         uint256 privacyFee = normalFee * PRIVACY_MULTIPLIER;
         
-        PrivacyFeeManager(getPrivacyFeeManager()).collectPrivacyFee(
+        PrivacyFeeManager(getPrivacyFeeManager()).collectPrivateFee(
             maker,
             keccak256("DEX_TRADE"),
             privacyFee
@@ -657,14 +658,58 @@ contract DEXSettlement is RegistryAware, ReentrancyGuard, Pausable, AccessContro
 
     /**
      * @notice Verify that the trade has a valid validator signature
-     * @dev Placeholder for signature verification logic
+     * @dev Verifies ECDSA signature from authorized validator
      * @param trade The trade containing the signature to verify
      * @return Whether the signature is valid
      */
-    function _verifyValidatorSignature(Trade calldata trade) internal pure returns (bool) {
-        // Implement signature verification logic
-        // For now, simplified check
-        return trade.validatorSignature.length > 0;
+    function _verifyValidatorSignature(Trade calldata trade) internal view returns (bool) {
+        if (trade.validatorSignature.length != 65) return false;
+        
+        // Construct the message hash that was signed
+        bytes32 messageHash = keccak256(
+            abi.encode(
+                trade.id,
+                trade.maker,
+                trade.taker,
+                trade.tokenIn,
+                trade.tokenOut,
+                trade.amountIn,
+                trade.amountOut,
+                trade.makerFee,
+                trade.takerFee,
+                trade.deadline,
+                trade.maxSlippage,
+                trade.isPrivate
+            )
+        );
+        
+        // Ethereum signed message hash
+        bytes32 ethSignedMessageHash = keccak256(
+            abi.encodePacked("\x19Ethereum Signed Message:\n32", messageHash)
+        );
+        
+        // Recover signer from signature
+        bytes memory signature = trade.validatorSignature;
+        bytes32 r;
+        bytes32 s;
+        uint8 v;
+        
+        assembly {
+            r := mload(add(signature, 32))
+            s := mload(add(signature, 64))
+            v := byte(0, mload(add(signature, 96)))
+        }
+        
+        address signer = ecrecover(ethSignedMessageHash, v, r, s);
+        if (signer == address(0)) return false;
+        
+        // Check if signer is an authorized validator
+        OmniCoinValidator validatorContract = OmniCoinValidator(
+            _getContract(registry.VALIDATOR_MANAGER())
+        );
+        // Check if the signer is registered as a validator
+        (address validatorAddress,,,,,bool isActive,) = validatorContract.getValidator(signer);
+        return validatorAddress != address(0) && isActive;
     }
 
     /**

@@ -61,6 +61,7 @@ contract DEXDeploymentHelper {
         address privacyFeeManager = registry.getContract(registry.FEE_MANAGER());
         
         dexSettlement = address(new DEXSettlement(
+            address(registry),
             companyTreasury,
             developmentFund,
             privacyFeeManager

@@ -28,3 +28,9 @@ Do NOT rely on the environment date shown in the system information, as it may b
 - Any other documentation files
 - Commit messages
 - Comments in code
+
+Read this: Coin\CLAUDE_IMPORTANT_NOTES.md
+
+IMPORTANT: Use "solhint" instead of compile to find errors and warnings. It is faster and less prone to issues.
+
+IMPORTANT: Fix all warnings in addition to fixing the errors. Add NatSpec documentation, fix sequencing issues, complexity, line length, and shadow declarations. Check all "not-rely-on-time" instances to be sure the business case really needs them. If so, you may disable the warning with solhint-disable-line comments. Fix every warning you can. Don't put it off for "later".

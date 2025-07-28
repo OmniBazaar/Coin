@@ -377,6 +377,43 @@ contract OmniCoinConfig is RegistryAware, Ownable, ReentrancyGuard {
         isTestnetMode = !isTestnetMode;
         emit TestnetModeToggled(isTestnetMode);
     }
+    
+    /**
+     * @notice Set privacy fee rate
+     * @param _rate New fee rate in basis points
+     */
+    function setPrivacyFeeRate(uint256 _rate) external onlyOwner {
+        if (_rate > 1000) revert InvalidRate(); // Max 10%
+        emit PrivacyFeeRateUpdated(privacyFeeRate, _rate);
+        privacyFeeRate = _rate;
+    }
+    
+    /**
+     * @notice Set privacy fee multiplier
+     * @param _multiplier New fee multiplier
+     */
+    function setPrivacyFeeMultiplier(uint256 _multiplier) external onlyOwner {
+        if (_multiplier == 0 || _multiplier > 100) revert InvalidRate(); // Between 1x and 100x
+        emit PrivacyFeeMultiplierUpdated(privacyFeeMultiplier, _multiplier);
+        privacyFeeMultiplier = _multiplier;
+    }
+    
+    /**
+     * @notice Toggle privacy features globally
+     */
+    function togglePrivacy() external onlyOwner {
+        privacyEnabled = !privacyEnabled;
+        emit PrivacyToggled(privacyEnabled);
+    }
+    
+    /**
+     * @notice Set token bridge fee
+     * @param _fee New bridge fee amount
+     */
+    function setTokenBridgeFee(uint256 _fee) external onlyOwner {
+        emit TokenBridgeFeeUpdated(tokenBridgeFee, _fee);
+        tokenBridgeFee = _fee;
+    }
 
     /**
      * @notice Check if a chain is supported for bridging
@@ -428,43 +465,6 @@ contract OmniCoinConfig is RegistryAware, Ownable, ReentrancyGuard {
             }
         }
         revert TierNotFound();
-    }
-    
-    /**
-     * @notice Set privacy fee rate
-     * @param _rate New fee rate in basis points
-     */
-    function setPrivacyFeeRate(uint256 _rate) external onlyOwner {
-        if (_rate > 1000) revert InvalidRate(); // Max 10%
-        emit PrivacyFeeRateUpdated(privacyFeeRate, _rate);
-        privacyFeeRate = _rate;
-    }
-    
-    /**
-     * @notice Set privacy fee multiplier
-     * @param _multiplier New fee multiplier
-     */
-    function setPrivacyFeeMultiplier(uint256 _multiplier) external onlyOwner {
-        if (_multiplier == 0 || _multiplier > 100) revert InvalidRate(); // Between 1x and 100x
-        emit PrivacyFeeMultiplierUpdated(privacyFeeMultiplier, _multiplier);
-        privacyFeeMultiplier = _multiplier;
-    }
-    
-    /**
-     * @notice Toggle privacy features globally
-     */
-    function togglePrivacy() external onlyOwner {
-        privacyEnabled = !privacyEnabled;
-        emit PrivacyToggled(privacyEnabled);
-    }
-    
-    /**
-     * @notice Set token bridge fee
-     * @param _fee New bridge fee amount
-     */
-    function setTokenBridgeFee(uint256 _fee) external onlyOwner {
-        emit TokenBridgeFeeUpdated(tokenBridgeFee, _fee);
-        tokenBridgeFee = _fee;
     }
     
     /**

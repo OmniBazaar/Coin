@@ -13,65 +13,23 @@ describe("OmniCoin Security Tests (Fixed)", function () {
   async function deployOmniCoinFixture() {
     const [owner, attacker, user1, user2] = await ethers.getSigners();
 
-    // Deploy mock dependency contracts
-    const MockConfig = await ethers.getContractFactory("OmniCoinConfig");
-    const config = await MockConfig.deploy(owner.address);
-    await config.waitForDeployment();
+    // Deploy actual OmniCoinRegistry
+    const OmniCoinRegistry = await ethers.getContractFactory("OmniCoinRegistry");
+    const registry = await OmniCoinRegistry.deploy(await owner.getAddress());
+    await registry.waitForDeployment();
 
-    const MockReputation = await ethers.getContractFactory("OmniCoinReputation");
-    const reputation = await MockReputation.deploy(await config.getAddress(), owner.address);
-    await reputation.waitForDeployment();
-
-    const MockStaking = await ethers.getContractFactory("OmniCoinStaking");
-    const staking = await MockStaking.deploy(await config.getAddress(), owner.address);
-    await staking.waitForDeployment();
-
-    const MockValidator = await ethers.getContractFactory("OmniCoinValidator");
-    const validator = await MockValidator.deploy(ZeroAddress, owner.address);
-    await validator.waitForDeployment();
-
-    const MockMultisig = await ethers.getContractFactory("OmniCoinMultisig");
-    const multisig = await MockMultisig.deploy(owner.address);
-    await multisig.waitForDeployment();
-
-    const MockPrivacy = await ethers.getContractFactory("OmniCoinPrivacy");
-    const privacy = await MockPrivacy.deploy(ZeroAddress, owner.address);
-    await privacy.waitForDeployment();
-
-    const MockGarbledCircuit = await ethers.getContractFactory("OmniCoinGarbledCircuit");
-    const garbledCircuit = await MockGarbledCircuit.deploy(owner.address);
-    await garbledCircuit.waitForDeployment();
-
-    const MockGovernor = await ethers.getContractFactory("OmniCoinGovernor");
-    const governor = await MockGovernor.deploy(ZeroAddress, owner.address);
-    await governor.waitForDeployment();
-
-    const MockEscrow = await ethers.getContractFactory("OmniCoinEscrow");
-    const escrow = await MockEscrow.deploy(ZeroAddress, owner.address);
-    await escrow.waitForDeployment();
-
-    const MockBridge = await ethers.getContractFactory("OmniCoinBridge");
-    const bridge = await MockBridge.deploy(ZeroAddress, owner.address);
-    await bridge.waitForDeployment();
-
-    // Deploy main contract
-    const OmniCoin = await ethers.getContractFactory("contracts/OmniCoin.sol:OmniCoin");
-    const omniCoin = await OmniCoin.deploy(
-      owner.address,
-      await config.getAddress(),
-      await reputation.getAddress(),
-      await staking.getAddress(),
-      await validator.getAddress(),
-      await multisig.getAddress(),
-      await privacy.getAddress(),
-      await garbledCircuit.getAddress(),
-      await governor.getAddress(),
-      await escrow.getAddress(),
-      await bridge.getAddress()
-    );
+    // Deploy actual OmniCoin
+    const OmniCoin = await ethers.getContractFactory("OmniCoin");
+    const omniCoin = await OmniCoin.deploy(await registry.getAddress());
     await omniCoin.waitForDeployment();
 
-    return { omniCoin, owner, attacker, user1, user2, config, reputation, staking, validator, multisig, privacy, garbledCircuit, governor, escrow, bridge };
+    // Set up registry
+    await registry.setContract(
+      ethers.keccak256(ethers.toUtf8Bytes("OMNICOIN")),
+      await omniCoin.getAddress()
+    );
+
+    return { omniCoin, owner, attacker, user1, user2, registry };
   }
 
   describe("Access Control Security", function () {
@@ -79,7 +37,7 @@ describe("OmniCoin Security Tests (Fixed)", function () {
       const { omniCoin, attacker } = await loadFixture(deployOmniCoinFixture);
 
       await expect(
-        omniCoin.connect(attacker).mint(attacker.address, parseEther("1000"))
+        omniCoin.connect(attacker).mint(await attacker.getAddress(), parseEther("1000"))
       ).to.be.revertedWithCustomError(omniCoin, "AccessControlUnauthorizedAccount");
     });
 
@@ -98,120 +56,260 @@ describe("OmniCoin Security Tests (Fixed)", function () {
         .to.be.revertedWithCustomError(omniCoin, "AccessControlUnauthorizedAccount");
     });
 
-    it("Should allow proper role-based access", async function () {
+    it("Should allow owner to grant roles", async function () {
       const { omniCoin, owner, user1 } = await loadFixture(deployOmniCoinFixture);
 
-      // Owner should be able to mint
-      await omniCoin.connect(owner).mint(user1.address, parseEther("1000"));
-      expect(await omniCoin.balanceOf(user1.address)).to.equal(parseEther("1000"));
+      const MINTER_ROLE = await omniCoin.MINTER_ROLE();
+      await omniCoin.connect(owner).grantRole(MINTER_ROLE, await user1.getAddress());
 
-      // Owner should be able to pause
-      await omniCoin.connect(owner).pause();
-      expect(await omniCoin.paused()).to.be.true;
-
-      // Owner should be able to unpause
-      await omniCoin.connect(owner).unpause();
-      expect(await omniCoin.paused()).to.be.false;
+      // Now user1 should be able to mint
+      await expect(
+        omniCoin.connect(user1).mint(await user1.getAddress(), parseEther("100"))
+      ).to.not.be.reverted;
     });
   });
 
-  describe("Input Validation", function () {
-    it("Should reject zero address transfers", async function () {
+  describe("Transfer Security", function () {
+    it("Should handle zero transfers correctly", async function () {
+      const { omniCoin, owner, user1 } = await loadFixture(deployOmniCoinFixture);
+      
+      await omniCoin.mint(await owner.getAddress(), parseEther("1000"));
+      
+      // Zero transfer should succeed (as per ERC20 standard)
+      await expect(
+        omniCoin.transfer(await user1.getAddress(), 0)
+      ).to.not.be.reverted;
+    });
+
+    it("Should prevent transfers to zero address", async function () {
       const { omniCoin, owner } = await loadFixture(deployOmniCoinFixture);
-
-      await omniCoin.mint(owner.address, parseEther("1000"));
-
+      
+      await omniCoin.mint(await owner.getAddress(), parseEther("1000"));
+      
       await expect(
         omniCoin.transfer(ZeroAddress, parseEther("100"))
       ).to.be.revertedWithCustomError(omniCoin, "ERC20InvalidReceiver");
     });
 
-    it("Should reject transfers exceeding balance", async function () {
+    it("Should not allow transfers when paused", async function () {
       const { omniCoin, owner, user1 } = await loadFixture(deployOmniCoinFixture);
-
-      await omniCoin.mint(owner.address, parseEther("100"));
-
+      
+      await omniCoin.mint(await owner.getAddress(), parseEther("1000"));
+      await omniCoin.pause();
+      
       await expect(
-        omniCoin.transfer(user1.address, parseEther("200"))
+        omniCoin.transfer(await user1.getAddress(), parseEther("100"))
+      ).to.be.revertedWithCustomError(omniCoin, "EnforcedPause");
+      
+      // Should work after unpausing
+      await omniCoin.unpause();
+      await expect(
+        omniCoin.transfer(await user1.getAddress(), parseEther("100"))
+      ).to.not.be.reverted;
+    });
+  });
+
+  describe("Approval Security", function () {
+    it("Should handle approval edge cases", async function () {
+      const { omniCoin, owner, user1 } = await loadFixture(deployOmniCoinFixture);
+      
+      // Approve to zero address should fail
+      await expect(
+        omniCoin.approve(ZeroAddress, parseEther("100"))
+      ).to.be.revertedWithCustomError(omniCoin, "ERC20InvalidSpender");
+      
+      // Self-approval should work
+      await expect(
+        omniCoin.approve(await owner.getAddress(), parseEther("100"))
+      ).to.not.be.reverted;
+    });
+
+    it("Should handle transferFrom correctly", async function () {
+      const { omniCoin, owner, user1, user2 } = await loadFixture(deployOmniCoinFixture);
+      
+      await omniCoin.mint(await owner.getAddress(), parseEther("1000"));
+      
+      // Approve user1 to spend 100 tokens
+      await omniCoin.approve(await user1.getAddress(), parseEther("100"));
+      
+      // user1 transfers from owner to user2
+      await expect(
+        omniCoin.connect(user1).transferFrom(
+          await owner.getAddress(),
+          await user2.getAddress(),
+          parseEther("50")
+        )
+      ).to.not.be.reverted;
+      
+      // Check remaining allowance
+      expect(await omniCoin.allowance(await owner.getAddress(), await user1.getAddress()))
+        .to.equal(parseEther("50"));
+      
+      // Exceeding allowance should fail
+      await expect(
+        omniCoin.connect(user1).transferFrom(
+          await owner.getAddress(),
+          await user2.getAddress(),
+          parseEther("51")
+        )
+      ).to.be.revertedWithCustomError(omniCoin, "ERC20InsufficientAllowance");
+    });
+  });
+
+  describe("Supply Security", function () {
+    it("Should correctly handle burning", async function () {
+      const { omniCoin, owner, user1 } = await loadFixture(deployOmniCoinFixture);
+      
+      const mintAmount = parseEther("1000");
+      await omniCoin.mint(await user1.getAddress(), mintAmount);
+      
+      // User can burn their own tokens
+      await expect(
+        omniCoin.connect(user1).burn(parseEther("100"))
+      ).to.not.be.reverted;
+      
+      expect(await omniCoin.balanceOf(await user1.getAddress()))
+        .to.equal(parseEther("900"));
+      
+      // Cannot burn more than balance
+      await expect(
+        omniCoin.connect(user1).burn(parseEther("1000"))
       ).to.be.revertedWithCustomError(omniCoin, "ERC20InsufficientBalance");
     });
 
-    it("Should handle zero amount transfers", async function () {
-      const { omniCoin, owner, user1 } = await loadFixture(deployOmniCoinFixture);
-
-      await omniCoin.mint(owner.address, parseEther("1000"));
-
-      // Zero amount transfer should succeed but not change balances
-      await expect(omniCoin.transfer(user1.address, 0)).to.not.be.reverted;
-      expect(await omniCoin.balanceOf(user1.address)).to.equal(0);
-    });
-  });
-
-  describe("Pausable Security", function () {
-    it("Should prevent transfers when paused", async function () {
-      const { omniCoin, owner, user1 } = await loadFixture(deployOmniCoinFixture);
-
-      await omniCoin.mint(owner.address, parseEther("1000"));
-      await omniCoin.pause();
-
+    it("Should correctly handle burnFrom", async function () {
+      const { omniCoin, owner, user1, user2 } = await loadFixture(deployOmniCoinFixture);
+      
+      // Grant BURNER_ROLE to user1
+      const BURNER_ROLE = await omniCoin.BURNER_ROLE();
+      await omniCoin.grantRole(BURNER_ROLE, await user1.getAddress());
+      
+      // Mint to user2
+      await omniCoin.mint(await user2.getAddress(), parseEther("1000"));
+      
+      // user2 approves user1 to burn
+      await omniCoin.connect(user2).approve(await user1.getAddress(), parseEther("500"));
+      
+      // user1 burns from user2's balance
       await expect(
-        omniCoin.transfer(user1.address, parseEther("100"))
-      ).to.be.revertedWithCustomError(omniCoin, "EnforcedPause");
-    });
-
-    it("Should allow transfers after unpause", async function () {
-      const { omniCoin, owner, user1 } = await loadFixture(deployOmniCoinFixture);
-
-      await omniCoin.mint(owner.address, parseEther("1000"));
-      await omniCoin.pause();
-      await omniCoin.unpause();
-
-      await expect(omniCoin.transfer(user1.address, parseEther("100"))).to.not.be.reverted;
-      expect(await omniCoin.balanceOf(user1.address)).to.equal(parseEther("100"));
+        omniCoin.connect(user1).burnFrom(await user2.getAddress(), parseEther("200"))
+      ).to.not.be.reverted;
+      
+      expect(await omniCoin.balanceOf(await user2.getAddress()))
+        .to.equal(parseEther("800"));
+      
+      // Check remaining allowance
+      expect(await omniCoin.allowance(await user2.getAddress(), await user1.getAddress()))
+        .to.equal(parseEther("300"));
     });
   });
 
-  describe("Token Economics Security", function () {
-    it("Should maintain total supply integrity", async function () {
+  describe("Permit Functionality", function () {
+    it("Should handle permit nonce correctly", async function () {
       const { omniCoin, owner, user1 } = await loadFixture(deployOmniCoinFixture);
-
-      const mintAmount = parseEther("1000");
-      await omniCoin.mint(owner.address, mintAmount);
-
-      expect(await omniCoin.totalSupply()).to.equal(mintAmount);
       
-      await omniCoin.transfer(user1.address, parseEther("300"));
+      const initialNonce = await omniCoin.nonces(await owner.getAddress());
+      expect(initialNonce).to.equal(0);
       
-      // Total supply should remain the same after transfer
-      expect(await omniCoin.totalSupply()).to.equal(mintAmount);
+      const value = parseEther("100");
+      const deadline = ethers.MaxUint256;
+      
+      // Create permit signature
+      const domain = {
+        name: await omniCoin.name(),
+        version: "1",
+        chainId: (await ethers.provider.getNetwork()).chainId,
+        verifyingContract: await omniCoin.getAddress()
+      };
+      
+      const types = {
+        Permit: [
+          { name: "owner", type: "address" },
+          { name: "spender", type: "address" },
+          { name: "value", type: "uint256" },
+          { name: "nonce", type: "uint256" },
+          { name: "deadline", type: "uint256" }
+        ]
+      };
+      
+      const message = {
+        owner: await owner.getAddress(),
+        spender: await user1.getAddress(),
+        value: value,
+        nonce: initialNonce,
+        deadline: deadline
+      };
+      
+      const signature = await owner.signTypedData(domain, types, message);
+      const sig = ethers.Signature.from(signature);
+      
+      // Use permit
+      await omniCoin.permit(
+        await owner.getAddress(),
+        await user1.getAddress(),
+        value,
+        deadline,
+        sig.v,
+        sig.r,
+        sig.s
+      );
+      
+      // Nonce should increment
+      expect(await omniCoin.nonces(await owner.getAddress())).to.equal(1);
+      
+      // Trying to reuse the same signature should fail
+      await expect(
+        omniCoin.permit(
+          await owner.getAddress(),
+          await user1.getAddress(),
+          value,
+          deadline,
+          sig.v,
+          sig.r,
+          sig.s
+        )
+      ).to.be.revertedWithCustomError(omniCoin, "ERC2612InvalidSigner");
+    });
+  });
+
+  describe("Edge Cases", function () {
+    it("Should handle max uint256 transfers correctly", async function () {
+      const { omniCoin, owner, user1 } = await loadFixture(deployOmniCoinFixture);
+      
+      // Mint close to max supply
+      const amount = parseEther("1000000"); // 1M tokens
+      await omniCoin.mint(await owner.getAddress(), amount);
+      
+      // Transfer all
+      await expect(
+        omniCoin.transfer(await user1.getAddress(), amount)
+      ).to.not.be.reverted;
+      
+      expect(await omniCoin.balanceOf(await user1.getAddress())).to.equal(amount);
+      expect(await omniCoin.balanceOf(await owner.getAddress())).to.equal(0);
     });
 
-    it("Should handle burning correctly", async function () {
+    it("Should handle multiple pauses and unpauses", async function () {
       const { omniCoin, owner } = await loadFixture(deployOmniCoinFixture);
-
-      const mintAmount = parseEther("1000");
-      const burnAmount = parseEther("300");
       
-      await omniCoin.mint(owner.address, mintAmount);
-      await omniCoin.burn(burnAmount);
-
-      expect(await omniCoin.totalSupply()).to.equal(mintAmount - burnAmount);
-      expect(await omniCoin.balanceOf(owner.address)).to.equal(mintAmount - burnAmount);
+      // Initial state should be unpaused
+      expect(await omniCoin.paused()).to.be.false;
+      
+      // Pause
+      await omniCoin.pause();
+      expect(await omniCoin.paused()).to.be.true;
+      
+      // Cannot pause again
+      await expect(omniCoin.pause())
+        .to.be.revertedWithCustomError(omniCoin, "EnforcedPause");
+      
+      // Unpause
+      await omniCoin.unpause();
+      expect(await omniCoin.paused()).to.be.false;
+      
+      // Cannot unpause again
+      await expect(omniCoin.unpause())
+        .to.be.revertedWithCustomError(omniCoin, "ExpectedPause");
     });
   });
-
-  describe("Event Security", function () {
-    it("Should emit events for security-relevant actions", async function () {
-      const { omniCoin, owner, user1 } = await loadFixture(deployOmniCoinFixture);
-
-      // Test minting event
-      await expect(omniCoin.mint(owner.address, parseEther("1000")))
-        .to.emit(omniCoin, "Transfer")
-        .withArgs(ZeroAddress, owner.address, parseEther("1000"));
-
-      // Test multisig threshold change event
-      await expect(omniCoin.setMultisigThreshold(parseEther("2000")))
-        .to.emit(omniCoin, "MultisigThresholdUpdated");
-    });
-  });
-}); 
+});

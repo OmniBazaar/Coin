@@ -586,7 +586,7 @@ contract OmniCoinReputationCore is IReputationCore, AccessControl, ReentrancyGua
      * @dev Helper to get config contract
      * @return Configuration contract instance
      */
-    function _getConfig() internal view returns (OmniCoinConfig) {
+    function _getConfig() internal returns (OmniCoinConfig) {
         if (address(config) != address(0)) {
             return config; // Backwards compatibility
         }
