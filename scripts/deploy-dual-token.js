@@ -24,9 +24,9 @@ async function main() {
     await privateOmniCoin.deployed();
     console.log("PrivateOmniCoin (pXOM) deployed to:", privateOmniCoin.address);
     
-    // 4. Deploy PrivacyFeeManagerV2
+    // 4. Deploy PrivacyFeeManager
     const treasury = deployer.address; // For testing
-    const PrivacyFeeManager = await hre.ethers.getContractFactory("PrivacyFeeManagerV2");
+    const PrivacyFeeManager = await hre.ethers.getContractFactory("PrivacyFeeManager");
     const feeManager = await PrivacyFeeManager.deploy(
         omniCoin.address,
         privateOmniCoin.address,
@@ -34,7 +34,7 @@ async function main() {
         deployer.address
     );
     await feeManager.deployed();
-    console.log("PrivacyFeeManagerV2 deployed to:", feeManager.address);
+    console.log("PrivacyFeeManager deployed to:", feeManager.address);
     
     // 5. Deploy Bridge
     const Bridge = await hre.ethers.getContractFactory("OmniCoinPrivacyBridge");
@@ -93,7 +93,7 @@ async function main() {
     console.log("Registry:", registry.address);
     console.log("OmniCoin (XOM):", omniCoin.address);
     console.log("PrivateOmniCoin (pXOM):", privateOmniCoin.address);
-    console.log("PrivacyFeeManagerV2:", feeManager.address);
+    console.log("PrivacyFeeManager:", feeManager.address);
     console.log("OmniCoinPrivacyBridge:", bridge.address);
     console.log("=====================");
     

@@ -4,6 +4,7 @@ pragma solidity ^0.8.20;
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {RegistryAware} from "./base/RegistryAware.sol";
 
 /**
  * @title OmniCoinGovernor
@@ -11,7 +12,7 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
  * @notice Governance contract for OmniCoin protocol
  * @dev Implements a simple governance system with proposals and voting
  */
-contract OmniCoinGovernor is Ownable, ReentrancyGuard {
+contract OmniCoinGovernor is RegistryAware, Ownable, ReentrancyGuard {
     // Enums
     enum VoteType {
         Against,
@@ -53,8 +54,10 @@ contract OmniCoinGovernor is Ownable, ReentrancyGuard {
     error InvalidProposalThreshold();
     error InvalidQuorum();
 
-    /// @notice OmniCoin token contract
+    /// @notice OmniCoin token contract (deprecated, use registry)
     IERC20 public token;
+    /// @notice Whether to use private token for governance
+    bool public usePrivateToken;
     /// @notice Total number of proposals created
     uint256 public proposalCount;
     /// @notice Duration of voting period
@@ -134,14 +137,18 @@ contract OmniCoinGovernor is Ownable, ReentrancyGuard {
 
     /**
      * @notice Initialize the governor contract
-     * @param _token The governance token address
+     * @param _registry Registry contract address
+     * @param _token The governance token address (deprecated, use registry)
      * @param initialOwner The initial owner address
      */
-    constructor(address _token, address initialOwner) Ownable(initialOwner) {
+    constructor(address _registry, address _token, address initialOwner) 
+        RegistryAware(_registry) 
+        Ownable(initialOwner) {
         token = IERC20(_token);
         votingPeriod = 3 days;
-        proposalThreshold = 1000 * 10 ** 18; // 1000 tokens
-        quorum = 10000 * 10 ** 18; // 10000 tokens
+        proposalThreshold = 1000 * 10 ** 6; // 1000 tokens (6 decimals)
+        quorum = 10000 * 10 ** 6; // 10000 tokens (6 decimals)
+        usePrivateToken = false; // Default to public token for governance
     }
 
     /**
@@ -154,7 +161,8 @@ contract OmniCoinGovernor is Ownable, ReentrancyGuard {
         string calldata description,
         ProposalAction[] calldata actions
     ) external nonReentrant returns (uint256) {
-        if (token.balanceOf(msg.sender) < proposalThreshold) 
+        address governanceToken = getGovernanceToken();
+        if (IERC20(governanceToken).balanceOf(msg.sender) < proposalThreshold) 
             revert InsufficientBalance();
 
         uint256 proposalId = ++proposalCount;
@@ -241,7 +249,8 @@ contract OmniCoinGovernor is Ownable, ReentrancyGuard {
             revert ProposalNotActive();
         if (proposal.hasVoted[msg.sender]) revert AlreadyVoted();
 
-        uint256 weight = token.balanceOf(msg.sender);
+        address governanceToken = getGovernanceToken();
+        uint256 weight = IERC20(governanceToken).balanceOf(msg.sender);
         if (weight == 0) revert InsufficientBalance();
 
         proposal.hasVoted[msg.sender] = true;
@@ -383,5 +392,31 @@ contract OmniCoinGovernor is Ownable, ReentrancyGuard {
         address voter
     ) external view returns (uint256) {
         return proposals[proposalId].votes[voter];
+    }
+    
+    /**
+     * @notice Get the governance token address
+     * @dev Returns either OmniCoin or PrivateOmniCoin based on configuration
+     * @return governanceToken The token used for governance
+     */
+    function getGovernanceToken() public view returns (address governanceToken) {
+        if (usePrivateToken) {
+            governanceToken = _getContract(registry.PRIVATE_OMNICOIN());
+        } else {
+            governanceToken = _getContract(registry.OMNICOIN());
+        }
+        
+        // Fallback to legacy token if registry not configured
+        if (governanceToken == address(0) && address(token) != address(0)) {
+            governanceToken = address(token);
+        }
+    }
+    
+    /**
+     * @notice Set whether to use private token for governance
+     * @param _usePrivate Whether to use PrivateOmniCoin for voting
+     */
+    function setUsePrivateToken(bool _usePrivate) external onlyOwner {
+        usePrivateToken = _usePrivate;
     }
 }

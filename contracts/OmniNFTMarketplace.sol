@@ -6,11 +6,12 @@ import {OwnableUpgradeable} from "@openzeppelin/contracts-upgradeable/access/Own
 import {ReentrancyGuardUpgradeable} from "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
 import {IERC721} from "@openzeppelin/contracts/token/ERC721/IERC721.sol";
 import {IERC721Receiver} from "@openzeppelin/contracts/token/ERC721/IERC721Receiver.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {MpcCore, gtUint64, gtBool, ctUint64, itUint64} from "../coti-contracts/contracts/utils/mpc/MpcCore.sol";
-import {OmniCoinCore} from "./OmniCoinCore.sol";
 import {OmniCoinEscrow} from "./OmniCoinEscrow.sol";
 import {ListingNFT} from "./ListingNFT.sol";
 import {PrivacyFeeManager} from "./PrivacyFeeManager.sol";
+import {RegistryAware} from "./base/RegistryAware.sol";
 
 /**
  * @title OmniNFTMarketplace
@@ -29,7 +30,8 @@ contract OmniNFTMarketplace is
     Initializable,
     OwnableUpgradeable,  
     ReentrancyGuardUpgradeable,
-    IERC721Receiver
+    IERC721Receiver,
+    RegistryAware
 {
     // =============================================================================
     // ENUMS
@@ -172,11 +174,9 @@ contract OmniNFTMarketplace is
     // STATE VARIABLES
     // =============================================================================
     
-    /// @notice OmniCoin token contract for payment processing
-    OmniCoinCore public omniCoin;
-    /// @notice Escrow contract for secure transactions
+    /// @notice Escrow contract for secure transactions (deprecated, use registry)
     OmniCoinEscrow public escrowContract;
-    /// @notice NFT contract for listing representations
+    /// @notice NFT contract for listing representations (deprecated, use registry)
     ListingNFT public listingNFT;
     /// @notice Address of the privacy fee manager contract
     address public privacyFeeManager;
@@ -338,15 +338,15 @@ contract OmniNFTMarketplace is
 
     /**
      * @notice Initializes the marketplace contract
-     * @param _omniCoin Address of the OmniCoin token contract
-     * @param _escrowContract Address of the escrow contract
-     * @param _listingNFT Address of the ListingNFT contract
+     * @param _registry Address of the registry contract
+     * @param _escrowContract Address of the escrow contract (deprecated, use registry)
+     * @param _listingNFT Address of the ListingNFT contract (deprecated, use registry)
      * @param _privacyFeeManager Address of the privacy fee manager
      * @param _platformFee Platform fee in basis points
      * @param _feeRecipient Address to receive platform fees
      */
     function initialize(
-        address _omniCoin,
+        address _registry,
         address _escrowContract,
         address _listingNFT,
         address _privacyFeeManager,
@@ -355,10 +355,17 @@ contract OmniNFTMarketplace is
     ) public initializer {
         __Ownable_init(msg.sender);
         __ReentrancyGuard_init();
+        
+        // Initialize registry
+        _initializeRegistry(_registry);
 
-        omniCoin = OmniCoinCore(_omniCoin);
-        escrowContract = OmniCoinEscrow(_escrowContract);
-        listingNFT = ListingNFT(_listingNFT);
+        // Keep for backwards compatibility
+        if (_escrowContract != address(0)) {
+            escrowContract = OmniCoinEscrow(_escrowContract);
+        }
+        if (_listingNFT != address(0)) {
+            listingNFT = ListingNFT(_listingNFT);
+        }
         privacyFeeManager = _privacyFeeManager;
         platformFee = _platformFee;
         feeRecipient = _feeRecipient;
@@ -394,6 +401,24 @@ contract OmniNFTMarketplace is
         privacyFeeManager = _privacyFeeManager;
     }
 
+    // =============================================================================
+    // INTERNAL HELPERS
+    // =============================================================================
+    
+    /**
+     * @notice Get token contract based on privacy preference
+     * @dev Helper to get appropriate token contract
+     * @param usePrivacy Whether to use private token
+     * @return Token contract address
+     */
+    function _getTokenContract(bool usePrivacy) internal view returns (address) {
+        if (usePrivacy) {
+            return _getContract(registry.PRIVATE_OMNICOIN());
+        } else {
+            return _getContract(registry.OMNICOIN());
+        }
+    }
+    
     // =============================================================================
     // PUBLIC LISTING FUNCTIONS (DEFAULT, NO PRIVACY FEES)
     // =============================================================================
@@ -450,11 +475,12 @@ contract OmniNFTMarketplace is
         uint256 fee = (totalPrice * platformFee) / 10000;
         uint256 sellerAmount = totalPrice - fee;
 
-        // Transfer payment
-        if (!omniCoin.transferFromPublic(msg.sender, listing.seller, sellerAmount)) 
+        // Transfer payment using OmniCoin (public listings use public token)
+        address omniCoin = _getTokenContract(false);
+        if (!IERC20(omniCoin).transferFrom(msg.sender, listing.seller, sellerAmount)) 
             revert PaymentFailed();
         if (fee > 0) {
-            if (!omniCoin.transferFromPublic(msg.sender, feeRecipient, fee))
+            if (!IERC20(omniCoin).transferFrom(msg.sender, feeRecipient, fee))
                 revert FeePaymentFailed();
         }
 
@@ -577,7 +603,7 @@ contract OmniNFTMarketplace is
             endTime: endTime,
             status: ListingStatus.ACTIVE,
             escrowEnabled: escrowEnabled,
-            currency: address(omniCoin),
+            currency: _getTokenContract(false),
             category: category,
             tags: tags,
             views: 0,
@@ -645,11 +671,12 @@ contract OmniNFTMarketplace is
             privacyFee
         );
 
-        // Transfer payment
-        if (!omniCoin.transferFromPublic(msg.sender, listing.seller, sellerAmount)) 
+        // Transfer payment using PrivateOmniCoin (private listings use private token)
+        address privateToken = _getTokenContract(true);
+        if (!IERC20(privateToken).transferFrom(msg.sender, listing.seller, sellerAmount)) 
             revert PaymentFailed();
         if (fee > 0) {
-            if (!omniCoin.transferFromPublic(msg.sender, feeRecipient, fee))
+            if (!IERC20(privateToken).transferFrom(msg.sender, feeRecipient, fee))
                 revert FeePaymentFailed();
         }
 
@@ -799,7 +826,7 @@ contract OmniNFTMarketplace is
             endTime: endTime,
             status: ListingStatus.ACTIVE,
             escrowEnabled: escrowEnabled,
-            currency: address(omniCoin),
+            currency: _getTokenContract(false),
             category: category,
             tags: tags,
             views: 0,
@@ -989,7 +1016,7 @@ contract OmniNFTMarketplace is
             expiry: expiry,
             accepted: false,
             cancelled: false,
-            currency: address(omniCoin),
+            currency: _getTokenContract(false),
             isPrivate: false,
             encryptedAmount: ctUint64.wrap(0)
         });
@@ -1034,7 +1061,7 @@ contract OmniNFTMarketplace is
             expiry: expiry,
             accepted: false,
             cancelled: false,
-            currency: address(omniCoin),
+            currency: _getTokenContract(false),
             isPrivate: true,
             encryptedAmount: MpcCore.offBoard(amount)
         });

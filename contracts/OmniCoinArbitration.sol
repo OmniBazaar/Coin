@@ -13,10 +13,14 @@ import {
     itUint64
 } from "../coti-contracts/contracts/utils/mpc/MpcCore.sol";
 import {OmniCoinCore} from "./OmniCoinCore.sol";
+import {OmniCoin} from "./OmniCoin.sol";
+import {PrivateOmniCoin} from "./PrivateOmniCoin.sol";
 import {OmniCoinAccount} from "./OmniCoinAccount.sol";
 import {OmniCoinEscrow} from "./OmniCoinEscrow.sol";
 import {OmniCoinConfig} from "./OmniCoinConfig.sol";
 import {PrivacyFeeManager} from "./PrivacyFeeManager.sol";
+import {RegistryAware} from "./base/RegistryAware.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
 /**
  * @title OmniCoinArbitration
@@ -26,6 +30,7 @@ import {PrivacyFeeManager} from "./PrivacyFeeManager.sol";
  */
 contract OmniCoinArbitration is
     Initializable,
+    RegistryAware,
     OwnableUpgradeable,
     ReentrancyGuardUpgradeable
 {
@@ -311,7 +316,8 @@ contract OmniCoinArbitration is
     /**
      * @notice Initialize the OmniBazaar arbitration system
      * @dev Sets up all contract references and parameters
-     * @param _omniCoin OmniCoin core contract address
+     * @param _registry Registry contract address
+     * @param _omniCoin OmniCoin core contract address (deprecated, use registry)
      * @param _omniCoinAccount Account abstraction contract address
      * @param _omniCoinEscrow Escrow contract address
      * @param _config Configuration contract address
@@ -323,6 +329,7 @@ contract OmniCoinArbitration is
      * @param _ratingWeight Weight factor for rating updates
      */
     function initialize(
+        address _registry,
         address _omniCoin,
         address _omniCoinAccount,
         address _omniCoinEscrow,
@@ -337,7 +344,14 @@ contract OmniCoinArbitration is
         __Ownable_init(msg.sender);
         __ReentrancyGuard_init();
         
-        omniCoin = OmniCoinCore(_omniCoin);
+        // Initialize registry
+        _initializeRegistry(_registry);
+        
+        // For backwards compatibility
+        if (_omniCoin != address(0)) {
+            omniCoin = OmniCoinCore(_omniCoin);
+        }
+        
         omniCoinAccount = OmniCoinAccount(_omniCoinAccount);
         omniCoinEscrow = OmniCoinEscrow(_omniCoinEscrow);
         config = OmniCoinConfig(_config);
@@ -396,9 +410,17 @@ contract OmniCoinArbitration is
             if (participationIndex < minParticipationIndex) revert InsufficientParticipation();
         }
 
-        // Transfer staking amount to this contract
-        if (!omniCoin.transferFromPublic(msg.sender, address(this), _stakingAmount)) {
-            revert StakingTransferFailed();
+        // Transfer staking amount to this contract (always use public OmniCoin for staking)
+        address publicToken = _getContract(registry.OMNICOIN());
+        if (publicToken == address(0) && address(omniCoin) != address(0)) {
+            // Backwards compatibility
+            if (!omniCoin.transferFromPublic(msg.sender, address(this), _stakingAmount)) {
+                revert StakingTransferFailed();
+            }
+        } else {
+            if (!IERC20(publicToken).transferFrom(msg.sender, address(this), _stakingAmount)) {
+                revert StakingTransferFailed();
+            }
         }
 
         // Initialize private earnings as zero
@@ -437,8 +459,17 @@ contract OmniCoinArbitration is
         if (!arbitrators[msg.sender].isActive) revert NotActiveArbitrator();
         if (_additionalStake == 0) revert MustStakeAdditionalAmount();
 
-        if (!omniCoin.transferFromPublic(msg.sender, address(this), _additionalStake)) {
-            revert AdditionalStakingTransferFailed();
+        // Transfer additional stake (always use public OmniCoin for staking)
+        address publicToken = _getContract(registry.OMNICOIN());
+        if (publicToken == address(0) && address(omniCoin) != address(0)) {
+            // Backwards compatibility
+            if (!omniCoin.transferFromPublic(msg.sender, address(this), _additionalStake)) {
+                revert AdditionalStakingTransferFailed();
+            }
+        } else {
+            if (!IERC20(publicToken).transferFrom(msg.sender, address(this), _additionalStake)) {
+                revert AdditionalStakingTransferFailed();
+            }
         }
 
         arbitrators[msg.sender].stakingAmount += _additionalStake;
@@ -885,9 +916,29 @@ contract OmniCoinArbitration is
         // address buyer = participants[0];
         // address seller = participants[1];
 
-        // In full implementation, would execute private transfers:
-        // omniCoin.privateTransfer(address(this), buyer, _buyerPayout);
-        // omniCoin.privateTransfer(address(this), seller, _sellerPayout);
+        // Execute transfers to buyer and seller
+        address[] memory participants = disputeParticipants[_escrowId];
+        address buyer = participants[0];
+        address seller = participants[1];
+        
+        // Get dispute to check if privacy was used
+        ConfidentialDispute storage dispute = disputes[_escrowId];
+        
+        // For arbitration payouts, use public tokens by default
+        address publicToken = _getContract(registry.OMNICOIN());
+        if (publicToken != address(0)) {
+            // Transfer buyer payout
+            uint256 buyerAmount = ctUint64.unwrap(_buyerPayout);
+            if (buyerAmount > 0) {
+                IERC20(publicToken).transfer(buyer, buyerAmount);
+            }
+            
+            // Transfer seller payout
+            uint256 sellerAmount = ctUint64.unwrap(_sellerPayout);
+            if (sellerAmount > 0) {
+                IERC20(publicToken).transfer(seller, sellerAmount);
+            }
+        }
         
         // For now, emit event with payout hash for verification
         // bytes32 payoutHash = keccak256(abi.encode(_buyerPayout, _sellerPayout, block.timestamp));
@@ -1114,8 +1165,15 @@ contract OmniCoinArbitration is
             arbitrators[msg.sender].privateEarnings = ctUint64.wrap(0);
         }
         
-        // In full implementation, would execute private transfer:
-        // omniCoin.privateTransfer(address(this), msg.sender, earnings);
+        // Execute earnings transfer to arbitrator
+        uint256 earningsAmount = ctUint64.unwrap(earnings);
+        if (earningsAmount > 0) {
+            // Arbitrator earnings are always paid in public OmniCoin
+            address publicToken = _getContract(registry.OMNICOIN());
+            if (publicToken != address(0)) {
+                IERC20(publicToken).transfer(msg.sender, earningsAmount);
+            }
+        }
         
         // Time tracking for earnings claim
         bytes32 earningsHash = keccak256(abi.encode(

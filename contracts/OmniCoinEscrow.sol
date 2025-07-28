@@ -6,8 +6,10 @@ import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol
 import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
 import {MpcCore, gtUint64, ctUint64, itUint64, gtBool} from "../coti-contracts/contracts/utils/mpc/MpcCore.sol";
 import {RegistryAware} from "./base/RegistryAware.sol";
-import {OmniCoinCore} from "./OmniCoinCore.sol";
+import {OmniCoin} from "./OmniCoin.sol";
+import {PrivateOmniCoin} from "./PrivateOmniCoin.sol";
 import {PrivacyFeeManager} from "./PrivacyFeeManager.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
 /**
  * @title OmniCoinEscrow
@@ -266,12 +268,17 @@ contract OmniCoinEscrow is RegistryAware, AccessControl, ReentrancyGuard, Pausab
     // =============================================================================
     
     /**
-     * @notice Get OmniCoin contract from registry
-     * @dev Returns the OmniCoinCore contract instance
-     * @return OmniCoinCore The OmniCoinCore contract instance
+     * @notice Get appropriate token contract based on privacy preference
+     * @dev Returns either OmniCoin or PrivateOmniCoin based on usePrivacy flag
+     * @param usePrivacy Whether to use private token
+     * @return token The token contract address
      */
-    function getOmniCoinCore() public returns (OmniCoinCore) {
-        return OmniCoinCore(_getContract(registry.OMNICOIN_CORE()));
+    function getTokenContract(bool usePrivacy) public view returns (address) {
+        if (usePrivacy) {
+            return _getContract(registry.PRIVATE_OMNICOIN());
+        } else {
+            return _getContract(registry.OMNICOIN());
+        }
     }
     
     /**
@@ -333,10 +340,11 @@ contract OmniCoinEscrow is RegistryAware, AccessControl, ReentrancyGuard, Pausab
         uint256 feeAmount = (_amount * FEE_RATE) / BASIS_POINTS;
         uint256 totalAmount = _amount + feeAmount;
         
-        // Transfer tokens to escrow (standard transfer)
-        OmniCoinCore omniToken = getOmniCoinCore();
-        bool transferResult = omniToken.transferFromPublic(msg.sender, address(this), totalAmount);
-        if (!transferResult) revert TransferFailed();
+        // Transfer tokens to escrow (use public OmniCoin for standard escrow)
+        address tokenContract = getTokenContract(false);
+        if (!IERC20(tokenContract).transferFrom(msg.sender, address(this), totalAmount)) {
+            revert TransferFailed();
+        }
         
         // Create escrow with public amounts wrapped as encrypted
         gtUint64 gtAmount = gtUint64.wrap(uint64(_amount));
@@ -435,10 +443,13 @@ contract OmniCoinEscrow is RegistryAware, AccessControl, ReentrancyGuard, Pausab
         userEscrows[msg.sender].push(escrowId);
         userEscrows[_buyer].push(escrowId);
         
-        // Transfer tokens to escrow (including fee)
-        OmniCoinCore omniToken = getOmniCoinCore();
+        // Transfer tokens to escrow (use PrivateOmniCoin for privacy escrow)
+        address tokenContract = getTokenContract(true);
         gtUint64 totalAmount = MpcCore.add(gtAmount, fee);
-        gtBool transferResult = omniToken.transferFrom(msg.sender, address(this), totalAmount);
+        uint256 totalAmountPlain = uint256(gtUint64.unwrap(totalAmount));
+        if (!IERC20(tokenContract).transferFrom(msg.sender, address(this), totalAmountPlain)) {
+            revert TransferFailed();
+        }
         if (!MpcCore.decrypt(transferResult)) revert TransferFailed();
         
         // solhint-disable-next-line not-rely-on-time
@@ -469,9 +480,12 @@ contract OmniCoinEscrow is RegistryAware, AccessControl, ReentrancyGuard, Pausab
         escrow.released = true;
         
         // Transfer to buyer (minus fee)
-        OmniCoinCore omniToken = getOmniCoinCore();
-        if (isMpcAvailable) {
-            gtBool transferResult = omniToken.transferGarbled(escrow.buyer, escrow.encryptedAmount);
+        address tokenContract = getTokenContract(escrow.encryptedAmount.unwrap() != 0);
+        if (isMpcAvailable && escrow.encryptedAmount.unwrap() != 0) {
+            uint256 amount = uint256(gtUint64.unwrap(escrow.encryptedAmount));
+            if (!IERC20(tokenContract).transfer(escrow.buyer, amount)) {
+                revert TransferFailed();
+            }
             if (!MpcCore.decrypt(transferResult)) revert TransferFailed();
         } else {
             // Fallback - assume transfer succeeds in test mode
@@ -504,9 +518,12 @@ contract OmniCoinEscrow is RegistryAware, AccessControl, ReentrancyGuard, Pausab
         escrow.refunded = true;
         
         // Refund to seller (minus fee)
-        OmniCoinCore omniToken = getOmniCoinCore();
-        if (isMpcAvailable) {
-            gtBool transferResult = omniToken.transferGarbled(escrow.seller, escrow.encryptedAmount);
+        address tokenContract = getTokenContract(escrow.encryptedAmount.unwrap() != 0);
+        if (isMpcAvailable && escrow.encryptedAmount.unwrap() != 0) {
+            uint256 amount = uint256(gtUint64.unwrap(escrow.encryptedAmount));
+            if (!IERC20(tokenContract).transfer(escrow.seller, amount)) {
+                revert TransferFailed();
+            }
             if (!MpcCore.decrypt(transferResult)) revert TransferFailed();
         } else {
             // Fallback - assume transfer succeeds in test mode
@@ -638,16 +655,18 @@ contract OmniCoinEscrow is RegistryAware, AccessControl, ReentrancyGuard, Pausab
         dispute.sellerPayout = gtUint64.wrap(uint64(sellerPayoutAmount));
         escrow.released = true;
         
-        // Transfer amounts
-        OmniCoinCore omniToken = getOmniCoinCore();
+        // Transfer amounts (use public token for dispute resolution)
+        address tokenContract = getTokenContract(false);
         if (buyerRefundAmount > 0) {
-            bool buyerTransferResult = omniToken.transferPublic(escrow.buyer, buyerRefundAmount);
-            if (!buyerTransferResult) revert TransferFailed();
+            if (!IERC20(tokenContract).transfer(escrow.buyer, buyerRefundAmount)) {
+                revert TransferFailed();
+            }
         }
         
         if (sellerPayoutAmount > 0) {
-            bool sellerTransferResult = omniToken.transferPublic(escrow.seller, sellerPayoutAmount);
-            if (!sellerTransferResult) revert TransferFailed();
+            if (!IERC20(tokenContract).transfer(escrow.seller, sellerPayoutAmount)) {
+                revert TransferFailed();
+            }
         }
         
         // Transfer fee to treasury
@@ -718,7 +737,7 @@ contract OmniCoinEscrow is RegistryAware, AccessControl, ReentrancyGuard, Pausab
         escrow.released = true;
         
         // Transfer amounts
-        OmniCoinCore omniToken = getOmniCoinCore();
+        address tokenContract = getTokenContract(true);
         if (isMpcAvailable) {
             // Transfer to buyer
             gtBool buyerHasRefund = MpcCore.gt(gtBuyerRefund, MpcCore.setPublic64(0));
@@ -918,9 +937,12 @@ contract OmniCoinEscrow is RegistryAware, AccessControl, ReentrancyGuard, Pausab
         if (isMpcAvailable) {
             gtBool hasFee = MpcCore.gt(fee, MpcCore.setPublic64(0));
             if (MpcCore.decrypt(hasFee)) {
-                OmniCoinCore omniToken = getOmniCoinCore();
+                address tokenContract = getTokenContract(escrow.encryptedAmount.unwrap() != 0);
                 address treasury = getTreasury();
-                gtBool transferResult = omniToken.transferGarbled(treasury, fee);
+                uint256 feeAmount = uint256(gtUint64.unwrap(fee));
+                if (!IERC20(tokenContract).transfer(treasury, feeAmount)) {
+                    revert TransferFailed();
+                }
                 if (!MpcCore.decrypt(transferResult)) revert TransferFailed();
             }
         } else {
@@ -935,10 +957,10 @@ contract OmniCoinEscrow is RegistryAware, AccessControl, ReentrancyGuard, Pausab
     /**
      * @dev Get token contract (backward compatibility)
      * @notice Deprecated - use registry directly
-     * @return OmniCoinCore The OmniCoinCore contract instance
+     * @return token The public OmniCoin contract address
      */
-    function token() external returns (OmniCoinCore) {
-        return getOmniCoinCore();
+    function token() external view returns (address) {
+        return getTokenContract(false);
     }
     
     /**

@@ -4,6 +4,7 @@ pragma solidity ^0.8.20;
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {RegistryAware} from "./base/RegistryAware.sol";
 
 /**
  * @title OmniCoinPrivacy
@@ -11,7 +12,7 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
  * @notice Privacy layer for OmniCoin using commitment-nullifier scheme
  * @dev Placeholder implementation for future privacy features
  */
-contract OmniCoinPrivacy is Ownable, ReentrancyGuard {
+contract OmniCoinPrivacy is RegistryAware, Ownable, ReentrancyGuard {
     struct PrivacyAccount {
         bytes32 commitment;
         uint256 balance;
@@ -31,7 +32,7 @@ contract OmniCoinPrivacy is Ownable, ReentrancyGuard {
     error NullifierAlreadySpent();
     error InvalidProof();
 
-    /// @notice OmniCoin token contract
+    /// @notice OmniCoin token contract (deprecated, use registry)
     IERC20 public token;
     /// @notice Minimum deposit amount required
     uint256 public minDeposit;
@@ -106,14 +107,17 @@ contract OmniCoinPrivacy is Ownable, ReentrancyGuard {
 
     /**
      * @notice Initialize the OmniCoinPrivacy contract
-     * @param _token Address of the OmniCoin token contract
+     * @param _registry Registry contract address
+     * @param _token Address of the OmniCoin token contract (deprecated, use registry)
      * @param initialOwner Address to be granted ownership
      */
-    constructor(address _token, address initialOwner) Ownable(initialOwner) {
+    constructor(address _registry, address _token, address initialOwner) 
+        RegistryAware(_registry) 
+        Ownable(initialOwner) {
         token = IERC20(_token);
-        minDeposit = 100 * 10 ** 18; // 100 tokens
-        maxWithdrawal = 1000 * 10 ** 18; // 1000 tokens
-        privacyFee = 1 * 10 ** 18; // 1 token
+        minDeposit = 100 * 10 ** 6; // 100 tokens (6 decimals)
+        maxWithdrawal = 1000 * 10 ** 6; // 1000 tokens (6 decimals)
+        privacyFee = 1 * 10 ** 6; // 1 token (6 decimals)
     }
 
     /**
@@ -160,7 +164,12 @@ contract OmniCoinPrivacy is Ownable, ReentrancyGuard {
         PrivacyAccount storage account = accounts[commitment];
         if (!account.isActive) revert InactiveAccount();
 
-        if (!token.transferFrom(msg.sender, address(this), amount))
+        // Use PrivateOmniCoin for privacy operations
+        address privateToken = _getContract(registry.PRIVATE_OMNICOIN());
+        if (privateToken == address(0) && address(token) != address(0)) {
+            privateToken = address(token); // Backwards compatibility
+        }
+        if (!IERC20(privateToken).transferFrom(msg.sender, address(this), amount))
             revert TransferFailed();
 
         account.balance += amount;
@@ -197,7 +206,12 @@ contract OmniCoinPrivacy is Ownable, ReentrancyGuard {
         account.balance -= amount;
         ++account.nonce;
 
-        if (!token.transfer(msg.sender, amount - privacyFee))
+        // Use PrivateOmniCoin for withdrawals
+        address privateToken = _getContract(registry.PRIVATE_OMNICOIN());
+        if (privateToken == address(0) && address(token) != address(0)) {
+            privateToken = address(token); // Backwards compatibility
+        }
+        if (!IERC20(privateToken).transfer(msg.sender, amount - privacyFee))
             revert TransferFailed();
 
         emit Withdrawal(commitment, amount);

@@ -7,6 +7,7 @@ import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
+import {RegistryAware} from "./base/RegistryAware.sol";
 
 /**
  * @title ValidatorRegistry
@@ -22,7 +23,7 @@ import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
  * - Automatic validator selection for consensus
  * - Economic incentives and penalties
  */
-contract ValidatorRegistry is ReentrancyGuard, Pausable, AccessControl {
+contract ValidatorRegistry is ReentrancyGuard, Pausable, AccessControl, RegistryAware {
     using SafeERC20 for IERC20;
     using Math for uint256;
 
@@ -116,9 +117,7 @@ contract ValidatorRegistry is ReentrancyGuard, Pausable, AccessControl {
     /// @notice Weight for IPFS storage in participation score
     uint256 public constant IPFS_STORAGE_WEIGHT = 10;
 
-    // State variables - Immutables
-    /// @notice XOM token used for staking
-    IERC20 public immutable STAKING_TOKEN;
+    // State variables - Immutables removed - will use registry
 
     // State variables - Storage
     /// @notice Mapping from validator address to their information
@@ -245,19 +244,16 @@ contract ValidatorRegistry is ReentrancyGuard, Pausable, AccessControl {
     error EpochDurationTooShort();
 
     /// @notice Initialize the ValidatorRegistry contract
-    /// @param _stakingToken Address of the XOM token used for staking
+    /// @param _registry Address of the OmniCoinRegistry contract
     /// @param _minimumStake Minimum stake amount required to become a validator
     /// @param _maximumStake Maximum stake amount allowed per validator
     constructor(
-        address _stakingToken,
+        address _registry,
         uint256 _minimumStake,
         uint256 _maximumStake
-    ) {
-        if (_stakingToken == address(0)) revert InvalidStakingToken();
+    ) RegistryAware(_registry) {
         if (_minimumStake == 0) revert MinimumStakeMustBePositive();
         if (_maximumStake < _minimumStake) revert MaximumStakeTooLow();
-
-        STAKING_TOKEN = IERC20(_stakingToken);
 
         stakingConfig = StakingConfig({
             minimumStake: _minimumStake,
@@ -295,8 +291,9 @@ contract ValidatorRegistry is ReentrancyGuard, Pausable, AccessControl {
         // Verify hardware requirements
         if (!_verifyHardwareSpecs(hardwareSpecs)) revert HardwareRequirementsNotMet();
 
-        // Transfer stake
-        STAKING_TOKEN.safeTransferFrom(msg.sender, address(this), stakeAmount);
+        // Transfer stake (using OmniCoin by default for validators)
+        address stakingToken = _getContract(registry.OMNICOIN());
+        IERC20(stakingToken).safeTransferFrom(msg.sender, address(this), stakeAmount);
 
         // Initialize validator info
         validators[msg.sender] = ValidatorInfo({
@@ -351,7 +348,8 @@ contract ValidatorRegistry is ReentrancyGuard, Pausable, AccessControl {
         if (newTotalStake > stakingConfig.maximumStake) revert StakeExceedsMaximum();
 
         // Transfer additional stake
-        STAKING_TOKEN.safeTransferFrom(
+        address stakingToken = _getContract(registry.OMNICOIN());
+        IERC20(stakingToken).safeTransferFrom(
             msg.sender,
             address(this),
             additionalStake
@@ -407,7 +405,8 @@ contract ValidatorRegistry is ReentrancyGuard, Pausable, AccessControl {
         --totalValidators;
 
         // Refund stake
-        STAKING_TOKEN.safeTransfer(msg.sender, refundAmount);
+        address stakingToken = _getContract(registry.OMNICOIN());
+        IERC20(stakingToken).safeTransfer(msg.sender, refundAmount);
 
         emit ValidatorDeregistered(msg.sender, refundAmount, "Voluntary exit");
     }
@@ -495,7 +494,8 @@ contract ValidatorRegistry is ReentrancyGuard, Pausable, AccessControl {
         }
 
         // Burned tokens (sent to zero address)
-        STAKING_TOKEN.safeTransfer(address(0), slashAmount);
+        address stakingToken = _getContract(registry.OMNICOIN());
+        IERC20(stakingToken).safeTransfer(address(0), slashAmount);
 
         emit ValidatorSlashed(
             validatorAddress,
@@ -527,7 +527,8 @@ contract ValidatorRegistry is ReentrancyGuard, Pausable, AccessControl {
                 validator.totalRewards += rewardAmounts[i];
 
                 // Transfer reward
-                STAKING_TOKEN.safeTransfer(
+                address stakingToken = _getContract(registry.OMNICOIN());
+                IERC20(stakingToken).safeTransfer(
                     validatorAddresses[i],
                     rewardAmounts[i]
                 );

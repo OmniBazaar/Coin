@@ -3,6 +3,7 @@ pragma solidity ^0.8.19;
 
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import {RegistryAware} from "./base/RegistryAware.sol";
 
 /**
  * @title OmniCoinConfig
@@ -10,7 +11,7 @@ import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol
  * @notice Configuration contract for OmniCoin system parameters and settings
  * @dev This contract stores bridge configurations, staking tiers, and governance parameters
  */
-contract OmniCoinConfig is Ownable, ReentrancyGuard {
+contract OmniCoinConfig is RegistryAware, Ownable, ReentrancyGuard {
     // =============================================================================
     // STRUCTS
     // =============================================================================
@@ -55,6 +56,15 @@ contract OmniCoinConfig is Ownable, ReentrancyGuard {
     
     /// @notice Testnet mode flag - bypasses reputation requirements for testing
     bool public isTestnetMode;
+    
+    /// @notice Privacy fee rate for private transactions (basis points)
+    uint256 public privacyFeeRate;
+    /// @notice Privacy fee multiplier for premium features
+    uint256 public privacyFeeMultiplier;
+    /// @notice Whether privacy features are enabled globally
+    bool public privacyEnabled;
+    /// @notice Bridge fee for converting between public and private tokens
+    uint256 public tokenBridgeFee;
 
     // =============================================================================
     // EVENTS
@@ -140,6 +150,33 @@ contract OmniCoinConfig is Ownable, ReentrancyGuard {
      */
     event TestnetModeToggled(bool indexed enabled);
     
+    /**
+     * @notice Emitted when privacy fee rate is updated
+     * @param oldRate Previous fee rate
+     * @param newRate New fee rate
+     */
+    event PrivacyFeeRateUpdated(uint256 indexed oldRate, uint256 indexed newRate);
+    
+    /**
+     * @notice Emitted when privacy fee multiplier is updated
+     * @param oldMultiplier Previous multiplier
+     * @param newMultiplier New multiplier
+     */
+    event PrivacyFeeMultiplierUpdated(uint256 indexed oldMultiplier, uint256 indexed newMultiplier);
+    
+    /**
+     * @notice Emitted when privacy is toggled
+     * @param enabled Whether privacy is enabled
+     */
+    event PrivacyToggled(bool indexed enabled);
+    
+    /**
+     * @notice Emitted when token bridge fee is updated
+     * @param oldFee Previous bridge fee
+     * @param newFee New bridge fee
+     */
+    event TokenBridgeFeeUpdated(uint256 indexed oldFee, uint256 indexed newFee);
+    
     // =============================================================================
     // CUSTOM ERRORS
     // =============================================================================
@@ -153,9 +190,12 @@ contract OmniCoinConfig is Ownable, ReentrancyGuard {
 
     /**
      * @notice Initialize the configuration contract
+     * @param _registry Registry contract address
      * @param initialOwner The initial owner of the contract
      */
-    constructor(address initialOwner) Ownable(initialOwner) {
+    constructor(address _registry, address initialOwner) 
+        RegistryAware(_registry) 
+        Ownable(initialOwner) {
         // Initialize default values
         emissionRate = 100; // 100 tokens per block
         useParticipationScore = true;
@@ -163,6 +203,12 @@ contract OmniCoinConfig is Ownable, ReentrancyGuard {
         votingPeriod = 3 days;
         quorum = 100000 * 10 ** 6; // 100,000 tokens
         isTestnetMode = false; // Default to production mode
+        
+        // Initialize privacy settings
+        privacyFeeRate = 100; // 1% in basis points
+        privacyFeeMultiplier = 10; // 10x fee for privacy features
+        privacyEnabled = true; // Privacy enabled by default
+        tokenBridgeFee = 10 * 10 ** 6; // 10 tokens for bridging
 
         // Initialize default staking tiers
         stakingTiers.push(
@@ -382,5 +428,58 @@ contract OmniCoinConfig is Ownable, ReentrancyGuard {
             }
         }
         revert TierNotFound();
+    }
+    
+    /**
+     * @notice Set privacy fee rate
+     * @param _rate New fee rate in basis points
+     */
+    function setPrivacyFeeRate(uint256 _rate) external onlyOwner {
+        if (_rate > 1000) revert InvalidRate(); // Max 10%
+        emit PrivacyFeeRateUpdated(privacyFeeRate, _rate);
+        privacyFeeRate = _rate;
+    }
+    
+    /**
+     * @notice Set privacy fee multiplier
+     * @param _multiplier New fee multiplier
+     */
+    function setPrivacyFeeMultiplier(uint256 _multiplier) external onlyOwner {
+        if (_multiplier == 0 || _multiplier > 100) revert InvalidRate(); // Between 1x and 100x
+        emit PrivacyFeeMultiplierUpdated(privacyFeeMultiplier, _multiplier);
+        privacyFeeMultiplier = _multiplier;
+    }
+    
+    /**
+     * @notice Toggle privacy features globally
+     */
+    function togglePrivacy() external onlyOwner {
+        privacyEnabled = !privacyEnabled;
+        emit PrivacyToggled(privacyEnabled);
+    }
+    
+    /**
+     * @notice Set token bridge fee
+     * @param _fee New bridge fee amount
+     */
+    function setTokenBridgeFee(uint256 _fee) external onlyOwner {
+        emit TokenBridgeFeeUpdated(tokenBridgeFee, _fee);
+        tokenBridgeFee = _fee;
+    }
+    
+    /**
+     * @notice Get all privacy-related configuration
+     * @return feeRate Privacy fee rate in basis points
+     * @return feeMultiplier Privacy fee multiplier
+     * @return enabled Whether privacy is enabled
+     * @return bridgeFee Token bridge fee
+     */
+    function getPrivacyConfig() external view returns (
+        uint256 feeRate,
+        uint256 feeMultiplier,
+        bool enabled,
+        uint256 bridgeFee
+    ) {
+        return (privacyFeeRate, privacyFeeMultiplier, privacyEnabled, tokenBridgeFee);
     }
 }

@@ -6,7 +6,7 @@ import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol
 import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
 import {OmniCoin} from "./OmniCoin.sol";
 import {PrivateOmniCoin} from "./PrivateOmniCoin.sol";
-import {PrivacyFeeManagerV2} from "./PrivacyFeeManagerV2.sol";
+import {PrivacyFeeManager} from "./PrivacyFeeManager.sol";
 import {RegistryAware} from "./base/RegistryAware.sol";
 
 /**
@@ -48,7 +48,7 @@ contract OmniCoinPrivacyBridge is AccessControl, ReentrancyGuard, Pausable, Regi
     PrivateOmniCoin public immutable PRIVATE_OMNI_COIN;
     
     /// @notice Privacy fee manager
-    PrivacyFeeManagerV2 public immutable PRIVACY_FEE_MANAGER;
+    PrivacyFeeManager public immutable PRIVACY_FEE_MANAGER;
     
     /// @notice Bridge fee in basis points (100 = 1%)
     uint256 public bridgeFee = 100; // 1% default
@@ -137,7 +137,7 @@ contract OmniCoinPrivacyBridge is AccessControl, ReentrancyGuard, Pausable, Regi
         
         OMNI_COIN = OmniCoin(_omniCoin);
         PRIVATE_OMNI_COIN = PrivateOmniCoin(_privateOmniCoin);
-        PRIVACY_FEE_MANAGER = PrivacyFeeManagerV2(_privacyFeeManager);
+        PRIVACY_FEE_MANAGER = PrivacyFeeManager(_privacyFeeManager);
         
         // Grant roles
         _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);

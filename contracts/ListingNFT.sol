@@ -5,6 +5,7 @@ import {ERC721} from "@openzeppelin/contracts/token/ERC721/ERC721.sol";
 import {ERC721URIStorage} from "@openzeppelin/contracts/token/ERC721/extensions/ERC721URIStorage.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import {RegistryAware} from "./base/RegistryAware.sol";
 
 /**
  * @title ListingNFT
@@ -12,7 +13,7 @@ import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol
  * @notice NFT contract for OmniBazaar marketplace listings
  * @dev ERC721 implementation with transaction management and escrow integration
  */
-contract ListingNFT is ERC721URIStorage, Ownable, ReentrancyGuard {
+contract ListingNFT is ERC721URIStorage, RegistryAware, Ownable, ReentrancyGuard {
     // =============================================================================
     // ENUMS & STRUCTS
     // =============================================================================
@@ -30,8 +31,10 @@ contract ListingNFT is ERC721URIStorage, Ownable, ReentrancyGuard {
         uint256 quantity;
         TransactionStatus status;
         string escrowId;
-        uint256 createdAt;  // Time tracking required for transaction history
-        uint256 updatedAt;  // Time tracking required for transaction updates
+        address paymentToken;  // OmniCoin or PrivateOmniCoin
+        bool usePrivacy;       // Whether to use privacy features
+        uint256 createdAt;     // Time tracking required for transaction history
+        uint256 updatedAt;     // Time tracking required for transaction updates
     }
     
     // =============================================================================
@@ -77,11 +80,15 @@ contract ListingNFT is ERC721URIStorage, Ownable, ReentrancyGuard {
 
     /**
      * @notice Initialize the ListingNFT contract
+     * @param registry Address of the registry contract
      * @param initialOwner Address to be granted ownership
      */
     constructor(
+        address registry,
         address initialOwner
-    ) ERC721("OmniBazaar Listing", "OBL") Ownable(initialOwner) {
+    ) ERC721("OmniBazaar Listing", "OBL") 
+      RegistryAware(registry) 
+      Ownable(initialOwner) {
         _tokenIds = 0;
     }
 
@@ -164,17 +171,29 @@ contract ListingNFT is ERC721URIStorage, Ownable, ReentrancyGuard {
      * @param buyer Address of the buyer
      * @param quantity Number of items (always 1 for NFTs)
      * @param price Transaction price in wei
+     * @param usePrivacy Whether to use PrivateOmniCoin for payment
      * @return transactionId The token ID (same as input)
      */
     function createTransaction(
         uint256 tokenId,
         address buyer,
         uint256 quantity,
-        uint256 price
+        uint256 price,
+        bool usePrivacy
     ) public nonReentrant returns (uint256 transactionId) {
         if (_ownerOf(tokenId) == address(0)) revert ListingDoesNotExist();
         if (ownerOf(tokenId) != msg.sender) revert NotListingOwner();
         if (buyer == msg.sender) revert CannotBuyOwnListing();
+
+        // Get payment token based on privacy preference
+        address paymentToken;
+        if (usePrivacy) {
+            paymentToken = _getContract(registry.PRIVATE_OMNICOIN());
+        } else {
+            paymentToken = _getContract(registry.OMNICOIN());
+        }
+        
+        if (paymentToken == address(0)) revert NotAuthorized();
 
         Transaction memory newTransaction = Transaction({
             seller: msg.sender,
@@ -183,6 +202,8 @@ contract ListingNFT is ERC721URIStorage, Ownable, ReentrancyGuard {
             quantity: quantity,
             status: TransactionStatus.Pending,
             escrowId: "",
+            paymentToken: paymentToken,
+            usePrivacy: usePrivacy,
             createdAt: block.timestamp,  // solhint-disable-line not-rely-on-time
             updatedAt: block.timestamp  // solhint-disable-line not-rely-on-time
         });
@@ -293,5 +314,26 @@ contract ListingNFT is ERC721URIStorage, Ownable, ReentrancyGuard {
         }
 
         return super._update(to, tokenId, auth);
+    }
+    
+    /**
+     * @notice Check if a transaction uses OmniCoin or PrivateOmniCoin
+     * @param tokenId The NFT token ID
+     * @return isOmniPayment Whether payment is in OmniCoin tokens
+     * @return paymentToken The payment token address
+     */
+    function isOmniCoinPayment(uint256 tokenId) 
+        public 
+        view 
+        returns (bool isOmniPayment, address paymentToken) 
+    {
+        if (_ownerOf(tokenId) == address(0)) revert ListingDoesNotExist();
+        
+        Transaction memory txn = transactions[tokenId];
+        address omniCoin = _getContract(registry.OMNICOIN());
+        address privateOmniCoin = _getContract(registry.PRIVATE_OMNICOIN());
+        
+        isOmniPayment = (txn.paymentToken == omniCoin || txn.paymentToken == privateOmniCoin);
+        paymentToken = txn.paymentToken;
     }
 }

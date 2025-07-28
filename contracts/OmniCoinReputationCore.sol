@@ -8,6 +8,7 @@ import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol
 import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
 import {MpcCore, gtUint64, ctUint64, itUint64} from "../coti-contracts/contracts/utils/mpc/MpcCore.sol";
 import {OmniCoinConfig} from "./OmniCoinConfig.sol";
+import {RegistryAware} from "./base/RegistryAware.sol";
 import {
     IReputationCore,
     IIdentityVerification,
@@ -28,7 +29,7 @@ import {
  * - Referral System
  * - Standard reputation components
  */
-contract OmniCoinReputationCore is IReputationCore, AccessControl, ReentrancyGuard, Pausable {
+contract OmniCoinReputationCore is IReputationCore, AccessControl, ReentrancyGuard, Pausable, RegistryAware {
     
     // =============================================================================
     // STRUCTS
@@ -144,7 +145,7 @@ contract OmniCoinReputationCore is IReputationCore, AccessControl, ReentrancyGua
     /// @notice Referral system module address
     IReferralSystem public referralModule;
     
-    /// @notice Configuration contract instance
+    /// @notice Configuration contract instance (deprecated, use registry)
     OmniCoinConfig public config;
     
     /// @notice Minimum reputation score required for validators
@@ -178,21 +179,20 @@ contract OmniCoinReputationCore is IReputationCore, AccessControl, ReentrancyGua
     
     /// @notice Initializes the reputation core contract
     /// @param _admin Address to receive admin privileges
-    /// @param _config Address of the configuration contract
+    /// @param _registry Address of the registry contract
+    /// @param _config Address of the configuration contract (deprecated, use registry)
     /// @param _identityModule Address of identity verification module (can be zero)
     /// @param _trustModule Address of trust system module (can be zero)
     /// @param _referralModule Address of referral system module (can be zero)
     constructor(
         address _admin,
+        address _registry,
         address _config,
         address _identityModule,
         address _trustModule,
         address _referralModule
-    ) {
+    ) RegistryAware(_registry) {
         if (_admin == address(0)) {
-            revert InvalidAddress();
-        }
-        if (_config == address(0)) {
             revert InvalidAddress();
         }
         
@@ -200,7 +200,10 @@ contract OmniCoinReputationCore is IReputationCore, AccessControl, ReentrancyGua
         _grantRole(ADMIN_ROLE, _admin);
         _grantRole(REPUTATION_UPDATER_ROLE, _admin);
         
-        config = OmniCoinConfig(_config);
+        // Keep config for backwards compatibility
+        if (_config != address(0)) {
+            config = OmniCoinConfig(_config);
+        }
         
         // Set modules (can be zero initially)
         identityModule = IIdentityVerification(_identityModule);
@@ -316,7 +319,7 @@ contract OmniCoinReputationCore is IReputationCore, AccessControl, ReentrancyGua
      */
     function isEligibleValidator(address user) external view override returns (bool) {
         // Check testnet mode first
-        if (config.isTestnetMode()) {
+        if (_getConfig().isTestnetMode()) {
             return true;
         }
         
@@ -334,7 +337,7 @@ contract OmniCoinReputationCore is IReputationCore, AccessControl, ReentrancyGua
      */
     function isEligibleArbitrator(address user) external view override returns (bool) {
         // Check testnet mode first
-        if (config.isTestnetMode()) {
+        if (_getConfig().isTestnetMode()) {
             return true;
         }
         
@@ -577,6 +580,19 @@ contract OmniCoinReputationCore is IReputationCore, AccessControl, ReentrancyGua
     // =============================================================================
     // INTERNAL FUNCTIONS
     // =============================================================================
+    
+    /**
+     * @notice Get config contract from registry
+     * @dev Helper to get config contract
+     * @return Configuration contract instance
+     */
+    function _getConfig() internal view returns (OmniCoinConfig) {
+        if (address(config) != address(0)) {
+            return config; // Backwards compatibility
+        }
+        address configAddr = _getContract(registry.OMNICOIN_CONFIG());
+        return OmniCoinConfig(configAddr);
+    }
     
     /**
      * @notice Recalculate total reputation after component update

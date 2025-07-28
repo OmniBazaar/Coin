@@ -5,7 +5,7 @@ import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Ini
 import {OwnableUpgradeable} from "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
 import {ReentrancyGuardUpgradeable} from "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
 import {ECDSA} from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
-import {OmniCoinCore} from "./OmniCoinCore.sol";
+import {RegistryAware} from "./base/RegistryAware.sol";
 
 /**
  * @title OmniWalletRecovery
@@ -16,7 +16,8 @@ import {OmniCoinCore} from "./OmniCoinCore.sol";
 contract OmniWalletRecovery is
     Initializable,
     OwnableUpgradeable,
-    ReentrancyGuardUpgradeable
+    ReentrancyGuardUpgradeable,
+    RegistryAware
 {
     using ECDSA for bytes32;
 
@@ -81,8 +82,6 @@ contract OmniWalletRecovery is
     }
 
     // State variables
-    /// @notice Reference to the OmniCoin core contract
-    OmniCoinCore public omniCoin;
 
     /// @notice Recovery configuration for each wallet address
     mapping(address => WalletRecoveryConfig) public walletConfigs;
@@ -200,20 +199,20 @@ contract OmniWalletRecovery is
 
     /// @custom:oz-upgrades-unsafe-allow constructor
     /// @notice Disables initializers to ensure the contract can only be initialized through a proxy
-    constructor() {
+    constructor() RegistryAware(address(0)) {
         _disableInitializers();
     }
 
     /**
      * @notice Initialize the recovery contract
-     * @dev Sets up the contract with default parameters and links to OmniCoin
-     * @param _omniCoin Address of the OmniCoin core contract
+     * @dev Sets up the contract with default parameters and registry
+     * @param _registry Address of the OmniCoinRegistry contract
      */
-    function initialize(address _omniCoin) external initializer {
+    function initialize(address _registry) external initializer {
         __Ownable_init(msg.sender);
         __ReentrancyGuard_init();
+        __RegistryAware_init(_registry);
 
-        omniCoin = OmniCoinCore(_omniCoin);
         requestCounter = 0;
         minGuardians = 2;
         maxGuardians = 10;

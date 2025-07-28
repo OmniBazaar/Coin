@@ -8,6 +8,9 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {MpcCore, gtUint64, ctUint64, itUint64} from "../coti-contracts/contracts/utils/mpc/MpcCore.sol";
 import {PrivacyFeeManager} from "./PrivacyFeeManager.sol";
+import {RegistryAware} from "./base/RegistryAware.sol";
+import {OmniCoin} from "./OmniCoin.sol";
+import {PrivateOmniCoin} from "./PrivateOmniCoin.sol";
 
 /**
  * @title DEXSettlement
@@ -23,7 +26,7 @@ import {PrivacyFeeManager} from "./PrivacyFeeManager.sol";
  * - MEV protection and slippage controls
  * - Emergency circuit breakers
  */
-contract DEXSettlement is ReentrancyGuard, Pausable, AccessControl {
+contract DEXSettlement is RegistryAware, ReentrancyGuard, Pausable, AccessControl {
     using SafeERC20 for IERC20;
 
     // =============================================================================
@@ -113,7 +116,7 @@ contract DEXSettlement is ReentrancyGuard, Pausable, AccessControl {
     
     /// @notice Whether COTI MPC is available for privacy features
     bool public isMpcAvailable;
-    /// @notice Address of the privacy fee manager contract
+    /// @notice Address of the privacy fee manager contract (deprecated - use registry)
     address public privacyFeeManager;
     
     /// @notice Mapping of trade ID to trade data
@@ -218,15 +221,17 @@ contract DEXSettlement is ReentrancyGuard, Pausable, AccessControl {
     
     /**
      * @notice Initializes the DEX settlement contract
+     * @param _registry Address of the registry contract
      * @param _companyTreasury Address for company fee collection
      * @param _developmentFund Address for development fund fee collection
      * @param _privacyFeeManager Address of the privacy fee manager contract
      */
     constructor(
+        address _registry,
         address _companyTreasury,
         address _developmentFund,
         address _privacyFeeManager
-    ) {
+    ) RegistryAware(_registry) {
         if (_companyTreasury == address(0)) revert InvalidTokenAddress();
         if (_developmentFund == address(0)) revert InvalidTokenAddress();
 
@@ -436,7 +441,7 @@ contract DEXSettlement is ReentrancyGuard, Pausable, AccessControl {
      */
     function _validatePrivacyParams(bool usePrivacy, address maker, address taker, uint256 deadline) internal view {
         if (!usePrivacy || !isMpcAvailable) revert PrivacyNotAvailable();
-        if (privacyFeeManager == address(0)) revert InvalidTokenAddress();
+        if (getPrivacyFeeManager() == address(0)) revert InvalidTokenAddress();
         if (emergencyStop) revert InvalidTrade();
         if (block.timestamp > deadline) revert TradeExpired(); // solhint-disable-line not-rely-on-time
         if (maker == taker) revert InvalidTrade();
@@ -527,7 +532,7 @@ contract DEXSettlement is ReentrancyGuard, Pausable, AccessControl {
         uint256 normalFee = uint64(gtUint64.unwrap(privacyFeeBase));
         uint256 privacyFee = normalFee * PRIVACY_MULTIPLIER;
         
-        PrivacyFeeManager(privacyFeeManager).collectPrivacyFee(
+        PrivacyFeeManager(getPrivacyFeeManager()).collectPrivacyFee(
             maker,
             keccak256("DEX_TRADE"),
             privacyFee
@@ -875,5 +880,47 @@ contract DEXSettlement is ReentrancyGuard, Pausable, AccessControl {
      */
     function setMaxSlippage(uint256 _maxSlippage) external onlyRole(FEE_MANAGER_ROLE) {
         maxSlippageBasisPoints = _maxSlippage;
+    }
+    
+    // =============================================================================
+    // DUAL-TOKEN SUPPORT
+    // =============================================================================
+    
+    /**
+     * @notice Check if a token is part of the OmniCoin dual-token system
+     * @dev Returns true for OmniCoin or PrivateOmniCoin addresses
+     * @param token The token address to check
+     * @return isOmniToken Whether the token is OmniCoin or PrivateOmniCoin
+     */
+    function isOmniCoinToken(address token) public view returns (bool isOmniToken) {
+        address omniCoin = _getContract(registry.OMNICOIN());
+        address privateOmniCoin = _getContract(registry.PRIVATE_OMNICOIN());
+        return token == omniCoin || token == privateOmniCoin;
+    }
+    
+    /**
+     * @notice Check if a trade involves privacy tokens
+     * @dev Returns true if either token is PrivateOmniCoin
+     * @param tokenIn Input token address
+     * @param tokenOut Output token address
+     * @return Whether the trade involves privacy tokens
+     */
+    function isPrivacyTrade(address tokenIn, address tokenOut) public view returns (bool) {
+        address privateOmniCoin = _getContract(registry.PRIVATE_OMNICOIN());
+        return tokenIn == privateOmniCoin || tokenOut == privateOmniCoin;
+    }
+    
+    /**
+     * @notice Get the correct privacy fee manager from registry
+     * @dev Uses registry instead of stored address
+     * @return feeManager Address of the privacy fee manager
+     */
+    function getPrivacyFeeManager() public view returns (address feeManager) {
+        feeManager = _getContract(registry.FEE_MANAGER());
+        if (feeManager == address(0) && privacyFeeManager != address(0)) {
+            // Fallback to stored address if registry not configured
+            feeManager = privacyFeeManager;
+        }
+        return feeManager;
     }
 }

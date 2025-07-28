@@ -4,7 +4,8 @@ pragma solidity ^0.8.20;
 import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import {OwnableUpgradeable} from "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
 import {ReentrancyGuardUpgradeable} from "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
-import {OmniCoinCore} from "./OmniCoinCore.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {RegistryAware} from "./base/RegistryAware.sol";
 import {OmniCoinAccount} from "./OmniCoinAccount.sol";
 import {OmniCoinPayment} from "./OmniCoinPayment.sol";
 import {OmniCoinEscrow} from "./OmniCoinEscrow.sol";
@@ -21,7 +22,8 @@ import {ListingNFT} from "./ListingNFT.sol";
 contract OmniWalletProvider is
     Initializable,
     OwnableUpgradeable,
-    ReentrancyGuardUpgradeable
+    ReentrancyGuardUpgradeable,
+    RegistryAware
 {
     // Wallet-specific structures
     /// @notice Comprehensive wallet information structure
@@ -54,21 +56,7 @@ contract OmniWalletProvider is
         mapping(bytes4 => bool) approvedMethods;
     }
 
-    // Contract interfaces
-    /// @notice OmniCoin core contract interface
-    OmniCoinCore public omniCoin;
-    /// @notice Account management contract interface
-    OmniCoinAccount public accountManager;
-    /// @notice Payment processing contract interface
-    OmniCoinPayment public paymentProcessor;
-    /// @notice Escrow management contract interface
-    OmniCoinEscrow public escrowManager;
-    /// @notice Privacy features contract interface
-    OmniCoinPrivacy public privacyManager;
-    /// @notice Cross-chain bridge contract interface
-    OmniCoinBridge public bridgeManager;
-    /// @notice NFT marketplace contract interface
-    ListingNFT public nftManager;
+    // State variables
 
     // State variables
     /// @notice Mapping of wallet addresses to their active sessions
@@ -131,40 +119,21 @@ contract OmniWalletProvider is
 
     /// @notice Constructor to disable initializers for upgradeable pattern
     /// @custom:oz-upgrades-unsafe-allow constructor
-    constructor() {
+    constructor() RegistryAware(address(0)) {
         _disableInitializers();
     }
 
     /**
-     * @notice Initializes the wallet provider with all contract addresses
-     * @dev Sets up all contract interfaces and default values
-     * @param _omniCoin Address of the OmniCoin core contract
-     * @param _accountManager Address of the account management contract
-     * @param _paymentProcessor Address of the payment processing contract
-     * @param _escrowManager Address of the escrow management contract
-     * @param _privacyManager Address of the privacy features contract
-     * @param _bridgeManager Address of the cross-chain bridge contract
-     * @param _nftManager Address of the NFT marketplace contract
+     * @notice Initializes the wallet provider with registry address
+     * @dev Sets up registry integration and default values
+     * @param _registry Address of the OmniCoinRegistry contract
      */
     function initialize(
-        address _omniCoin,
-        address _accountManager,
-        address _paymentProcessor,
-        address _escrowManager,
-        address _privacyManager,
-        address _bridgeManager,
-        address _nftManager
+        address _registry
     ) public initializer {
         __Ownable_init(msg.sender);
         __ReentrancyGuard_init();
-
-        omniCoin = OmniCoinCore(_omniCoin);
-        accountManager = OmniCoinAccount(_accountManager);
-        paymentProcessor = OmniCoinPayment(_paymentProcessor);
-        escrowManager = OmniCoinEscrow(_escrowManager);
-        privacyManager = OmniCoinPrivacy(_privacyManager);
-        bridgeManager = OmniCoinBridge(_bridgeManager);
-        nftManager = ListingNFT(_nftManager);
+        __RegistryAware_init(_registry);
 
         sessionDuration = 24 hours;
         sessionCounter = 0;
@@ -182,13 +151,13 @@ contract OmniWalletProvider is
         return
             WalletInfo({
                 walletAddress: wallet,
-                balance: omniCoin.balanceOfPublic(wallet),
-                stakedAmount: omniCoin.getStakeAmount(wallet),
-                reputationScore: omniCoin.getReputationScore(wallet),
-                privacyEnabled: false, // Will be implemented with privacy integration
-                username: omniCoin.addressToUsername(wallet),
-                nftCount: nftManager.getUserListings(wallet).length,
-                pendingTransactions: accountManager.getNonce(wallet)
+                balance: _getWalletBalance(wallet, false),
+                stakedAmount: _getStakedAmount(wallet),
+                reputationScore: _getReputationScore(wallet),
+                privacyEnabled: _isPrivacyEnabled(wallet),
+                username: _getUsername(wallet),
+                nftCount: _getNFTCount(wallet),
+                pendingTransactions: _getPendingTransactions(wallet)
             });
     }
 
@@ -286,10 +255,11 @@ contract OmniWalletProvider is
 
         if (usePrivacy) {
             // Route through privacy manager if enabled
+            OmniCoinPrivacy privacy = OmniCoinPrivacy(_getContract(registry.OMNICOIN_PRIVACY()));
             bytes32 commitment = keccak256(
                 abi.encodePacked(msg.sender, block.timestamp) // solhint-disable-line not-rely-on-time
             );
-            privacyManager.deposit(commitment, amount);
+            privacy.deposit(commitment, amount);
             bytes32 recipientCommitment = keccak256(
                 abi.encodePacked(recipient, block.timestamp) // solhint-disable-line not-rely-on-time
             );
@@ -299,7 +269,7 @@ contract OmniWalletProvider is
                 abi.encodePacked(commitment, block.number)
             );
 
-            privacyManager.transfer(
+            privacy.transfer(
                 commitment,
                 recipientCommitment,
                 nullifier,
@@ -307,7 +277,8 @@ contract OmniWalletProvider is
                 proof
             );
         } else {
-            if (!omniCoin.transferPublic(recipient, amount)) revert TransferFailed();
+            IERC20 token = IERC20(_getContract(registry.OMNICOIN()));
+            if (!token.transferFrom(msg.sender, recipient, amount)) revert TransferFailed();
         }
 
         return true;
@@ -329,10 +300,11 @@ contract OmniWalletProvider is
         uint256 quantity
     ) external nonReentrant returns (uint256 tokenId) {
         // Mint NFT
-        tokenId = nftManager.mint(msg.sender, tokenURI);
+        ListingNFT nft = ListingNFT(_getContract(registry.LISTING_NFT()));
+        tokenId = nft.mint(msg.sender, tokenURI);
 
         // Create transaction for marketplace
-        nftManager.createTransaction(tokenId, buyer, quantity, price);
+        nft.createTransaction(tokenId, buyer, quantity, price);
 
         return tokenId;
     }
@@ -358,7 +330,8 @@ contract OmniWalletProvider is
         //     "Insufficient allowance"
         // );
 
-        escrowManager.createEscrow(buyer, arbitrator, amount, duration);
+        OmniCoinEscrow escrow = OmniCoinEscrow(_getContract(registry.OMNICOIN_ESCROW()));
+        escrow.createEscrow(buyer, arbitrator, amount, duration);
         return true;
     }
 
@@ -383,7 +356,8 @@ contract OmniWalletProvider is
         //     "Insufficient allowance"
         // );
 
-        bridgeManager.initiateTransfer(
+        OmniCoinBridge bridge = OmniCoinBridge(_getContract(registry.OMNICOIN_BRIDGE()));
+        bridge.initiateTransfer(
             targetChainId,
             targetToken,
             recipient,
@@ -428,7 +402,8 @@ contract OmniWalletProvider is
      */
     function enablePrivacy() external returns (bytes32 commitment) {
         commitment = keccak256(abi.encodePacked(msg.sender, block.timestamp)); // solhint-disable-line not-rely-on-time
-        privacyManager.createAccount(commitment);
+        OmniCoinPrivacy privacy = OmniCoinPrivacy(_getContract(registry.OMNICOIN_PRIVACY()));
+        privacy.createAccount(commitment);
         return commitment;
     }
 
@@ -451,14 +426,15 @@ contract OmniWalletProvider is
             uint256[] memory transactionCounts
         )
     {
-        uint256[] memory listings = nftManager.getUserListings(wallet);
+        ListingNFT nft = ListingNFT(_getContract(registry.LISTING_NFT()));
+        uint256[] memory listings = nft.getUserListings(wallet);
         tokenIds = listings;
 
         tokenURIs = new string[](listings.length);
         transactionCounts = new uint256[](listings.length);
 
         for (uint256 i = 0; i < listings.length; ++i) {
-            tokenURIs[i] = nftManager.tokenURI(listings[i]);
+            tokenURIs[i] = nft.tokenURI(listings[i]);
             // Get transaction count for each NFT
             transactionCounts[i] = 1; // Placeholder
         }
@@ -512,5 +488,80 @@ contract OmniWalletProvider is
      */
     function updateSessionDuration(uint256 newDuration) external onlyOwner {
         sessionDuration = newDuration;
+    }
+
+    // Internal helper functions
+
+    /**
+     * @notice Get wallet balance for specified token
+     * @param wallet The wallet address
+     * @param usePrivacy Whether to check private token balance
+     * @return Balance amount
+     */
+    function _getWalletBalance(address wallet, bool usePrivacy) internal view returns (uint256) {
+        address tokenContract = usePrivacy ? 
+            _getContract(registry.PRIVATE_OMNICOIN()) : 
+            _getContract(registry.OMNICOIN());
+        return IERC20(tokenContract).balanceOf(wallet);
+    }
+
+    /**
+     * @notice Get staked amount for wallet
+     * @param wallet The wallet address
+     * @return Staked amount
+     */
+    function _getStakedAmount(address wallet) internal view returns (uint256) {
+        // This would call staking contract - placeholder for now
+        return 0;
+    }
+
+    /**
+     * @notice Get reputation score for wallet
+     * @param wallet The wallet address
+     * @return Reputation score
+     */
+    function _getReputationScore(address wallet) internal view returns (uint256) {
+        // This would call reputation contract - placeholder for now
+        return 0;
+    }
+
+    /**
+     * @notice Check if privacy is enabled for wallet
+     * @param wallet The wallet address
+     * @return Whether privacy is enabled
+     */
+    function _isPrivacyEnabled(address wallet) internal view returns (bool) {
+        // This would check privacy contract - placeholder for now
+        return false;
+    }
+
+    /**
+     * @notice Get username for wallet
+     * @param wallet The wallet address
+     * @return Username string
+     */
+    function _getUsername(address wallet) internal view returns (string memory) {
+        // This would call identity contract - placeholder for now
+        return "";
+    }
+
+    /**
+     * @notice Get NFT count for wallet
+     * @param wallet The wallet address
+     * @return NFT count
+     */
+    function _getNFTCount(address wallet) internal view returns (uint256) {
+        ListingNFT nft = ListingNFT(_getContract(registry.LISTING_NFT()));
+        return nft.getUserListings(wallet).length;
+    }
+
+    /**
+     * @notice Get pending transaction count
+     * @param wallet The wallet address
+     * @return Pending transaction count
+     */
+    function _getPendingTransactions(address wallet) internal view returns (uint256) {
+        OmniCoinAccount account = OmniCoinAccount(_getContract(registry.OMNICOIN_ACCOUNT()));
+        return account.getNonce(wallet);
     }
 }

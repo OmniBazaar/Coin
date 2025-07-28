@@ -3,6 +3,7 @@ pragma solidity ^0.8.20;
 
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import {RegistryAware} from "./base/RegistryAware.sol";
 
 /**
  * @title OmniCoinGarbledCircuit
@@ -10,7 +11,7 @@ import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol
  * @notice Implements garbled circuit evaluation for privacy-preserving computations
  * @dev Placeholder implementation for future MPC garbled circuit functionality
  */
-contract OmniCoinGarbledCircuit is Ownable, ReentrancyGuard {
+contract OmniCoinGarbledCircuit is RegistryAware, Ownable, ReentrancyGuard {
     struct Circuit {
         bytes circuit;
         bytes inputLabels;
@@ -102,9 +103,12 @@ contract OmniCoinGarbledCircuit is Ownable, ReentrancyGuard {
 
     /**
      * @notice Initialize the garbled circuit contract
+     * @param _registry Registry contract address
      * @param initialOwner Address to be granted ownership
      */
-    constructor(address initialOwner) Ownable(initialOwner) {
+    constructor(address _registry, address initialOwner) 
+        RegistryAware(_registry) 
+        Ownable(initialOwner) {
         maxCircuitSize = 1024 * 1024; // 1MB
         maxInputSize = 1024; // 1KB
         maxOutputSize = 1024; // 1KB
@@ -124,11 +128,14 @@ contract OmniCoinGarbledCircuit is Ownable, ReentrancyGuard {
 
         circuitId = ++circuitCount;
 
-        // Parse circuit metadata (to be implemented)
-        uint256 inputSize = 0;
-        uint256 outputSize = 0;
-        bytes memory inputLabels;
-        bytes memory outputLabels;
+        // Parse circuit metadata
+        // For MVP, we'll use the first 8 bytes as input size and next 8 bytes as output size
+        uint256 inputSize = circuit.length >= 8 ? uint256(uint64(bytes8(circuit[0:8]))) : 32;
+        uint256 outputSize = circuit.length >= 16 ? uint256(uint64(bytes8(circuit[8:16]))) : 32;
+        
+        // Extract labels from circuit data (simplified for MVP)
+        bytes memory inputLabels = circuit.length > 16 ? circuit[16:min(16 + inputSize, circuit.length)] : new bytes(inputSize);
+        bytes memory outputLabels = new bytes(outputSize);
 
         circuits[circuitId] = Circuit({
             circuit: circuit,
@@ -169,8 +176,14 @@ contract OmniCoinGarbledCircuit is Ownable, ReentrancyGuard {
         if (input.length > maxInputSize) revert InputTooLarge();
         if (input.length != circuits[circuitId].inputSize) revert InvalidInputSize();
 
-        // Evaluate circuit (to be implemented)
-        bytes memory output;
+        // Evaluate circuit - simplified implementation
+        // In production, this would perform actual garbled circuit evaluation
+        bytes memory output = new bytes(circuits[circuitId].outputSize);
+        
+        // Simple XOR-based evaluation for MVP
+        for (uint256 i = 0; i < output.length && i < input.length; i++) {
+            output[i] = input[i] ^ circuits[circuitId].circuit[i % circuits[circuitId].circuit.length];
+        }
 
         evaluations[circuitId].push(
             Evaluation({
@@ -245,6 +258,16 @@ contract OmniCoinGarbledCircuit is Ownable, ReentrancyGuard {
         );
     }
 
+    /**
+     * @notice Helper function to get minimum of two numbers
+     * @param a First number
+     * @param b Second number
+     * @return Minimum of a and b
+     */
+    function min(uint256 a, uint256 b) internal pure returns (uint256) {
+        return a < b ? a : b;
+    }
+    
     /**
      * @notice Get evaluation details
      * @param circuitId Circuit identifier

@@ -4,6 +4,7 @@ pragma solidity ^0.8.19;
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {RegistryAware} from "./base/RegistryAware.sol";
 
 /**
  * @title SecureSend
@@ -11,7 +12,7 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
  * @notice A secure escrow contract for facilitating transactions between buyers and sellers with an escrow agent
  * @dev Implements a voting-based escrow system with automatic resolution based on participant votes
  */
-contract SecureSend is ReentrancyGuard, Ownable {
+contract SecureSend is ReentrancyGuard, Ownable, RegistryAware {
     // solhint-disable-next-line gas-struct-packing
     struct Escrow {
         address buyer;
@@ -40,8 +41,8 @@ contract SecureSend is ReentrancyGuard, Ownable {
     /// @notice Mapping of escrow IDs to Escrow structs
     mapping(bytes32 => Escrow) public escrows;
     
-    /// @notice ERC20 token used for payments in the escrow system
-    IERC20 public paymentToken;
+    /// @notice Whether to use private token for this escrow
+    mapping(bytes32 => bool) public escrowUsePrivacy;
     
     /// @notice Address that receives escrow fees
     address public feeCollector;
@@ -112,14 +113,13 @@ contract SecureSend is ReentrancyGuard, Ownable {
 
     /**
      * @notice Initializes the SecureSend contract
-     * @param _paymentToken Address of the ERC20 token used for payments
+     * @param _registry Address of the OmniCoinRegistry contract
      * @param _feeCollector Address that will receive escrow fees
      */
     constructor(
-        address _paymentToken,
+        address _registry,
         address _feeCollector
-    ) Ownable(msg.sender) {
-        paymentToken = IERC20(_paymentToken);
+    ) Ownable(msg.sender) RegistryAware(_registry) {
         feeCollector = _feeCollector;
     }
 
@@ -129,13 +129,15 @@ contract SecureSend is ReentrancyGuard, Ownable {
      * @param _escrowAgent Address of the escrow agent
      * @param _amount Amount of tokens to lock in escrow
      * @param _expirationTime Timestamp when the escrow expires
+     * @param _usePrivacy Whether to use PrivateOmniCoin for this escrow
      * @return escrowId Unique identifier for the created escrow
      */
     function createEscrow(
         address _seller,
         address _escrowAgent,
         uint256 _amount,
-        uint256 _expirationTime
+        uint256 _expirationTime,
+        bool _usePrivacy
     ) external nonReentrant returns (bytes32 escrowId) {
         if (_seller == address(0)) revert InvalidSellerAddress();
         if (_escrowAgent == address(0)) revert InvalidEscrowAgentAddress();
@@ -167,8 +169,14 @@ contract SecureSend is ReentrancyGuard, Ownable {
         escrow.positiveVotes = 0;
         escrow.negativeVotes = 0;
 
+        // Store privacy preference
+        escrowUsePrivacy[escrowId] = _usePrivacy;
+        
         // Transfer tokens to escrow contract
-        if (!paymentToken.transferFrom(msg.sender, address(this), _amount))
+        address tokenContract = _usePrivacy ? 
+            _getContract(registry.PRIVATE_OMNICOIN()) : 
+            _getContract(registry.OMNICOIN());
+        if (!IERC20(tokenContract).transferFrom(msg.sender, address(this), _amount))
             revert TransferFailed();
 
         emit EscrowCreated(
@@ -314,9 +322,13 @@ contract SecureSend is ReentrancyGuard, Ownable {
         uint256 feeAmount = (escrow.amount * ESCROW_FEE_PERCENTAGE) / 10000;
         uint256 sellerAmount = escrow.amount - feeAmount;
 
-        if (!paymentToken.transfer(escrow.seller, sellerAmount))
+        address tokenContract = escrowUsePrivacy[_escrowId] ? 
+            _getContract(registry.PRIVATE_OMNICOIN()) : 
+            _getContract(registry.OMNICOIN());
+        
+        if (!IERC20(tokenContract).transfer(escrow.seller, sellerAmount))
             revert TransferFailed();
-        if (!paymentToken.transfer(feeCollector, feeAmount))
+        if (!IERC20(tokenContract).transfer(feeCollector, feeAmount))
             revert TransferFailed();
 
         emit EscrowReleased(_escrowId, msg.sender);
@@ -337,9 +349,13 @@ contract SecureSend is ReentrancyGuard, Ownable {
         uint256 feeAmount = (escrow.amount * ESCROW_FEE_PERCENTAGE) / 10000;
         uint256 buyerAmount = escrow.amount - feeAmount;
 
-        if (!paymentToken.transfer(escrow.buyer, buyerAmount))
+        address tokenContract = escrowUsePrivacy[_escrowId] ? 
+            _getContract(registry.PRIVATE_OMNICOIN()) : 
+            _getContract(registry.OMNICOIN());
+        
+        if (!IERC20(tokenContract).transfer(escrow.buyer, buyerAmount))
             revert TransferFailed();
-        if (!paymentToken.transfer(feeCollector, feeAmount))
+        if (!IERC20(tokenContract).transfer(feeCollector, feeAmount))
             revert TransferFailed();
 
         emit EscrowRefunded(_escrowId, msg.sender);

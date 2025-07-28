@@ -8,7 +8,7 @@
   - [ ] OmniCoin.sol - Standard ERC20 for public transactions
   - [ ] PrivateOmniCoin.sol - COTI PrivateERC20 for private transactions
   - [ ] OmniCoinPrivacyBridge.sol - Bridge between tokens
-- [ ] PrivacyFeeManagerV2 correctly handles both token types
+- [ ] PrivacyFeeManager correctly handles both token types
 - [ ] All tests pass (100% pass rate)
 - [ ] Security audit completed (if applicable)
 
@@ -60,7 +60,7 @@
 2. [ ] Deploy PrivateOmniCoin (pXOM)
    - [ ] Verify MPC mode disabled for testing
    - [ ] Verify decimals = 6
-3. [ ] Deploy PrivacyFeeManagerV2
+3. [ ] Deploy PrivacyFeeManager
    - [ ] Verify treasury address set
    - [ ] Verify fee structure initialized
 4. [ ] Deploy OmniCoinPrivacyBridge

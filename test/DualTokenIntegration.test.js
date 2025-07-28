@@ -28,8 +28,8 @@ describe("Dual Token Integration Tests", function () {
         privateOmniCoin = await PrivateOmniCoin.deploy(registry.address);
         await privateOmniCoin.deployed();
         
-        // 4. Deploy PrivacyFeeManagerV2
-        const FeeManager = await ethers.getContractFactory("PrivacyFeeManagerV2");
+        // 4. Deploy PrivacyFeeManager
+        const FeeManager = await ethers.getContractFactory("PrivacyFeeManager");
         feeManager = await FeeManager.deploy(
             omniCoin.address,
             privateOmniCoin.address,

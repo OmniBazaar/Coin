@@ -8,7 +8,7 @@ cp contracts/OmniCoinRegistry.sol temp-core/contracts/
 cp contracts/base/RegistryAware.sol temp-core/contracts/base/
 cp contracts/OmniCoin.sol temp-core/contracts/
 cp contracts/PrivateOmniCoin.sol temp-core/contracts/
-cp contracts/PrivacyFeeManagerV2.sol temp-core/contracts/
+cp contracts/PrivacyFeeManager.sol temp-core/contracts/
 cp contracts/OmniCoinPrivacyBridge.sol temp-core/contracts/
 cp -r coti-contracts temp-core/
 

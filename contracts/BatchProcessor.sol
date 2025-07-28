@@ -6,6 +6,10 @@ import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {RegistryAware} from "./base/RegistryAware.sol";
 import {PrivacyFeeManager} from "./PrivacyFeeManager.sol";
+import {OmniCoin} from "./OmniCoin.sol";
+import {PrivateOmniCoin} from "./PrivateOmniCoin.sol";
+import {OmniCoinPrivacyBridge} from "./OmniCoinPrivacyBridge.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
 /**
  * @title BatchProcessor
@@ -33,6 +37,8 @@ contract BatchProcessor is RegistryAware, AccessControl, Pausable, ReentrancyGua
         ESCROW_RELEASE,
         STAKE,
         UNSTAKE,
+        BRIDGE_TO_PRIVATE,
+        BRIDGE_TO_PUBLIC,
         CUSTOM
     }
     
@@ -379,6 +385,10 @@ contract BatchProcessor is RegistryAware, AccessControl, Pausable, ReentrancyGua
             return _executeMint(op);
         } else if (op.opType == OperationType.BURN) {
             return _executeBurn(op);
+        } else if (op.opType == OperationType.BRIDGE_TO_PRIVATE) {
+            return _executeBridgeToPrivate(op);
+        } else if (op.opType == OperationType.BRIDGE_TO_PUBLIC) {
+            return _executeBridgeToPublic(op);
         } else if (op.opType == OperationType.CUSTOM) {
             // Custom operation - direct call with gas limit
             (success, result) = op.target.call{
@@ -398,21 +408,45 @@ contract BatchProcessor is RegistryAware, AccessControl, Pausable, ReentrancyGua
      * @return result Return data from the transfer
      */
     function _executeTransfer(
-        BatchOperation memory /* op */
-    ) internal pure returns (bool success, bytes memory result) {
+        BatchOperation memory op
+    ) internal returns (bool success, bytes memory result) {
         // Decode transfer parameters
-        // (address to, uint256 amount) = abi.decode(op.data, (address, uint256));
+        (address token, address to, uint256 amount) = abi.decode(op.data, (address, address, uint256));
         
-        // OmniCoinCore token = OmniCoinCore(_getContract(registry.OMNICOIN_CORE()));
+        // Determine which token to use
+        address tokenAddress;
+        if (token == address(0)) {
+            // Default to public OmniCoin if no token specified
+            tokenAddress = _getContract(registry.OMNICOIN());
+        } else {
+            tokenAddress = token;
+        }
         
-        // try token.transferPublic(to, amount) returns (bool transferSuccess) {
-        //     return (transferSuccess, "");
-        // } catch Error(string memory reason) {
-        //     return (false, bytes(reason));
-        // } catch {
-        //     return (false, "Transfer failed");
-        // }
-        return (false, "Not implemented");
+        // Execute transfer based on privacy mode
+        if (op.usePrivacy) {
+            // Use PrivateOmniCoin for privacy transfers
+            address privateToken = _getContract(registry.PRIVATE_OMNICOIN());
+            if (tokenAddress != privateToken) {
+                return (false, "Privacy transfer requires PrivateOmniCoin");
+            }
+            
+            try PrivateOmniCoin(privateToken).transferPrivate(to, amount) returns (bool transferSuccess) {
+                return (transferSuccess, "");
+            } catch Error(string memory reason) {
+                return (false, bytes(reason));
+            } catch {
+                return (false, "Private transfer failed");
+            }
+        } else {
+            // Standard ERC20 transfer
+            try IERC20(tokenAddress).transferFrom(op.target, to, amount) returns (bool transferSuccess) {
+                return (transferSuccess, "");
+            } catch Error(string memory reason) {
+                return (false, bytes(reason));
+            } catch {
+                return (false, "Transfer failed");
+            }
+        }
     }
     
     /**
@@ -422,18 +456,39 @@ contract BatchProcessor is RegistryAware, AccessControl, Pausable, ReentrancyGua
      * @return result Return data from the mint
      */
     function _executeMint(
-        BatchOperation memory /* op */
-    ) internal view returns (bool success, bytes memory result) {
+        BatchOperation memory op
+    ) internal returns (bool success, bytes memory result) {
         // Only authorized minters can mint
         if (!hasRole(PROCESSOR_ROLE, msg.sender)) {
-            revert UnauthorizedValidator();
+            return (false, "Unauthorized minter");
         }
         
         // Decode mint parameters
-        // (address to, uint256 amount) = abi.decode(op.data, (address, uint256));
+        (address token, address to, uint256 amount) = abi.decode(op.data, (address, address, uint256));
         
-        // Minting would be implemented based on token contract
-        return (false, "Mint not implemented");
+        // Determine which token to mint
+        address tokenAddress;
+        if (token == address(0)) {
+            tokenAddress = _getContract(registry.OMNICOIN());
+        } else {
+            tokenAddress = token;
+        }
+        
+        // Check if minting private tokens
+        address privateToken = _getContract(registry.PRIVATE_OMNICOIN());
+        if (tokenAddress == privateToken) {
+            // Private token minting is restricted
+            return (false, "Private token minting not allowed through batch");
+        }
+        
+        // Execute mint on public token
+        try OmniCoin(tokenAddress).mint(to, amount) {
+            return (true, "");
+        } catch Error(string memory reason) {
+            return (false, bytes(reason));
+        } catch {
+            return (false, "Mint failed");
+        }
     }
     
     /**
@@ -443,13 +498,102 @@ contract BatchProcessor is RegistryAware, AccessControl, Pausable, ReentrancyGua
      * @return result Return data from the burn
      */
     function _executeBurn(
-        BatchOperation memory /* op */
-    ) internal pure returns (bool success, bytes memory result) {
+        BatchOperation memory op
+    ) internal returns (bool success, bytes memory result) {
         // Decode burn parameters
-        // (address from, uint256 amount) = abi.decode(op.data, (address, uint256));
+        (address token, uint256 amount) = abi.decode(op.data, (address, uint256));
         
-        // Burning would be implemented based on token contract
-        return (false, "Burn not implemented");
+        // Determine which token to burn
+        address tokenAddress;
+        if (token == address(0)) {
+            tokenAddress = _getContract(registry.OMNICOIN());
+        } else {
+            tokenAddress = token;
+        }
+        
+        // Execute burn based on token type
+        if (op.usePrivacy) {
+            // Burn private tokens
+            address privateToken = _getContract(registry.PRIVATE_OMNICOIN());
+            if (tokenAddress != privateToken) {
+                return (false, "Privacy burn requires PrivateOmniCoin");
+            }
+            
+            try PrivateOmniCoin(privateToken).burnPrivate(amount) {
+                return (true, "");
+            } catch Error(string memory reason) {
+                return (false, bytes(reason));
+            } catch {
+                return (false, "Private burn failed");
+            }
+        } else {
+            // Standard burn
+            try OmniCoin(tokenAddress).burnFrom(op.target, amount) {
+                return (true, "");
+            } catch Error(string memory reason) {
+                return (false, bytes(reason));
+            } catch {
+                return (false, "Burn failed");
+            }
+        }
+    }
+    
+    /**
+     * @notice Execute bridge to private operation
+     * @dev Bridges public OmniCoin to PrivateOmniCoin
+     * @param op The operation containing bridge details
+     * @return success Whether the bridge operation succeeded
+     * @return result Return data from the bridge
+     */
+    function _executeBridgeToPrivate(
+        BatchOperation memory op
+    ) internal returns (bool success, bytes memory result) {
+        // Decode bridge parameters
+        (uint256 amount) = abi.decode(op.data, (uint256));
+        
+        // Get bridge contract
+        address bridge = _getContract(registry.OMNICOIN_BRIDGE());
+        if (bridge == address(0)) {
+            return (false, "Bridge not configured");
+        }
+        
+        // Execute bridge operation
+        try OmniCoinPrivacyBridge(bridge).convertToPrivate(amount) returns (uint256 amountOut) {
+            return (true, abi.encode(amountOut));
+        } catch Error(string memory reason) {
+            return (false, bytes(reason));
+        } catch {
+            return (false, "Bridge to private failed");
+        }
+    }
+    
+    /**
+     * @notice Execute bridge to public operation
+     * @dev Bridges PrivateOmniCoin back to public OmniCoin
+     * @param op The operation containing bridge details
+     * @return success Whether the bridge operation succeeded
+     * @return result Return data from the bridge
+     */
+    function _executeBridgeToPublic(
+        BatchOperation memory op
+    ) internal returns (bool success, bytes memory result) {
+        // Decode bridge parameters
+        (uint256 amount) = abi.decode(op.data, (uint256));
+        
+        // Get bridge contract
+        address bridge = _getContract(registry.OMNICOIN_BRIDGE());
+        if (bridge == address(0)) {
+            return (false, "Bridge not configured");
+        }
+        
+        // Execute bridge operation
+        try OmniCoinPrivacyBridge(bridge).convertToPublic(amount) returns (uint256 amountOut) {
+            return (true, abi.encode(amountOut));
+        } catch Error(string memory reason) {
+            return (false, bytes(reason));
+        } catch {
+            return (false, "Bridge to public failed");
+        }
     }
     
     // =============================================================================

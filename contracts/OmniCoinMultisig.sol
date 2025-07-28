@@ -3,6 +3,7 @@ pragma solidity ^0.8.19;
 
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import {RegistryAware} from "./base/RegistryAware.sol";
 
 /**
  * @title OmniCoinMultisig
@@ -10,7 +11,7 @@ import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol
  * @notice Multi-signature wallet for secure transaction management
  * @dev Implements a multi-signature wallet with time-based signer activity tracking
  */
-contract OmniCoinMultisig is Ownable, ReentrancyGuard {
+contract OmniCoinMultisig is RegistryAware, Ownable, ReentrancyGuard {
     // =============================================================================
     // CUSTOM ERRORS
     // =============================================================================
@@ -137,9 +138,12 @@ contract OmniCoinMultisig is Ownable, ReentrancyGuard {
 
     /**
      * @notice Initialize the multisig contract
+     * @param _registry Registry contract address
      * @param initialOwner Initial owner address
      */
-    constructor(address initialOwner) Ownable(initialOwner) {
+    constructor(address _registry, address initialOwner) 
+        RegistryAware(_registry) 
+        Ownable(initialOwner) {
         minSignatures = 2;
         signerTimeout = 1 days;
     }
@@ -416,6 +420,6 @@ contract OmniCoinMultisig is Ownable, ReentrancyGuard {
     ) external view returns (bool) {
         // For now, return true for small amounts, false for large amounts requiring multisig
         // In a real implementation, this would check if a specific transaction has been approved
-        return amount < 1000 * 10 ** 18; // Amounts under 1000 tokens don't need multisig approval
+        return amount < 1000 * 10 ** 6; // Amounts under 1000 tokens (6 decimals) don't need multisig approval
     }
 }

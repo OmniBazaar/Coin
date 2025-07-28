@@ -7,10 +7,13 @@ import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
 import {MpcCore, gtBool, gtUint64, ctUint64, itUint64} from "../coti-contracts/contracts/utils/mpc/MpcCore.sol";
-import {OmniCoinCore} from "./OmniCoinCore.sol";
+import {OmniCoin} from "./OmniCoin.sol";
+import {PrivateOmniCoin} from "./PrivateOmniCoin.sol";
 import {OmniCoinAccount} from "./OmniCoinAccount.sol";
 import {OmniCoinStaking} from "./OmniCoinStaking.sol";
 import {PrivacyFeeManager} from "./PrivacyFeeManager.sol";
+import {RegistryAware} from "./base/RegistryAware.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
 /**
  * @title OmniCoinPayment
@@ -26,7 +29,7 @@ import {PrivacyFeeManager} from "./PrivacyFeeManager.sol";
  * - Payment streaming capabilities
  * - User choice for privacy on each operation
  */
-contract OmniCoinPayment is AccessControl, ReentrancyGuard, Pausable {
+contract OmniCoinPayment is RegistryAware, AccessControl, ReentrancyGuard, Pausable {
     
     // =============================================================================
     // CUSTOM ERRORS
@@ -110,8 +113,8 @@ contract OmniCoinPayment is AccessControl, ReentrancyGuard, Pausable {
     // STATE VARIABLES
     // =============================================================================
     
-    /// @notice Reference to the OmniCoin token contract
-    OmniCoinCore public token;
+    /// @notice Reference to the OmniCoin token contract (deprecated, use registry)
+    address public token;
     /// @notice Reference to the account management contract
     OmniCoinAccount public accountContract;
     /// @notice Reference to the staking contract
@@ -242,25 +245,27 @@ contract OmniCoinPayment is AccessControl, ReentrancyGuard, Pausable {
     
     /**
      * @notice Initializes the payment contract
-     * @param _token Address of the OmniCoin token contract
+     * @param _registry Registry contract address
+     * @param _token Address of the OmniCoin token contract (deprecated, use registry)
      * @param _accountContract Address of the account management contract
      * @param _stakingContract Address of the staking contract
      * @param _admin Address to grant admin role
      * @param _privacyFeeManager Address of the privacy fee manager
      */
     constructor(
+        address _registry,
         address _token,
         address _accountContract,
         address _stakingContract,
         address _admin,
         address _privacyFeeManager
-    ) {
+    ) RegistryAware(_registry) {
         if (_token == address(0)) revert InvalidReceiver();
         if (_accountContract == address(0)) revert InvalidReceiver();
         if (_stakingContract == address(0)) revert InvalidReceiver();
         if (_admin == address(0)) revert InvalidReceiver();
         
-        token = OmniCoinCore(_token);
+        token = _token;
         accountContract = OmniCoinAccount(_accountContract);
         stakingContract = OmniCoinStaking(_stakingContract);
         privacyFeeManager = _privacyFeeManager;
@@ -357,9 +362,14 @@ contract OmniCoinPayment is AccessControl, ReentrancyGuard, Pausable {
         userPayments[msg.sender].push(paymentId);
         userPayments[receiver].push(paymentId);
         
-        // Execute transfers using public methods
-        bool transferResult = token.transferFromPublic(msg.sender, receiver, amount);
-        if (!transferResult) revert TransferFailed();
+        // Execute transfers using public OmniCoin
+        address publicToken = _getContract(registry.OMNICOIN());
+        if (publicToken == address(0) && token != address(0)) {
+            publicToken = token; // Backwards compatibility
+        }
+        if (!IERC20(publicToken).transferFrom(msg.sender, receiver, amount)) {
+            revert TransferFailed();
+        }
         
         if (stakingEnabled && stakeAmount > 0) {
             // Handle staking
@@ -518,9 +528,14 @@ contract OmniCoinPayment is AccessControl, ReentrancyGuard, Pausable {
         userStreams[msg.sender].push(streamId);
         userStreams[receiver].push(streamId);
         
-        // Transfer total amount to contract using public method
-        bool transferResult = token.transferFromPublic(msg.sender, address(this), totalAmount);
-        if (!transferResult) revert TransferFailed();
+        // Transfer total amount to contract using public OmniCoin
+        address publicToken = _getContract(registry.OMNICOIN());
+        if (publicToken == address(0) && token != address(0)) {
+            publicToken = token; // Backwards compatibility
+        }
+        if (!IERC20(publicToken).transferFrom(msg.sender, address(this), totalAmount)) {
+            revert TransferFailed();
+        }
         
         emit PaymentStreamCreated(
             streamId,
@@ -591,10 +606,15 @@ contract OmniCoinPayment is AccessControl, ReentrancyGuard, Pausable {
         userStreams[msg.sender].push(streamId);
         userStreams[receiver].push(streamId);
         
-        // Transfer total amount to contract (including fee)
+        // Transfer total amount to contract using PrivateOmniCoin
+        address privateToken = _getContract(registry.PRIVATE_OMNICOIN());
+        if (privateToken == address(0)) revert InvalidReceiver();
+        
         gtUint64 totalWithFee = MpcCore.add(gtTotalAmount, fee);
-        gtBool transferResult = token.transferFrom(msg.sender, address(this), totalWithFee);
-        if (!MpcCore.decrypt(transferResult)) revert TransferFailed();
+        uint256 totalAmount = uint256(gtUint64.unwrap(totalWithFee));
+        if (!IERC20(privateToken).transferFrom(msg.sender, address(this), totalAmount)) {
+            revert TransferFailed();
+        }
         
         emit PaymentStreamCreated(streamId, msg.sender, receiver, startTime, endTime);
         
@@ -645,8 +665,15 @@ contract OmniCoinPayment is AccessControl, ReentrancyGuard, Pausable {
         
         // Transfer to receiver
         if (isMpcAvailable) {
-            gtBool transferResult = token.transferGarbled(stream.receiver, withdrawable);
-            if (!MpcCore.decrypt(transferResult)) revert TransferFailed();
+            address privateToken = _getContract(registry.PRIVATE_OMNICOIN());
+            if (privateToken != address(0)) {
+                uint256 withdrawableAmount = uint256(gtUint64.unwrap(withdrawable));
+                if (!IERC20(privateToken).transfer(stream.receiver, withdrawableAmount)) {
+                    revert TransferFailed();
+                }
+            } else {
+                revert InvalidReceiver();
+            }
         } else {
             // Fallback - assume transfer succeeds
         }
@@ -678,8 +705,15 @@ contract OmniCoinPayment is AccessControl, ReentrancyGuard, Pausable {
             
             gtBool hasRemaining = MpcCore.gt(remaining, MpcCore.setPublic64(0));
             if (MpcCore.decrypt(hasRemaining)) {
-                gtBool transferResult = token.transferGarbled(stream.sender, remaining);
-                if (!MpcCore.decrypt(transferResult)) revert TransferFailed();
+                address privateToken = _getContract(registry.PRIVATE_OMNICOIN());
+                if (privateToken != address(0)) {
+                    uint256 remainingAmount = uint256(gtUint64.unwrap(remaining));
+                    if (!IERC20(privateToken).transfer(stream.sender, remainingAmount)) {
+                        revert TransferFailed();
+                    }
+                } else {
+                    revert InvalidReceiver();
+                }
             }
         } else {
             uint64 total = uint64(gtUint64.unwrap(stream.totalAmount));
@@ -888,20 +922,38 @@ contract OmniCoinPayment is AccessControl, ReentrancyGuard, Pausable {
     ) internal {
         // Transfer from sender to receiver
         if (isMpcAvailable) {
-            // Transfer the gross amount from sender
-            gtBool transferFromResult = token.transferFrom(sender, address(this), totalAmount);
-            if (!MpcCore.decrypt(transferFromResult)) revert TransferFailed();
-            
-            // Transfer net amount to receiver
-            gtBool transferToResult = token.transferGarbled(receiver, netAmount);
-            if (!MpcCore.decrypt(transferToResult)) revert TransferFailed();
+            // Transfer using PrivateOmniCoin for privacy payments
+            address privateToken = _getContract(registry.PRIVATE_OMNICOIN());
+            if (privateToken != address(0)) {
+                uint256 totalAmountPlain = uint256(gtUint64.unwrap(totalAmount));
+                uint256 netAmountPlain = uint256(gtUint64.unwrap(netAmount));
+                
+                // Transfer the gross amount from sender
+                if (!IERC20(privateToken).transferFrom(sender, address(this), totalAmountPlain)) {
+                    revert TransferFailed();
+                }
+                
+                // Transfer net amount to receiver
+                if (!IERC20(privateToken).transfer(receiver, netAmountPlain)) {
+                    revert TransferFailed();
+                }
+            } else {
+                revert InvalidReceiver();
+            }
             
             // Transfer fee if applicable
             gtBool hasFee = MpcCore.gt(fee, MpcCore.setPublic64(0));
             if (MpcCore.decrypt(hasFee)) {
-                gtBool feeTransferResult = token.transferGarbled(
-                    token.treasuryContract(), 
-                    fee
+                address privateToken = _getContract(registry.PRIVATE_OMNICOIN());
+                address treasury = _getContract(registry.TREASURY());
+                if (privateToken != address(0) && treasury != address(0)) {
+                    uint256 feeAmount = uint256(gtUint64.unwrap(fee));
+                    if (!IERC20(privateToken).transfer(treasury, feeAmount)) {
+                        revert TransferFailed();
+                    }
+                } else {
+                    revert InvalidReceiver();
+                }
                 );
                 if (!MpcCore.decrypt(feeTransferResult)) revert TransferFailed();
             }

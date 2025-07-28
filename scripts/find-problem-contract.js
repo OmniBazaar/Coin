@@ -19,7 +19,7 @@ for (const contract of contracts) {
     fs.copyFileSync(`./contracts/${contract}`, `./temp-single/${contract}`);
     
     // Copy common dependencies
-    const deps = ['OmniCoinRegistry.sol', 'base/RegistryAware.sol', 'PrivacyFeeManagerV2.sol', 'OmniCoin.sol', 'PrivateOmniCoin.sol'];
+    const deps = ['OmniCoinRegistry.sol', 'base/RegistryAware.sol', 'PrivacyFeeManager.sol', 'OmniCoin.sol', 'PrivateOmniCoin.sol'];
     deps.forEach(dep => {
         const src = `./contracts/${dep}`;
         const dest = `./temp-single/${dep}`;

@@ -6,6 +6,11 @@ import {OwnableUpgradeable} from "@openzeppelin/contracts-upgradeable/access/Own
 import {ReentrancyGuardUpgradeable} from "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
 import {PausableUpgradeable} from "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol";
 import {OmniCoinCore} from "./OmniCoinCore.sol";
+import {OmniCoin} from "./OmniCoin.sol";
+import {PrivateOmniCoin} from "./PrivateOmniCoin.sol";
+import {OmniCoinPrivacyBridge} from "./OmniCoinPrivacyBridge.sol";
+import {RegistryAware} from "./base/RegistryAware.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
 /**
  * @title OmniBatchTransactions
@@ -15,6 +20,7 @@ import {OmniCoinCore} from "./OmniCoinCore.sol";
  */
 contract OmniBatchTransactions is
     Initializable,
+    RegistryAware,
     OwnableUpgradeable,
     ReentrancyGuardUpgradeable,
     PausableUpgradeable
@@ -41,6 +47,7 @@ contract OmniBatchTransactions is
         address target;          // 20 bytes
         TransactionType opType;  // 1 byte
         bool critical;           // 1 byte - If true, failure stops batch execution
+        bool usePrivacy;         // 1 byte - Whether to use PrivateOmniCoin
         uint88 gasLimit;         // 11 bytes - Gas limit for this operation
         uint256 value;           // 32 bytes
         bytes data;              // dynamic
@@ -184,14 +191,22 @@ contract OmniBatchTransactions is
     /**
      * @notice Initialize the batch transaction contract
      * @dev Called once during deployment
-     * @param _omniCoin Address of the OmniCoin core contract
+     * @param _registry Address of the registry contract
+     * @param _omniCoin Address of the OmniCoin core contract (deprecated, use registry)
      */
-    function initialize(address _omniCoin) public initializer {
+    function initialize(address _registry, address _omniCoin) public initializer {
         __Ownable_init(msg.sender);
         __ReentrancyGuard_init();
         __Pausable_init();
+        
+        // Initialize registry
+        _initializeRegistry(_registry);
 
-        omniCoin = OmniCoinCore(_omniCoin);
+        // For backwards compatibility
+        if (_omniCoin != address(0)) {
+            omniCoin = OmniCoinCore(_omniCoin);
+        }
+        
         maxBatchSize = 50; // Maximum 50 operations per batch
         maxGasPerOperation = 500000; // 500k gas per operation max
         batchCounter = 0;
@@ -320,6 +335,12 @@ contract OmniBatchTransactions is
             return _executeTransfer(operation);
         } else if (operation.opType == TransactionType.APPROVE) {
             return _executeApprove(operation);
+        } else if (operation.opType == TransactionType.BRIDGE_TRANSFER) {
+            return _executeBridgeTransfer(operation);
+        } else if (operation.opType == TransactionType.PRIVACY_DEPOSIT) {
+            return _executePrivacyDeposit(operation);
+        } else if (operation.opType == TransactionType.PRIVACY_WITHDRAW) {
+            return _executePrivacyWithdraw(operation);
         } else if (operation.opType == TransactionType.STAKE) {
             return _executeStake(operation);
         } else if (operation.opType == TransactionType.UNSTAKE) {
@@ -336,7 +357,7 @@ contract OmniBatchTransactions is
 
     /**
      * @notice Execute token transfer
-     * @dev Decodes transfer parameters and executes via OmniCoin
+     * @dev Decodes transfer parameters and executes via appropriate token
      * @param operation The transfer operation
      * @return Encoded success boolean
      */
@@ -347,13 +368,30 @@ contract OmniBatchTransactions is
             operation.data,
             (address, uint256)
         );
-        if (!omniCoin.transferPublic(recipient, amount)) revert TransferFailed();
+        
+        if (operation.usePrivacy) {
+            // Use PrivateOmniCoin
+            address privateToken = _getContract(registry.PRIVATE_OMNICOIN());
+            if (!IERC20(privateToken).transfer(recipient, amount)) revert TransferFailed();
+        } else {
+            // Use OmniCoin
+            address publicToken = _getContract(registry.OMNICOIN());
+            if (publicToken != address(0)) {
+                if (!IERC20(publicToken).transfer(recipient, amount)) revert TransferFailed();
+            } else if (address(omniCoin) != address(0)) {
+                // Fallback to legacy OmniCoinCore
+                if (!omniCoin.transferPublic(recipient, amount)) revert TransferFailed();
+            } else {
+                revert TransferFailed();
+            }
+        }
+        
         return abi.encode(true);
     }
 
     /**
      * @notice Execute token approval
-     * @dev Decodes approval parameters and executes via OmniCoin
+     * @dev Decodes approval parameters and executes via appropriate token
      * @param operation The approval operation
      * @return Encoded success boolean
      */
@@ -364,7 +402,24 @@ contract OmniBatchTransactions is
             operation.data,
             (address, uint256)
         );
-        if (!omniCoin.approvePublic(spender, amount)) revert ApprovalFailed();
+        
+        if (operation.usePrivacy) {
+            // Use PrivateOmniCoin
+            address privateToken = _getContract(registry.PRIVATE_OMNICOIN());
+            if (!IERC20(privateToken).approve(spender, amount)) revert ApprovalFailed();
+        } else {
+            // Use OmniCoin
+            address publicToken = _getContract(registry.OMNICOIN());
+            if (publicToken != address(0)) {
+                if (!IERC20(publicToken).approve(spender, amount)) revert ApprovalFailed();
+            } else if (address(omniCoin) != address(0)) {
+                // Fallback to legacy OmniCoinCore
+                if (!omniCoin.approvePublic(spender, amount)) revert ApprovalFailed();
+            } else {
+                revert ApprovalFailed();
+            }
+        }
+        
         return abi.encode(true);
     }
 
@@ -391,6 +446,65 @@ contract OmniBatchTransactions is
         // Unstaking functionality would be in OmniCoinStaking contract
         revert UnstakeOperationsNotSupported();
     }
+    
+    /**
+     * @notice Execute bridge transfer between OmniCoin and PrivateOmniCoin
+     * @dev Executes conversion via OmniCoinPrivacyBridge
+     * @param operation The bridge operation
+     * @return Encoded amount output
+     */
+    function _executeBridgeTransfer(
+        BatchOperation calldata operation
+    ) internal returns (bytes memory) {
+        (uint256 amount, bool toPrivate) = abi.decode(
+            operation.data,
+            (uint256, bool)
+        );
+        
+        address bridge = _getContract(registry.OMNICOIN_BRIDGE());
+        if (bridge == address(0)) revert OperationFailed();
+        
+        uint256 amountOut;
+        if (toPrivate) {
+            amountOut = OmniCoinPrivacyBridge(bridge).convertToPrivate(amount);
+        } else {
+            amountOut = OmniCoinPrivacyBridge(bridge).convertToPublic(amount);
+        }
+        
+        return abi.encode(amountOut);
+    }
+    
+    /**
+     * @notice Execute privacy deposit (convert to private tokens)
+     * @dev Convenience wrapper for bridge operation
+     * @param operation The deposit operation
+     * @return Encoded amount output
+     */
+    function _executePrivacyDeposit(
+        BatchOperation calldata operation
+    ) internal returns (bytes memory) {
+        uint256 amount = abi.decode(operation.data, (uint256));
+        
+        // Create bridge operation data
+        operation.data = abi.encode(amount, true); // true = convert to private
+        return _executeBridgeTransfer(operation);
+    }
+    
+    /**
+     * @notice Execute privacy withdraw (convert to public tokens)
+     * @dev Convenience wrapper for bridge operation
+     * @param operation The withdraw operation
+     * @return Encoded amount output
+     */
+    function _executePrivacyWithdraw(
+        BatchOperation calldata operation
+    ) internal returns (bytes memory) {
+        uint256 amount = abi.decode(operation.data, (uint256));
+        
+        // Create bridge operation data
+        operation.data = abi.encode(amount, false); // false = convert to public
+        return _executeBridgeTransfer(operation);
+    }
 
     /**
      * @notice Create optimized batch for common wallet operations
@@ -411,10 +525,11 @@ contract OmniBatchTransactions is
         for (uint256 i = 0; i < recipients.length; ++i) {
             operations[i] = BatchOperation({
                 opType: TransactionType.TRANSFER,
-                target: address(omniCoin),
+                target: address(0), // Will be determined by usePrivacy flag
                 data: abi.encode(recipients[i], amounts[i]),
                 value: 0,
                 critical: false,
+                usePrivacy: false, // Default to public transfers
                 gasLimit: uint88(maxGasPerOperation)
             });
         }
@@ -449,6 +564,7 @@ contract OmniBatchTransactions is
                 ),
                 value: 0,
                 critical: false,
+                usePrivacy: false, // NFTs don't use privacy flag
                 gasLimit: uint88(maxGasPerOperation)
             });
         }

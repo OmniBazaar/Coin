@@ -8,6 +8,9 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {MpcCore, gtBool, gtUint64, ctBool, ctUint64} from "../coti-contracts/contracts/utils/mpc/MpcCore.sol";
+import {RegistryAware} from "./base/RegistryAware.sol";
+import {OmniCoin} from "./OmniCoin.sol";
+import {PrivateOmniCoin} from "./PrivateOmniCoin.sol";
 
 /**
  * @title FeeDistribution
@@ -27,7 +30,7 @@ import {MpcCore, gtBool, gtUint64, ctBool, ctUint64} from "../coti-contracts/con
  * - Multiple fee source support
  * - Transparent distribution history
  */
-contract FeeDistribution is ReentrancyGuard, Pausable, AccessControl {
+contract FeeDistribution is RegistryAware, ReentrancyGuard, Pausable, AccessControl {
     using SafeERC20 for IERC20;
     using Math for uint256;
 
@@ -322,15 +325,17 @@ contract FeeDistribution is ReentrancyGuard, Pausable, AccessControl {
 
     /**
      * @notice Initialize the fee distribution contract
+     * @param registry_ Address of the registry contract
      * @param feeToken_ Address of the primary fee token (XOM)
      * @param companyTreasury_ Address to receive company fees
      * @param developmentFund_ Address to receive development fees
      */
     constructor(
+        address registry_,
         address feeToken_,
         address companyTreasury_,
         address developmentFund_
-    ) {
+    ) RegistryAware(registry_) {
         if (feeToken_ == address(0)) revert InvalidToken();
         if (companyTreasury_ == address(0)) revert InvalidAddress();
         if (developmentFund_ == address(0)) revert InvalidAddress();
@@ -1351,5 +1356,62 @@ contract FeeDistribution is ReentrancyGuard, Pausable, AccessControl {
      */
     function getVersion() external pure returns (string memory) {
         return "FeeDistribution v2.0.0 - COTI V2 Privacy Integration";
+    }
+    
+    // =============================================================================
+    // DUAL-TOKEN SUPPORT
+    // =============================================================================
+    
+    /**
+     * @notice Check if a token is part of the OmniCoin dual-token system
+     * @dev Returns true for OmniCoin or PrivateOmniCoin addresses
+     * @param token The token address to check
+     * @return isOmniToken Whether the token is OmniCoin or PrivateOmniCoin
+     */
+    function isOmniCoinToken(address token) public view returns (bool isOmniToken) {
+        address omniCoin = _getContract(registry.OMNICOIN());
+        address privateOmniCoin = _getContract(registry.PRIVATE_OMNICOIN());
+        return token == omniCoin || token == privateOmniCoin;
+    }
+    
+    /**
+     * @notice Collect fees from dual-token system
+     * @dev Handles both OmniCoin and PrivateOmniCoin fee collection
+     * @param amount Amount of fees to collect
+     * @param source Source category of the fees
+     * @param usePrivateToken Whether to collect in PrivateOmniCoin
+     */
+    function collectDualTokenFees(
+        uint256 amount,
+        FeeSource source,
+        bool usePrivateToken
+    ) external onlyRole(COLLECTOR_ROLE) {
+        address token;
+        if (usePrivateToken) {
+            token = _getContract(registry.PRIVATE_OMNICOIN());
+            if (token == address(0)) revert InvalidToken();
+        } else {
+            token = _getContract(registry.OMNICOIN());
+            if (token == address(0)) {
+                // Fallback to FEE_TOKEN if registry not configured
+                token = address(FEE_TOKEN);
+            }
+        }
+        
+        // Use existing collectFees function
+        collectFees(token, amount, source);
+    }
+    
+    /**
+     * @notice Get the primary fee token from registry
+     * @dev Uses registry if available, otherwise returns FEE_TOKEN
+     * @return token Address of the primary fee token
+     */
+    function getPrimaryFeeToken() public view returns (address token) {
+        token = _getContract(registry.OMNICOIN());
+        if (token == address(0)) {
+            token = address(FEE_TOKEN);
+        }
+        return token;
     }
 }

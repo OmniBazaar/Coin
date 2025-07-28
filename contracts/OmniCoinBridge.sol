@@ -6,6 +6,9 @@ import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {MpcCore, gtBool, gtUint64, ctUint64, itUint64} from "../coti-contracts/contracts/utils/mpc/MpcCore.sol";
 import {PrivacyFeeManager} from "./PrivacyFeeManager.sol";
+import {RegistryAware} from "./base/RegistryAware.sol";
+import {OmniCoin} from "./OmniCoin.sol";
+import {PrivateOmniCoin} from "./PrivateOmniCoin.sol";
 
 /**
  * @title OmniCoinBridge
@@ -13,7 +16,7 @@ import {PrivacyFeeManager} from "./PrivacyFeeManager.sol";
  * @notice Cross-chain bridge for OmniCoin with privacy features
  * @dev Enables transfers between COTI V2 and other chains with MPC privacy
  */
-contract OmniCoinBridge is Ownable, ReentrancyGuard {
+contract OmniCoinBridge is RegistryAware, Ownable, ReentrancyGuard {
     // =============================================================================
     // STRUCTS
     // =============================================================================
@@ -58,8 +61,10 @@ contract OmniCoinBridge is Ownable, ReentrancyGuard {
     // STATE VARIABLES
     // =============================================================================
     
-    /// @notice OmniCoin token contract
+    /// @notice OmniCoin token contract (deprecated, use registry)
     IERC20 public token;
+    /// @notice Whether to use private token for this transfer
+    mapping(uint256 => bool) public transferUsePrivacy;
     /// @notice Privacy fee manager contract address
     address public privacyFeeManager;
     /// @notice MPC availability flag for COTI network
@@ -191,15 +196,17 @@ contract OmniCoinBridge is Ownable, ReentrancyGuard {
 
     /**
      * @notice Initialize the OmniCoinBridge contract
-     * @param _token OmniCoin token address
+     * @param _registry Registry contract address
+     * @param _token OmniCoin token address (deprecated, use registry)
      * @param initialOwner Initial owner address
      * @param _privacyFeeManager Privacy fee manager address
      */
     constructor(
+        address _registry,
         address _token, 
         address initialOwner,
         address _privacyFeeManager
-    ) Ownable(initialOwner) {
+    ) RegistryAware(_registry) Ownable(initialOwner) {
         token = IERC20(_token);
         privacyFeeManager = _privacyFeeManager;
         minTransferAmount = 100 * 10 ** 6; // 100 tokens
@@ -296,8 +303,19 @@ contract OmniCoinBridge is Ownable, ReentrancyGuard {
             encryptedFee: ctUint64.wrap(0)
         });
 
-        if (!token.transferFrom(msg.sender, address(this), _amount + fee)) {
-            revert TransferFailed();
+        // Transfer tokens from sender (use public OmniCoin for standard bridge)
+        address publicToken = _getContract(registry.OMNICOIN());
+        if (publicToken != address(0)) {
+            if (!IERC20(publicToken).transferFrom(msg.sender, address(this), _amount + fee)) {
+                revert TransferFailed();
+            }
+        } else if (address(token) != address(0)) {
+            // Backwards compatibility
+            if (!token.transferFrom(msg.sender, address(this), _amount + fee)) {
+                revert TransferFailed();
+            }
+        } else {
+            revert InvalidToken();
         }
 
         emit TransferInitiated(
@@ -387,9 +405,23 @@ contract OmniCoinBridge is Ownable, ReentrancyGuard {
             encryptedFee: encryptedFee
         });
         
-        // Note: Actual token transfer would use OmniCoinCore's private transfer
-        // Total amount calculation: MpcCore.add(gtAmount, gtBridgeFee)
-        // For now, emit event with transfer ID
+        // Transfer tokens using PrivateOmniCoin
+        address privateToken = _getContract(registry.PRIVATE_OMNICOIN());
+        if (privateToken != address(0)) {
+            // Calculate total amount needed (amount + fee)
+            gtUint64 gtTotal = MpcCore.add(gtAmount, gtBridgeFee);
+            uint256 totalAmount = uint64(gtUint64.unwrap(gtTotal));
+            
+            // Transfer from sender to bridge
+            if (!IERC20(privateToken).transferFrom(msg.sender, address(this), totalAmount)) {
+                revert TransferFailed();
+            }
+            
+            // Mark transfer as using privacy
+            transferUsePrivacy[transferId] = true;
+        } else {
+            revert InvalidToken();
+        }
         
         emit TransferInitiated(
             transferId,
@@ -443,8 +475,33 @@ contract OmniCoinBridge is Ownable, ReentrancyGuard {
         transfer.completed = true;
         processedMessages[messageHash] = true;
 
-        if (!token.transfer(transfer.recipient, transfer.amount)) {
-            revert TransferFailed();
+        // Transfer to recipient using appropriate token
+        if (transferUsePrivacy[_transferId]) {
+            // Use PrivateOmniCoin for privacy transfers
+            address privateToken = _getContract(registry.PRIVATE_OMNICOIN());
+            if (privateToken != address(0)) {
+                uint256 amount = ctUint64.unwrap(transfer.encryptedAmount);
+                if (!IERC20(privateToken).transfer(transfer.recipient, amount)) {
+                    revert TransferFailed();
+                }
+            } else {
+                revert InvalidToken();
+            }
+        } else {
+            // Use OmniCoin for standard transfers
+            address publicToken = _getContract(registry.OMNICOIN());
+            if (publicToken != address(0)) {
+                if (!IERC20(publicToken).transfer(transfer.recipient, transfer.amount)) {
+                    revert TransferFailed();
+                }
+            } else if (address(token) != address(0)) {
+                // Backwards compatibility
+                if (!token.transfer(transfer.recipient, transfer.amount)) {
+                    revert TransferFailed();
+                }
+            } else {
+                revert InvalidToken();
+            }
         }
 
         emit TransferCompleted(
@@ -471,7 +528,35 @@ contract OmniCoinBridge is Ownable, ReentrancyGuard {
 
         transfer.refunded = true;
 
-        if (!token.transfer(transfer.sender, transfer.amount + transfer.fee)) revert TransferFailed();
+        // Refund using appropriate token
+        if (transferUsePrivacy[_transferId]) {
+            // Use PrivateOmniCoin for privacy transfers
+            address privateToken = _getContract(registry.PRIVATE_OMNICOIN());
+            if (privateToken != address(0)) {
+                uint256 amount = ctUint64.unwrap(transfer.encryptedAmount);
+                uint256 fee = ctUint64.unwrap(transfer.encryptedFee);
+                if (!IERC20(privateToken).transfer(transfer.sender, amount + fee)) {
+                    revert TransferFailed();
+                }
+            } else {
+                revert InvalidToken();
+            }
+        } else {
+            // Use OmniCoin for standard transfers
+            address publicToken = _getContract(registry.OMNICOIN());
+            if (publicToken != address(0)) {
+                if (!IERC20(publicToken).transfer(transfer.sender, transfer.amount + transfer.fee)) {
+                    revert TransferFailed();
+                }
+            } else if (address(token) != address(0)) {
+                // Backwards compatibility
+                if (!token.transfer(transfer.sender, transfer.amount + transfer.fee)) {
+                    revert TransferFailed();
+                }
+            } else {
+                revert InvalidToken();
+            }
+        }
 
         emit TransferRefunded(
             _transferId,

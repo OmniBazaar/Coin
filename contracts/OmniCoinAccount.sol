@@ -7,6 +7,9 @@ import {ReentrancyGuardUpgradeable} from "@openzeppelin/contracts-upgradeable/ut
 import {ECDSA} from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 import {MessageHashUtils} from "@openzeppelin/contracts/utils/cryptography/MessageHashUtils.sol";
 import {OmniCoin} from "./OmniCoin.sol";
+import {PrivateOmniCoin} from "./PrivateOmniCoin.sol";
+import {RegistryAware} from "./base/RegistryAware.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
 /**
  * @title OmniCoinAccount
@@ -16,6 +19,7 @@ import {OmniCoin} from "./OmniCoin.sol";
  */
 contract OmniCoinAccount is
     Initializable,
+    RegistryAware,
     OwnableUpgradeable,
     ReentrancyGuardUpgradeable
 {
@@ -76,8 +80,11 @@ contract OmniCoinAccount is
     /// @notice Privacy mode status for accounts
     mapping(address => bool) public privacyEnabled;
     
-    /// @notice Staking amounts per account
+    /// @notice Staking amounts per account (public OmniCoin)
     mapping(address => uint256) public stakingAmount;
+    
+    /// @notice Private staking amounts per account (PrivateOmniCoin)
+    mapping(address => uint256) public privateStakingAmount;
     
     /// @notice Reputation scores per account
     mapping(address => uint256) public reputationScore;
@@ -159,17 +166,28 @@ contract OmniCoinAccount is
     /**
      * @notice Initialize the account contract
      * @dev Called once during deployment
+     * @param _registry Registry contract address
      * @param _entryPoint Entry point contract address
-     * @param _omniCoin OmniCoin token contract address
+     * @param _omniCoin OmniCoin token contract address (deprecated, use registry)
      */
     function initialize(
+        address _registry,
         address _entryPoint,
         address _omniCoin
     ) public initializer {
         __Ownable_init(msg.sender);
         __ReentrancyGuard_init();
+        
+        // Initialize registry
+        _initializeRegistry(_registry);
+        
         entryPoint = _entryPoint;
-        omniCoin = OmniCoin(_omniCoin);
+        
+        // For backwards compatibility
+        if (_omniCoin != address(0)) {
+            omniCoin = OmniCoin(_omniCoin);
+        }
+        
         entryPointGasLimit = 1000000; // Default gas limit
     }
 
@@ -251,15 +269,34 @@ contract OmniCoinAccount is
      * @notice Update staking amount for an account
      * @dev Handles both increasing and decreasing stake amounts
      * @param amount New staking amount to set
+     * @param usePrivacy Whether to use PrivateOmniCoin for staking
      */
-    function updateStaking(uint256 amount) external nonReentrant {
-        uint256 currentStake = stakingAmount[msg.sender];
+    function updateStaking(uint256 amount, bool usePrivacy) external nonReentrant {
+        address token;
+        uint256 currentStake;
+        
+        if (usePrivacy) {
+            token = _getContract(registry.PRIVATE_OMNICOIN());
+            currentStake = privateStakingAmount[msg.sender];
+        } else {
+            token = _getContract(registry.OMNICOIN());
+            if (token == address(0) && address(omniCoin) != address(0)) {
+                token = address(omniCoin); // Backwards compatibility
+            }
+            currentStake = stakingAmount[msg.sender];
+        }
+        
+        if (token == address(0)) revert InvalidAddress();
         
         if (amount > currentStake) {
             uint256 additionalStake = amount - currentStake;
             // Update state before transfer to prevent reentrancy
-            stakingAmount[msg.sender] = amount;
-            if (!omniCoin.transferFrom(
+            if (usePrivacy) {
+                privateStakingAmount[msg.sender] = amount;
+            } else {
+                stakingAmount[msg.sender] = amount;
+            }
+            if (!IERC20(token).transferFrom(
                     msg.sender,
                     address(this),
                     additionalStake
@@ -267,12 +304,20 @@ contract OmniCoinAccount is
         } else if (amount < currentStake) {
             uint256 returnStake = currentStake - amount;
             // Update state before transfer to prevent reentrancy
-            stakingAmount[msg.sender] = amount;
-            if (!omniCoin.transfer(msg.sender, returnStake))
+            if (usePrivacy) {
+                privateStakingAmount[msg.sender] = amount;
+            } else {
+                stakingAmount[msg.sender] = amount;
+            }
+            if (!IERC20(token).transfer(msg.sender, returnStake))
                 revert TransferFailed();
         } else {
             // No change in stake amount
-            stakingAmount[msg.sender] = amount;
+            if (usePrivacy) {
+                privateStakingAmount[msg.sender] = amount;
+            } else {
+                stakingAmount[msg.sender] = amount;
+            }
         }
         
         emit StakingUpdated(msg.sender, amount);
@@ -318,7 +363,8 @@ contract OmniCoinAccount is
      * @return nonce Current nonce for the account
      * @return init Initialization code for the account
      * @return privacy Whether privacy mode is enabled
-     * @return stake Current staking amount
+     * @return stake Current staking amount (public)
+     * @return privateStake Current staking amount (private)
      * @return reputation Current reputation score
      */
     function getAccountStatus(
@@ -332,6 +378,7 @@ contract OmniCoinAccount is
             bytes memory init,
             bool privacy,
             uint256 stake,
+            uint256 privateStake,
             uint256 reputation
         )
     {
@@ -341,6 +388,7 @@ contract OmniCoinAccount is
             initCode[_account],
             privacyEnabled[_account],
             stakingAmount[_account],
+            privateStakingAmount[_account],
             reputationScore[_account]
         );
     }

@@ -4,6 +4,7 @@ pragma solidity ^0.8.20;
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {RegistryAware} from "./base/RegistryAware.sol";
 
 /**
  * @title OmniCoinValidator
@@ -11,7 +12,7 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
  * @notice Validator management contract for OmniCoin network
  * @dev Manages validator registration, staking, and rewards
  */
-contract OmniCoinValidator is Ownable, ReentrancyGuard {
+contract OmniCoinValidator is Ownable, ReentrancyGuard, RegistryAware {
     struct Validator {
         address account;
         bool isActive;
@@ -19,6 +20,7 @@ contract OmniCoinValidator is Ownable, ReentrancyGuard {
         uint256 reputation;
         uint256 lastRewardTime;
         uint256 accumulatedRewards;
+        bool usePrivacy;  // Whether using PrivateOmniCoin
     }
 
     struct ValidatorSet {
@@ -28,8 +30,6 @@ contract OmniCoinValidator is Ownable, ReentrancyGuard {
         uint256 maxValidators;
     }
 
-    /// @notice OmniCoin token contract
-    IERC20 public token;
     /// @notice Reward rate per period
     uint256 public rewardRate;
     /// @notice Reward calculation period
@@ -122,14 +122,16 @@ contract OmniCoinValidator is Ownable, ReentrancyGuard {
 
     /**
      * @notice Initializes the validator contract
-     * @param _token Address of the OmniCoin token contract
+     * @param _registry Address of the registry contract
      * @param initialOwner Address of the initial contract owner
      */
-    constructor(address _token, address initialOwner) Ownable(initialOwner) {
-        token = IERC20(_token);
+    constructor(address _registry, address initialOwner) 
+        Ownable(initialOwner) 
+        RegistryAware(_registry) 
+    {
         rewardRate = 100; // 1% per period
         rewardPeriod = 1 days;
-        minStake = 1000 * 10 ** 18; // 1000 tokens
+        minStake = 1000 * 10 ** 6; // 1000 tokens (6 decimals)
         maxValidators = 100;
 
         activeSet.minStake = minStake;
@@ -137,12 +139,29 @@ contract OmniCoinValidator is Ownable, ReentrancyGuard {
     }
 
     /**
+     * @notice Get token contract based on privacy preference
+     * @dev Helper to get appropriate token contract
+     * @param usePrivacy Whether to use private token
+     * @return Token contract address
+     */
+    function _getTokenContract(bool usePrivacy) internal view returns (address) {
+        if (usePrivacy) {
+            return _getContract(registry.PRIVATE_OMNICOIN());
+        } else {
+            return _getContract(registry.OMNICOIN());
+        }
+    }
+    
+    /**
      * @notice Registers the caller as a validator
      * @dev Requires the caller to have at least minStake tokens
+     * @param usePrivacy Whether to use PrivateOmniCoin for staking
      */
-    function registerValidator() external nonReentrant {
+    function registerValidator(bool usePrivacy) external nonReentrant {
         if (validators[msg.sender].isActive) revert AlreadyRegistered();
-        if (token.balanceOf(msg.sender) < minStake) revert InsufficientBalance();
+        
+        address tokenContract = _getTokenContract(usePrivacy);
+        if (IERC20(tokenContract).balanceOf(msg.sender) < minStake) revert InsufficientBalance();
 
         validators[msg.sender] = Validator({
             account: msg.sender,
@@ -150,7 +169,8 @@ contract OmniCoinValidator is Ownable, ReentrancyGuard {
             reputation: 0,
             lastRewardTime: block.timestamp, // solhint-disable-line not-rely-on-time
             accumulatedRewards: 0,
-            isActive: true
+            isActive: true,
+            usePrivacy: usePrivacy
         });
 
         emit ValidatorRegistered(msg.sender, 0);
@@ -179,7 +199,9 @@ contract OmniCoinValidator is Ownable, ReentrancyGuard {
         Validator storage validator = validators[msg.sender];
         if (!validator.isActive) revert NotActiveValidator();
         if (amount == 0) revert InvalidAmount();
-        if (token.balanceOf(msg.sender) < amount) revert InsufficientBalance();
+        
+        address tokenContract = _getTokenContract(validator.usePrivacy);
+        if (IERC20(tokenContract).balanceOf(msg.sender) < amount) revert InsufficientBalance();
 
         // Claim pending rewards
         uint256 pendingRewards = calculateRewards(msg.sender);
@@ -199,7 +221,7 @@ contract OmniCoinValidator is Ownable, ReentrancyGuard {
             activeSet.validators.push(msg.sender);
         }
 
-        if (!token.transferFrom(msg.sender, address(this), amount)) 
+        if (!IERC20(tokenContract).transferFrom(msg.sender, address(this), amount)) 
             revert TransferFailed();
 
         emit ValidatorStaked(msg.sender, amount);
@@ -231,7 +253,8 @@ contract OmniCoinValidator is Ownable, ReentrancyGuard {
             removeFromActiveSet(msg.sender);
         }
 
-        if (!token.transfer(msg.sender, amount)) revert TransferFailed();
+        address tokenContract = _getTokenContract(validator.usePrivacy);
+        if (!IERC20(tokenContract).transfer(msg.sender, amount)) revert TransferFailed();
 
         emit ValidatorUnstaked(msg.sender, amount);
     }
@@ -251,7 +274,8 @@ contract OmniCoinValidator is Ownable, ReentrancyGuard {
         validator.accumulatedRewards = 0;
         validator.lastRewardTime = block.timestamp; // solhint-disable-line not-rely-on-time
 
-        if (!token.transfer(msg.sender, totalRewards)) revert RewardTransferFailed();
+        address tokenContract = _getTokenContract(validator.usePrivacy);
+        if (!IERC20(tokenContract).transfer(msg.sender, totalRewards)) revert RewardTransferFailed();
 
         emit RewardsClaimed(msg.sender, totalRewards);
     }
@@ -324,6 +348,7 @@ contract OmniCoinValidator is Ownable, ReentrancyGuard {
      * @return lastRewardTime The last time rewards were calculated
      * @return accumulatedRewards The unclaimed reward amount
      * @return isActive Whether the validator is active
+     * @return usePrivacy Whether the validator uses PrivateOmniCoin
      */
     function getValidator(
         address account
@@ -336,7 +361,8 @@ contract OmniCoinValidator is Ownable, ReentrancyGuard {
             uint256 reputation,
             uint256 lastRewardTime,
             uint256 accumulatedRewards,
-            bool isActive
+            bool isActive,
+            bool usePrivacy
         )
     {
         Validator storage v = validators[account];
@@ -346,7 +372,8 @@ contract OmniCoinValidator is Ownable, ReentrancyGuard {
             v.reputation,
             v.lastRewardTime,
             v.accumulatedRewards,
-            v.isActive
+            v.isActive,
+            v.usePrivacy
         );
     }
 
