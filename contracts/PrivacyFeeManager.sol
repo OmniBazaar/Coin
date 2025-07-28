@@ -9,6 +9,8 @@ import {OmniCoin} from "./OmniCoin.sol";
 
 /**
  * @title PrivacyFeeManager
+ * @author OmniCoin Development Team
+ * @notice Manages privacy fees for OmniCoin transactions
  * @dev Manages privacy fees for OmniCoin transactions
  * 
  * Key Features:
@@ -27,11 +29,18 @@ contract PrivacyFeeManager is AccessControl, ReentrancyGuard, Pausable {
     // CONSTANTS & ROLES
     // =============================================================================
     
+    /// @notice Fee manager role identifier
     bytes32 public constant FEE_MANAGER_ROLE = keccak256("FEE_MANAGER_ROLE");
+    /// @notice Treasury role identifier
     bytes32 public constant TREASURY_ROLE = keccak256("TREASURY_ROLE");
     
+    /// @notice Basis points for percentage calculations
     uint256 public constant BASIS_POINTS = 10000;
-    uint256 public constant MIN_COTI_RESERVE = 1000 * 10**18; // 1000 COTI minimum
+    /// @notice Minimum COTI reserve required (1000 COTI)
+    uint256 public constant MIN_COTI_RESERVE = 1000 * 10**18;
+    
+    /// @notice OmniCoin token contract reference
+    OmniCoin public immutable OMNI_COIN;
     
     // =============================================================================
     // CUSTOM ERRORS
@@ -55,76 +64,137 @@ contract PrivacyFeeManager is AccessControl, ReentrancyGuard, Pausable {
     // =============================================================================
     // STATE VARIABLES
     // =============================================================================
-    
-    OmniCoin public immutable OMNI_COIN;
+    /// @notice COTI token address for MPC operations
     address public cotiToken;
+    /// @notice DEX router for OmniCoin/COTI swaps
     address public dexRouter;
     
-    // Fee structure (in basis points)
+    /// @notice Fee structure (in basis points) by operation type
     mapping(bytes32 => uint256) public privacyFees;
     
     // Reserves
+    /// @notice OmniCoin reserve balance
     uint256 public omniCoinReserve;
+    /// @notice COTI reserve balance for MPC operations
     uint256 public cotiReserve;
-    uint256 public targetCotiReserve = 5000 * 10**18; // 5000 COTI target
+    /// @notice Target COTI reserve level (5000 COTI)
+    uint256 public targetCotiReserve = 5000 * 10**18;
     
     // Statistics
+    /// @notice Total fees collected in OmniCoin
     uint256 public totalFeesCollected;
+    /// @notice Total number of privacy transactions
     uint256 public totalPrivacyTransactions;
+    /// @notice Privacy usage count by user
     mapping(address => uint256) public userPrivacyUsage;
     
     // Privacy Credit System
+    /// @notice User privacy credit balances
     mapping(address => uint256) public userPrivacyCredits;
+    /// @notice Total credits deposited by all users
     uint256 public totalCreditsDeposited;
+    /// @notice Total credits used by all users
     uint256 public totalCreditsUsed;
     
     // =============================================================================
     // EVENTS
     // =============================================================================
     
+    /**
+     * @notice Emitted when privacy fee is collected
+     * @param user User who paid the fee
+     * @param operationType Type of privacy operation
+     * @param omniAmount Amount of OmniCoin collected
+     * @param timestamp When the fee was collected
+     */
     event PrivacyFeeCollected(
         address indexed user,
         bytes32 indexed operationType,
-        uint256 omniAmount,
+        uint256 indexed omniAmount,
         uint256 timestamp
     );
     
+    /**
+     * @notice Emitted when reserves are rebalanced
+     * @param omniSwapped Amount of OmniCoin swapped
+     * @param cotiReceived Amount of COTI received
+     * @param timestamp When rebalancing occurred
+     */
     event ReservesRebalanced(
-        uint256 omniSwapped,
-        uint256 cotiReceived,
-        uint256 timestamp
+        uint256 indexed omniSwapped,
+        uint256 indexed cotiReceived,
+        uint256 indexed timestamp
     );
     
+    /**
+     * @notice Emitted when fee is updated
+     * @param operationType Type of operation
+     * @param oldFee Previous fee amount
+     * @param newFee New fee amount
+     */
     event FeeUpdated(
         bytes32 indexed operationType,
-        uint256 oldFee,
-        uint256 newFee
+        uint256 indexed oldFee,
+        uint256 indexed newFee
     );
     
+    /**
+     * @notice Emitted when COTI is withdrawn
+     * @param recipient Recipient address
+     * @param amount Amount withdrawn
+     * @param reason Reason for withdrawal
+     */
     event CotiWithdrawn(
         address indexed recipient,
-        uint256 amount,
+        uint256 indexed amount,
         string reason
     );
     
+    /**
+     * @notice Emitted when privacy credits are deposited
+     * @param user User who deposited
+     * @param amount Amount deposited
+     * @param newBalance New credit balance
+     */
     event PrivacyCreditsDeposited(
         address indexed user,
-        uint256 amount,
-        uint256 newBalance
+        uint256 indexed amount,
+        uint256 indexed newBalance
     );
     
+    /**
+     * @notice Emitted when privacy credits are used
+     * @param user User who used credits
+     * @param operationType Type of operation
+     * @param amount Amount of credits used
+     * @param remainingBalance Remaining credit balance
+     */
     event PrivacyCreditsUsed(
         address indexed user,
         bytes32 indexed operationType,
-        uint256 amount,
+        uint256 indexed amount,
         uint256 remainingBalance
     );
-    event BridgeUsageRecorded(address indexed user, uint256 amount);
+    
+    /**
+     * @notice Emitted when bridge usage is recorded
+     * @param user User who used the bridge
+     * @param amount Amount bridged
+     */
+    event BridgeUsageRecorded(address indexed user, uint256 indexed amount);
     
     // =============================================================================
     // CONSTRUCTOR
     // =============================================================================
     
+    /**
+     * @notice Initializes the PrivacyFeeManager contract
+     * @dev Sets up token addresses, router, and grants admin roles
+     * @param _omniCoin Address of the OmniCoin token contract
+     * @param _cotiToken Address of the COTI token contract  
+     * @param _dexRouter Address of the DEX router for token swaps
+     * @param _admin Address of the initial admin who receives all roles
+     */
     constructor(
         address _omniCoin,
         address _cotiToken,
@@ -132,9 +202,9 @@ contract PrivacyFeeManager is AccessControl, ReentrancyGuard, Pausable {
         address _admin
     ) {
         if (_omniCoin == address(0)) revert InvalidAddress();
-        require(_cotiToken != address(0), "Invalid COTI address");
-        require(_dexRouter != address(0), "Invalid DEX router");
-        require(_admin != address(0), "Invalid admin address");
+        if (_cotiToken == address(0)) revert InvalidToken();
+        if (_dexRouter == address(0)) revert InvalidRouter();
+        if (_admin == address(0)) revert InvalidAddress();
         
         OMNI_COIN = OmniCoin(_omniCoin);
         cotiToken = _cotiToken;
@@ -158,13 +228,12 @@ contract PrivacyFeeManager is AccessControl, ReentrancyGuard, Pausable {
      * @notice Users pre-fund their privacy operations to avoid timing correlation
      */
     function depositPrivacyCredits(uint256 amount) external nonReentrant whenNotPaused {
-        require(amount > 0, "Must deposit credits");
+        if (amount == 0) revert MustDepositCredits();
         
         // Transfer OMNI tokens from user
-        require(
-            IERC20(address(OMNI_COIN)).transferFrom(msg.sender, address(this), amount),
-            "Credit deposit failed"
-        );
+        if (!IERC20(address(OMNI_COIN)).transferFrom(msg.sender, address(this), amount)) {
+            revert TransferFromFailed();
+        }
         
         userPrivacyCredits[msg.sender] += amount;
         totalCreditsDeposited += amount;
@@ -178,21 +247,21 @@ contract PrivacyFeeManager is AccessControl, ReentrancyGuard, Pausable {
     }
     
     /**
-     * @dev Withdraw unused privacy credits
+     * @notice Withdraw unused privacy credits
+     * @dev Transfers OMNI tokens back to the user from their credit balance
      * @param amount Amount to withdraw
      */
     function withdrawPrivacyCredits(uint256 amount) external nonReentrant whenNotPaused {
-        require(amount > 0, "Invalid amount");
-        require(userPrivacyCredits[msg.sender] >= amount, "Insufficient credits");
+        if (amount == 0) revert InvalidAmount();
+        if (userPrivacyCredits[msg.sender] < amount) revert InsufficientCredits();
         
         userPrivacyCredits[msg.sender] -= amount;
         omniCoinReserve -= amount;
         
         // Transfer OMNI back to user
-        require(
-            IERC20(address(OMNI_COIN)).transfer(msg.sender, amount),
-            "Credit withdrawal failed"
-        );
+        if (!IERC20(address(OMNI_COIN)).transfer(msg.sender, amount)) {
+            revert TransferFailed();
+        }
         
         emit PrivacyCreditsDeposited(
             msg.sender, 
@@ -202,9 +271,10 @@ contract PrivacyFeeManager is AccessControl, ReentrancyGuard, Pausable {
     }
     
     /**
-     * @dev Check user's privacy credit balance
+     * @notice Check user's privacy credit balance
+     * @dev Returns the amount of privacy credits a user has deposited
      * @param user User address
-     * @return creditBalance Current credit balance
+     * @return Current credit balance
      */
     function getPrivacyCredits(address user) external view returns (uint256) {
         return userPrivacyCredits[user];
@@ -215,7 +285,8 @@ contract PrivacyFeeManager is AccessControl, ReentrancyGuard, Pausable {
     // =============================================================================
     
     /**
-     * @dev Initialize default privacy fees for different operations
+     * @notice Initialize default privacy fees for different operations
+     * @dev Sets up the initial fee structure for various operation types
      */
     function _initializeDefaultFees() private {
         // Transfer operations: 0.1% (10 basis points)
@@ -239,7 +310,8 @@ contract PrivacyFeeManager is AccessControl, ReentrancyGuard, Pausable {
     }
     
     /**
-     * @dev Calculate privacy fee for a given operation
+     * @notice Calculate privacy fee for a given operation
+     * @dev Determines if fee is fixed or percentage-based and calculates accordingly
      * @param operationType Type of operation
      * @param amount Transaction amount (for percentage-based fees)
      * @return feeAmount Fee in OmniCoins
@@ -249,7 +321,7 @@ contract PrivacyFeeManager is AccessControl, ReentrancyGuard, Pausable {
         uint256 amount
     ) public view returns (uint256 feeAmount) {
         uint256 fee = privacyFees[operationType];
-        require(fee > 0, "Unknown operation type");
+        if (fee == 0) revert UnknownOperationType();
         
         // Check if it's a fixed fee (> BASIS_POINTS means fixed amount)
         if (fee > BASIS_POINTS) {
@@ -274,17 +346,16 @@ contract PrivacyFeeManager is AccessControl, ReentrancyGuard, Pausable {
         uint256 amount
     ) external nonReentrant whenNotPaused returns (bool success) {
         // Only registered contracts can collect fees
-        require(
-            hasRole(FEE_MANAGER_ROLE, msg.sender) || 
-            OMNI_COIN.hasRole(keccak256("BRIDGE_ROLE"), msg.sender),
-            "Unauthorized fee collector"
-        );
+        if (!hasRole(FEE_MANAGER_ROLE, msg.sender) && 
+            !OMNI_COIN.hasRole(keccak256("BRIDGE_ROLE"), msg.sender)) {
+            revert NotAuthorized();
+        }
         
         uint256 feeAmount = calculatePrivacyFee(operationType, amount);
-        require(feeAmount > 0, "No fee required");
+        if (feeAmount == 0) revert NoFeeRequired();
         
         // Deduct from user's privacy credits (no visible transaction)
-        require(userPrivacyCredits[user] >= feeAmount, "Insufficient privacy credits");
+        if (userPrivacyCredits[user] < feeAmount) revert InsufficientPrivacyCredits();
         userPrivacyCredits[user] -= feeAmount;
         
         // Update statistics
@@ -324,26 +395,25 @@ contract PrivacyFeeManager is AccessControl, ReentrancyGuard, Pausable {
         uint256 amount
     ) external nonReentrant whenNotPaused returns (bool success) {
         // Only registered contracts can collect fees
-        require(
-            hasRole(FEE_MANAGER_ROLE, msg.sender) || 
-            OMNI_COIN.hasRole(keccak256("BRIDGE_ROLE"), msg.sender),
-            "Unauthorized fee collector"
-        );
+        if (!hasRole(FEE_MANAGER_ROLE, msg.sender) && 
+            !OMNI_COIN.hasRole(keccak256("BRIDGE_ROLE"), msg.sender)) {
+            revert NotAuthorized();
+        }
         
         uint256 feeAmount = calculatePrivacyFee(operationType, amount);
-        require(feeAmount > 0, "No fee required");
+        if (feeAmount == 0) revert NoFeeRequired();
         
         // Transfer fee from user to this contract (VISIBLE TRANSACTION)
-        require(
-            IERC20(address(OMNI_COIN)).transferFrom(user, address(this), feeAmount),
-            "Fee transfer failed"
-        );
+        if (!IERC20(address(OMNI_COIN)).transferFrom(user, address(this), feeAmount)) {
+            revert TransferFromFailed();
+        }
         
         omniCoinReserve += feeAmount;
         totalFeesCollected += feeAmount;
         ++totalPrivacyTransactions;
         ++userPrivacyUsage[user];
         
+        // solhint-disable-next-line not-rely-on-time
         emit PrivacyFeeCollected(user, operationType, feeAmount, block.timestamp);
         
         // Check if we need to rebalance reserves
@@ -359,7 +429,8 @@ contract PrivacyFeeManager is AccessControl, ReentrancyGuard, Pausable {
     // =============================================================================
     
     /**
-     * @dev Rebalance reserves by swapping OMNI for COTI
+     * @notice Rebalance reserves by swapping OMNI for COTI
+     * @dev Internal function to maintain adequate COTI reserves for MPC operations
      */
     function _rebalanceReserves() private {
         uint256 cotiNeeded = targetCotiReserve - cotiReserve;
@@ -373,6 +444,7 @@ contract PrivacyFeeManager is AccessControl, ReentrancyGuard, Pausable {
         
         // In production, this would call DEX router to swap
         // For now, we'll emit an event for manual processing
+        // solhint-disable-next-line not-rely-on-time
         emit ReservesRebalanced(omniToSwap, cotiNeeded, block.timestamp);
         
         // Update reserves (in production, after actual swap)
@@ -381,31 +453,30 @@ contract PrivacyFeeManager is AccessControl, ReentrancyGuard, Pausable {
     }
     
     /**
-     * @dev Manually rebalance reserves
+     * @notice Manually rebalance reserves
      */
     function rebalanceReserves() external onlyRole(TREASURY_ROLE) {
         _rebalanceReserves();
     }
     
     /**
-     * @dev Record bridge usage for rewards/tracking
+     * @notice Record bridge usage for rewards/tracking
      * @param user User who used the bridge
      * @param amount Amount bridged
      */
     function recordBridgeUsage(address user, uint256 amount) external {
         // Only authorized contracts can record usage
-        require(
-            msg.sender == address(OMNI_COIN) || 
-            hasRole(FEE_MANAGER_ROLE, msg.sender),
-            "PrivacyFeeManager: Unauthorized"
-        );
+        if (msg.sender != address(OMNI_COIN) && 
+            !hasRole(FEE_MANAGER_ROLE, msg.sender)) {
+            revert NotAuthorized();
+        }
         
         // Could track usage for rewards/analytics
         emit BridgeUsageRecorded(user, amount);
     }
     
     /**
-     * @dev Withdraw COTI for MPC operations
+     * @notice Withdraw COTI for MPC operations
      * @param amount Amount to withdraw
      * @param recipient Recipient address (usually bridge or MPC operator)
      * @param reason Reason for withdrawal
@@ -415,16 +486,15 @@ contract PrivacyFeeManager is AccessControl, ReentrancyGuard, Pausable {
         address recipient,
         string calldata reason
     ) external onlyRole(TREASURY_ROLE) nonReentrant {
-        require(amount <= cotiReserve, "Insufficient COTI reserve");
-        require(recipient != address(0), "Invalid recipient");
+        if (amount > cotiReserve) revert InsufficientCotiReserve();
+        if (recipient == address(0)) revert InvalidAddress();
         
         cotiReserve -= amount;
         
         // Transfer COTI (simplified - real implementation would use SafeERC20)
-        require(
-            IERC20(cotiToken).transfer(recipient, amount),
-            "COTI transfer failed"
-        );
+        if (!IERC20(cotiToken).transfer(recipient, amount)) {
+            revert TransferFailed();
+        }
         
         emit CotiWithdrawn(recipient, amount, reason);
     }
@@ -434,7 +504,7 @@ contract PrivacyFeeManager is AccessControl, ReentrancyGuard, Pausable {
     // =============================================================================
     
     /**
-     * @dev Update privacy fee for an operation type
+     * @notice Update privacy fee for an operation type
      * @param operationType Type of operation
      * @param newFee New fee (basis points or fixed amount)
      */
@@ -449,20 +519,20 @@ contract PrivacyFeeManager is AccessControl, ReentrancyGuard, Pausable {
     }
     
     /**
-     * @dev Update target COTI reserve
+     * @notice Update target COTI reserve
      * @param newTarget New target reserve amount
      */
     function updateTargetReserve(uint256 newTarget) external onlyRole(TREASURY_ROLE) {
-        require(newTarget >= MIN_COTI_RESERVE, "Target too low");
+        if (newTarget < MIN_COTI_RESERVE) revert TargetTooLow();
         targetCotiReserve = newTarget;
     }
     
     /**
-     * @dev Update DEX router address
+     * @notice Update DEX router address
      * @param newRouter New router address
      */
     function updateDexRouter(address newRouter) external onlyRole(DEFAULT_ADMIN_ROLE) {
-        require(newRouter != address(0), "Invalid router");
+        if (newRouter == address(0)) revert InvalidRouter();
         dexRouter = newRouter;
     }
     
@@ -471,7 +541,7 @@ contract PrivacyFeeManager is AccessControl, ReentrancyGuard, Pausable {
     // =============================================================================
     
     /**
-     * @dev Get user's privacy statistics
+     * @notice Get user's privacy statistics
      * @param user User address
      * @return usage Number of privacy transactions
      * @return estimatedFeesPaid Estimated fees paid (based on average)
@@ -490,7 +560,7 @@ contract PrivacyFeeManager is AccessControl, ReentrancyGuard, Pausable {
     }
     
     /**
-     * @dev Get current reserve status
+     * @notice Get current reserve status
      * @return omniReserve Current OMNI reserve
      * @return cotiReserveAmount Current COTI reserve
      * @return needsRebalance Whether rebalancing is needed
@@ -506,7 +576,7 @@ contract PrivacyFeeManager is AccessControl, ReentrancyGuard, Pausable {
     }
     
     /**
-     * @dev Get privacy credit system statistics
+     * @notice Get privacy credit system statistics
      * @return totalDeposited Total credits deposited
      * @return totalUsed Total credits used
      * @return totalActive Total active credits in system
@@ -534,21 +604,21 @@ contract PrivacyFeeManager is AccessControl, ReentrancyGuard, Pausable {
     // =============================================================================
     
     /**
-     * @dev Pause fee collection in emergency
+     * @notice Pause fee collection in emergency
      */
     function pause() external onlyRole(DEFAULT_ADMIN_ROLE) {
         _pause();
     }
     
     /**
-     * @dev Resume fee collection
+     * @notice Resume fee collection
      */
     function unpause() external onlyRole(DEFAULT_ADMIN_ROLE) {
         _unpause();
     }
     
     /**
-     * @dev Recover stuck tokens (emergency only)
+     * @notice Recover stuck tokens (emergency only)
      * @param token Token address
      * @param amount Amount to recover
      */
@@ -556,7 +626,7 @@ contract PrivacyFeeManager is AccessControl, ReentrancyGuard, Pausable {
         address token,
         uint256 amount
     ) external onlyRole(DEFAULT_ADMIN_ROLE) {
-        require(token != address(0), "Invalid token");
+        if (token == address(0)) revert InvalidToken();
         if (!IERC20(token).transfer(msg.sender, amount))
             revert TransferFailed();
     }

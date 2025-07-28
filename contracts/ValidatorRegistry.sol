@@ -10,7 +10,9 @@ import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
 /**
  * @title ValidatorRegistry
- * @dev Registry and management system for unified validators
+ * @author OmniBazaar Team
+ * @notice Registry and management system for unified validators with proof of participation
+ * @dev Implements validator registration, staking, scoring, and slashing mechanisms
  *
  * Features:
  * - Validator registration and staking
@@ -25,6 +27,7 @@ contract ValidatorRegistry is ReentrancyGuard, Pausable, AccessControl {
     using Math for uint256;
 
     // Enums
+    /// @notice Validator lifecycle states
     enum ValidatorStatus {
         INACTIVE,
         ACTIVE,
@@ -33,59 +36,8 @@ contract ValidatorRegistry is ReentrancyGuard, Pausable, AccessControl {
         EXITING
     }
 
-    // Roles
-    bytes32 public constant VALIDATOR_MANAGER_ROLE =
-        keccak256("VALIDATOR_MANAGER_ROLE");
-    bytes32 public constant SLASHER_ROLE = keccak256("SLASHER_ROLE");
-    bytes32 public constant ORACLE_ROLE = keccak256("ORACLE_ROLE");
-
-    // Events
-    event ValidatorRegistered(
-        address indexed validator,
-        uint256 stake,
-        string nodeId,
-        uint256 timestamp
-    );
-
-    event ValidatorStakeIncreased(
-        address indexed validator,
-        uint256 additionalStake,
-        uint256 totalStake
-    );
-
-    event ValidatorDeregistered(
-        address indexed validator,
-        uint256 refundedStake,
-        string reason
-    );
-
-    event ParticipationScoreUpdated(
-        address indexed validator,
-        uint256 oldScore,
-        uint256 newScore,
-        string reason
-    );
-
-    event ValidatorSlashed(
-        address indexed validator,
-        uint256 slashedAmount,
-        uint256 remainingStake,
-        string reason
-    );
-
-    event ValidatorRewardDistributed(
-        address indexed validator,
-        uint256 amount,
-        uint256 participationScore
-    );
-
-    event ValidatorStatusChanged(
-        address indexed validator,
-        ValidatorStatus oldStatus,
-        ValidatorStatus newStatus
-    );
-
     // Structs
+    /// @notice Complete information about a validator
     struct ValidatorInfo {
         address validatorAddress;
         uint256 stakedAmount;
@@ -101,6 +53,7 @@ contract ValidatorRegistry is ReentrancyGuard, Pausable, AccessControl {
         uint256 exitTime;
     }
 
+    /// @notice Hardware specifications for validator nodes
     struct HardwareSpecs {
         uint256 cpuCores;
         uint256 ramGB;
@@ -110,6 +63,7 @@ contract ValidatorRegistry is ReentrancyGuard, Pausable, AccessControl {
         uint256 verificationTime;
     }
 
+    /// @notice Performance metrics tracked for each validator
     struct PerformanceMetrics {
         uint256 blocksProduced;
         uint256 uptime; // Percentage (0-10000, where 10000 = 100%)
@@ -119,6 +73,7 @@ contract ValidatorRegistry is ReentrancyGuard, Pausable, AccessControl {
         uint256 lastUpdateTime;
     }
 
+    /// @notice Configuration parameters for staking mechanism
     struct StakingConfig {
         uint256 minimumStake;
         uint256 maximumStake;
@@ -128,34 +83,143 @@ contract ValidatorRegistry is ReentrancyGuard, Pausable, AccessControl {
         uint256 participationThreshold; // Minimum score to stay active
     }
 
-    // State variables
-    mapping(address => ValidatorInfo) public validators;
-    mapping(string => address) public nodeIdToValidator;
-    address[] public validatorList;
-
-    IERC20 public immutable stakingToken; // XOM token
-    StakingConfig public stakingConfig;
-
-    uint256 public totalStaked;
-    uint256 public totalValidators;
-    uint256 public activeValidators;
-    uint256 public currentEpoch;
-    uint256 public epochDuration = 1 hours;
-    uint256 public lastEpochTime;
+    // State variables - Constants
+    /// @notice Role for validator management operations
+    bytes32 public constant VALIDATOR_MANAGER_ROLE =
+        keccak256("VALIDATOR_MANAGER_ROLE");
+    /// @notice Role for slashing operations
+    bytes32 public constant SLASHER_ROLE = keccak256("SLASHER_ROLE");
+    /// @notice Role for oracle data submission
+    bytes32 public constant ORACLE_ROLE = keccak256("ORACLE_ROLE");
 
     // Hardware requirements
+    /// @notice Minimum required CPU cores
     uint256 public constant MIN_CPU_CORES = 4;
+    /// @notice Minimum required RAM in GB
     uint256 public constant MIN_RAM_GB = 8;
+    /// @notice Minimum required storage in GB
     uint256 public constant MIN_STORAGE_GB = 100;
-    uint256 public constant MIN_NETWORK_SPEED = 100; // Mbps
+    /// @notice Minimum required network speed in Mbps
+    uint256 public constant MIN_NETWORK_SPEED = 100;
 
     // Participation scoring constants
+    /// @notice Maximum possible participation score
     uint256 public constant MAX_PARTICIPATION_SCORE = 100;
+    /// @notice Weight for block production in participation score
     uint256 public constant BLOCK_PRODUCTION_WEIGHT = 30;
+    /// @notice Weight for uptime in participation score
     uint256 public constant UPTIME_WEIGHT = 25;
+    /// @notice Weight for trading volume in participation score
     uint256 public constant TRADING_VOLUME_WEIGHT = 20;
+    /// @notice Weight for chat activity in participation score
     uint256 public constant CHAT_ACTIVITY_WEIGHT = 15;
+    /// @notice Weight for IPFS storage in participation score
     uint256 public constant IPFS_STORAGE_WEIGHT = 10;
+
+    // State variables - Immutables
+    /// @notice XOM token used for staking
+    IERC20 public immutable STAKING_TOKEN;
+
+    // State variables - Storage
+    /// @notice Mapping from validator address to their information
+    mapping(address => ValidatorInfo) public validators;
+    /// @notice Mapping from node ID to validator address
+    mapping(string => address) public nodeIdToValidator;
+    /// @notice List of all validator addresses
+    address[] public validatorList;
+
+    /// @notice Current staking configuration parameters
+    StakingConfig public stakingConfig;
+
+    /// @notice Total amount of tokens staked across all validators
+    uint256 public totalStaked;
+    /// @notice Total number of registered validators
+    uint256 public totalValidators;
+    /// @notice Number of currently active validators
+    uint256 public activeValidators;
+    /// @notice Current epoch number
+    uint256 public currentEpoch;
+    /// @notice Duration of each epoch in seconds
+    uint256 public epochDuration = 1 hours;
+    /// @notice Timestamp of the last epoch transition
+    uint256 public lastEpochTime;
+
+    // Events
+    /// @notice Emitted when a new validator registers
+    /// @param validator Address of the registered validator
+    /// @param stake Initial stake amount
+    /// @param nodeId Unique node identifier
+    /// @param timestamp Registration timestamp
+    event ValidatorRegistered(
+        address indexed validator,
+        uint256 indexed stake,
+        string indexed nodeId,
+        uint256 timestamp
+    );
+
+    /// @notice Emitted when a validator increases their stake
+    /// @param validator Address of the validator
+    /// @param additionalStake Amount of stake added
+    /// @param totalStake New total stake amount
+    event ValidatorStakeIncreased(
+        address indexed validator,
+        uint256 indexed additionalStake,
+        uint256 indexed totalStake
+    );
+
+    /// @notice Emitted when a validator deregisters
+    /// @param validator Address of the deregistered validator
+    /// @param refundedStake Amount of stake refunded
+    /// @param reason Deregistration reason
+    event ValidatorDeregistered(
+        address indexed validator,
+        uint256 indexed refundedStake,
+        string indexed reason
+    );
+
+    /// @notice Emitted when a validator's participation score changes
+    /// @param validator Address of the validator
+    /// @param oldScore Previous participation score
+    /// @param newScore Updated participation score
+    /// @param reason Reason for the update
+    event ParticipationScoreUpdated(
+        address indexed validator,
+        uint256 indexed oldScore,
+        uint256 indexed newScore,
+        string reason
+    );
+
+    /// @notice Emitted when a validator is slashed
+    /// @param validator Address of the slashed validator
+    /// @param slashedAmount Amount slashed from stake
+    /// @param remainingStake Remaining stake after slashing
+    /// @param reason Slashing reason
+    event ValidatorSlashed(
+        address indexed validator,
+        uint256 indexed slashedAmount,
+        uint256 indexed remainingStake,
+        string indexed reason
+    );
+
+    /// @notice Emitted when rewards are distributed to a validator
+    /// @param validator Address of the validator
+    /// @param amount Reward amount
+    /// @param participationScore Validator's participation score at time of reward
+    event ValidatorRewardDistributed(
+        address indexed validator,
+        uint256 indexed amount,
+        uint256 indexed participationScore
+    );
+
+    /// @notice Emitted when a validator's status changes
+    /// @param validator Address of the validator
+    /// @param oldStatus Previous status
+    /// @param newStatus New status
+    event ValidatorStatusChanged(
+        address indexed validator,
+        ValidatorStatus indexed oldStatus,
+        ValidatorStatus indexed newStatus
+    );
 
     // Custom errors
     error InvalidStakingToken();
@@ -180,6 +244,10 @@ contract ValidatorRegistry is ReentrancyGuard, Pausable, AccessControl {
     error NotEnoughActiveValidators();
     error EpochDurationTooShort();
 
+    /// @notice Initialize the ValidatorRegistry contract
+    /// @param _stakingToken Address of the XOM token used for staking
+    /// @param _minimumStake Minimum stake amount required to become a validator
+    /// @param _maximumStake Maximum stake amount allowed per validator
     constructor(
         address _stakingToken,
         uint256 _minimumStake,
@@ -189,7 +257,7 @@ contract ValidatorRegistry is ReentrancyGuard, Pausable, AccessControl {
         if (_minimumStake == 0) revert MinimumStakeMustBePositive();
         if (_maximumStake < _minimumStake) revert MaximumStakeTooLow();
 
-        stakingToken = IERC20(_stakingToken);
+        STAKING_TOKEN = IERC20(_stakingToken);
 
         stakingConfig = StakingConfig({
             minimumStake: _minimumStake,
@@ -205,12 +273,14 @@ contract ValidatorRegistry is ReentrancyGuard, Pausable, AccessControl {
         _grantRole(SLASHER_ROLE, msg.sender);
         _grantRole(ORACLE_ROLE, msg.sender);
 
+        /* solhint-disable-next-line not-rely-on-time */
         lastEpochTime = block.timestamp;
     }
 
-    /**
-     * @dev Register as a validator
-     */
+    /// @notice Register as a validator with initial stake
+    /// @param stakeAmount Amount of tokens to stake
+    /// @param nodeId Unique identifier for the validator node
+    /// @param hardwareSpecs Hardware specifications of the validator node
     function registerValidator(
         uint256 stakeAmount,
         string calldata nodeId,
@@ -226,7 +296,7 @@ contract ValidatorRegistry is ReentrancyGuard, Pausable, AccessControl {
         if (!_verifyHardwareSpecs(hardwareSpecs)) revert HardwareRequirementsNotMet();
 
         // Transfer stake
-        stakingToken.safeTransferFrom(msg.sender, address(this), stakeAmount);
+        STAKING_TOKEN.safeTransferFrom(msg.sender, address(this), stakeAmount);
 
         // Initialize validator info
         validators[msg.sender] = ValidatorInfo({
@@ -234,7 +304,9 @@ contract ValidatorRegistry is ReentrancyGuard, Pausable, AccessControl {
             stakedAmount: stakeAmount,
             participationScore: MAX_PARTICIPATION_SCORE, // Start with full score
             status: ValidatorStatus.ACTIVE,
+            /* solhint-disable-next-line not-rely-on-time */
             registrationTime: block.timestamp,
+            /* solhint-disable-next-line not-rely-on-time */
             lastActivityTime: block.timestamp,
             nodeId: nodeId,
             hardwareSpecs: hardwareSpecs,
@@ -244,6 +316,7 @@ contract ValidatorRegistry is ReentrancyGuard, Pausable, AccessControl {
                 tradingVolumeFacilitated: 0,
                 chatMessages: 0,
                 ipfsDataStored: 0,
+                /* solhint-disable-next-line not-rely-on-time */
                 lastUpdateTime: block.timestamp
             }),
             totalRewards: 0,
@@ -262,13 +335,13 @@ contract ValidatorRegistry is ReentrancyGuard, Pausable, AccessControl {
             msg.sender,
             stakeAmount,
             nodeId,
+            /* solhint-disable-next-line not-rely-on-time */
             block.timestamp
         );
     }
 
-    /**
-     * @dev Increase validator stake
-     */
+    /// @notice Increase validator stake
+    /// @param additionalStake Amount of additional tokens to stake
     function increaseStake(uint256 additionalStake) external nonReentrant {
         if (validators[msg.sender].validatorAddress == address(0)) revert NotAValidator();
         if (additionalStake == 0) revert AdditionalStakeMustBePositive();
@@ -278,7 +351,7 @@ contract ValidatorRegistry is ReentrancyGuard, Pausable, AccessControl {
         if (newTotalStake > stakingConfig.maximumStake) revert StakeExceedsMaximum();
 
         // Transfer additional stake
-        stakingToken.safeTransferFrom(
+        STAKING_TOKEN.safeTransferFrom(
             msg.sender,
             address(this),
             additionalStake
@@ -295,15 +368,14 @@ contract ValidatorRegistry is ReentrancyGuard, Pausable, AccessControl {
         );
     }
 
-    /**
-     * @dev Request to deregister and unstake
-     */
+    /// @notice Request to deregister and unstake
     function requestDeregistration() external {
         if (validators[msg.sender].validatorAddress == address(0)) revert NotAValidator();
         if (validators[msg.sender].status == ValidatorStatus.EXITING) revert AlreadyExiting();
 
         validators[msg.sender].status = ValidatorStatus.EXITING;
         validators[msg.sender].exitTime =
+            /* solhint-disable-next-line not-rely-on-time */
             block.timestamp +
             stakingConfig.unstakingPeriod;
 
@@ -316,13 +388,12 @@ contract ValidatorRegistry is ReentrancyGuard, Pausable, AccessControl {
         );
     }
 
-    /**
-     * @dev Complete deregistration and withdraw stake
-     */
+    /// @notice Complete deregistration and withdraw stake
     function completeDeregistration() external nonReentrant {
         ValidatorInfo storage validator = validators[msg.sender];
         if (validator.validatorAddress == address(0)) revert NotAValidator();
         if (validator.status != ValidatorStatus.EXITING) revert NotInExitingState();
+        /* solhint-disable-next-line not-rely-on-time */
         if (block.timestamp < validator.exitTime) revert UnstakingPeriodNotCompleted();
 
         uint256 refundAmount = validator.stakedAmount;
@@ -336,14 +407,18 @@ contract ValidatorRegistry is ReentrancyGuard, Pausable, AccessControl {
         --totalValidators;
 
         // Refund stake
-        stakingToken.safeTransfer(msg.sender, refundAmount);
+        STAKING_TOKEN.safeTransfer(msg.sender, refundAmount);
 
         emit ValidatorDeregistered(msg.sender, refundAmount, "Voluntary exit");
     }
 
-    /**
-     * @dev Update validator performance metrics (called by oracles)
-     */
+    /// @notice Update validator performance metrics (called by oracles)
+    /// @param validatorAddress Address of the validator to update
+    /// @param blocksProduced Number of blocks produced
+    /// @param uptime Uptime percentage (0-10000)
+    /// @param tradingVolume Trading volume facilitated
+    /// @param chatMessages Number of chat messages handled
+    /// @param ipfsDataStored Amount of IPFS data stored
     function updatePerformanceMetrics(
         address validatorAddress,
         uint256 blocksProduced,
@@ -361,7 +436,9 @@ contract ValidatorRegistry is ReentrancyGuard, Pausable, AccessControl {
         validator.performance.tradingVolumeFacilitated += tradingVolume;
         validator.performance.chatMessages += chatMessages;
         validator.performance.ipfsDataStored += ipfsDataStored;
+        /* solhint-disable-next-line not-rely-on-time */
         validator.performance.lastUpdateTime = block.timestamp;
+        /* solhint-disable-next-line not-rely-on-time */
         validator.lastActivityTime = block.timestamp;
 
         // Calculate new participation score
@@ -370,6 +447,7 @@ contract ValidatorRegistry is ReentrancyGuard, Pausable, AccessControl {
         validator.participationScore = newScore;
 
         // Check if validator should be suspended for low participation
+        /* solhint-disable-next-line not-rely-on-time */
         if (
             newScore < stakingConfig.participationThreshold &&
             validator.status == ValidatorStatus.ACTIVE
@@ -392,9 +470,10 @@ contract ValidatorRegistry is ReentrancyGuard, Pausable, AccessControl {
         );
     }
 
-    /**
-     * @dev Slash a validator for malicious behavior
-     */
+    /// @notice Slash a validator for malicious behavior
+    /// @param validatorAddress Address of the validator to slash
+    /// @param slashAmount Amount to slash from validator's stake
+    /// @param reason Reason for slashing
     function slashValidator(
         address validatorAddress,
         uint256 slashAmount,
@@ -416,7 +495,7 @@ contract ValidatorRegistry is ReentrancyGuard, Pausable, AccessControl {
         }
 
         // Burned tokens (sent to zero address)
-        stakingToken.safeTransfer(address(0), slashAmount);
+        STAKING_TOKEN.safeTransfer(address(0), slashAmount);
 
         emit ValidatorSlashed(
             validatorAddress,
@@ -431,9 +510,9 @@ contract ValidatorRegistry is ReentrancyGuard, Pausable, AccessControl {
         );
     }
 
-    /**
-     * @dev Distribute rewards to validators
-     */
+    /// @notice Distribute rewards to validators
+    /// @param validatorAddresses Array of validator addresses
+    /// @param rewardAmounts Array of reward amounts corresponding to each validator
     function distributeRewards(
         address[] calldata validatorAddresses,
         uint256[] calldata rewardAmounts
@@ -448,7 +527,7 @@ contract ValidatorRegistry is ReentrancyGuard, Pausable, AccessControl {
                 validator.totalRewards += rewardAmounts[i];
 
                 // Transfer reward
-                stakingToken.safeTransfer(
+                STAKING_TOKEN.safeTransfer(
                     validatorAddresses[i],
                     rewardAmounts[i]
                 );
@@ -462,13 +541,13 @@ contract ValidatorRegistry is ReentrancyGuard, Pausable, AccessControl {
         }
     }
 
-    /**
-     * @dev Advance epoch and update validator states
-     */
+    /// @notice Advance epoch and update validator states
     function advanceEpoch() external {
+        /* solhint-disable-next-line not-rely-on-time */
         if (block.timestamp < lastEpochTime + epochDuration) revert EpochNotReady();
 
         ++currentEpoch;
+        /* solhint-disable-next-line not-rely-on-time */
         lastEpochTime = block.timestamp;
 
         // Update validator states based on participation
@@ -480,8 +559,8 @@ contract ValidatorRegistry is ReentrancyGuard, Pausable, AccessControl {
                 // Reactivate suspended validators with improved participation
                 if (
                     validator.status == ValidatorStatus.SUSPENDED &&
-                    validator.participationScore >=
-                    stakingConfig.participationThreshold
+                    validator.participationScore >
+                    stakingConfig.participationThreshold - 1
                 ) {
                     validator.status = ValidatorStatus.ACTIVE;
                     ++activeValidators;
@@ -496,19 +575,49 @@ contract ValidatorRegistry is ReentrancyGuard, Pausable, AccessControl {
         }
     }
 
-    /**
-     * @dev Get validator selection for consensus (top performers)
-     */
+    /// @notice Get validator selection for consensus (top performers)
+    /// @param count Number of validators to select
+    /// @return selected Array of selected validator addresses
     function getValidatorSelection(
         uint256 count
-    ) external view returns (address[] memory) {
+    ) external view returns (address[] memory selected) {
         if (count > activeValidators) revert NotEnoughActiveValidators();
 
-        // Create array of active validators with their scores
-        address[] memory activeValidatorAddresses = new address[](
-            activeValidators
-        );
-        uint256[] memory scores = new uint256[](activeValidators);
+        // Get active validators and their scores
+        (address[] memory activeValidatorAddresses, uint256[] memory scores) = _getActiveValidatorsWithScores();
+
+        // Sort validators by score
+        _sortValidatorsByScore(activeValidatorAddresses, scores);
+
+        // Return top performers
+        selected = new address[](count);
+        for (uint256 i = 0; i < count; ++i) {
+            selected[i] = activeValidatorAddresses[i];
+        }
+    }
+
+    // Internal functions
+    /// @notice Remove a validator from the validator list
+    /// @param validatorAddress Address of the validator to remove
+    function _removeValidatorFromList(address validatorAddress) internal {
+        for (uint256 i = 0; i < validatorList.length; ++i) {
+            if (validatorList[i] == validatorAddress) {
+                validatorList[i] = validatorList[validatorList.length - 1];
+                validatorList.pop();
+                break;
+            }
+        }
+    }
+
+    /// @notice Get active validators and their scores
+    /// @return activeValidatorAddresses Array of active validator addresses
+    /// @return scores Array of participation scores
+    function _getActiveValidatorsWithScores() internal view returns (
+        address[] memory activeValidatorAddresses,
+        uint256[] memory scores
+    ) {
+        activeValidatorAddresses = new address[](activeValidators);
+        scores = new uint256[](activeValidators);
         uint256 activeIndex = 0;
 
         for (uint256 i = 0; i < validatorList.length; ++i) {
@@ -519,10 +628,18 @@ contract ValidatorRegistry is ReentrancyGuard, Pausable, AccessControl {
                 ++activeIndex;
             }
         }
+    }
 
-        // Sort by participation score (simple bubble sort for small arrays)
-        for (uint256 i = 0; i < activeValidators - 1; ++i) {
-            for (uint256 j = 0; j < activeValidators - i - 1; ++j) {
+    /// @notice Sort validators by participation score (descending)
+    /// @param addresses Array of validator addresses to sort
+    /// @param scores Array of participation scores to sort
+    function _sortValidatorsByScore(
+        address[] memory addresses,
+        uint256[] memory scores
+    ) internal pure {
+        uint256 length = addresses.length;
+        for (uint256 i = 0; i < length - 1; ++i) {
+            for (uint256 j = 0; j < length - i - 1; ++j) {
                 if (scores[j] < scores[j + 1]) {
                     // Swap scores
                     uint256 tempScore = scores[j];
@@ -530,40 +647,34 @@ contract ValidatorRegistry is ReentrancyGuard, Pausable, AccessControl {
                     scores[j + 1] = tempScore;
 
                     // Swap addresses
-                    address tempAddr = activeValidatorAddresses[j];
-                    activeValidatorAddresses[j] = activeValidatorAddresses[
-                        j + 1
-                    ];
-                    activeValidatorAddresses[j + 1] = tempAddr;
+                    address tempAddr = addresses[j];
+                    addresses[j] = addresses[j + 1];
+                    addresses[j + 1] = tempAddr;
                 }
             }
         }
-
-        // Return top performers
-        address[] memory selected = new address[](count);
-        for (uint256 i = 0; i < count; ++i) {
-            selected[i] = activeValidatorAddresses[i];
-        }
-
-        return selected;
     }
 
     // Internal functions
+    /// @notice Verify hardware specifications meet minimum requirements
+    /// @param specs Hardware specifications to verify
+    /// @return valid True if specifications meet requirements
     function _verifyHardwareSpecs(
         HardwareSpecs calldata specs
-    ) internal pure returns (bool) {
-        return
-            specs.cpuCores >= MIN_CPU_CORES &&
-            specs.ramGB >= MIN_RAM_GB &&
-            specs.storageGB >= MIN_STORAGE_GB &&
-            specs.networkSpeed >= MIN_NETWORK_SPEED;
+    ) internal pure returns (bool valid) {
+        valid = specs.cpuCores > MIN_CPU_CORES - 1 &&
+            specs.ramGB > MIN_RAM_GB - 1 &&
+            specs.storageGB > MIN_STORAGE_GB - 1 &&
+            specs.networkSpeed > MIN_NETWORK_SPEED - 1;
     }
 
+    /// @notice Calculate participation score from performance metrics
+    /// @param performance Performance metrics to evaluate
+    /// @return score Calculated participation score
     function _calculateParticipationScore(
         PerformanceMetrics memory performance
-    ) internal pure returns (uint256) {
+    ) internal pure returns (uint256 score) {
         // Calculate weighted score based on different metrics
-        uint256 score = 0;
 
         // Block production score (0-30 points)
         uint256 blockScore = Math.min(
@@ -597,38 +708,38 @@ contract ValidatorRegistry is ReentrancyGuard, Pausable, AccessControl {
         );
         score += storageScore;
 
-        return Math.min(score, MAX_PARTICIPATION_SCORE);
-    }
-
-    function _removeValidatorFromList(address validatorAddress) internal {
-        for (uint256 i = 0; i < validatorList.length; ++i) {
-            if (validatorList[i] == validatorAddress) {
-                validatorList[i] = validatorList[validatorList.length - 1];
-                validatorList.pop();
-                break;
-            }
-        }
+        score = Math.min(score, MAX_PARTICIPATION_SCORE);
     }
 
     // View functions
+    /// @notice Get complete information for a validator
+    /// @param validatorAddress Address of the validator
+    /// @return ValidatorInfo struct with all validator details
     function getValidatorInfo(
         address validatorAddress
     ) external view returns (ValidatorInfo memory) {
         return validators[validatorAddress];
     }
 
+    /// @notice Get validator address by node ID
+    /// @param nodeId Node identifier to look up
+    /// @return validatorAddress Address of the validator
     function getValidatorByNodeId(
         string calldata nodeId
-    ) external view returns (address) {
-        return nodeIdToValidator[nodeId];
+    ) external view returns (address validatorAddress) {
+        validatorAddress = nodeIdToValidator[nodeId];
     }
 
+    /// @notice Get list of all validator addresses
+    /// @return Array of validator addresses
     function getValidatorList() external view returns (address[] memory) {
         return validatorList;
     }
 
-    function getActiveValidators() external view returns (address[] memory) {
-        address[] memory active = new address[](activeValidators);
+    /// @notice Get list of active validator addresses
+    /// @return active Array of active validator addresses
+    function getActiveValidators() external view returns (address[] memory active) {
+        active = new address[](activeValidators);
         uint256 index = 0;
 
         for (uint256 i = 0; i < validatorList.length; ++i) {
@@ -638,17 +749,23 @@ contract ValidatorRegistry is ReentrancyGuard, Pausable, AccessControl {
             }
         }
 
-        return active;
     }
 
+    /// @notice Get current staking configuration
+    /// @return Current staking configuration parameters
     function getStakingConfig() external view returns (StakingConfig memory) {
         return stakingConfig;
     }
 
+    /// @notice Get total amount staked across all validators
+    /// @return Total staked amount
     function getTotalStaked() external view returns (uint256) {
         return totalStaked;
     }
 
+    /// @notice Get validator count statistics
+    /// @return total Total number of validators
+    /// @return active Number of active validators
     function getValidatorCount()
         external
         view
@@ -658,12 +775,16 @@ contract ValidatorRegistry is ReentrancyGuard, Pausable, AccessControl {
     }
 
     // Admin functions
+    /// @notice Update staking configuration parameters
+    /// @param newConfig New staking configuration
     function updateStakingConfig(
         StakingConfig calldata newConfig
     ) external onlyRole(DEFAULT_ADMIN_ROLE) {
         stakingConfig = newConfig;
     }
 
+    /// @notice Update epoch duration
+    /// @param newDuration New epoch duration in seconds
     function updateEpochDuration(
         uint256 newDuration
     ) external onlyRole(DEFAULT_ADMIN_ROLE) {
@@ -671,10 +792,12 @@ contract ValidatorRegistry is ReentrancyGuard, Pausable, AccessControl {
         epochDuration = newDuration;
     }
 
+    /// @notice Pause the contract
     function pause() external onlyRole(DEFAULT_ADMIN_ROLE) {
         _pause();
     }
 
+    /// @notice Unpause the contract
     function unpause() external onlyRole(DEFAULT_ADMIN_ROLE) {
         _unpause();
     }

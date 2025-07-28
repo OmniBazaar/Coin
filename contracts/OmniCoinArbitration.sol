@@ -74,39 +74,6 @@ contract OmniCoinArbitration is
     }
 
     // =============================================================================
-    // CUSTOM ERRORS
-    // =============================================================================
-    
-    error InvalidAddress();
-    error AlreadyRegistered();
-    error InsufficientStakingAmount();
-    error NoSpecializationProvided();
-    error InsufficientReputation();
-    error InsufficientParticipation();
-    error StakingTransferFailed();
-    error NotActiveArbitrator();
-    error MustStakeAdditionalAmount();
-    error AdditionalStakingTransferFailed();
-    error EscrowNotDisputed();
-    error NotAuthorized();
-    error DisputeAlreadyExists();
-    error TotalClaimsExceedEscrowBalance();
-    error NoSuitableArbitratorFound();
-    error PrivacyNotAvailable();
-    error PrivacyFeeManagerNotSet();
-    error AlreadyResolved();
-    error NotAuthorizedArbitrator();
-    error ResolutionDeadlinePassed();
-    error TotalPayoutsExceedEscrowBalance();
-    error PanelConsensusRequired();
-    error InvalidRating();
-    error NotAuthorizedToRate();
-    error DisputeNotResolved();
-    error AlreadyRated();
-    error OnlyBuyerAndSellerCanRate();
-    error NoEarningsToClaim();
-    
-    // =============================================================================
     // CONSTANTS
     // =============================================================================
     
@@ -143,6 +110,39 @@ contract OmniCoinArbitration is
     uint256 public constant TREASURY_FEE_SHARE = 20;
     /// @notice Validator fee share (10% to validator network)
     uint256 public constant VALIDATOR_FEE_SHARE = 10;
+    
+    // =============================================================================
+    // CUSTOM ERRORS
+    // =============================================================================
+    
+    error InvalidAddress();
+    error AlreadyRegistered();
+    error InsufficientStakingAmount();
+    error NoSpecializationProvided();
+    error InsufficientReputation();
+    error InsufficientParticipation();
+    error StakingTransferFailed();
+    error NotActiveArbitrator();
+    error MustStakeAdditionalAmount();
+    error AdditionalStakingTransferFailed();
+    error EscrowNotDisputed();
+    error NotAuthorized();
+    error DisputeAlreadyExists();
+    error TotalClaimsExceedEscrowBalance();
+    error NoSuitableArbitratorFound();
+    error PrivacyNotAvailable();
+    error PrivacyFeeManagerNotSet();
+    error AlreadyResolved();
+    error NotAuthorizedArbitrator();
+    error ResolutionDeadlinePassed();
+    error TotalPayoutsExceedEscrowBalance();
+    error PanelConsensusRequired();
+    error InvalidRating();
+    error NotAuthorizedToRate();
+    error DisputeNotResolved();
+    error AlreadyRated();
+    error OnlyBuyerAndSellerCanRate();
+    error NoEarningsToClaim();
     
     // =============================================================================
     // STATE VARIABLES
@@ -419,7 +419,7 @@ contract OmniCoinArbitration is
             successfulCases: 0,
             stakingAmount: _stakingAmount,
             isActive: true,
-            lastActiveTimestamp: block.timestamp, // Time tracking required for arbitrator activity
+            lastActiveTimestamp: block.timestamp, // solhint-disable-line not-rely-on-time
             privateEarnings: initialEarnings,
             specializationMask: _specializations
         });
@@ -638,7 +638,9 @@ contract OmniCoinArbitration is
         if (msg.sender != dispute.primaryArbitrator && !_isPanelArbitrator(_escrowId, msg.sender)) {
             revert NotAuthorizedArbitrator();
         }
-        if (block.timestamp > dispute.deadlineTimestamp) revert ResolutionDeadlinePassed(); // Time-based decision required for dispute deadline
+        // Time-based decision required for dispute deadline
+        // solhint-disable-next-line not-rely-on-time
+        if (block.timestamp > dispute.deadlineTimestamp) revert ResolutionDeadlinePassed();
         
         // Verify total payouts
         uint256 escrowBalance = ctUint64.unwrap(dispute.escrowBalance);
@@ -675,10 +677,14 @@ contract OmniCoinArbitration is
         
         // Create verification hash
         bytes32 payoutHash = keccak256(abi.encode(
-            _buyerPayout, _sellerPayout, block.timestamp, _resolutionHash // Time tracking for payout verification
+            _buyerPayout, _sellerPayout, 
+            block.timestamp, // solhint-disable-line not-rely-on-time
+            _resolutionHash
         ));
         
-        emit ConfidentialDisputeResolved(_escrowId, _resolutionHash, block.timestamp, payoutHash); // Time tracking for resolution event
+        // Time tracking for resolution event
+        // solhint-disable-next-line not-rely-on-time
+        emit ConfidentialDisputeResolved(_escrowId, _resolutionHash, block.timestamp, payoutHash);
     }
     
     /**
@@ -705,7 +711,9 @@ contract OmniCoinArbitration is
         if (msg.sender != dispute.primaryArbitrator && !_isPanelArbitrator(_escrowId, msg.sender)) {
             revert NotAuthorizedArbitrator();
         }
-        if (block.timestamp > dispute.deadlineTimestamp) revert ResolutionDeadlinePassed(); // Time-based decision required for dispute deadline
+        // Time-based decision required for dispute deadline
+        // solhint-disable-next-line not-rely-on-time
+        if (block.timestamp > dispute.deadlineTimestamp) revert ResolutionDeadlinePassed();
         
         // Validate encrypted inputs
         gtUint64 gtBuyerPayout = MpcCore.validateCiphertext(_buyerPayout);
@@ -765,10 +773,14 @@ contract OmniCoinArbitration is
         
         // Create verification hash
         bytes32 payoutHash = keccak256(abi.encode(
-            encryptedBuyerPayout, encryptedSellerPayout, block.timestamp, _resolutionHash // Time tracking for payout verification
+            encryptedBuyerPayout, encryptedSellerPayout, 
+            block.timestamp, // solhint-disable-line not-rely-on-time
+            _resolutionHash
         ));
         
-        emit ConfidentialDisputeResolved(_escrowId, _resolutionHash, block.timestamp, payoutHash); // Time tracking for resolution event
+        // Time tracking for resolution event
+        // solhint-disable-next-line not-rely-on-time
+        emit ConfidentialDisputeResolved(_escrowId, _resolutionHash, block.timestamp, payoutHash);
     }
 
     /**
@@ -851,7 +863,8 @@ contract OmniCoinArbitration is
         
         // Store fee distribution hash for transparency
         bytes32 feeDistributionHash = keccak256(abi.encode(
-            arbitratorShare, treasuryShare, validatorShare, block.timestamp // Time tracking for fee distribution
+            arbitratorShare, treasuryShare, validatorShare, 
+            block.timestamp // solhint-disable-line not-rely-on-time
         ));
         disputeFeeDistribution[_escrowId] = totalFee;
         
@@ -1104,7 +1117,11 @@ contract OmniCoinArbitration is
         // In full implementation, would execute private transfer:
         // omniCoin.privateTransfer(address(this), msg.sender, earnings);
         
-        bytes32 earningsHash = keccak256(abi.encode(earnings, msg.sender, block.timestamp)); // Time tracking for earnings claim
+        // Time tracking for earnings claim
+        bytes32 earningsHash = keccak256(abi.encode(
+            earnings, msg.sender, 
+            block.timestamp // solhint-disable-line not-rely-on-time
+        ));
         emit PrivateEarningsUpdated(msg.sender, earningsHash);
     }
 
@@ -1166,7 +1183,7 @@ contract OmniCoinArbitration is
             escrowId: _escrowId,
             primaryArbitrator: primaryArbitrator,
             panelArbitrators: panelArbitrators,
-            timestamp: block.timestamp, // Time tracking required for dispute creation
+            timestamp: block.timestamp, // solhint-disable-line not-rely-on-time
             disputeType: disputeType,
             evidenceHash: _evidenceHash,
             disputedAmount: disputedAmount,
@@ -1181,7 +1198,8 @@ contract OmniCoinArbitration is
             sellerRating: 0,
             arbitratorRating: 0,
             resolutionHash: bytes32(0),
-            deadlineTimestamp: block.timestamp + RESOLUTION_PERIOD // Time tracking required for deadline
+            // solhint-disable-next-line not-rely-on-time
+            deadlineTimestamp: block.timestamp + RESOLUTION_PERIOD
         });
         
         // Track dispute participants
@@ -1201,14 +1219,14 @@ contract OmniCoinArbitration is
         
         ++arbitrators[primaryArbitrator].totalCases;
         arbitrators[primaryArbitrator].lastActiveTimestamp = 
-            block.timestamp; // Time tracking required for activity
+            block.timestamp; // solhint-disable-line not-rely-on-time
         
         // Update panel arbitrators if applicable
         for (uint256 i = 0; i < panelArbitrators.length; ++i) {
             arbitratorDisputes[panelArbitrators[i]].push(_escrowId);
             ++arbitrators[panelArbitrators[i]].totalCases;
             arbitrators[panelArbitrators[i]].lastActiveTimestamp = 
-                block.timestamp; // Time tracking required for activity
+                block.timestamp; // solhint-disable-line not-rely-on-time
         }
         
         emit ConfidentialDisputeCreated(_escrowId, primaryArbitrator, disputeType, _evidenceHash);

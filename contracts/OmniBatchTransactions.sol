@@ -41,7 +41,7 @@ contract OmniBatchTransactions is
         address target;          // 20 bytes
         TransactionType opType;  // 1 byte
         bool critical;           // 1 byte - If true, failure stops batch execution
-        // 10 bytes padding
+        uint88 gasLimit;         // 11 bytes - Gas limit for this operation
         uint256 value;           // 32 bytes
         bytes data;              // dynamic
     }
@@ -61,9 +61,16 @@ contract OmniBatchTransactions is
         uint256 operationCount;  // 32 bytes
         uint256 successCount;    // 32 bytes
         uint256 totalGasUsed;    // 32 bytes
-        uint256 timestamp;       // 32 bytes - Time tracking required for batch history
+        uint256 timestamp;       // 32 bytes
     }
 
+    // =============================================================================
+    // STATE VARIABLES
+    // =============================================================================
+    
+    /// @notice OmniCoin core contract instance
+    OmniCoinCore public omniCoin;
+    
     // =============================================================================
     // CUSTOM ERRORS
     // =============================================================================
@@ -83,13 +90,6 @@ contract OmniBatchTransactions is
     error InvalidWhitelistRequest();
     error InvalidMaxBatchSize();
     error InvalidMaxGasPerOperation();
-    
-    // =============================================================================
-    // STATE VARIABLES
-    // =============================================================================
-    
-    /// @notice OmniCoin core contract instance
-    OmniCoinCore public omniCoin;
     
     /// @notice Mapping of batch ID to batch execution details
     mapping(uint256 => BatchExecution) public batchExecutions;
@@ -164,14 +164,18 @@ contract OmniBatchTransactions is
      * @notice Emitted when max batch size is updated
      * @param newSize New maximum batch size
      */
-    event MaxBatchSizeUpdated(uint256 newSize);
+    event MaxBatchSizeUpdated(uint256 indexed newSize);
     
     /**
      * @notice Emitted when max gas per operation is updated
      * @param newGas New maximum gas per operation
      */
-    event MaxGasPerOperationUpdated(uint256 newGas);
+    event MaxGasPerOperationUpdated(uint256 indexed newGas);
 
+    /**
+     * @notice Constructor for the upgradeable contract
+     * @dev Disables initializers to prevent implementation contract initialization
+     */
     /// @custom:oz-upgrades-unsafe-allow constructor
     constructor() {
         _disableInitializers();
@@ -224,7 +228,7 @@ contract OmniBatchTransactions is
             operationCount: operations.length,
             successCount: 0,
             totalGasUsed: 0,
-            timestamp: block.timestamp,  // Time tracking required for batch history
+            timestamp: block.timestamp, // solhint-disable-line not-rely-on-time
             completed: false
         });
 
@@ -233,7 +237,7 @@ contract OmniBatchTransactions is
         emit BatchExecutionStarted(batchId, msg.sender, operations.length);
 
         // Execute each operation
-        for (uint256 i = 0; i < operations.length; i++) {
+        for (uint256 i = 0; i < operations.length; ++i) {
             uint256 gasStart = gasleft();
 
             (
@@ -253,7 +257,7 @@ contract OmniBatchTransactions is
             });
 
             if (success) {
-                successCount++;
+                ++successCount;
             } else if (operations[i].critical) {
                 // Stop execution if critical operation fails
                 break;
@@ -271,7 +275,12 @@ contract OmniBatchTransactions is
     }
 
     /**
-     * @dev Execute a single operation within a batch
+     * @notice Execute a single operation within a batch
+     * @dev Executes operation with gas limiting and error handling
+     * @param operation The operation to execute
+     * @return success Whether the operation succeeded
+     * @return returnData Data returned from the operation
+     * @return errorMessage Error message if operation failed
      */
     function _executeOperation(
         BatchOperation calldata operation
@@ -297,7 +306,10 @@ contract OmniBatchTransactions is
     }
 
     /**
-     * @dev Perform the actual operation (external call for gas limiting)
+     * @notice Perform the actual operation (external call for gas limiting)
+     * @dev Must be called internally via this._performOperation
+     * @param operation The operation to execute
+     * @return Data returned from the operation
      */
     function _performOperation(
         BatchOperation calldata operation
@@ -323,7 +335,10 @@ contract OmniBatchTransactions is
     }
 
     /**
-     * @dev Execute token transfer
+     * @notice Execute token transfer
+     * @dev Decodes transfer parameters and executes via OmniCoin
+     * @param operation The transfer operation
+     * @return Encoded success boolean
      */
     function _executeTransfer(
         BatchOperation calldata operation
@@ -337,7 +352,10 @@ contract OmniBatchTransactions is
     }
 
     /**
-     * @dev Execute token approval
+     * @notice Execute token approval
+     * @dev Decodes approval parameters and executes via OmniCoin
+     * @param operation The approval operation
+     * @return Encoded success boolean
      */
     function _executeApprove(
         BatchOperation calldata operation
@@ -351,50 +369,64 @@ contract OmniBatchTransactions is
     }
 
     /**
-     * @dev Execute staking
+     * @notice Execute staking
+     * @dev Currently not implemented - use OmniCoinStaking
+     * @return Never returns, always reverts
      */
     function _executeStake(
-        BatchOperation calldata operation
-    ) internal returns (bytes memory) {
+        BatchOperation calldata /* operation */
+    ) internal pure returns (bytes memory) {
         // Staking functionality would be in OmniCoinStaking contract
-        revert("Use OmniCoinStaking contract for stake operations");
+        revert StakeOperationsNotSupported();
     }
 
     /**
-     * @dev Execute unstaking
+     * @notice Execute unstaking
+     * @dev Currently not implemented - use OmniCoinStaking
+     * @return Never returns, always reverts
      */
     function _executeUnstake(
-        BatchOperation calldata operation
-    ) internal returns (bytes memory) {
+        BatchOperation calldata /* operation */
+    ) internal pure returns (bytes memory) {
         // Unstaking functionality would be in OmniCoinStaking contract
-        revert("Use OmniCoinStaking contract for unstake operations");
+        revert UnstakeOperationsNotSupported();
     }
 
     /**
-     * @dev Create optimized batch for common wallet operations
+     * @notice Create optimized batch for common wallet operations
+     * @dev Generates batch operations for multiple transfers
+     * @param recipients Array of recipient addresses
+     * @param amounts Array of transfer amounts
+     * @return operations Array of batch operations
      */
     function createTransferBatch(
         address[] calldata recipients,
         uint256[] calldata amounts
     ) external view returns (BatchOperation[] memory operations) {
-        require(recipients.length == amounts.length, "Array length mismatch");
-        require(recipients.length <= maxBatchSize, "Too many transfers");
+        if (recipients.length != amounts.length) revert ArrayLengthMismatch();
+        if (recipients.length > maxBatchSize) revert TooManyTransfers();
 
         operations = new BatchOperation[](recipients.length);
 
-        for (uint256 i = 0; i < recipients.length; i++) {
+        for (uint256 i = 0; i < recipients.length; ++i) {
             operations[i] = BatchOperation({
                 opType: TransactionType.TRANSFER,
                 target: address(omniCoin),
                 data: abi.encode(recipients[i], amounts[i]),
                 value: 0,
-                critical: false
+                critical: false,
+                gasLimit: uint88(maxGasPerOperation)
             });
         }
     }
 
     /**
-     * @dev Create optimized batch for NFT operations
+     * @notice Create optimized batch for NFT operations
+     * @dev Generates batch operations for multiple NFT mints
+     * @param nftContract Address of the NFT contract
+     * @param recipients Array of recipient addresses
+     * @param tokenURIs Array of token URIs
+     * @return operations Array of batch operations
      */
     function createNFTBatch(
         address nftContract,
@@ -406,7 +438,7 @@ contract OmniBatchTransactions is
 
         operations = new BatchOperation[](recipients.length);
 
-        for (uint256 i = 0; i < recipients.length; i++) {
+        for (uint256 i = 0; i < recipients.length; ++i) {
             operations[i] = BatchOperation({
                 opType: TransactionType.NFT_MINT,
                 target: nftContract,
@@ -416,13 +448,17 @@ contract OmniBatchTransactions is
                     tokenURIs[i]
                 ),
                 value: 0,
-                critical: false
+                critical: false,
+                gasLimit: uint88(maxGasPerOperation)
             });
         }
     }
 
     /**
-     * @dev Get batch execution details
+     * @notice Get batch execution details
+     * @dev Returns full details of a batch execution
+     * @param batchId The batch ID to query
+     * @return BatchExecution struct with all details
      */
     function getBatchExecution(
         uint256 batchId
@@ -431,7 +467,10 @@ contract OmniBatchTransactions is
     }
 
     /**
-     * @dev Get user's batch history
+     * @notice Get user's batch history
+     * @dev Returns array of batch IDs for a user
+     * @param user The user address to query
+     * @return Array of batch IDs
      */
     function getUserBatches(
         address user
@@ -440,14 +479,17 @@ contract OmniBatchTransactions is
     }
 
     /**
-     * @dev Estimate gas for a batch operation
+     * @notice Estimate gas for a batch operation
+     * @dev Provides rough gas estimate for planning
+     * @param operations Array of operations to estimate
+     * @return totalGasEstimate Estimated total gas cost
      */
     function estimateBatchGas(
         BatchOperation[] calldata operations
     ) external view returns (uint256 totalGasEstimate) {
         totalGasEstimate = 21000; // Base transaction gas
 
-        for (uint256 i = 0; i < operations.length; i++) {
+        for (uint256 i = 0; i < operations.length; ++i) {
             if (operations[i].opType == TransactionType.TRANSFER) {
                 totalGasEstimate += 65000; // Approximate gas for ERC20 transfer
             } else if (operations[i].opType == TransactionType.APPROVE) {
@@ -461,7 +503,9 @@ contract OmniBatchTransactions is
     }
 
     /**
-     * @dev Authorize an executor for advanced batch operations
+     * @notice Authorize an executor for advanced batch operations
+     * @dev Grants executor privileges to an address
+     * @param executor Address to authorize
      */
     function authorizeExecutor(address executor) external onlyOwner {
         authorizedExecutors[executor] = true;
@@ -469,7 +513,9 @@ contract OmniBatchTransactions is
     }
 
     /**
-     * @dev Deauthorize an executor
+     * @notice Deauthorize an executor
+     * @dev Removes executor privileges from an address
+     * @param executor Address to deauthorize
      */
     function deauthorizeExecutor(address executor) external onlyOwner {
         authorizedExecutors[executor] = false;
@@ -477,7 +523,9 @@ contract OmniBatchTransactions is
     }
 
     /**
-     * @dev Update maximum batch size
+     * @notice Update maximum batch size
+     * @dev Adjusts the limit on operations per batch
+     * @param newSize New maximum batch size (1-100)
      */
     function updateMaxBatchSize(uint256 newSize) external onlyOwner {
         if (newSize == 0 || newSize > 100) revert InvalidMaxBatchSize();
@@ -486,7 +534,9 @@ contract OmniBatchTransactions is
     }
 
     /**
-     * @dev Update maximum gas per operation
+     * @notice Update maximum gas per operation
+     * @dev Adjusts gas limit for individual operations
+     * @param newGas New gas limit (100k-1M)
      */
     function updateMaxGasPerOperation(uint256 newGas) external onlyOwner {
         if (newGas < 100000 || newGas > 1000000) revert InvalidMaxGasPerOperation();
@@ -495,14 +545,16 @@ contract OmniBatchTransactions is
     }
 
     /**
-     * @dev Emergency pause for batch operations
+     * @notice Emergency pause for batch operations
+     * @dev Pauses all batch execution functionality
      */
     function emergencyPause() external onlyOwner {
         _pause();
     }
 
     /**
-     * @dev Resume batch operations
+     * @notice Resume batch operations
+     * @dev Unpauses batch execution functionality
      */
     function emergencyUnpause() external onlyOwner {
         _unpause();

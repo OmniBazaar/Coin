@@ -46,6 +46,13 @@ contract OmniCoinAccount is
     }
 
     // =============================================================================
+    // STATE VARIABLES
+    // =============================================================================
+    
+    /// @notice Nonce tracking for user operations
+    mapping(address => uint256) public nonces;
+    
+    // =============================================================================
     // CUSTOM ERRORS
     // =============================================================================
     
@@ -59,13 +66,6 @@ contract OmniCoinAccount is
     error TransferFailed();
     error NotWhitelisted();
     error InvalidRecipient();
-    
-    // =============================================================================
-    // STATE VARIABLES
-    // =============================================================================
-    
-    /// @notice Nonce tracking for user operations
-    mapping(address => uint256) public nonces;
     
     /// @notice Account deployment status
     mapping(address => bool) public isDeployed;
@@ -131,22 +131,26 @@ contract OmniCoinAccount is
      * @param account Account address
      * @param enabled Whether privacy is enabled
      */
-    event PrivacyToggled(address indexed account, bool enabled);
+    event PrivacyToggled(address indexed account, bool indexed enabled);
     
     /**
      * @notice Emitted when staking amount is updated
      * @param account Account address
      * @param amount New staking amount
      */
-    event StakingUpdated(address indexed account, uint256 amount);
+    event StakingUpdated(address indexed account, uint256 indexed amount);
     
     /**
      * @notice Emitted when reputation score is updated
      * @param account Account address
      * @param score New reputation score
      */
-    event ReputationUpdated(address indexed account, uint256 score);
+    event ReputationUpdated(address indexed account, uint256 indexed score);
 
+    /**
+     * @notice Constructor for the upgradeable contract
+     * @dev Disables initializers to prevent implementation contract initialization
+     */
     /// @custom:oz-upgrades-unsafe-allow constructor
     constructor() {
         _disableInitializers();
@@ -211,7 +215,10 @@ contract OmniCoinAccount is
     }
 
     /**
-     * @dev Executes a user operation
+     * @notice Executes a user operation
+     * @dev Called by the entry point to execute validated operations
+     * @param userOp User operation to execute
+     * @return result Execution result containing success status and return data
      */
     function executeUserOp(
         UserOperation calldata userOp
@@ -220,6 +227,7 @@ contract OmniCoinAccount is
         if (!isDeployed[userOp.sender]) revert AccountNotDeployed();
 
         // Execute the operation
+        // solhint-disable-next-line avoid-low-level-calls
         (bool success, bytes memory returnData) = userOp.sender.call{
             gas: userOp.callGasLimit
         }(userOp.callData);
@@ -231,7 +239,8 @@ contract OmniCoinAccount is
     }
 
     /**
-     * @dev Toggle privacy for an account
+     * @notice Toggle privacy for an account
+     * @dev Allows users to enable/disable privacy mode for their account
      */
     function togglePrivacy() external {
         privacyEnabled[msg.sender] = !privacyEnabled[msg.sender];
@@ -239,30 +248,40 @@ contract OmniCoinAccount is
     }
 
     /**
-     * @dev Update staking amount for an account
+     * @notice Update staking amount for an account
+     * @dev Handles both increasing and decreasing stake amounts
+     * @param amount New staking amount to set
      */
     function updateStaking(uint256 amount) external nonReentrant {
-        if (amount > stakingAmount[msg.sender]) {
-            uint256 additionalStake = amount - stakingAmount[msg.sender];
+        uint256 currentStake = stakingAmount[msg.sender];
+        
+        if (amount > currentStake) {
+            uint256 additionalStake = amount - currentStake;
+            // Update state before transfer to prevent reentrancy
+            stakingAmount[msg.sender] = amount;
             if (!omniCoin.transferFrom(
                     msg.sender,
                     address(this),
                     additionalStake
                 )) revert TransferFailed();
-        } else if (amount < stakingAmount[msg.sender]) {
-            uint256 returnStake = stakingAmount[msg.sender] - amount;
+        } else if (amount < currentStake) {
+            uint256 returnStake = currentStake - amount;
             // Update state before transfer to prevent reentrancy
             stakingAmount[msg.sender] = amount;
             if (!omniCoin.transfer(msg.sender, returnStake))
                 revert TransferFailed();
         } else {
+            // No change in stake amount
             stakingAmount[msg.sender] = amount;
         }
+        
         emit StakingUpdated(msg.sender, amount);
     }
 
     /**
-     * @dev Update reputation score for an account
+     * @notice Update reputation score for an account
+     * @dev Restricted to contract owner
+     * @param score New reputation score to set
      */
     function updateReputation(uint256 score) external {
         if (msg.sender != owner()) revert NotWhitelisted();
@@ -271,7 +290,9 @@ contract OmniCoinAccount is
     }
 
     /**
-     * @dev Updates the entry point address
+     * @notice Updates the entry point address
+     * @dev Restricted to contract owner
+     * @param _newEntryPoint New entry point contract address
      */
     function updateEntryPoint(address _newEntryPoint) external onlyOwner {
         if (_newEntryPoint == address(0)) revert InvalidAddress();
@@ -280,7 +301,9 @@ contract OmniCoinAccount is
     }
 
     /**
-     * @dev Updates the gas limit
+     * @notice Updates the gas limit
+     * @dev Restricted to contract owner
+     * @param _newGasLimit New gas limit for entry point operations
      */
     function updateGasLimit(uint256 _newGasLimit) external onlyOwner {
         entryPointGasLimit = _newGasLimit;
@@ -288,7 +311,15 @@ contract OmniCoinAccount is
     }
 
     /**
-     * @dev Returns account status and settings
+     * @notice Returns account status and settings
+     * @dev Provides comprehensive account information in a single call
+     * @param _account Address of the account to query
+     * @return deployed Whether the account is deployed
+     * @return nonce Current nonce for the account
+     * @return init Initialization code for the account
+     * @return privacy Whether privacy mode is enabled
+     * @return stake Current staking amount
+     * @return reputation Current reputation score
      */
     function getAccountStatus(
         address _account
@@ -315,16 +346,22 @@ contract OmniCoinAccount is
     }
 
     /**
-     * @dev Returns the current nonce for an account
+     * @notice Returns the current nonce for an account
+     * @dev Used for transaction ordering and replay protection
+     * @param _account Address of the account to query
+     * @return nonce Current nonce value
      */
-    function getNonce(address _account) external view returns (uint256) {
+    function getNonce(address _account) external view returns (uint256 nonce) {
         return nonces[_account];
     }
 
     /**
-     * @dev Returns whether an account is deployed
+     * @notice Returns whether an account is deployed
+     * @dev Checks deployment status for ERC-4337 compliance
+     * @param _account Address of the account to check
+     * @return deployed True if the account is deployed
      */
-    function isAccountDeployed(address _account) external view returns (bool) {
+    function isAccountDeployed(address _account) external view returns (bool deployed) {
         return isDeployed[_account];
     }
 }

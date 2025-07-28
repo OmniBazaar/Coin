@@ -10,6 +10,8 @@ import {PrivateOmniCoin} from "./PrivateOmniCoin.sol";
 
 /**
  * @title PrivacyFeeManagerV2
+ * @author OmniCoin Development Team
+ * @notice Simplified fee manager for dual-token architecture
  * @dev Simplified fee manager for dual-token architecture
  * 
  * Key Changes:
@@ -24,16 +26,21 @@ contract PrivacyFeeManagerV2 is AccessControl, ReentrancyGuard, Pausable {
     // CONSTANTS & ROLES
     // =============================================================================
     
+    /// @notice Fee manager role identifier
     bytes32 public constant FEE_MANAGER_ROLE = keccak256("FEE_MANAGER_ROLE");
+    /// @notice Treasury role identifier
     bytes32 public constant TREASURY_ROLE = keccak256("TREASURY_ROLE");
     
+    /// @notice Basis points for percentage calculations
     uint256 public constant BASIS_POINTS = 10000;
     
     // =============================================================================
     // IMMUTABLE VARIABLES
     // =============================================================================
     
+    /// @notice OmniCoin token contract
     OmniCoin public immutable OMNI_COIN;
+    /// @notice PrivateOmniCoin token contract
     PrivateOmniCoin public immutable PRIVATE_OMNI_COIN;
     
     // =============================================================================
@@ -50,38 +57,61 @@ contract PrivacyFeeManagerV2 is AccessControl, ReentrancyGuard, Pausable {
     // =============================================================================
     // STATE VARIABLES
     // =============================================================================
+    /// @notice Treasury address that receives collected fees
     address public treasury;
     
     // Fee structure (in basis points)
+    /// @notice Mapping of operation types to fee amounts in basis points
     mapping(bytes32 => uint256) public operationFees;
     
     // Statistics
+    /// @notice Total fees collected per operation type
     mapping(bytes32 => uint256) public totalFeesCollected; // operationType => amount
+    /// @notice Total fees contributed by each user address
     mapping(address => uint256) public userFeesContributed;
     
     // =============================================================================
     // EVENTS
     // =============================================================================
     
+    /// @notice Emitted when a fee is collected from a user
+    /// @param payer Address that paid the fee
+    /// @param operationType Type of operation the fee was collected for
+    /// @param amount Amount of fee collected
+    /// @param isPrivate Whether the fee was collected in private token
     event FeeCollected(
         address indexed payer,
         bytes32 indexed operationType,
-        uint256 amount,
+        uint256 indexed amount,
         bool isPrivate
     );
     
+    /// @notice Emitted when a fee for an operation type is updated
+    /// @param operationType Type of operation being updated
+    /// @param oldFee Previous fee in basis points
+    /// @param newFee New fee in basis points
     event FeeUpdated(
         bytes32 indexed operationType,
-        uint256 oldFee,
-        uint256 newFee
+        uint256 indexed oldFee,
+        uint256 indexed newFee
     );
     
+    /// @notice Emitted when the treasury address is updated
+    /// @param oldTreasury Previous treasury address
+    /// @param newTreasury New treasury address
     event TreasuryUpdated(address indexed oldTreasury, address indexed newTreasury);
     
     // =============================================================================
     // CONSTRUCTOR
     // =============================================================================
     
+    /**
+     * @notice Initialize the fee manager contract
+     * @param _omniCoin Address of the OmniCoin contract
+     * @param _privateOmniCoin Address of the PrivateOmniCoin contract
+     * @param _treasury Address to receive collected fees
+     * @param _admin Address to be granted admin roles
+     */
     constructor(
         address _omniCoin,
         address _privateOmniCoin,
@@ -108,6 +138,10 @@ contract PrivacyFeeManagerV2 is AccessControl, ReentrancyGuard, Pausable {
     // FEE INITIALIZATION
     // =============================================================================
     
+    /**
+     * @notice Initialize default fee values for various operations
+     * @dev Called during contract construction to set initial fee structure
+     */
     function _initializeDefaultFees() private {
         // Standard operations (basis points)
         operationFees[keccak256("TRANSFER")] = 0; // Free for basic transfers
@@ -127,6 +161,7 @@ contract PrivacyFeeManagerV2 is AccessControl, ReentrancyGuard, Pausable {
     // =============================================================================
     
     /**
+     * @notice Calculate fee for an operation
      * @dev Calculate fee for an operation
      * @param operationType Type of operation
      * @param amount Transaction amount
@@ -147,6 +182,7 @@ contract PrivacyFeeManagerV2 is AccessControl, ReentrancyGuard, Pausable {
     // =============================================================================
     
     /**
+     * @notice Collect fee in public OmniCoin (XOM)
      * @dev Collect fee in public OmniCoin (XOM)
      * @param payer Address paying the fee
      * @param operationType Type of operation
@@ -166,8 +202,8 @@ contract PrivacyFeeManagerV2 is AccessControl, ReentrancyGuard, Pausable {
             revert FeeTransferFailed();
         
         // Update statistics
-        totalFeesCollected[operationType] += feeAmount;
-        userFeesContributed[payer] += feeAmount;
+        totalFeesCollected[operationType] = totalFeesCollected[operationType] + feeAmount;
+        userFeesContributed[payer] = userFeesContributed[payer] + feeAmount;
         
         emit FeeCollected(payer, operationType, feeAmount, false);
         
@@ -199,7 +235,7 @@ contract PrivacyFeeManagerV2 is AccessControl, ReentrancyGuard, Pausable {
         PRIVATE_OMNI_COIN.transferPublic(treasury, feeAmount);
         
         // Update statistics (aggregated, not linked to specific users)
-        totalFeesCollected[operationType] += feeAmount;
+        totalFeesCollected[operationType] = totalFeesCollected[operationType] + feeAmount;
         
         emit FeeCollected(payer, operationType, feeAmount, true);
         
@@ -211,6 +247,7 @@ contract PrivacyFeeManagerV2 is AccessControl, ReentrancyGuard, Pausable {
     // =============================================================================
     
     /**
+     * @notice Update fee for an operation type
      * @dev Update fee for an operation type
      * @param operationType Type of operation
      * @param newFeeBasisPoints New fee in basis points
@@ -228,6 +265,7 @@ contract PrivacyFeeManagerV2 is AccessControl, ReentrancyGuard, Pausable {
     }
     
     /**
+     * @notice Update treasury address
      * @dev Update treasury address
      * @param newTreasury New treasury address
      */
@@ -245,6 +283,7 @@ contract PrivacyFeeManagerV2 is AccessControl, ReentrancyGuard, Pausable {
     // =============================================================================
     
     /**
+     * @notice Get total fees collected for all operations
      * @dev Get total fees collected for all operations
      * @return total Total fees collected
      */
@@ -261,16 +300,17 @@ contract PrivacyFeeManagerV2 is AccessControl, ReentrancyGuard, Pausable {
         ];
         
         for (uint256 i = 0; i < operations.length; ++i) {
-            total += totalFeesCollected[operations[i]];
+            total = total + totalFeesCollected[operations[i]];
         }
     }
     
     /**
+     * @notice Check if an address is authorized to collect fees
      * @dev Check if an address is authorized to collect fees
      * @param collector Address to check
      * @return isAuthorized Whether the address can collect fees
      */
-    function isAuthorizedCollector(address collector) external view returns (bool) {
+    function isAuthorizedCollector(address collector) external view returns (bool isAuthorized) {
         return hasRole(FEE_MANAGER_ROLE, collector);
     }
     
@@ -278,10 +318,18 @@ contract PrivacyFeeManagerV2 is AccessControl, ReentrancyGuard, Pausable {
     // EMERGENCY FUNCTIONS
     // =============================================================================
     
+    /**
+     * @notice Pause all fee collection operations
+     * @dev Only admin can pause the contract
+     */
     function pause() external onlyRole(DEFAULT_ADMIN_ROLE) {
         _pause();
     }
     
+    /**
+     * @notice Resume fee collection operations
+     * @dev Only admin can unpause the contract
+     */
     function unpause() external onlyRole(DEFAULT_ADMIN_ROLE) {
         _unpause();
     }

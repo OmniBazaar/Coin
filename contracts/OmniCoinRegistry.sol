@@ -6,6 +6,8 @@ import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
 
 /**
  * @title OmniCoinRegistry
+ * @author OmniCoin Development Team
+ * @notice Central registry for all OmniCoin contract addresses
  * @dev Central registry for all OmniCoin contract addresses
  * 
  * Benefits:
@@ -23,11 +25,11 @@ contract OmniCoinRegistry is AccessControl, Pausable {
     
     struct ContractInfo {
         address contractAddress;
-        uint256 version;
         bool isActive;
-        string description;
+        uint256 version;
         uint256 deployedAt;
         uint256 updatedAt;
+        string description;
     }
     
     // =============================================================================
@@ -49,7 +51,9 @@ contract OmniCoinRegistry is AccessControl, Pausable {
     // ROLES
     // =============================================================================
     
+    /// @notice Role for admin operations
     bytes32 public constant ADMIN_ROLE = keccak256("ADMIN_ROLE");
+    /// @notice Role for updating contract addresses
     bytes32 public constant UPDATER_ROLE = keccak256("UPDATER_ROLE");
     
     // =============================================================================
@@ -57,72 +61,111 @@ contract OmniCoinRegistry is AccessControl, Pausable {
     // =============================================================================
     
     // Core contracts
+    /// @notice Identifier for OmniCoin Core contract
     bytes32 public constant OMNICOIN_CORE = keccak256("OMNICOIN_CORE");
+    /// @notice Identifier for OmniCoin token contract
     bytes32 public constant OMNICOIN = keccak256("OMNICOIN");
+    /// @notice Identifier for Private OmniCoin contract
     bytes32 public constant PRIVATE_OMNICOIN = keccak256("PRIVATE_OMNICOIN");
+    /// @notice Identifier for OmniCoin Bridge contract
     bytes32 public constant OMNICOIN_BRIDGE = keccak256("OMNICOIN_BRIDGE");
+    /// @notice Identifier for OmniCoin Config contract
     bytes32 public constant OMNICOIN_CONFIG = keccak256("OMNICOIN_CONFIG");
+    /// @notice Identifier for Fee Distribution contract
     bytes32 public constant FEE_DISTRIBUTION = keccak256("FEE_DISTRIBUTION");
     
     // Reputation system
+    /// @notice Identifier for Reputation Core contract
     bytes32 public constant REPUTATION_CORE = keccak256("REPUTATION_CORE");
+    /// @notice Identifier for Identity Verification contract
     bytes32 public constant IDENTITY_VERIFICATION = keccak256("IDENTITY_VERIFICATION");
+    /// @notice Identifier for Trust System contract
     bytes32 public constant TRUST_SYSTEM = keccak256("TRUST_SYSTEM");
+    /// @notice Identifier for Referral System contract
     bytes32 public constant REFERRAL_SYSTEM = keccak256("REFERRAL_SYSTEM");
     
     // Financial contracts
+    /// @notice Identifier for Escrow contract
     bytes32 public constant ESCROW = keccak256("ESCROW");
+    /// @notice Identifier for Payment contract
     bytes32 public constant PAYMENT = keccak256("PAYMENT");
+    /// @notice Identifier for Staking contract
     bytes32 public constant STAKING = keccak256("STAKING");
     
     // Governance and dispute
+    /// @notice Identifier for Governance contract
     bytes32 public constant GOVERNANCE = keccak256("GOVERNANCE");
+    /// @notice Identifier for Arbitration contract
     bytes32 public constant ARBITRATION = keccak256("ARBITRATION");
     
     // Bridge
+    /// @notice Identifier for Bridge contract
     bytes32 public constant BRIDGE = keccak256("BRIDGE");
     
     // Future expansions
+    /// @notice Identifier for DEX contract
     bytes32 public constant DEX = keccak256("DEX");
+    /// @notice Identifier for Marketplace contract
     bytes32 public constant MARKETPLACE = keccak256("MARKETPLACE");
+    /// @notice Identifier for Validator Manager contract
     bytes32 public constant VALIDATOR_MANAGER = keccak256("VALIDATOR_MANAGER");
+    /// @notice Identifier for Gas Relayer contract
     bytes32 public constant GAS_RELAYER = keccak256("GAS_RELAYER");
+    /// @notice Identifier for Fee Manager contract
     bytes32 public constant FEE_MANAGER = keccak256("FEE_MANAGER");
+    /// @notice Identifier for Treasury contract
     bytes32 public constant TREASURY = keccak256("TREASURY");
+    /// @notice Identifier for DEX Settlement contract
     bytes32 public constant DEX_SETTLEMENT = keccak256("DEX_SETTLEMENT");
+    /// @notice Identifier for NFT Marketplace contract
     bytes32 public constant NFT_MARKETPLACE = keccak256("NFT_MARKETPLACE");
     
     // =============================================================================
     // STATE VARIABLES
     // =============================================================================
     
-    /// @dev Mapping from contract identifier to contract info
+    /// @notice Mapping from contract identifier to contract info
     mapping(bytes32 => ContractInfo) public contracts;
     
-    /// @dev Array of all registered contract identifiers
+    /// @notice Array of all registered contract identifiers
     bytes32[] public contractIdentifiers;
     
-    /// @dev Mapping to check if identifier exists
+    /// @notice Mapping to check if identifier exists
     mapping(bytes32 => bool) public identifierExists;
     
-    /// @dev Version history: identifier => version => address
-    mapping(bytes32 => mapping(uint256 => address)) public versionHistory;
+    /// @notice Version history: identifier => version => contract info
+    mapping(bytes32 => mapping(uint256 => ContractInfo)) public versionHistory;
     
-    /// @dev Emergency contacts
+    /// @notice Emergency admin address for critical operations
     address public emergencyAdmin;
-    address public emergencyFallback;
+    /// @notice Emergency fallback addresses per contract
+    mapping(bytes32 => address) public emergencyFallback;
     
     // =============================================================================
     // EVENTS
     // =============================================================================
     
+    /**
+     * @notice Emitted when a contract is registered
+     * @param identifier The contract identifier
+     * @param contractAddress The contract address
+     * @param version The contract version
+     * @param description The contract description
+     */
     event ContractRegistered(
         bytes32 indexed identifier,
         address indexed contractAddress,
-        uint256 version,
+        uint256 indexed version,
         string description
     );
     
+    /**
+     * @notice Emitted when a contract is updated
+     * @param identifier The contract identifier
+     * @param oldAddress The previous contract address
+     * @param newAddress The new contract address
+     * @param newVersion The new contract version
+     */
     event ContractUpdated(
         bytes32 indexed identifier,
         address indexed oldAddress,
@@ -130,15 +173,45 @@ contract OmniCoinRegistry is AccessControl, Pausable {
         uint256 newVersion
     );
     
+    /**
+     * @notice Emitted when a contract is deactivated
+     * @param identifier The contract identifier
+     */
     event ContractDeactivated(bytes32 indexed identifier);
+    
+    /**
+     * @notice Emitted when a contract is reactivated
+     * @param identifier The contract identifier
+     */
     event ContractReactivated(bytes32 indexed identifier);
+    
+    /**
+     * @notice Emitted when emergency admin is updated
+     * @param oldAdmin The previous emergency admin
+     * @param newAdmin The new emergency admin
+     */
     event EmergencyAdminUpdated(address indexed oldAdmin, address indexed newAdmin);
-    event EmergencyFallbackUpdated(address indexed oldFallback, address indexed newFallback);
+    
+    /**
+     * @notice Emitted when emergency fallback is updated
+     * @param identifier The contract identifier
+     * @param oldFallback The previous fallback address
+     * @param newFallback The new fallback address
+     */
+    event EmergencyFallbackUpdated(
+        bytes32 indexed identifier, 
+        address indexed oldFallback, 
+        address indexed newFallback
+    );
     
     // =============================================================================
     // CONSTRUCTOR
     // =============================================================================
     
+    /**
+     * @notice Initialize the registry with an admin address
+     * @param _admin The initial admin address
+     */
     constructor(address _admin) {
         if (_admin == address(0)) revert InvalidAddress();
         
@@ -147,7 +220,7 @@ contract OmniCoinRegistry is AccessControl, Pausable {
         _grantRole(UPDATER_ROLE, _admin);
         
         emergencyAdmin = _admin;
-        emergencyFallback = _admin;
+        emergencyFallback[bytes32(0)] = _admin;
     }
     
     // =============================================================================
@@ -155,7 +228,7 @@ contract OmniCoinRegistry is AccessControl, Pausable {
     // =============================================================================
     
     /**
-     * @dev Register a new contract
+     * @notice Register a new contract in the registry
      * @param identifier Unique identifier for the contract
      * @param contractAddress Address of the contract
      * @param description Human-readable description
@@ -174,19 +247,19 @@ contract OmniCoinRegistry is AccessControl, Pausable {
             version: 1,
             isActive: true,
             description: description,
-            deployedAt: block.timestamp,
-            updatedAt: block.timestamp
+            deployedAt: block.timestamp, // solhint-disable-line not-rely-on-time
+            updatedAt: block.timestamp // solhint-disable-line not-rely-on-time
         });
         
         contractIdentifiers.push(identifier);
         identifierExists[identifier] = true;
-        versionHistory[identifier][1] = contractAddress;
+        versionHistory[identifier][1] = contracts[identifier];
         
         emit ContractRegistered(identifier, contractAddress, 1, description);
     }
     
     /**
-     * @dev Update an existing contract address
+     * @notice Update an existing contract address
      * @param identifier Contract identifier
      * @param newAddress New contract address
      */
@@ -202,16 +275,16 @@ contract OmniCoinRegistry is AccessControl, Pausable {
         address oldAddress = info.contractAddress;
         
         info.contractAddress = newAddress;
-        info.version++;
-        info.updatedAt = block.timestamp;
+        ++info.version;
+        info.updatedAt = block.timestamp; // solhint-disable-line not-rely-on-time
         
-        versionHistory[identifier][info.version] = newAddress;
+        versionHistory[identifier][info.version] = info;
         
         emit ContractUpdated(identifier, oldAddress, newAddress, info.version);
     }
     
     /**
-     * @dev Batch register contracts
+     * @notice Batch register multiple contracts at once
      * @param identifiers Array of identifiers
      * @param addresses Array of addresses
      * @param descriptions Array of descriptions
@@ -224,20 +297,20 @@ contract OmniCoinRegistry is AccessControl, Pausable {
         if (identifiers.length != addresses.length || 
             addresses.length != descriptions.length) revert BatchSizeMismatch();
         
-        for (uint256 i = 0; i < identifiers.length; i++) {
+        for (uint256 i = 0; i < identifiers.length; ++i) {
             if (!identifierExists[identifiers[i]] && addresses[i] != address(0)) {
                 contracts[identifiers[i]] = ContractInfo({
                     contractAddress: addresses[i],
                     version: 1,
                     isActive: true,
                     description: descriptions[i],
-                    deployedAt: block.timestamp,
-                    updatedAt: block.timestamp
+                    deployedAt: block.timestamp, // solhint-disable-line not-rely-on-time
+                    updatedAt: block.timestamp // solhint-disable-line not-rely-on-time
                 });
                 
                 contractIdentifiers.push(identifiers[i]);
                 identifierExists[identifiers[i]] = true;
-                versionHistory[identifiers[i]][1] = addresses[i];
+                versionHistory[identifiers[i]][1] = contracts[identifiers[i]];
                 
                 emit ContractRegistered(identifiers[i], addresses[i], 1, descriptions[i]);
             }
@@ -249,7 +322,7 @@ contract OmniCoinRegistry is AccessControl, Pausable {
     // =============================================================================
     
     /**
-     * @dev Deactivate a contract
+     * @notice Deactivate a contract in the registry
      * @param identifier Contract identifier
      */
     function deactivateContract(bytes32 identifier) 
@@ -264,7 +337,7 @@ contract OmniCoinRegistry is AccessControl, Pausable {
     }
     
     /**
-     * @dev Reactivate a contract
+     * @notice Reactivate a previously deactivated contract
      * @param identifier Contract identifier
      */
     function reactivateContract(bytes32 identifier) 
@@ -283,7 +356,7 @@ contract OmniCoinRegistry is AccessControl, Pausable {
     // =============================================================================
     
     /**
-     * @dev Get contract address by identifier
+     * @notice Get contract address by identifier
      * @param identifier Contract identifier
      * @return Contract address
      */
@@ -294,9 +367,9 @@ contract OmniCoinRegistry is AccessControl, Pausable {
     }
     
     /**
-     * @dev Get contract info
+     * @notice Get detailed contract information
      * @param identifier Contract identifier
-     * @return Contract information
+     * @return Contract information struct
      */
     function getContractInfo(bytes32 identifier) 
         external 
@@ -308,7 +381,7 @@ contract OmniCoinRegistry is AccessControl, Pausable {
     }
     
     /**
-     * @dev Get multiple contracts at once (gas optimization)
+     * @notice Get multiple contracts at once (gas optimization)
      * @param identifiers Array of identifiers
      * @return addresses Array of addresses
      */
@@ -318,7 +391,7 @@ contract OmniCoinRegistry is AccessControl, Pausable {
         returns (address[] memory addresses) 
     {
         addresses = new address[](identifiers.length);
-        for (uint256 i = 0; i < identifiers.length; i++) {
+        for (uint256 i = 0; i < identifiers.length; ++i) {
             if (identifierExists[identifiers[i]] && contracts[identifiers[i]].isActive) {
                 addresses[i] = contracts[identifiers[i]].contractAddress;
             }
@@ -326,7 +399,7 @@ contract OmniCoinRegistry is AccessControl, Pausable {
     }
     
     /**
-     * @dev Get all registered identifiers
+     * @notice Get all registered identifiers
      * @return Array of all identifiers
      */
     function getAllIdentifiers() external view returns (bytes32[] memory) {
@@ -334,7 +407,7 @@ contract OmniCoinRegistry is AccessControl, Pausable {
     }
     
     /**
-     * @dev Get contract at specific version
+     * @notice Get contract at specific version
      * @param identifier Contract identifier
      * @param version Version number
      * @return Contract address at that version
@@ -346,16 +419,16 @@ contract OmniCoinRegistry is AccessControl, Pausable {
     {
         if (!identifierExists[identifier]) revert ContractNotRegistered();
         if (version == 0 || version > contracts[identifier].version) revert InvalidVersion();
-        return versionHistory[identifier][version];
+        return versionHistory[identifier][version].contractAddress;
     }
     
     /**
-     * @dev Check if address is a registered OmniCoin contract
+     * @notice Check if address is a registered OmniCoin contract
      * @param contractAddress Address to check
-     * @return bool Whether address is registered
+     * @return Whether address is registered
      */
     function isOmniCoinContract(address contractAddress) external view returns (bool) {
-        for (uint256 i = 0; i < contractIdentifiers.length; i++) {
+        for (uint256 i = 0; i < contractIdentifiers.length; ++i) {
             if (contracts[contractIdentifiers[i]].contractAddress == contractAddress && 
                 contracts[contractIdentifiers[i]].isActive) {
                 return true;
@@ -369,7 +442,7 @@ contract OmniCoinRegistry is AccessControl, Pausable {
     // =============================================================================
     
     /**
-     * @dev Update emergency admin
+     * @notice Update emergency admin
      * @param newAdmin New emergency admin address
      */
     function updateEmergencyAdmin(address newAdmin) external {
@@ -383,29 +456,30 @@ contract OmniCoinRegistry is AccessControl, Pausable {
     }
     
     /**
-     * @dev Update emergency fallback
+     * @notice Update emergency fallback address
+     * @param identifier Contract identifier
      * @param newFallback New emergency fallback address
      */
-    function updateEmergencyFallback(address newFallback) external onlyRole(ADMIN_ROLE) {
+    function updateEmergencyFallback(bytes32 identifier, address newFallback) external onlyRole(ADMIN_ROLE) {
         if (newFallback == address(0)) revert InvalidAddress();
         
-        address oldFallback = emergencyFallback;
-        emergencyFallback = newFallback;
+        address oldFallback = emergencyFallback[identifier];
+        emergencyFallback[identifier] = newFallback;
         
-        emit EmergencyFallbackUpdated(oldFallback, newFallback);
+        emit EmergencyFallbackUpdated(identifier, oldFallback, newFallback);
     }
     
     /**
-     * @dev Emergency pause
+     * @notice Emergency pause the registry
      */
     function emergencyPause() external {
-        if (msg.sender != emergencyAdmin && msg.sender != emergencyFallback) 
+        if (msg.sender != emergencyAdmin) 
             revert UnauthorizedUpgrade();
         _pause();
     }
     
     /**
-     * @dev Unpause
+     * @notice Unpause the registry
      */
     function unpause() external onlyRole(ADMIN_ROLE) {
         _unpause();
@@ -416,7 +490,7 @@ contract OmniCoinRegistry is AccessControl, Pausable {
     // =============================================================================
     
     /**
-     * @dev Export all contract data for migration
+     * @notice Export all contract data for migration
      * @return identifiers Array of identifiers
      * @return addresses Array of current addresses
      * @return versions Array of versions
@@ -435,7 +509,7 @@ contract OmniCoinRegistry is AccessControl, Pausable {
         addresses = new address[](length);
         versions = new uint256[](length);
         
-        for (uint256 i = 0; i < length; i++) {
+        for (uint256 i = 0; i < length; ++i) {
             bytes32 id = contractIdentifiers[i];
             identifiers[i] = id;
             addresses[i] = contracts[id].contractAddress;

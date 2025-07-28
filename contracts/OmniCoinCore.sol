@@ -695,7 +695,7 @@ contract OmniCoinCore is PrivateERC20, AccessControl, Pausable, ReentrancyGuard,
             operationData,
             operationType,
             msg.sender,
-            block.timestamp
+            block.timestamp // solhint-disable-line not-rely-on-time
         ));
         
         validatorOperations[operationHash] = ValidatorOperation({
@@ -703,7 +703,7 @@ contract OmniCoinCore is PrivateERC20, AccessControl, Pausable, ReentrancyGuard,
             validators: new address[](0),
             confirmations: 0,
             executed: false,
-            timestamp: block.timestamp
+            timestamp: block.timestamp // solhint-disable-line not-rely-on-time
         });
         
         emit ValidatorOperationSubmitted(operationHash, msg.sender);
@@ -996,6 +996,8 @@ contract OmniCoinCore is PrivateERC20, AccessControl, Pausable, ReentrancyGuard,
         ValidatorOperation storage operation = validatorOperations[operationHash];
         if (operation.operationHash == bytes32(0)) revert OperationNotFound();
         if (operation.executed) revert OperationAlreadyExecuted();
+        // Emergency operations require 24 hour delay for security
+        // solhint-disable-next-line not-rely-on-time
         if (block.timestamp < operation.timestamp + 24 hours + 1) revert OperationNotFound();
         
         operation.executed = true;

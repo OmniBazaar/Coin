@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.19;
 
+/* solhint-disable not-rely-on-time */
+
 import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
@@ -12,7 +14,9 @@ import {PrivacyFeeManager} from "./PrivacyFeeManager.sol";
 
 /**
  * @title OmniCoinPayment
- * @dev Payment processing with optional privacy using COTI V2 MPC
+ * @author OmniBazaar Team
+ * @notice Payment processing contract with optional privacy features using COTI V2 MPC
+ * @dev Implements payment processing with privacy options, streaming payments, and staking integration
  * 
  * Features:
  * - Default: Public payment amounts (no privacy fees)
@@ -47,42 +51,35 @@ contract OmniCoinPayment is AccessControl, ReentrancyGuard, Pausable {
     error InvalidFee();
     
     // =============================================================================
-    // CONSTANTS & ROLES
-    // =============================================================================
-    
-    bytes32 public constant ADMIN_ROLE = keccak256("ADMIN_ROLE");
-    bytes32 public constant PAYMENT_PROCESSOR_ROLE = keccak256("PAYMENT_PROCESSOR_ROLE");
-    bytes32 public constant FEE_MANAGER_ROLE = keccak256("FEE_MANAGER_ROLE");
-    
-    // =============================================================================
     // STRUCTS
     // =============================================================================
     
+    /* solhint-disable-next-line ordering */
     struct PrivatePayment {
-        bytes32 paymentId;
-        address sender;
-        address receiver;
-        gtUint64 encryptedAmount;         // Private: payment amount
-        ctUint64 senderEncryptedAmount;   // Private: amount visible to sender
-        ctUint64 receiverEncryptedAmount; // Private: amount visible to receiver
-        bool privacyEnabled;
-        uint256 timestamp;
-        bool stakingEnabled;
-        gtUint64 stakeAmount;             // Private: staking amount
-        bool completed;
-        PaymentType paymentType;
+        bytes32 paymentId;                // 32 bytes - slot 1
+        uint256 timestamp;                // 32 bytes - slot 2
+        address sender;                   // 20 bytes \
+        PaymentType paymentType;          // 1 byte   |-- slot 3 (21 bytes used, 11 free)
+        bool privacyEnabled;              // 1 byte   |
+        bool stakingEnabled;              // 1 byte   |
+        bool completed;                   // 1 byte   /
+        address receiver;                 // 20 bytes - slot 4 (20 bytes used, 12 free)
+        gtUint64 encryptedAmount;         // 8 bytes - slot 5
+        gtUint64 stakeAmount;             // 8 bytes - slot 6
+        ctUint64 senderEncryptedAmount;   // 8 bytes - slot 7
+        ctUint64 receiverEncryptedAmount; // 8 bytes - slot 8
     }
     
     struct PaymentStream {
-        bytes32 streamId;
-        address sender;
-        address receiver;
-        gtUint64 totalAmount;             // Private: total stream amount
-        gtUint64 releasedAmount;          // Private: amount already released
-        uint256 startTime;
-        uint256 endTime;
-        uint256 lastWithdrawTime;
-        bool cancelled;
+        bytes32 streamId;                 // 32 bytes - slot 1
+        uint256 startTime;                // 32 bytes - slot 2
+        uint256 endTime;                  // 32 bytes - slot 3
+        uint256 lastWithdrawTime;         // 32 bytes - slot 4
+        address sender;                   // 20 bytes \
+        bool cancelled;                   // 1 byte   |-- slot 5 (21 bytes used, 11 free)
+        address receiver;                 // 20 bytes - slot 6 (20 bytes used, 12 free)
+        gtUint64 totalAmount;             // 8 bytes - slot 7
+        gtUint64 releasedAmount;          // 8 bytes - slot 8
     }
     
     enum PaymentType {
@@ -92,40 +89,72 @@ contract OmniCoinPayment is AccessControl, ReentrancyGuard, Pausable {
     }
     
     // =============================================================================
+    // CONSTANTS & ROLES
+    // =============================================================================
+    
+    /// @notice Role identifier for admin functions
+    bytes32 public constant ADMIN_ROLE = keccak256("ADMIN_ROLE");
+    /// @notice Role identifier for payment processors
+    bytes32 public constant PAYMENT_PROCESSOR_ROLE = keccak256("PAYMENT_PROCESSOR_ROLE");
+    /// @notice Role identifier for fee managers
+    bytes32 public constant FEE_MANAGER_ROLE = keccak256("FEE_MANAGER_ROLE");
+    
+    /// @notice Privacy fee rate in basis points (10 = 0.1%)
+    uint256 public constant PRIVACY_FEE_RATE = 10;
+    /// @notice Basis points divisor for percentage calculations
+    uint256 public constant BASIS_POINTS = 10000;
+    /// @notice Multiplier for privacy fees (10x base fee)
+    uint256 public constant PRIVACY_MULTIPLIER = 10;
+    
+    // =============================================================================
     // STATE VARIABLES
     // =============================================================================
     
+    /// @notice Reference to the OmniCoin token contract
     OmniCoinCore public token;
+    /// @notice Reference to the account management contract
     OmniCoinAccount public accountContract;
+    /// @notice Reference to the staking contract
     OmniCoinStaking public stakingContract;
     
-    /// @dev Payment mappings
+    /// @notice Mapping of payment ID to payment details
     mapping(bytes32 => PrivatePayment) public payments;
+    /// @notice Mapping of stream ID to stream details
     mapping(bytes32 => PaymentStream) public streams;
+    /// @notice Mapping of user address to their payment IDs
     mapping(address => bytes32[]) public userPayments;
+    /// @notice Mapping of user address to their stream IDs
     mapping(address => bytes32[]) public userStreams;
     
-    /// @dev Statistics (encrypted)
+    /// @notice Encrypted total payments sent by each user
     mapping(address => gtUint64) private totalPaymentsSent;
+    /// @notice Encrypted total payments received by each user
     mapping(address => gtUint64) private totalPaymentsReceived;
     
-    /// @dev Configuration
-    gtUint64 public minStakeAmount;      // Private minimum stake
-    gtUint64 public maxPrivacyFee;       // Private maximum privacy fee
-    uint256 public constant PRIVACY_FEE_RATE = 10; // 0.1% for privacy
-    uint256 public constant BASIS_POINTS = 10000;
+    /// @notice Minimum stake amount (encrypted)
+    gtUint64 public minStakeAmount;
+    /// @notice Maximum privacy fee allowed (encrypted)
+    gtUint64 public maxPrivacyFee;
     
-    /// @dev Privacy fee configuration
-    uint256 public constant PRIVACY_MULTIPLIER = 10; // 10x fee for privacy
+    /// @notice Address of the privacy fee manager contract
     address public privacyFeeManager;
     
-    /// @dev MPC availability flag
+    /// @notice Flag indicating if MPC functionality is available
     bool public isMpcAvailable;
     
     // =============================================================================
     // EVENTS
     // =============================================================================
     
+    /**
+     * @notice Emitted when a payment is processed
+     * @param paymentId Unique identifier for the payment
+     * @param sender Address that sent the payment
+     * @param receiver Address that received the payment
+     * @param privacyEnabled Whether privacy features were used
+     * @param paymentType Type of payment (instant, stream, scheduled)
+     * @param timestamp When the payment was processed
+     */
     event PaymentProcessed(
         bytes32 indexed paymentId,
         address indexed sender,
@@ -134,6 +163,14 @@ contract OmniCoinPayment is AccessControl, ReentrancyGuard, Pausable {
         PaymentType paymentType,
         uint256 timestamp
     );
+    /**
+     * @notice Emitted when a payment stream is created
+     * @param streamId Unique identifier for the stream
+     * @param sender Address that created the stream
+     * @param receiver Address that will receive stream payments
+     * @param startTime When the stream starts
+     * @param endTime When the stream ends
+     */
     event PaymentStreamCreated(
         bytes32 indexed streamId,
         address indexed sender,
@@ -141,24 +178,58 @@ contract OmniCoinPayment is AccessControl, ReentrancyGuard, Pausable {
         uint256 startTime,
         uint256 endTime
     );
+    /**
+     * @notice Emitted when funds are withdrawn from a stream
+     * @param streamId Unique identifier for the stream
+     * @param receiver Address that withdrew funds
+     * @param timestamp When the withdrawal occurred
+     */
     event PaymentStreamWithdrawn(
         bytes32 indexed streamId,
         address indexed receiver,
-        uint256 timestamp
+        uint256 indexed timestamp
     );
+    /**
+     * @notice Emitted when a payment stream is cancelled
+     * @param streamId Unique identifier for the stream
+     * @param timestamp When the cancellation occurred
+     */
     event PaymentStreamCancelled(
         bytes32 indexed streamId,
-        uint256 timestamp
+        uint256 indexed timestamp
     );
-    event PrivacyToggled(bytes32 indexed paymentId, bool enabled);
-    event StakingToggled(bytes32 indexed paymentId, bool enabled);
+    /**
+     * @notice Emitted when privacy is toggled for a payment
+     * @param paymentId Payment identifier
+     * @param enabled Whether privacy was enabled or disabled
+     */
+    event PrivacyToggled(bytes32 indexed paymentId, bool indexed enabled);
+    
+    /**
+     * @notice Emitted when staking is toggled for a payment
+     * @param paymentId Payment identifier
+     * @param enabled Whether staking was enabled or disabled
+     */
+    event StakingToggled(bytes32 indexed paymentId, bool indexed enabled);
+    
+    /**
+     * @notice Emitted when minimum stake amount is updated
+     */
     event MinStakeAmountUpdated();
+    
+    /**
+     * @notice Emitted when maximum privacy fee is updated
+     */
     event MaxPrivacyFeeUpdated();
     
     // =============================================================================
     // MODIFIERS
     // =============================================================================
     
+    /**
+     * @notice Ensures the receiver address is valid
+     * @param receiver Address to validate
+     */
     modifier validReceiver(address receiver) {
         if (receiver == address(0)) revert InvalidReceiver();
         if (receiver == msg.sender) revert InvalidReceiver();
@@ -169,6 +240,14 @@ contract OmniCoinPayment is AccessControl, ReentrancyGuard, Pausable {
     // CONSTRUCTOR
     // =============================================================================
     
+    /**
+     * @notice Initializes the payment contract
+     * @param _token Address of the OmniCoin token contract
+     * @param _accountContract Address of the account management contract
+     * @param _stakingContract Address of the staking contract
+     * @param _admin Address to grant admin role
+     * @param _privacyFeeManager Address of the privacy fee manager
+     */
     constructor(
         address _token,
         address _accountContract,
@@ -210,17 +289,21 @@ contract OmniCoinPayment is AccessControl, ReentrancyGuard, Pausable {
     // =============================================================================
     
     /**
-     * @dev Set MPC availability
+     * @notice Set MPC availability status
+     * @param _available Whether MPC functionality is available
+     * @dev Only callable by admin role
      */
     function setMpcAvailability(bool _available) external onlyRole(ADMIN_ROLE) {
         isMpcAvailable = _available;
     }
     
     /**
-     * @dev Set privacy fee manager
+     * @notice Set the privacy fee manager address
+     * @param _privacyFeeManager New privacy fee manager address
+     * @dev Only callable by admin role
      */
     function setPrivacyFeeManager(address _privacyFeeManager) external onlyRole(ADMIN_ROLE) {
-        require(_privacyFeeManager != address(0), "OmniCoinPayment: Invalid address");
+        if (_privacyFeeManager == address(0)) revert InvalidReceiver();
         privacyFeeManager = _privacyFeeManager;
     }
     
@@ -229,11 +312,12 @@ contract OmniCoinPayment is AccessControl, ReentrancyGuard, Pausable {
     // =============================================================================
     
     /**
-     * @dev Process standard public payment (default, no privacy fees)
+     * @notice Process standard public payment (default, no privacy fees)
      * @param receiver Receiver address
      * @param amount Payment amount
      * @param stakingEnabled Enable staking rewards
      * @param stakeAmount Stake amount (if staking enabled)
+     * @return paymentId Unique identifier for the payment
      */
     function processPayment(
         address receiver,
@@ -241,10 +325,10 @@ contract OmniCoinPayment is AccessControl, ReentrancyGuard, Pausable {
         bool stakingEnabled,
         uint256 stakeAmount
     ) external whenNotPaused nonReentrant validReceiver(receiver) returns (bytes32) {
-        require(amount > 0, "OmniCoinPayment: Invalid amount");
+        if (amount == 0) revert InvalidAmount();
         
         if (stakingEnabled) {
-            require(stakeAmount >= uint64(gtUint64.unwrap(minStakeAmount)), "OmniCoinPayment: Stake too low");
+            if (stakeAmount < uint64(gtUint64.unwrap(minStakeAmount))) revert InvalidAmount();
         }
         
         bytes32 paymentId = keccak256(
@@ -257,17 +341,17 @@ contract OmniCoinPayment is AccessControl, ReentrancyGuard, Pausable {
         
         payments[paymentId] = PrivatePayment({
             paymentId: paymentId,
+            timestamp: block.timestamp,
             sender: msg.sender,
+            paymentType: PaymentType.INSTANT,
+            privacyEnabled: false,
+            stakingEnabled: stakingEnabled,
+            completed: false,
             receiver: receiver,
             encryptedAmount: gtAmount,
-            senderEncryptedAmount: ctUint64.wrap(uint64(amount)),
-            receiverEncryptedAmount: ctUint64.wrap(uint64(amount)),
-            privacyEnabled: false,
-            timestamp: block.timestamp,
-            stakingEnabled: stakingEnabled,
             stakeAmount: gtStakeAmount,
-            completed: false,
-            paymentType: PaymentType.INSTANT
+            senderEncryptedAmount: ctUint64.wrap(uint64(amount)),
+            receiverEncryptedAmount: ctUint64.wrap(uint64(amount))
         });
         
         userPayments[msg.sender].push(paymentId);
@@ -275,7 +359,7 @@ contract OmniCoinPayment is AccessControl, ReentrancyGuard, Pausable {
         
         // Execute transfers using public methods
         bool transferResult = token.transferFromPublic(msg.sender, receiver, amount);
-        require(transferResult, "OmniCoinPayment: Transfer failed");
+        if (!transferResult) revert TransferFailed();
         
         if (stakingEnabled && stakeAmount > 0) {
             // Handle staking
@@ -297,12 +381,13 @@ contract OmniCoinPayment is AccessControl, ReentrancyGuard, Pausable {
     }
     
     /**
-     * @dev Process payment with privacy (premium feature)
+     * @notice Process payment with privacy (premium feature)
      * @param receiver Receiver address
      * @param amount Encrypted payment amount
      * @param usePrivacy Whether to use privacy features
      * @param stakingEnabled Enable staking rewards
      * @param stakeAmount Encrypted stake amount (if staking enabled)
+     * @return paymentId Unique identifier for the payment
      */
     function processPaymentWithPrivacy(
         address receiver,
@@ -311,20 +396,20 @@ contract OmniCoinPayment is AccessControl, ReentrancyGuard, Pausable {
         bool stakingEnabled,
         itUint64 calldata stakeAmount
     ) external whenNotPaused nonReentrant validReceiver(receiver) returns (bytes32) {
-        require(usePrivacy && isMpcAvailable, "OmniCoinPayment: Privacy not available");
-        require(privacyFeeManager != address(0), "OmniCoinPayment: Privacy fee manager not set");
+        if (!usePrivacy || !isMpcAvailable) revert PrivacyNotEnabled();
+        if (privacyFeeManager == address(0)) revert InvalidReceiver();
         
         gtUint64 gtAmount = MpcCore.validateCiphertext(amount);
         
         // Validate amount > 0
         gtBool isPositive = MpcCore.gt(gtAmount, MpcCore.setPublic64(0));
-        require(MpcCore.decrypt(isPositive), "OmniCoinPayment: Invalid amount");
+        if (!MpcCore.decrypt(isPositive)) revert InvalidAmount();
         
         gtUint64 gtStakeAmount;
         if (stakingEnabled) {
             gtStakeAmount = MpcCore.validateCiphertext(stakeAmount);
             gtBool isEnoughStake = MpcCore.ge(gtStakeAmount, minStakeAmount);
-            require(MpcCore.decrypt(isEnoughStake), "OmniCoinPayment: Stake too low");
+            if (!MpcCore.decrypt(isEnoughStake)) revert InvalidAmount();
         } else {
             gtStakeAmount = MpcCore.setPublic64(0);
         }
@@ -355,17 +440,17 @@ contract OmniCoinPayment is AccessControl, ReentrancyGuard, Pausable {
         // Store payment record
         payments[paymentId] = PrivatePayment({
             paymentId: paymentId,
+            timestamp: block.timestamp,
             sender: msg.sender,
+            paymentType: PaymentType.INSTANT,
+            privacyEnabled: true,
+            stakingEnabled: stakingEnabled,
+            completed: false,
             receiver: receiver,
             encryptedAmount: gtAmount,
-            senderEncryptedAmount: senderEncrypted,
-            receiverEncryptedAmount: receiverEncrypted,
-            privacyEnabled: true,
-            timestamp: block.timestamp,
-            stakingEnabled: stakingEnabled,
             stakeAmount: gtStakeAmount,
-            completed: false,
-            paymentType: PaymentType.INSTANT
+            senderEncryptedAmount: senderEncrypted,
+            receiverEncryptedAmount: receiverEncrypted
         });
         
         userPayments[msg.sender].push(paymentId);
@@ -393,19 +478,20 @@ contract OmniCoinPayment is AccessControl, ReentrancyGuard, Pausable {
     // =============================================================================
     
     /**
-     * @dev Create standard public payment stream (default, no privacy fees)
+     * @notice Create standard public payment stream (default, no privacy fees)
      * @param receiver Stream receiver
      * @param totalAmount Total stream amount
      * @param duration Stream duration in seconds
+     * @return streamId Unique identifier for the stream
      */
     function createPaymentStream(
         address receiver,
         uint256 totalAmount,
         uint256 duration
     ) external whenNotPaused nonReentrant validReceiver(receiver) returns (bytes32) {
-        require(duration > 0, "OmniCoinPayment: Invalid duration");
-        require(duration <= 365 days, "OmniCoinPayment: Duration too long");
-        require(totalAmount > 0, "OmniCoinPayment: Invalid amount");
+        if (duration == 0) revert InvalidStreamDuration();
+        if (duration > 365 days) revert InvalidStreamDuration();
+        if (totalAmount == 0) revert InvalidAmount();
         
         bytes32 streamId = keccak256(
             abi.encodePacked(msg.sender, receiver, block.timestamp, "stream")
@@ -419,14 +505,14 @@ contract OmniCoinPayment is AccessControl, ReentrancyGuard, Pausable {
         
         streams[streamId] = PaymentStream({
             streamId: streamId,
-            sender: msg.sender,
-            receiver: receiver,
-            totalAmount: gtTotalAmount,
-            releasedAmount: gtUint64.wrap(0),
             startTime: startTime,
             endTime: endTime,
             lastWithdrawTime: startTime,
-            cancelled: false
+            sender: msg.sender,
+            cancelled: false,
+            receiver: receiver,
+            totalAmount: gtTotalAmount,
+            releasedAmount: gtUint64.wrap(0)
         });
         
         userStreams[msg.sender].push(streamId);
@@ -434,7 +520,7 @@ contract OmniCoinPayment is AccessControl, ReentrancyGuard, Pausable {
         
         // Transfer total amount to contract using public method
         bool transferResult = token.transferFromPublic(msg.sender, address(this), totalAmount);
-        require(transferResult, "OmniCoinPayment: Transfer failed");
+        if (!transferResult) revert TransferFailed();
         
         emit PaymentStreamCreated(
             streamId,
@@ -448,11 +534,12 @@ contract OmniCoinPayment is AccessControl, ReentrancyGuard, Pausable {
     }
     
     /**
-     * @dev Create payment stream with privacy (premium feature)
+     * @notice Create payment stream with privacy (premium feature)
      * @param receiver Stream receiver
      * @param totalAmount Total stream amount (encrypted)
      * @param duration Stream duration in seconds
      * @param usePrivacy Whether to use privacy features
+     * @return streamId Unique identifier for the stream
      */
     function createPaymentStreamWithPrivacy(
         address receiver,
@@ -460,14 +547,14 @@ contract OmniCoinPayment is AccessControl, ReentrancyGuard, Pausable {
         uint256 duration,
         bool usePrivacy
     ) external whenNotPaused nonReentrant validReceiver(receiver) returns (bytes32) {
-        require(usePrivacy && isMpcAvailable, "OmniCoinPayment: Privacy not available");
-        require(privacyFeeManager != address(0), "OmniCoinPayment: Privacy fee manager not set");
-        require(duration > 0, "OmniCoinPayment: Invalid duration");
-        require(duration <= 365 days, "OmniCoinPayment: Duration too long");
+        if (!usePrivacy || !isMpcAvailable) revert PrivacyNotEnabled();
+        if (privacyFeeManager == address(0)) revert InvalidReceiver();
+        if (duration == 0) revert InvalidStreamDuration();
+        if (duration > 365 days) revert InvalidStreamDuration();
         
         gtUint64 gtTotalAmount = MpcCore.validateCiphertext(totalAmount);
         gtBool isPositive = MpcCore.gt(gtTotalAmount, MpcCore.setPublic64(0));
-        require(MpcCore.decrypt(isPositive), "OmniCoinPayment: Invalid amount");
+        if (!MpcCore.decrypt(isPositive)) revert InvalidAmount();
         
         // Calculate privacy fee on total stream amount
         gtUint64 fee = _calculatePrivacyFee(gtTotalAmount);
@@ -491,14 +578,14 @@ contract OmniCoinPayment is AccessControl, ReentrancyGuard, Pausable {
         // Initialize stream
         streams[streamId] = PaymentStream({
             streamId: streamId,
-            sender: msg.sender,
-            receiver: receiver,
-            totalAmount: gtTotalAmount,
-            releasedAmount: MpcCore.setPublic64(0),
             startTime: startTime,
             endTime: endTime,
             lastWithdrawTime: startTime,
-            cancelled: false
+            sender: msg.sender,
+            cancelled: false,
+            receiver: receiver,
+            totalAmount: gtTotalAmount,
+            releasedAmount: MpcCore.setPublic64(0)
         });
         
         userStreams[msg.sender].push(streamId);
@@ -507,7 +594,7 @@ contract OmniCoinPayment is AccessControl, ReentrancyGuard, Pausable {
         // Transfer total amount to contract (including fee)
         gtUint64 totalWithFee = MpcCore.add(gtTotalAmount, fee);
         gtBool transferResult = token.transferFrom(msg.sender, address(this), totalWithFee);
-        require(MpcCore.decrypt(transferResult), "OmniCoinPayment: Transfer failed");
+        if (!MpcCore.decrypt(transferResult)) revert TransferFailed();
         
         emit PaymentStreamCreated(streamId, msg.sender, receiver, startTime, endTime);
         
@@ -515,8 +602,9 @@ contract OmniCoinPayment is AccessControl, ReentrancyGuard, Pausable {
     }
     
     /**
-     * @dev Withdraw from payment stream
+     * @notice Withdraw available funds from payment stream
      * @param streamId Stream ID
+     * @return withdrawable Amount withdrawn (encrypted)
      */
     function withdrawFromStream(bytes32 streamId) 
         external 
@@ -525,8 +613,8 @@ contract OmniCoinPayment is AccessControl, ReentrancyGuard, Pausable {
         returns (gtUint64) 
     {
         PaymentStream storage stream = streams[streamId];
-        require(msg.sender == stream.receiver, "OmniCoinPayment: Not receiver");
-        require(!stream.cancelled, "OmniCoinPayment: Stream cancelled");
+        if (msg.sender != stream.receiver) revert UnauthorizedAccess();
+        if (stream.cancelled) revert StreamAlreadyCompleted();
         
         uint256 currentTime = block.timestamp;
         if (currentTime > stream.endTime) {
@@ -539,10 +627,10 @@ contract OmniCoinPayment is AccessControl, ReentrancyGuard, Pausable {
         // Check if there's anything to withdraw
         if (isMpcAvailable) {
             gtBool hasWithdrawable = MpcCore.gt(withdrawable, MpcCore.setPublic64(0));
-            require(MpcCore.decrypt(hasWithdrawable), "OmniCoinPayment: Nothing to withdraw");
+            if (!MpcCore.decrypt(hasWithdrawable)) revert InvalidAmount();
         } else {
             uint64 withdrawableAmount = uint64(gtUint64.unwrap(withdrawable));
-            require(withdrawableAmount > 0, "OmniCoinPayment: Nothing to withdraw");
+            if (withdrawableAmount == 0) revert InvalidAmount();
         }
         
         // Update stream state
@@ -558,7 +646,7 @@ contract OmniCoinPayment is AccessControl, ReentrancyGuard, Pausable {
         // Transfer to receiver
         if (isMpcAvailable) {
             gtBool transferResult = token.transferGarbled(stream.receiver, withdrawable);
-            require(MpcCore.decrypt(transferResult), "OmniCoinPayment: Transfer failed");
+            if (!MpcCore.decrypt(transferResult)) revert TransferFailed();
         } else {
             // Fallback - assume transfer succeeds
         }
@@ -572,13 +660,14 @@ contract OmniCoinPayment is AccessControl, ReentrancyGuard, Pausable {
     }
     
     /**
-     * @dev Cancel payment stream (sender only)
+     * @notice Cancel payment stream and refund remaining funds
      * @param streamId Stream ID
+     * @dev Only callable by stream sender
      */
     function cancelStream(bytes32 streamId) external whenNotPaused nonReentrant {
         PaymentStream storage stream = streams[streamId];
-        require(msg.sender == stream.sender, "OmniCoinPayment: Not sender");
-        require(!stream.cancelled, "OmniCoinPayment: Already cancelled");
+        if (msg.sender != stream.sender) revert UnauthorizedAccess();
+        if (stream.cancelled) revert StreamAlreadyCompleted();
         
         stream.cancelled = true;
         
@@ -590,7 +679,7 @@ contract OmniCoinPayment is AccessControl, ReentrancyGuard, Pausable {
             gtBool hasRemaining = MpcCore.gt(remaining, MpcCore.setPublic64(0));
             if (MpcCore.decrypt(hasRemaining)) {
                 gtBool transferResult = token.transferGarbled(stream.sender, remaining);
-                require(MpcCore.decrypt(transferResult), "OmniCoinPayment: Refund failed");
+                if (!MpcCore.decrypt(transferResult)) revert TransferFailed();
             }
         } else {
             uint64 total = uint64(gtUint64.unwrap(stream.totalAmount));
@@ -609,7 +698,14 @@ contract OmniCoinPayment is AccessControl, ReentrancyGuard, Pausable {
     // =============================================================================
     
     /**
-     * @dev Get payment details (public parts)
+     * @notice Get payment details (public parts)
+     * @param paymentId Payment identifier
+     * @return sender Payment sender address
+     * @return receiver Payment receiver address
+     * @return privacyEnabled Whether privacy was enabled
+     * @return timestamp When payment was made
+     * @return completed Whether payment is complete
+     * @return paymentType Type of payment
      */
     function getPaymentDetails(bytes32 paymentId) 
         external 
@@ -635,7 +731,10 @@ contract OmniCoinPayment is AccessControl, ReentrancyGuard, Pausable {
     }
     
     /**
-     * @dev Get encrypted payment amount for authorized party
+     * @notice Get encrypted payment amount for authorized party
+     * @param paymentId Payment identifier
+     * @return Encrypted amount visible to caller
+     * @dev Only callable by payment sender or receiver
      */
     function getEncryptedPaymentAmount(bytes32 paymentId) 
         external 
@@ -643,10 +742,9 @@ contract OmniCoinPayment is AccessControl, ReentrancyGuard, Pausable {
         returns (ctUint64) 
     {
         PrivatePayment storage payment = payments[paymentId];
-        require(
-            msg.sender == payment.sender || msg.sender == payment.receiver,
-            "OmniCoinPayment: Not authorized"
-        );
+        if (msg.sender != payment.sender && msg.sender != payment.receiver) {
+            revert UnauthorizedAccess();
+        }
         
         if (msg.sender == payment.sender) {
             return payment.senderEncryptedAmount;
@@ -656,7 +754,14 @@ contract OmniCoinPayment is AccessControl, ReentrancyGuard, Pausable {
     }
     
     /**
-     * @dev Get stream details
+     * @notice Get stream details
+     * @param streamId Stream identifier
+     * @return sender Stream creator address
+     * @return receiver Stream beneficiary address
+     * @return startTime When stream started
+     * @return endTime When stream ends
+     * @return lastWithdrawTime Last withdrawal timestamp
+     * @return cancelled Whether stream is cancelled
      */
     function getStreamDetails(bytes32 streamId) 
         external 
@@ -682,14 +787,18 @@ contract OmniCoinPayment is AccessControl, ReentrancyGuard, Pausable {
     }
     
     /**
-     * @dev Get user payments
+     * @notice Get all payment IDs for a user
+     * @param user User address
+     * @return Array of payment IDs
      */
     function getUserPayments(address user) external view returns (bytes32[] memory) {
         return userPayments[user];
     }
     
     /**
-     * @dev Get user streams
+     * @notice Get all stream IDs for a user
+     * @param user User address
+     * @return Array of stream IDs
      */
     function getUserStreams(address user) external view returns (bytes32[] memory) {
         return userStreams[user];
@@ -700,7 +809,9 @@ contract OmniCoinPayment is AccessControl, ReentrancyGuard, Pausable {
     // =============================================================================
     
     /**
-     * @dev Update minimum stake amount
+     * @notice Update minimum stake amount
+     * @param newAmount New minimum stake amount (encrypted)
+     * @dev Only callable by admin role
      */
     function updateMinStakeAmount(itUint64 calldata newAmount) 
         external 
@@ -716,7 +827,9 @@ contract OmniCoinPayment is AccessControl, ReentrancyGuard, Pausable {
     }
     
     /**
-     * @dev Update maximum privacy fee
+     * @notice Update maximum privacy fee
+     * @param newFee New maximum fee (encrypted)
+     * @dev Only callable by fee manager role
      */
     function updateMaxPrivacyFee(itUint64 calldata newFee) 
         external 
@@ -732,14 +845,16 @@ contract OmniCoinPayment is AccessControl, ReentrancyGuard, Pausable {
     }
     
     /**
-     * @dev Emergency pause
+     * @notice Emergency pause all contract operations
+     * @dev Only callable by admin role
      */
     function pause() external onlyRole(ADMIN_ROLE) {
         _pause();
     }
     
     /**
-     * @dev Unpause
+     * @notice Resume contract operations after pause
+     * @dev Only callable by admin role
      */
     function unpause() external onlyRole(ADMIN_ROLE) {
         _unpause();
@@ -750,10 +865,19 @@ contract OmniCoinPayment is AccessControl, ReentrancyGuard, Pausable {
     // =============================================================================
     
     /**
-     * @dev Execute payment transfers
+     * @notice Execute payment transfers internally
+     * @dev Handles transfers between sender, receiver, and treasury
+     * @param paymentId Unique payment identifier
+     * @param sender Payment sender address
+     * @param receiver Payment receiver address
+     * @param totalAmount Total payment amount before fees
+     * @param netAmount Net amount after fees
+     * @param fee Fee amount to transfer to treasury
+     * @param stakingEnabled Whether staking is enabled
+     * @param stakeAmount Amount to stake
      */
     function _executePayment(
-        bytes32 paymentId,
+        bytes32,  // paymentId - unused
         address sender,
         address receiver,
         gtUint64 totalAmount,
@@ -766,11 +890,11 @@ contract OmniCoinPayment is AccessControl, ReentrancyGuard, Pausable {
         if (isMpcAvailable) {
             // Transfer the gross amount from sender
             gtBool transferFromResult = token.transferFrom(sender, address(this), totalAmount);
-            require(MpcCore.decrypt(transferFromResult), "OmniCoinPayment: Transfer from sender failed");
+            if (!MpcCore.decrypt(transferFromResult)) revert TransferFailed();
             
             // Transfer net amount to receiver
             gtBool transferToResult = token.transferGarbled(receiver, netAmount);
-            require(MpcCore.decrypt(transferToResult), "OmniCoinPayment: Transfer to receiver failed");
+            if (!MpcCore.decrypt(transferToResult)) revert TransferFailed();
             
             // Transfer fee if applicable
             gtBool hasFee = MpcCore.gt(fee, MpcCore.setPublic64(0));
@@ -779,7 +903,7 @@ contract OmniCoinPayment is AccessControl, ReentrancyGuard, Pausable {
                     token.treasuryContract(), 
                     fee
                 );
-                require(MpcCore.decrypt(feeTransferResult), "OmniCoinPayment: Fee transfer failed");
+                if (!MpcCore.decrypt(feeTransferResult)) revert TransferFailed();
             }
         } else {
             // Fallback - assume transfers succeed in test mode
@@ -795,9 +919,14 @@ contract OmniCoinPayment is AccessControl, ReentrancyGuard, Pausable {
     }
     
     /**
-     * @dev Handle staking integration
+     * @notice Handle staking integration
+     * @param user User address (unused in current implementation)
+     * @param stakeAmount Amount to stake (encrypted)
      */
     function _handleStaking(address user, gtUint64 stakeAmount) internal {
+        // User parameter is passed but not used in current implementation
+        user; // Suppress unused variable warning
+        
         // Forward to staking contract
         if (isMpcAvailable) {
             stakingContract.stakeGarbled(stakeAmount);
@@ -807,7 +936,9 @@ contract OmniCoinPayment is AccessControl, ReentrancyGuard, Pausable {
     }
     
     /**
-     * @dev Calculate privacy fee (0.1% of amount)
+     * @notice Calculate privacy fee (0.1% of amount)
+     * @param amount Payment amount (encrypted)
+     * @return fee Calculated fee (encrypted)
      */
     function _calculatePrivacyFee(gtUint64 amount) internal returns (gtUint64) {
         if (isMpcAvailable) {
@@ -836,7 +967,10 @@ contract OmniCoinPayment is AccessControl, ReentrancyGuard, Pausable {
     }
     
     /**
-     * @dev Calculate withdrawable amount from stream
+     * @notice Calculate withdrawable amount from stream
+     * @param stream Stream data
+     * @param currentTime Current timestamp
+     * @return Withdrawable amount (encrypted)
      */
     function _calculateStreamWithdrawable(
         PaymentStream storage stream,
@@ -868,7 +1002,10 @@ contract OmniCoinPayment is AccessControl, ReentrancyGuard, Pausable {
     }
     
     /**
-     * @dev Update payment statistics
+     * @notice Update payment statistics for users
+     * @param sender Payment sender
+     * @param receiver Payment receiver
+     * @param amount Payment amount (encrypted)
      */
     function _updateStatistics(
         address sender,

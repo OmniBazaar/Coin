@@ -11,6 +11,8 @@ import {RegistryAware} from "./base/RegistryAware.sol";
 
 /**
  * @title OmniCoinPrivacyBridge
+ * @author OmniCoin Development Team
+ * @notice Bridge for converting between public and private OmniCoin
  * @dev Bridge contract for converting between OmniCoin (public) and PrivateOmniCoin (private)
  * 
  * Features:
@@ -25,53 +27,81 @@ contract OmniCoinPrivacyBridge is AccessControl, ReentrancyGuard, Pausable, Regi
     // CONSTANTS & ROLES
     // =============================================================================
     
+    /// @notice Pauser role identifier
     bytes32 public constant PAUSER_ROLE = keccak256("PAUSER_ROLE");
+    /// @notice Fee manager role identifier
     bytes32 public constant FEE_MANAGER_ROLE = keccak256("FEE_MANAGER_ROLE");
     
+    /// @notice Basis points for percentage calculations
     uint256 public constant BASIS_POINTS = 10000;
-    uint256 public constant MAX_BRIDGE_FEE = 200; // 2% max
+    /// @notice Maximum bridge fee (2%)
+    uint256 public constant MAX_BRIDGE_FEE = 200;
     
     // =============================================================================
     // STATE VARIABLES
     // =============================================================================
     
-    /// @dev Public token contract
+    /// @notice Public token contract
     OmniCoin public immutable OMNI_COIN;
     
-    /// @dev Private token contract  
+    /// @notice Private token contract  
     PrivateOmniCoin public immutable PRIVATE_OMNI_COIN;
     
-    /// @dev Privacy fee manager
+    /// @notice Privacy fee manager
     PrivacyFeeManagerV2 public immutable PRIVACY_FEE_MANAGER;
     
-    /// @dev Bridge fee in basis points (100 = 1%)
+    /// @notice Bridge fee in basis points (100 = 1%)
     uint256 public bridgeFee = 100; // 1% default
     
-    /// @dev Total fees collected
+    /// @notice Total fees collected
     uint256 public totalFeesCollected;
     
-    /// @dev Conversion statistics
+    /// @notice Total amount converted to private tokens
     uint256 public totalConvertedToPrivate;
+    /// @notice Total amount converted to public tokens
     uint256 public totalConvertedToPublic;
     
     // =============================================================================
     // EVENTS
     // =============================================================================
     
+    /**
+     * @notice Emitted when tokens are converted to private
+     * @param user User address
+     * @param amountIn Amount of public tokens input
+     * @param amountOut Amount of private tokens output
+     * @param fee Fee charged
+     */
     event ConvertedToPrivate(
         address indexed user,
-        uint256 amountIn,
-        uint256 amountOut,
+        uint256 indexed amountIn,
+        uint256 indexed amountOut,
         uint256 fee
     );
     
+    /**
+     * @notice Emitted when tokens are converted to public
+     * @param user User address
+     * @param amount Amount converted
+     */
     event ConvertedToPublic(
         address indexed user,
-        uint256 amount
+        uint256 indexed amount
     );
     
-    event BridgeFeeUpdated(uint256 oldFee, uint256 newFee);
-    event FeesWithdrawn(address indexed recipient, uint256 amount);
+    /**
+     * @notice Emitted when bridge fee is updated
+     * @param oldFee Previous fee
+     * @param newFee New fee
+     */
+    event BridgeFeeUpdated(uint256 indexed oldFee, uint256 indexed newFee);
+    
+    /**
+     * @notice Emitted when fees are withdrawn
+     * @param recipient Recipient address
+     * @param amount Amount withdrawn
+     */
+    event FeesWithdrawn(address indexed recipient, uint256 indexed amount);
     
     // =============================================================================
     // ERRORS
@@ -88,6 +118,7 @@ contract OmniCoinPrivacyBridge is AccessControl, ReentrancyGuard, Pausable, Regi
     // =============================================================================
     
     /**
+     * @notice Initialize the privacy bridge
      * @dev Constructor
      * @param _omniCoin Address of OmniCoin contract
      * @param _privateOmniCoin Address of PrivateOmniCoin contract
@@ -119,6 +150,7 @@ contract OmniCoinPrivacyBridge is AccessControl, ReentrancyGuard, Pausable, Regi
     // =============================================================================
     
     /**
+     * @notice Convert OmniCoin to PrivateOmniCoin
      * @dev Convert OmniCoin to PrivateOmniCoin
      * @param amount Amount of OmniCoin to convert
      * @return amountOut Amount of PrivateOmniCoin received
@@ -153,6 +185,7 @@ contract OmniCoinPrivacyBridge is AccessControl, ReentrancyGuard, Pausable, Regi
     }
     
     /**
+     * @notice Convert PrivateOmniCoin back to OmniCoin (no fee)
      * @dev Convert PrivateOmniCoin back to OmniCoin (no fee)
      * @param amount Amount of PrivateOmniCoin to convert
      */
@@ -170,11 +203,12 @@ contract OmniCoinPrivacyBridge is AccessControl, ReentrancyGuard, Pausable, Regi
         // Burn PrivateOmniCoin from user
         PRIVATE_OMNI_COIN.burn(msg.sender, amount);
         
+        // Update state before transfer
+        totalConvertedToPublic += amount;
+        
         // Transfer OmniCoin to user
         bool success = OMNI_COIN.transfer(msg.sender, amount);
         if (!success) revert TransferFailed();
-        
-        totalConvertedToPublic += amount;
         
         emit ConvertedToPublic(msg.sender, amount);
     }
@@ -184,6 +218,7 @@ contract OmniCoinPrivacyBridge is AccessControl, ReentrancyGuard, Pausable, Regi
     // =============================================================================
     
     /**
+     * @notice Update bridge fee
      * @dev Update bridge fee
      * @param newFee New fee in basis points
      */
@@ -197,6 +232,7 @@ contract OmniCoinPrivacyBridge is AccessControl, ReentrancyGuard, Pausable, Regi
     }
     
     /**
+     * @notice Withdraw collected fees
      * @dev Withdraw collected fees
      * @param recipient Address to receive fees
      * @param amount Amount to withdraw
@@ -218,6 +254,7 @@ contract OmniCoinPrivacyBridge is AccessControl, ReentrancyGuard, Pausable, Regi
     }
     
     /**
+     * @notice Pause the bridge
      * @dev Pause the bridge
      */
     function pause() external onlyRole(PAUSER_ROLE) {
@@ -225,6 +262,7 @@ contract OmniCoinPrivacyBridge is AccessControl, ReentrancyGuard, Pausable, Regi
     }
     
     /**
+     * @notice Unpause the bridge
      * @dev Unpause the bridge
      */
     function unpause() external onlyRole(PAUSER_ROLE) {
@@ -236,6 +274,7 @@ contract OmniCoinPrivacyBridge is AccessControl, ReentrancyGuard, Pausable, Regi
     // =============================================================================
     
     /**
+     * @notice Get bridge statistics
      * @dev Get bridge statistics
      * @return publicBalance OmniCoin balance held by bridge
      * @return privateSupply Total PrivateOmniCoin supply
@@ -258,6 +297,7 @@ contract OmniCoinPrivacyBridge is AccessControl, ReentrancyGuard, Pausable, Regi
     }
     
     /**
+     * @notice Calculate fee for a given amount
      * @dev Calculate fee for a given amount
      * @param amount Amount to convert
      * @return fee Fee amount

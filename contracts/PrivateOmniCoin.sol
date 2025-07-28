@@ -10,6 +10,8 @@ import {RegistryAware} from "./base/RegistryAware.sol";
 
 /**
  * @title PrivateOmniCoin
+ * @author OmniCoin Development Team
+ * @notice Private version of OmniCoin with encrypted operations
  * @dev Private version of OmniCoin using COTI's MPC for encrypted operations
  * 
  * Users bridge from standard OmniCoin to PrivateOmniCoin for privacy features.
@@ -27,7 +29,9 @@ contract PrivateOmniCoin is PrivateERC20, AccessControl, Pausable, ReentrancyGua
     // CONSTANTS & ROLES
     // =============================================================================
     
+    /// @notice Bridge role identifier
     bytes32 public constant BRIDGE_ROLE = keccak256("BRIDGE_ROLE");
+    /// @notice Pauser role identifier
     bytes32 public constant PAUSER_ROLE = keccak256("PAUSER_ROLE");
     
     // =============================================================================
@@ -37,20 +41,41 @@ contract PrivateOmniCoin is PrivateERC20, AccessControl, Pausable, ReentrancyGua
     /// @dev Total supply tracking (encrypted)
     ctUint64 private _encryptedTotalSupply;
     
-    /// @dev Public total supply for transparency
+    /// @notice Public total supply for transparency
     uint256 public publicTotalSupply;
     
-    /// @dev MPC availability flag
+    /// @notice MPC availability flag
     bool public isMpcAvailable;
     
     // =============================================================================
     // EVENTS
     // =============================================================================
     
-    event PrivacyMint(address indexed to, uint256 publicAmount);
-    event PrivacyBurn(address indexed from, uint256 publicAmount);
-    event MpcAvailabilityUpdated(bool available);
-    event RegistryUpdateRequested(address newRegistry);
+    /**
+     * @notice Emitted when tokens are minted
+     * @param to Recipient address
+     * @param publicAmount Amount minted (public view)
+     */
+    event PrivacyMint(address indexed to, uint256 indexed publicAmount);
+    
+    /**
+     * @notice Emitted when tokens are burned
+     * @param from Token holder address
+     * @param publicAmount Amount burned (public view)
+     */
+    event PrivacyBurn(address indexed from, uint256 indexed publicAmount);
+    
+    /**
+     * @notice Emitted when MPC availability changes
+     * @param available Whether MPC is available
+     */
+    event MpcAvailabilityUpdated(bool indexed available);
+    
+    /**
+     * @notice Emitted when registry update is requested
+     * @param newRegistry New registry address
+     */
+    event RegistryUpdateRequested(address indexed newRegistry);
     
     // =============================================================================
     // ERRORS
@@ -80,6 +105,7 @@ contract PrivateOmniCoin is PrivateERC20, AccessControl, Pausable, ReentrancyGua
     // =============================================================================
     
     /**
+     * @notice Initialize the private OmniCoin token
      * @dev Constructor initializes the private token
      * @param _registry Address of the OmniCoinRegistry contract
      */
@@ -102,6 +128,7 @@ contract PrivateOmniCoin is PrivateERC20, AccessControl, Pausable, ReentrancyGua
     // =============================================================================
     
     /**
+     * @notice Mint private tokens (only callable by bridge)
      * @dev Mint private tokens (only callable by bridge)
      * @param to Address to mint tokens to
      * @param amount Amount to mint (public value)
@@ -128,6 +155,7 @@ contract PrivateOmniCoin is PrivateERC20, AccessControl, Pausable, ReentrancyGua
     }
     
     /**
+     * @notice Burn private tokens (only callable by bridge)
      * @dev Burn private tokens (only callable by bridge)
      * @param from Address to burn tokens from  
      * @param amount Amount to burn (public value)
@@ -158,6 +186,7 @@ contract PrivateOmniCoin is PrivateERC20, AccessControl, Pausable, ReentrancyGua
     // =============================================================================
     
     /**
+     * @notice Transfer tokens using public amount (converts to encrypted)
      * @dev Transfer tokens using public amount (converts to encrypted)
      * @param to Recipient address
      * @param amount Amount to transfer (public value)
@@ -190,6 +219,7 @@ contract PrivateOmniCoin is PrivateERC20, AccessControl, Pausable, ReentrancyGua
     // =============================================================================
     
     /**
+     * @notice Set MPC availability (admin only)
      * @dev Set MPC availability (admin only)
      * @param available Whether MPC is available
      */
@@ -203,6 +233,7 @@ contract PrivateOmniCoin is PrivateERC20, AccessControl, Pausable, ReentrancyGua
     // =============================================================================
     
     /**
+     * @notice Pause the contract
      * @dev Pause the contract
      */
     function pause() external onlyRole(PAUSER_ROLE) {
@@ -210,6 +241,7 @@ contract PrivateOmniCoin is PrivateERC20, AccessControl, Pausable, ReentrancyGua
     }
     
     /**
+     * @notice Unpause the contract
      * @dev Unpause the contract
      */
     function unpause() external onlyRole(PAUSER_ROLE) {
@@ -221,6 +253,7 @@ contract PrivateOmniCoin is PrivateERC20, AccessControl, Pausable, ReentrancyGua
     // =============================================================================
     
     /**
+     * @notice Grant bridge role to an address
      * @dev Grant bridge role to an address
      * @param bridge Address to grant bridge role to
      */
@@ -229,6 +262,7 @@ contract PrivateOmniCoin is PrivateERC20, AccessControl, Pausable, ReentrancyGua
     }
     
     /**
+     * @notice Update the registry address (admin only)
      * @dev Update the registry address (admin only)
      * @param newRegistry New registry address
      */
@@ -240,7 +274,9 @@ contract PrivateOmniCoin is PrivateERC20, AccessControl, Pausable, ReentrancyGua
     }
     
     /**
+     * @notice Get balance as public value (decrypts in test mode)
      * @dev Get balance as public value (decrypts in test mode)
+     * @param account Account address (unused in this implementation)
      * @return balance Public balance value
      */
     function balanceOfPublic(address /* account */) external view returns (uint256) {
@@ -259,7 +295,9 @@ contract PrivateOmniCoin is PrivateERC20, AccessControl, Pausable, ReentrancyGua
     // =============================================================================
     
     /**
+     * @notice Returns the number of decimals (6 for compatibility)
      * @dev Returns the number of decimals (6 for compatibility)
+     * @return The number of decimals
      */
     function decimals() public view virtual override returns (uint8) {
         return 6;
@@ -270,7 +308,9 @@ contract PrivateOmniCoin is PrivateERC20, AccessControl, Pausable, ReentrancyGua
     // =============================================================================
     
     /**
+     * @notice Returns the total supply (public view for transparency)
      * @dev Returns the total supply (public view for transparency)
+     * @return The total supply amount
      */
     function totalSupply() public view virtual override returns (uint256) {
         return publicTotalSupply;

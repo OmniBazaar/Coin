@@ -138,7 +138,7 @@ contract FeeDistribution is ReentrancyGuard, Pausable, AccessControl {
     error InvalidToken();
     error NoFundsToWithdraw();
     error InvalidFeeConfiguration();
-
+    
     // =============================================================================
     // EVENTS
     // =============================================================================
@@ -222,9 +222,9 @@ contract FeeDistribution is ReentrancyGuard, Pausable, AccessControl {
      * @param developmentShare New development share percentage
      */
     event DistributionRatiosUpdated(
-        uint256 validatorShare,
-        uint256 companyShare,
-        uint256 developmentShare
+        uint256 indexed validatorShare,
+        uint256 indexed companyShare,
+        uint256 indexed developmentShare
     );
 
     /**
@@ -236,7 +236,7 @@ contract FeeDistribution is ReentrancyGuard, Pausable, AccessControl {
     event PrivateValidatorRewardDistributed(
         address indexed validator,
         bytes32 encryptedAmountHash,
-        uint256 distributionId
+        uint256 indexed distributionId
     );
 
     /**
@@ -356,7 +356,7 @@ contract FeeDistribution is ReentrancyGuard, Pausable, AccessControl {
         _grantRole(DISTRIBUTOR_ROLE, msg.sender);
         _grantRole(TREASURY_ROLE, msg.sender);
 
-        lastDistributionTime = block.timestamp; // Time tracking required for periodic distributions
+        lastDistributionTime = block.timestamp; // solhint-disable-line not-rely-on-time
         
         // MPC availability will be set by admin after deployment
         isMpcAvailable = false; // Default to false (Hardhat/testing mode)
@@ -418,7 +418,7 @@ contract FeeDistribution is ReentrancyGuard, Pausable, AccessControl {
                 token: token,
                 amount: amount,
                 source: source,
-                timestamp: block.timestamp,
+                timestamp: block.timestamp, // solhint-disable-line not-rely-on-time
                 collector: msg.sender
             })
         );
@@ -428,11 +428,15 @@ contract FeeDistribution is ReentrancyGuard, Pausable, AccessControl {
         tokenTotals[token] += amount;
         revenueMetrics.totalFeesCollected += amount;
 
-        emit FeesCollected(msg.sender, token, amount, source, block.timestamp);
+        emit FeesCollected(msg.sender, token, amount, source, block.timestamp); // solhint-disable-line not-rely-on-time
     }
 
     /**
-     * @dev Batch collect fees from multiple sources
+     * @notice Batch collect fees from multiple sources
+     * @dev Transfers multiple fee collections in a single transaction
+     * @param tokens Array of token addresses
+     * @param amounts Array of amounts to collect
+     * @param sources Array of fee sources
      */
     function batchCollectFees(
         address[] calldata tokens,
@@ -457,7 +461,7 @@ contract FeeDistribution is ReentrancyGuard, Pausable, AccessControl {
                         token: tokens[i],
                         amount: amounts[i],
                         source: sources[i],
-                        timestamp: block.timestamp,
+                        timestamp: block.timestamp, // solhint-disable-line not-rely-on-time
                         collector: msg.sender
                     })
                 );
@@ -472,14 +476,17 @@ contract FeeDistribution is ReentrancyGuard, Pausable, AccessControl {
                     tokens[i],
                     amounts[i],
                     sources[i],
-                    block.timestamp
+                    block.timestamp // solhint-disable-line not-rely-on-time
                 );
             }
         }
     }
 
     /**
-     * @dev Distribute fees to validators, company, and development fund
+     * @notice Distribute fees to validators, company, and development fund
+     * @dev Executes distribution based on participation scores
+     * @param validatorAddresses Array of validator addresses
+     * @param participationScores Array of participation scores corresponding to validators
      */
     function distributeFees(
         address[] calldata validatorAddresses,
@@ -533,7 +540,10 @@ contract FeeDistribution is ReentrancyGuard, Pausable, AccessControl {
     }
     
     /**
-     * @dev Validate distribution inputs
+     * @notice Validate distribution inputs
+     * @dev Checks array lengths and distribution timing
+     * @param validatorAddresses Array of validator addresses
+     * @param participationScores Array of participation scores
      */
     function _validateDistributionInputs(
         address[] calldata validatorAddresses,
@@ -542,12 +552,14 @@ contract FeeDistribution is ReentrancyGuard, Pausable, AccessControl {
         if (validatorAddresses.length != participationScores.length)
             revert InvalidAmount();
         if (validatorAddresses.length == 0) revert InvalidAmount();
-        if (block.timestamp < lastDistributionTime + distributionInterval)
+        if (block.timestamp < lastDistributionTime + distributionInterval) // solhint-disable-line not-rely-on-time
             revert InvalidDistribution();
     }
     
     /**
-     * @dev Calculate distributable amount
+     * @notice Calculate distributable amount
+     * @dev Returns available balance minus pending withdrawals
+     * @return Total amount available for distribution
      */
     function _calculateDistributableAmount() internal view returns (uint256) {
         return FEE_TOKEN.balanceOf(address(this)) -
@@ -556,7 +568,12 @@ contract FeeDistribution is ReentrancyGuard, Pausable, AccessControl {
     }
     
     /**
-     * @dev Calculate distribution shares
+     * @notice Calculate distribution shares
+     * @dev Splits total amount according to configured ratios
+     * @param totalAmount Total amount to distribute
+     * @return validatorShare Amount for validators
+     * @return companyShare Amount for company
+     * @return developmentShare Amount for development
      */
     function _calculateDistributionShares(uint256 totalAmount) 
         internal 
@@ -569,7 +586,14 @@ contract FeeDistribution is ReentrancyGuard, Pausable, AccessControl {
     }
     
     /**
-     * @dev Create new distribution record
+     * @notice Create new distribution record
+     * @dev Initializes a new distribution with provided parameters
+     * @param totalAmount Total amount being distributed
+     * @param validatorShareAmount Amount allocated to validators
+     * @param companyShareAmount Amount allocated to company
+     * @param developmentShareAmount Amount allocated to development
+     * @param validatorCount Number of validators in this distribution
+     * @return newDistribution The created distribution storage reference
      */
     function _createNewDistribution(
         uint256 totalAmount,
@@ -585,14 +609,17 @@ contract FeeDistribution is ReentrancyGuard, Pausable, AccessControl {
         newDistribution.validatorShare = validatorShareAmount;
         newDistribution.companyShare = companyShareAmount;
         newDistribution.developmentShare = developmentShareAmount;
-        newDistribution.timestamp = block.timestamp;
+        newDistribution.timestamp = block.timestamp; // solhint-disable-line not-rely-on-time
         newDistribution.validatorCount = validatorCount;
         newDistribution.completed = false;
         return newDistribution;
     }
     
     /**
-     * @dev Calculate total participation score
+     * @notice Calculate total participation score
+     * @dev Sums all participation scores for proportional distribution
+     * @param scores Array of individual participation scores
+     * @return total Sum of all participation scores
      */
     function _calculateTotalParticipationScore(uint256[] calldata scores) 
         internal 
@@ -605,7 +632,13 @@ contract FeeDistribution is ReentrancyGuard, Pausable, AccessControl {
     }
     
     /**
-     * @dev Distribute rewards to validators
+     * @notice Distribute rewards to validators
+     * @dev Allocates rewards proportionally based on participation scores
+     * @param newDistribution The distribution being processed
+     * @param validatorAddresses Array of validator addresses
+     * @param participationScores Array of participation scores
+     * @param validatorShareAmount Total amount allocated to validators
+     * @param totalParticipationScore Sum of all participation scores
      */
     function _distributeToValidators(
         Distribution storage newDistribution,
@@ -634,7 +667,12 @@ contract FeeDistribution is ReentrancyGuard, Pausable, AccessControl {
     }
     
     /**
-     * @dev Process individual validator reward
+     * @notice Process individual validator reward
+     * @dev Records validator's reward allocation in the distribution
+     * @param newDistribution The distribution being processed
+     * @param validator Address of the validator
+     * @param score Validator's participation score
+     * @param validatorReward Amount of reward for this validator
      */
     function _processValidatorReward(
         Distribution storage newDistribution,
@@ -664,14 +702,19 @@ contract FeeDistribution is ReentrancyGuard, Pausable, AccessControl {
                 claimed: false,
                 claimTime: 0,
                 participationScore: score,
-                privateAmount: ctUint64.wrap(0),
-                privateClaimed: ctBool.wrap(0)
+                privateAmount: ctUint64.wrap(0), // solhint-disable-line
+                privateClaimed: ctBool.wrap(0) // solhint-disable-line
             });
         }
     }
     
     /**
-     * @dev Process private validator reward with MPC
+     * @notice Process private validator reward with MPC
+     * @dev Encrypts reward amounts and stores them privately
+     * @param newDistribution The distribution being processed
+     * @param validator Address of the validator
+     * @param score Validator's participation score
+     * @param validatorReward Amount of reward for this validator
      */
     function _processPrivateValidatorReward(
         Distribution storage newDistribution,
@@ -702,12 +745,14 @@ contract FeeDistribution is ReentrancyGuard, Pausable, AccessControl {
         _updatePrivateRewards(validator, gtReward);
         
         // Emit privacy event
-        bytes32 encryptedHash = keccak256(abi.encode(encryptedReward, validator, block.timestamp));
+        bytes32 encryptedHash = keccak256(abi.encode(encryptedReward, validator, block.timestamp)); // solhint-disable-line not-rely-on-time
         emit PrivateValidatorRewardDistributed(validator, encryptedHash, currentDistributionId);
     }
     
     /**
-     * @dev Initialize private earnings if needed
+     * @notice Initialize private earnings if needed
+     * @dev Sets up initial encrypted zero values for new validators
+     * @param validator Address of the validator to initialize
      */
     function _initializePrivateEarnings(address validator) internal {
         gtUint64 gtZero = MpcCore.setPublic64(uint64(0));
@@ -723,7 +768,10 @@ contract FeeDistribution is ReentrancyGuard, Pausable, AccessControl {
     }
     
     /**
-     * @dev Update private rewards using MPC
+     * @notice Update private rewards using MPC
+     * @dev Adds new rewards to existing encrypted balances
+     * @param validator Address of the validator
+     * @param gtReward Encrypted reward amount to add
      */
     function _updatePrivateRewards(address validator, gtUint64 gtReward) internal {
         // Update token-specific private rewards
@@ -741,7 +789,13 @@ contract FeeDistribution is ReentrancyGuard, Pausable, AccessControl {
     }
     
     /**
-     * @dev Finalize distribution and update metrics
+     * @notice Finalize distribution and update metrics
+     * @dev Updates all tracking metrics and marks distribution as complete
+     * @param newDistribution The distribution being finalized
+     * @param totalAmount Total amount distributed
+     * @param validatorShareAmount Amount distributed to validators
+     * @param companyShareAmount Amount allocated to company
+     * @param developmentShareAmount Amount allocated to development
      */
     function _finalizeDistribution(
         Distribution storage newDistribution,
@@ -756,10 +810,10 @@ contract FeeDistribution is ReentrancyGuard, Pausable, AccessControl {
         revenueMetrics.totalCompanyRevenue += companyShareAmount;
         revenueMetrics.totalDevelopmentFunding += developmentShareAmount;
         ++revenueMetrics.distributionCount;
-        revenueMetrics.lastDistributionTime = block.timestamp; // Time tracking required for revenue metrics
+        revenueMetrics.lastDistributionTime = block.timestamp; // solhint-disable-line not-rely-on-time
         
         newDistribution.completed = true;
-        lastDistributionTime = block.timestamp; // Time tracking required for periodic distributions
+        lastDistributionTime = block.timestamp; // solhint-disable-line not-rely-on-time
         
         emit FeesDistributed(
             currentDistributionId,
@@ -767,12 +821,14 @@ contract FeeDistribution is ReentrancyGuard, Pausable, AccessControl {
             validatorShareAmount,
             companyShareAmount,
             developmentShareAmount,
-            block.timestamp
+            block.timestamp // solhint-disable-line not-rely-on-time
         );
     }
 
     /**
-     * @dev Claim validator rewards (public version)
+     * @notice Claim validator rewards (public version)
+     * @dev Transfers accumulated rewards to the validator
+     * @param token Token address to claim rewards for
      */
     function claimValidatorRewards(address token) external nonReentrant {
         uint256 pendingAmount = validatorPendingRewards[msg.sender][token];
@@ -783,7 +839,7 @@ contract FeeDistribution is ReentrancyGuard, Pausable, AccessControl {
 
         // Update validator info
         validators[msg.sender].totalRewardsClaimed += pendingAmount;
-        validators[msg.sender].lastClaimTime = block.timestamp;
+        validators[msg.sender].lastClaimTime = block.timestamp; // solhint-disable-line not-rely-on-time
 
         // Transfer rewards
         IERC20(token).safeTransfer(msg.sender, pendingAmount);
@@ -797,7 +853,9 @@ contract FeeDistribution is ReentrancyGuard, Pausable, AccessControl {
     }
 
     /**
-     * @dev Claim validator rewards with privacy (encrypted amounts)
+     * @notice Claim validator rewards with privacy (encrypted amounts)
+     * @dev Transfers rewards while keeping amounts encrypted until claim
+     * @param token Token address to claim rewards for
      */
     function claimPrivateValidatorRewards(address token) external nonReentrant {
         if (isMpcAvailable) {
@@ -819,13 +877,13 @@ contract FeeDistribution is ReentrancyGuard, Pausable, AccessControl {
 
             // Update validator info with encrypted totals
             validators[msg.sender].totalRewardsClaimed += decryptedAmount;
-            validators[msg.sender].lastClaimTime = block.timestamp;
+            validators[msg.sender].lastClaimTime = block.timestamp; // solhint-disable-line not-rely-on-time
 
             // Transfer rewards (amount is only known to validator)
             IERC20(token).safeTransfer(msg.sender, decryptedAmount);
 
             // Emit privacy-preserving event with hash
-            bytes32 encryptedHash = keccak256(abi.encode(privatePendingAmount, msg.sender, block.timestamp));
+            bytes32 encryptedHash = keccak256(abi.encode(privatePendingAmount, msg.sender, block.timestamp)); // solhint-disable-line not-rely-on-time
             emit PrivateRewardsClaimed(msg.sender, encryptedHash, token);
 
         } else {
@@ -838,7 +896,7 @@ contract FeeDistribution is ReentrancyGuard, Pausable, AccessControl {
             
             // Update validator info
             validators[msg.sender].totalRewardsClaimed += pendingAmount;
-            validators[msg.sender].lastClaimTime = block.timestamp;
+            validators[msg.sender].lastClaimTime = block.timestamp; // solhint-disable-line not-rely-on-time
             
             // Transfer rewards
             IERC20(token).safeTransfer(msg.sender, pendingAmount);
@@ -849,7 +907,10 @@ contract FeeDistribution is ReentrancyGuard, Pausable, AccessControl {
     }
 
     /**
-     * @dev Withdraw company fees
+     * @notice Withdraw company fees
+     * @dev Transfers accumulated company share to treasury
+     * @param token Token address to withdraw
+     * @param amount Amount to withdraw
      */
     function withdrawCompanyFees(
         address token,
@@ -866,7 +927,10 @@ contract FeeDistribution is ReentrancyGuard, Pausable, AccessControl {
     }
 
     /**
-     * @dev Withdraw development fees
+     * @notice Withdraw development fees
+     * @dev Transfers accumulated development share to fund
+     * @param token Token address to withdraw
+     * @param amount Amount to withdraw
      */
     function withdrawDevelopmentFees(
         address token,
@@ -883,7 +947,11 @@ contract FeeDistribution is ReentrancyGuard, Pausable, AccessControl {
     }
 
     /**
-     * @dev Update distribution ratios
+     * @notice Update distribution ratios
+     * @dev Adjusts the percentage split between validators, company, and development
+     * @param _validatorShare New validator share (in basis points)
+     * @param _companyShare New company share (in basis points)
+     * @param _developmentShare New development share (in basis points)
      */
     function updateDistributionRatios(
         uint256 _validatorShare,
@@ -909,7 +977,10 @@ contract FeeDistribution is ReentrancyGuard, Pausable, AccessControl {
     }
 
     /**
-     * @dev Update distribution parameters
+     * @notice Update distribution parameters
+     * @dev Adjusts timing and minimum amounts for distributions
+     * @param _distributionInterval New interval between distributions
+     * @param _minimumDistributionAmount New minimum amount required to distribute
      */
     function updateDistributionParameters(
         uint256 _distributionInterval,
@@ -924,7 +995,10 @@ contract FeeDistribution is ReentrancyGuard, Pausable, AccessControl {
     }
 
     /**
-     * @dev Update treasury addresses
+     * @notice Update treasury addresses
+     * @dev Changes the recipient addresses for company and development fees
+     * @param _companyTreasury New company treasury address
+     * @param _developmentFund New development fund address
      */
     function updateTreasuryAddresses(
         address _companyTreasury,
@@ -940,7 +1014,10 @@ contract FeeDistribution is ReentrancyGuard, Pausable, AccessControl {
     }
 
     /**
-     * @dev Enable/disable fee sources
+     * @notice Enable/disable fee sources
+     * @dev Controls which fee sources are accepted for collection
+     * @param source The fee source to configure
+     * @param enabled Whether the source should be enabled
      */
     function setFeeSourceEnabled(
         FeeSource source,
@@ -950,7 +1027,10 @@ contract FeeDistribution is ReentrancyGuard, Pausable, AccessControl {
     }
 
     /**
-     * @dev Set fee source weights
+     * @notice Set fee source weights
+     * @dev Adjusts the relative importance of different fee sources
+     * @param source The fee source to configure
+     * @param weight The weight value (max 10000)
      */
     function setFeeSourceWeight(
         FeeSource source,
@@ -960,7 +1040,10 @@ contract FeeDistribution is ReentrancyGuard, Pausable, AccessControl {
         feeSourceWeights[source] = weight;
     }
 
-    // Internal functions
+    /**
+     * @notice Initialize fee sources
+     * @dev Sets up default fee sources and their weights
+     */
     function _initializeFeeSources() internal {
         // Enable all fee sources
         enabledFeeSources[FeeSource.TRADING] = true;
@@ -985,7 +1068,19 @@ contract FeeDistribution is ReentrancyGuard, Pausable, AccessControl {
         feeSourceWeights[FeeSource.STAKING_REWARDS] = 200; // 2%
     }
 
-    // View functions
+    /**
+     * @notice Get validator information
+     * @dev Returns detailed info about a validator's rewards and status
+     * @param validator Address of the validator
+     * @return validatorAddress The validator's address
+     * @return isActive Whether the validator is active
+     * @return participationScore The validator's participation score
+     * @return totalEarned Total rewards earned by the validator
+     * @return pendingRewards Unclaimed rewards
+     * @return lastUpdateTime Last time validator info was updated
+     * @return totalRewardsClaimed Total rewards claimed to date
+     * @return lastClaimTime Last time rewards were claimed
+     */
     function getValidatorInfo(
         address validator
     ) external view returns (
@@ -1011,6 +1106,19 @@ contract FeeDistribution is ReentrancyGuard, Pausable, AccessControl {
         );
     }
 
+    /**
+     * @notice Get distribution information
+     * @dev Returns details about a specific distribution
+     * @param distributionId The ID of the distribution
+     * @return id Distribution ID
+     * @return totalAmount Total amount distributed
+     * @return validatorShare Amount allocated to validators
+     * @return companyShare Amount allocated to company
+     * @return developmentShare Amount allocated to development
+     * @return timestamp When the distribution occurred
+     * @return validatorCount Number of validators in the distribution
+     * @return completed Whether the distribution is complete
+     */
     function getDistribution(
         uint256 distributionId
     )
@@ -1040,6 +1148,15 @@ contract FeeDistribution is ReentrancyGuard, Pausable, AccessControl {
         );
     }
 
+    /**
+     * @notice Get validator's distribution details
+     * @dev Returns specific validator's info for a distribution
+     * @param distributionId The ID of the distribution
+     * @param validator Address of the validator
+     * @return amount Amount allocated to the validator
+     * @return participationScore Validator's participation score
+     * @return claimed Whether the validator has claimed
+     */
     function getValidatorDistribution(
         uint256 distributionId,
         address validator
@@ -1053,6 +1170,13 @@ contract FeeDistribution is ReentrancyGuard, Pausable, AccessControl {
         return (valDist.amount, valDist.participationScore, valDist.claimed);
     }
 
+    /**
+     * @notice Get validator's pending rewards
+     * @dev Returns unclaimed rewards for a specific token
+     * @param validator Address of the validator
+     * @param token Token address
+     * @return Pending reward amount
+     */
     function getValidatorPendingRewards(
         address validator,
         address token
@@ -1061,7 +1185,11 @@ contract FeeDistribution is ReentrancyGuard, Pausable, AccessControl {
     }
 
     /**
-     * @dev Get validator's private pending rewards (only accessible by validator or admin)
+     * @notice Get validator's private pending rewards
+     * @dev Only accessible by validator or admin, returns encrypted amount
+     * @param validator Address of the validator
+     * @param token Token address
+     * @return Encrypted pending reward amount
      */
     function getValidatorPrivatePendingRewards(
         address validator,
@@ -1073,7 +1201,10 @@ contract FeeDistribution is ReentrancyGuard, Pausable, AccessControl {
     }
 
     /**
-     * @dev Get validator's total private earnings (only accessible by validator or admin)
+     * @notice Get validator's total private earnings
+     * @dev Only accessible by validator or admin, returns encrypted total
+     * @param validator Address of the validator
+     * @return Encrypted total earnings
      */
     function getValidatorPrivateEarnings(
         address validator
@@ -1083,32 +1214,66 @@ contract FeeDistribution is ReentrancyGuard, Pausable, AccessControl {
         return validatorPrivateEarnings[validator];
     }
 
+    /**
+     * @notice Get company's pending withdrawals
+     * @dev Returns accumulated company fees ready for withdrawal
+     * @param token Token address
+     * @return Pending withdrawal amount
+     */
     function getCompanyPendingWithdrawals(
         address token
     ) external view returns (uint256) {
         return companyPendingWithdrawals[token];
     }
 
+    /**
+     * @notice Get development fund's pending withdrawals
+     * @dev Returns accumulated development fees ready for withdrawal
+     * @param token Token address
+     * @return Pending withdrawal amount
+     */
     function getDevelopmentPendingWithdrawals(
         address token
     ) external view returns (uint256) {
         return developmentPendingWithdrawals[token];
     }
 
+    /**
+     * @notice Get revenue metrics
+     * @dev Returns comprehensive revenue tracking data
+     * @return Revenue metrics struct with all tracking data
+     */
     function getRevenueMetrics() external view returns (RevenueMetrics memory) {
         return revenueMetrics;
     }
 
+    /**
+     * @notice Get total fees from a specific source
+     * @dev Returns cumulative fees collected from the source
+     * @param source The fee source to query
+     * @return Total fees collected from this source
+     */
     function getFeeSourceTotal(
         FeeSource source
     ) external view returns (uint256) {
         return feeSourceTotals[source];
     }
 
+    /**
+     * @notice Get total fees for a specific token
+     * @dev Returns cumulative fees collected in this token
+     * @param token Token address to query
+     * @return Total fees collected in this token
+     */
     function getTokenTotal(address token) external view returns (uint256) {
         return tokenTotals[token];
     }
 
+    /**
+     * @notice Get current distribution ratios
+     * @dev Returns the percentage split configuration
+     * @return Distribution ratio struct with validator, company, and development shares
+     */
     function getDistributionRatio()
         external
         view
@@ -1117,10 +1282,21 @@ contract FeeDistribution is ReentrancyGuard, Pausable, AccessControl {
         return distributionRatio;
     }
 
+    /**
+     * @notice Get total number of fee collections
+     * @dev Returns the length of the fee collections array
+     * @return Number of fee collections recorded
+     */
     function getFeeCollectionCount() external view returns (uint256) {
         return feeCollections.length;
     }
 
+    /**
+     * @notice Get specific fee collection details
+     * @dev Returns fee collection data at the given index
+     * @param index Index in the fee collections array
+     * @return Fee collection struct with all details
+     */
     function getFeeCollection(
         uint256 index
     ) external view returns (FeeCollection memory) {
@@ -1128,6 +1304,11 @@ contract FeeDistribution is ReentrancyGuard, Pausable, AccessControl {
         return feeCollections[index];
     }
 
+    /**
+     * @notice Check if distribution can be executed
+     * @dev Verifies minimum amount and time interval requirements
+     * @return Whether distribution conditions are met
+     */
     function canDistribute() external view returns (bool) {
         uint256 totalAmount = FEE_TOKEN.balanceOf(address(this)) -
             companyPendingWithdrawals[address(FEE_TOKEN)] -
@@ -1135,24 +1316,38 @@ contract FeeDistribution is ReentrancyGuard, Pausable, AccessControl {
 
         return
             totalAmount >= minimumDistributionAmount &&
-            block.timestamp >= lastDistributionTime + distributionInterval; // Time check required for distribution intervals
+            block.timestamp >= lastDistributionTime + distributionInterval; // solhint-disable-line not-rely-on-time
     }
 
+    /**
+     * @notice Get next distribution time
+     * @dev Calculates when the next distribution will be allowed
+     * @return Timestamp of next allowed distribution
+     */
     function getNextDistributionTime() external view returns (uint256) {
         return lastDistributionTime + distributionInterval;
     }
 
-    // Pause functions
+    /**
+     * @notice Pause contract operations
+     * @dev Emergency pause function for admin
+     */
     function pause() external onlyRole(DEFAULT_ADMIN_ROLE) {
         _pause();
     }
 
+    /**
+     * @notice Unpause contract operations
+     * @dev Resume normal operations after pause
+     */
     function unpause() external onlyRole(DEFAULT_ADMIN_ROLE) {
         _unpause();
     }
 
     /**
-     * @dev Get contract version for privacy upgrade tracking
+     * @notice Get contract version
+     * @dev Returns version string for tracking upgrades
+     * @return Version string
      */
     function getVersion() external pure returns (string memory) {
         return "FeeDistribution v2.0.0 - COTI V2 Privacy Integration";

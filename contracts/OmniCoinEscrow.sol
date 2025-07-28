@@ -350,7 +350,7 @@ contract OmniCoinEscrow is RegistryAware, AccessControl, ReentrancyGuard, Pausab
             encryptedAmount: gtAmount,
             sellerEncryptedAmount: ctUint64.wrap(uint64(_amount)),
             buyerEncryptedAmount: ctUint64.wrap(uint64(_amount)),
-            releaseTime: block.timestamp + _duration,
+            releaseTime: block.timestamp + _duration, // solhint-disable-line not-rely-on-time
             released: false,
             disputed: false,
             refunded: false,
@@ -360,6 +360,7 @@ contract OmniCoinEscrow is RegistryAware, AccessControl, ReentrancyGuard, Pausab
         userEscrows[msg.sender].push(escrowId);
         userEscrows[_buyer].push(escrowId);
         
+        // solhint-disable-next-line not-rely-on-time
         emit EscrowCreated(escrowId, msg.sender, _buyer, _arbitrator, block.timestamp + _duration);
         
         return escrowId;
@@ -424,7 +425,7 @@ contract OmniCoinEscrow is RegistryAware, AccessControl, ReentrancyGuard, Pausab
             encryptedAmount: gtAmount,
             sellerEncryptedAmount: sellerEncrypted,
             buyerEncryptedAmount: buyerEncrypted,
-            releaseTime: block.timestamp + _duration,
+            releaseTime: block.timestamp + _duration, // solhint-disable-line not-rely-on-time
             released: false,
             disputed: false,
             refunded: false,
@@ -440,6 +441,7 @@ contract OmniCoinEscrow is RegistryAware, AccessControl, ReentrancyGuard, Pausab
         gtBool transferResult = omniToken.transferFrom(msg.sender, address(this), totalAmount);
         if (!MpcCore.decrypt(transferResult)) revert TransferFailed();
         
+        // solhint-disable-next-line not-rely-on-time
         emit EscrowCreated(escrowId, msg.sender, _buyer, _arbitrator, block.timestamp + _duration);
         
         return escrowId;
@@ -478,6 +480,7 @@ contract OmniCoinEscrow is RegistryAware, AccessControl, ReentrancyGuard, Pausab
         // Transfer fee to treasury
         _distributeFee(escrow.encryptedFee);
         
+        // solhint-disable-next-line not-rely-on-time
         emit EscrowReleased(escrowId, block.timestamp);
     }
     
@@ -494,6 +497,7 @@ contract OmniCoinEscrow is RegistryAware, AccessControl, ReentrancyGuard, Pausab
     {
         PrivateEscrow storage escrow = escrows[escrowId];
         if (msg.sender != escrow.buyer) revert NotParticipant();
+        // solhint-disable-next-line not-rely-on-time
         if (block.timestamp < escrow.releaseTime) revert TooEarlyToRelease();
         if (escrow.disputed) revert EscrowDisputed();
         
@@ -511,6 +515,7 @@ contract OmniCoinEscrow is RegistryAware, AccessControl, ReentrancyGuard, Pausab
         // Transfer fee to treasury
         _distributeFee(escrow.encryptedFee);
         
+        // solhint-disable-next-line not-rely-on-time
         emit EscrowRefunded(escrowId, block.timestamp);
     }
     
@@ -544,7 +549,7 @@ contract OmniCoinEscrow is RegistryAware, AccessControl, ReentrancyGuard, Pausab
             escrowId: escrowId,
             reporter: msg.sender,
             reason: reason,
-            timestamp: block.timestamp,
+            timestamp: block.timestamp, // solhint-disable-line not-rely-on-time
             resolved: false,
             resolver: address(0),
             buyerRefund: zeroAmount,
@@ -596,7 +601,7 @@ contract OmniCoinEscrow is RegistryAware, AccessControl, ReentrancyGuard, Pausab
             escrowId: escrowId,
             reporter: msg.sender,
             reason: privateReason,
-            timestamp: block.timestamp,
+            timestamp: block.timestamp, // solhint-disable-line not-rely-on-time
             resolved: false,
             resolver: address(0),
             buyerRefund: zeroAmount,
@@ -648,6 +653,7 @@ contract OmniCoinEscrow is RegistryAware, AccessControl, ReentrancyGuard, Pausab
         // Transfer fee to treasury
         _distributeFee(escrow.encryptedFee);
         
+        // solhint-disable-next-line not-rely-on-time
         emit DisputeResolved(dispute.escrowId, disputeId, msg.sender, block.timestamp);
     }
     
@@ -734,6 +740,7 @@ contract OmniCoinEscrow is RegistryAware, AccessControl, ReentrancyGuard, Pausab
         // Transfer fee to treasury
         _distributeFee(escrow.encryptedFee);
         
+        // solhint-disable-next-line not-rely-on-time
         emit DisputeResolved(dispute.escrowId, disputeId, msg.sender, block.timestamp);
     }
     

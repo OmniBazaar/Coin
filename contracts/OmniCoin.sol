@@ -53,6 +53,9 @@ contract OmniCoin is ERC20, ERC20Burnable, ERC20Pausable, AccessControl, Reentra
     /// @notice Maximum token supply (1B tokens)
     uint256 public constant MAX_SUPPLY = 1_000_000_000 * 10**6;
     
+    /// @notice Maximum supply cap (immutable)
+    uint256 public immutable MAX_SUPPLY_CAP;
+    
     // =============================================================================
     // CUSTOM ERRORS
     // =============================================================================
@@ -70,9 +73,6 @@ contract OmniCoin is ERC20, ERC20Burnable, ERC20Pausable, AccessControl, Reentra
     // =============================================================================
     // STATE VARIABLES
     // =============================================================================
-    
-    /// @notice Maximum supply cap (immutable)
-    uint256 public immutable MAX_SUPPLY_CAP;
     
     /// @notice Registry of approved validators
     mapping(address => bool) public validators;
@@ -101,7 +101,7 @@ contract OmniCoin is ERC20, ERC20Burnable, ERC20Pausable, AccessControl, Reentra
      * @param initiator Address that initiated the operation
      * @param amount Amount involved in the operation
      */
-    event ValidatorOperationInitiated(bytes32 indexed operationId, address indexed initiator, uint256 amount);
+    event ValidatorOperationInitiated(bytes32 indexed operationId, address indexed initiator, uint256 indexed amount);
     
     /**
      * @notice Emitted when a validator operation is executed
@@ -115,7 +115,7 @@ contract OmniCoin is ERC20, ERC20Burnable, ERC20Pausable, AccessControl, Reentra
      * @param bridge Bridge contract address
      * @param amount Amount transferred
      */
-    event BridgeTransferInitiated(address indexed from, address indexed bridge, uint256 amount);
+    event BridgeTransferInitiated(address indexed from, address indexed bridge, uint256 indexed amount);
     
     // =============================================================================
     // CONSTRUCTOR
@@ -210,7 +210,8 @@ contract OmniCoin is ERC20, ERC20Burnable, ERC20Pausable, AccessControl, Reentra
     }
     
     /**
-     * @dev Check if an address is a validator
+     * @notice Check if an address is a validator
+     * @dev Checks both the validators mapping and VALIDATOR_ROLE
      * @param account Address to check
      * @return bool True if the address is a validator
      */
@@ -223,7 +224,8 @@ contract OmniCoin is ERC20, ERC20Burnable, ERC20Pausable, AccessControl, Reentra
     // =============================================================================
     
     /**
-     * @dev Initiate a validator operation
+     * @notice Initiate a validator operation
+     * @dev Restricted to validators, stores operation for later execution
      * @param operationId Unique operation identifier
      * @param amount Amount involved in the operation
      */
@@ -237,7 +239,7 @@ contract OmniCoin is ERC20, ERC20Burnable, ERC20Pausable, AccessControl, Reentra
         validatorOperations[operationId] = ValidatorOperation({
             initiator: msg.sender,
             amount: amount,
-            timestamp: block.timestamp,
+            timestamp: block.timestamp, // solhint-disable-line not-rely-on-time
             executed: false
         });
         
@@ -245,7 +247,8 @@ contract OmniCoin is ERC20, ERC20Burnable, ERC20Pausable, AccessControl, Reentra
     }
     
     /**
-     * @dev Execute a validator operation
+     * @notice Execute a validator operation
+     * @dev Restricted to validators, marks operation as executed
      * @param operationId Operation identifier to execute
      */
     function executeValidatorOperation(bytes32 operationId) external {
@@ -263,7 +266,8 @@ contract OmniCoin is ERC20, ERC20Burnable, ERC20Pausable, AccessControl, Reentra
     // =============================================================================
     
     /**
-     * @dev Initiate transfer to bridge for conversion to PrivateOmniCoin
+     * @notice Initiate transfer to bridge for conversion to PrivateOmniCoin
+     * @dev Transfers tokens to bridge contract from caller's balance
      * @param amount Amount to transfer to bridge
      */
     function transferToBridge(uint256 amount) external nonReentrant whenNotPaused {
@@ -279,14 +283,16 @@ contract OmniCoin is ERC20, ERC20Burnable, ERC20Pausable, AccessControl, Reentra
     // =============================================================================
     
     /**
-     * @dev Pause the contract
+     * @notice Pause the contract
+     * @dev Pauses all token transfers, restricted to PAUSER_ROLE
      */
     function pause() external onlyRole(PAUSER_ROLE) {
         _pause();
     }
     
     /**
-     * @dev Unpause the contract
+     * @notice Unpause the contract
+     * @dev Resumes token transfers, restricted to PAUSER_ROLE
      */
     function unpause() external onlyRole(PAUSER_ROLE) {
         _unpause();
@@ -297,7 +303,11 @@ contract OmniCoin is ERC20, ERC20Burnable, ERC20Pausable, AccessControl, Reentra
     // =============================================================================
     
     /**
+     * @notice Internal token transfer logic
      * @dev Override required by Solidity for multiple inheritance
+     * @param from Address sending tokens
+     * @param to Address receiving tokens
+     * @param value Amount of tokens to transfer
      */
     function _update(
         address from,
@@ -312,7 +322,8 @@ contract OmniCoin is ERC20, ERC20Burnable, ERC20Pausable, AccessControl, Reentra
     // =============================================================================
     
     /**
-     * @dev Update the registry address (admin only)
+     * @notice Update the registry address (admin only)
+     * @dev Emits RegistryUpdateRequested event for tracking
      * @param newRegistry New registry address
      */
     function setRegistry(address newRegistry) external onlyRole(DEFAULT_ADMIN_ROLE) {
@@ -322,5 +333,9 @@ contract OmniCoin is ERC20, ERC20Burnable, ERC20Pausable, AccessControl, Reentra
         emit RegistryUpdateRequested(newRegistry);
     }
     
-    event RegistryUpdateRequested(address newRegistry);
+    /**
+     * @notice Emitted when registry update is requested
+     * @param newRegistry Address of the requested new registry
+     */
+    event RegistryUpdateRequested(address indexed newRegistry);
 }

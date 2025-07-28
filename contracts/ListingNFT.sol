@@ -54,6 +54,10 @@ contract ListingNFT is ERC721URIStorage, Ownable, ReentrancyGuard {
     mapping(address => uint256[]) public userTransactions;
     
     // =============================================================================
+    // EVENTS
+    // =============================================================================
+    
+    // =============================================================================
     // CUSTOM ERRORS
     // =============================================================================
     
@@ -63,10 +67,6 @@ contract ListingNFT is ERC721URIStorage, Ownable, ReentrancyGuard {
     error CannotBuyOwnListing();
     error NotAuthorized();
     error CannotTransferPendingTransaction();
-
-    // =============================================================================
-    // EVENTS
-    // =============================================================================
     
     /**
      * @notice Emitted when minter approval status changes
@@ -183,8 +183,8 @@ contract ListingNFT is ERC721URIStorage, Ownable, ReentrancyGuard {
             quantity: quantity,
             status: TransactionStatus.Pending,
             escrowId: "",
-            createdAt: block.timestamp,  // Time tracking required for transaction history
-            updatedAt: block.timestamp  // Time tracking required for transaction updates
+            createdAt: block.timestamp,  // solhint-disable-line not-rely-on-time
+            updatedAt: block.timestamp  // solhint-disable-line not-rely-on-time
         });
 
         transactions[tokenId] = newTransaction;
@@ -211,7 +211,7 @@ contract ListingNFT is ERC721URIStorage, Ownable, ReentrancyGuard {
             revert NotAuthorized();
 
         transaction.status = newStatus;
-        transaction.updatedAt = block.timestamp;  // Time tracking required for transaction updates
+        transaction.updatedAt = block.timestamp;  // solhint-disable-line not-rely-on-time
 
         emit TransactionStatusChanged(
             tokenId,
@@ -234,7 +234,7 @@ contract ListingNFT is ERC721URIStorage, Ownable, ReentrancyGuard {
             revert NotAuthorized();
 
         transaction.escrowId = escrowId;
-        transaction.updatedAt = block.timestamp;  // Time tracking required for transaction updates
+        transaction.updatedAt = block.timestamp;  // solhint-disable-line not-rely-on-time
     }
 
     /**

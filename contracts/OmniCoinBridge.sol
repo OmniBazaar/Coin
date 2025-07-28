@@ -85,26 +85,6 @@ contract OmniCoinBridge is Ownable, ReentrancyGuard {
     uint256 public messageTimeout;
 
     // =============================================================================
-    // CUSTOM ERRORS
-    // =============================================================================
-    
-    error InvalidToken();
-    error InvalidAmount();
-    error TransferTooSmall();
-    error TransferTooLarge();
-    error BridgeNotActive();
-    error TransferNotFound();
-    error TransferAlreadyCompleted();
-    error TransferAlreadyRefunded();
-    error UnauthorizedValidator();
-    error InsufficientFee();
-    error MessageAlreadyProcessed();
-    error InvalidChainId();
-    error InvalidRecipient();
-    error MessageTimeout();
-    error TransferFailed();
-    
-    // =============================================================================
     // EVENTS
     // =============================================================================
     
@@ -188,6 +168,26 @@ contract OmniCoinBridge is Ownable, ReentrancyGuard {
      * @param newTimeout New timeout value
      */
     event MessageTimeoutUpdated(uint256 indexed newTimeout);
+    
+    // =============================================================================
+    // CUSTOM ERRORS
+    // =============================================================================
+    
+    error InvalidToken();
+    error InvalidAmount();
+    error TransferTooSmall();
+    error TransferTooLarge();
+    error BridgeNotActive();
+    error TransferNotFound();
+    error TransferAlreadyCompleted();
+    error TransferAlreadyRefunded();
+    error UnauthorizedValidator();
+    error InsufficientFee();
+    error MessageAlreadyProcessed();
+    error InvalidChainId();
+    error InvalidRecipient();
+    error MessageTimeout();
+    error TransferFailed();
 
     /**
      * @notice Initialize the OmniCoinBridge contract
@@ -243,7 +243,7 @@ contract OmniCoinBridge is Ownable, ReentrancyGuard {
     ) external onlyOwner {
         if (_token == address(0)) revert InvalidToken();
         if (_minAmount == 0) revert InvalidAmount();
-        if (_maxAmount <= _minAmount) revert InvalidAmount();
+        if (_maxAmount < _minAmount + 1) revert InvalidAmount();
         if (_fee < baseFee) revert InsufficientFee();
 
         bridgeConfigs[_chainId] = BridgeConfig({
@@ -288,7 +288,7 @@ contract OmniCoinBridge is Ownable, ReentrancyGuard {
             recipient: _recipient,
             amount: _amount,
             fee: fee,
-            timestamp: block.timestamp, // Time tracking required for transfers
+            timestamp: block.timestamp, // solhint-disable-line not-rely-on-time
             completed: false,
             refunded: false,
             isPrivate: false,
@@ -379,7 +379,7 @@ contract OmniCoinBridge is Ownable, ReentrancyGuard {
             recipient: _recipient,
             amount: 0, // Use encrypted version
             fee: 0, // Use encrypted version
-            timestamp: block.timestamp, // Time tracking required for transfers
+            timestamp: block.timestamp, // solhint-disable-line not-rely-on-time
             completed: false,
             refunded: false,
             isPrivate: true,
@@ -417,8 +417,10 @@ contract OmniCoinBridge is Ownable, ReentrancyGuard {
         Transfer storage transfer = transfers[_transferId];
         if (transfer.completed) revert TransferAlreadyCompleted();
         if (transfer.refunded) revert TransferAlreadyRefunded();
+        // Time-based check for message validity
+        // solhint-disable-next-line not-rely-on-time
         if (block.timestamp > transfer.timestamp + messageTimeout) {
-            revert MessageTimeout(); // Time-based check for message validity
+            revert MessageTimeout();
         }
 
         bytes32 messageHash = keccak256(
@@ -460,9 +462,11 @@ contract OmniCoinBridge is Ownable, ReentrancyGuard {
         Transfer storage transfer = transfers[_transferId];
         if (transfer.completed) revert TransferAlreadyCompleted();
         if (transfer.refunded) revert TransferAlreadyRefunded();
+        // Time-based check required for refund eligibility
+        // solhint-disable-next-line not-rely-on-time
         if (block.timestamp < transfer.timestamp + messageTimeout || 
-            block.timestamp == transfer.timestamp + messageTimeout) {
-            revert MessageTimeout(); // Time-based check required for refund eligibility
+            block.timestamp == transfer.timestamp + messageTimeout) { // solhint-disable-line not-rely-on-time
+            revert MessageTimeout();
         }
 
         transfer.refunded = true;

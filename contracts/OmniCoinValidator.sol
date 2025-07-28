@@ -5,14 +5,20 @@ import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
+/**
+ * @title OmniCoinValidator
+ * @author OmniCoin Development Team
+ * @notice Validator management contract for OmniCoin network
+ * @dev Manages validator registration, staking, and rewards
+ */
 contract OmniCoinValidator is Ownable, ReentrancyGuard {
     struct Validator {
         address account;
+        bool isActive;
         uint256 stake;
         uint256 reputation;
         uint256 lastRewardTime;
         uint256 accumulatedRewards;
-        bool isActive;
     }
 
     struct ValidatorSet {
@@ -22,6 +28,84 @@ contract OmniCoinValidator is Ownable, ReentrancyGuard {
         uint256 maxValidators;
     }
 
+    /// @notice OmniCoin token contract
+    IERC20 public token;
+    /// @notice Reward rate per period
+    uint256 public rewardRate;
+    /// @notice Reward calculation period
+    uint256 public rewardPeriod;
+    /// @notice Minimum stake required
+    uint256 public minStake;
+    /// @notice Maximum number of validators
+    uint256 public maxValidators;
+
+    /// @notice Mapping of validator addresses to validator data
+    mapping(address => Validator) public validators;
+    /// @notice Active validator set information
+    ValidatorSet public activeSet;
+
+    /**
+     * @notice Emitted when a validator is registered
+     * @param validator Validator address
+     * @param stake Initial stake amount
+     */
+    event ValidatorRegistered(address indexed validator, uint256 indexed stake);
+    
+    /**
+     * @notice Emitted when a validator is unregistered
+     * @param validator Validator address
+     */
+    event ValidatorUnregistered(address indexed validator);
+    
+    /**
+     * @notice Emitted when a validator stakes tokens
+     * @param validator Validator address
+     * @param amount Amount staked
+     */
+    event ValidatorStaked(address indexed validator, uint256 indexed amount);
+    
+    /**
+     * @notice Emitted when a validator unstakes tokens
+     * @param validator Validator address
+     * @param amount Amount unstaked
+     */
+    event ValidatorUnstaked(address indexed validator, uint256 indexed amount);
+    
+    /**
+     * @notice Emitted when rewards are claimed
+     * @param validator Validator address
+     * @param amount Reward amount
+     */
+    event RewardsClaimed(address indexed validator, uint256 indexed amount);
+    
+    /**
+     * @notice Emitted when reward rate is updated
+     * @param oldRate Previous reward rate
+     * @param newRate New reward rate
+     */
+    event RewardRateUpdated(uint256 indexed oldRate, uint256 indexed newRate);
+    
+    /**
+     * @notice Emitted when reward period is updated
+     * @param oldPeriod Previous reward period
+     * @param newPeriod New reward period
+     */
+    event RewardPeriodUpdated(uint256 indexed oldPeriod, uint256 indexed newPeriod);
+    
+    /**
+     * @notice Emitted when minimum stake is updated
+     * @param oldStake Previous minimum stake
+     * @param newStake New minimum stake
+     */
+    event MinStakeUpdated(uint256 indexed oldStake, uint256 indexed newStake);
+    
+    /**
+     * @notice Emitted when maximum validators is updated
+     * @param oldMax Previous maximum validators
+     * @param newMax New maximum validators
+     */
+    event MaxValidatorsUpdated(uint256 indexed oldMax, uint256 indexed newMax);
+    
     // Custom errors
     error InvalidValidator();
     error AlreadyRegistered();
@@ -36,25 +120,11 @@ contract OmniCoinValidator is Ownable, ReentrancyGuard {
     error InvalidAddress();
     error InvalidAmount();
 
-    IERC20 public token;
-    uint256 public rewardRate;
-    uint256 public rewardPeriod;
-    uint256 public minStake;
-    uint256 public maxValidators;
-
-    mapping(address => Validator) public validators;
-    ValidatorSet public activeSet;
-
-    event ValidatorRegistered(address indexed validator, uint256 stake);
-    event ValidatorUnregistered(address indexed validator);
-    event ValidatorStaked(address indexed validator, uint256 amount);
-    event ValidatorUnstaked(address indexed validator, uint256 amount);
-    event RewardsClaimed(address indexed validator, uint256 amount);
-    event RewardRateUpdated(uint256 oldRate, uint256 newRate);
-    event RewardPeriodUpdated(uint256 oldPeriod, uint256 newPeriod);
-    event MinStakeUpdated(uint256 oldStake, uint256 newStake);
-    event MaxValidatorsUpdated(uint256 oldMax, uint256 newMax);
-
+    /**
+     * @notice Initializes the validator contract
+     * @param _token Address of the OmniCoin token contract
+     * @param initialOwner Address of the initial contract owner
+     */
     constructor(address _token, address initialOwner) Ownable(initialOwner) {
         token = IERC20(_token);
         rewardRate = 100; // 1% per period
@@ -66,6 +136,10 @@ contract OmniCoinValidator is Ownable, ReentrancyGuard {
         activeSet.maxValidators = maxValidators;
     }
 
+    /**
+     * @notice Registers the caller as a validator
+     * @dev Requires the caller to have at least minStake tokens
+     */
     function registerValidator() external nonReentrant {
         if (validators[msg.sender].isActive) revert AlreadyRegistered();
         if (token.balanceOf(msg.sender) < minStake) revert InsufficientBalance();
@@ -74,7 +148,7 @@ contract OmniCoinValidator is Ownable, ReentrancyGuard {
             account: msg.sender,
             stake: 0,
             reputation: 0,
-            lastRewardTime: block.timestamp,
+            lastRewardTime: block.timestamp, // solhint-disable-line not-rely-on-time
             accumulatedRewards: 0,
             isActive: true
         });
@@ -82,6 +156,10 @@ contract OmniCoinValidator is Ownable, ReentrancyGuard {
         emit ValidatorRegistered(msg.sender, 0);
     }
 
+    /**
+     * @notice Unregisters the caller as a validator
+     * @dev Requires the validator to have no stake remaining
+     */
     function unregisterValidator() external nonReentrant {
         Validator storage validator = validators[msg.sender];
         if (!validator.isActive) revert NotActiveValidator();
@@ -92,6 +170,11 @@ contract OmniCoinValidator is Ownable, ReentrancyGuard {
         emit ValidatorUnregistered(msg.sender);
     }
 
+    /**
+     * @notice Stakes tokens for the validator
+     * @param amount The amount of tokens to stake
+     * @dev Claims pending rewards before updating stake
+     */
     function stake(uint256 amount) external nonReentrant {
         Validator storage validator = validators[msg.sender];
         if (!validator.isActive) revert NotActiveValidator();
@@ -109,10 +192,11 @@ contract OmniCoinValidator is Ownable, ReentrancyGuard {
         activeSet.totalStake += amount;
 
         // Update validator set
-        if (validator.stake >= minStake && !isInActiveSet(msg.sender)) {
-            if (activeSet.validators.length < maxValidators) {
-                activeSet.validators.push(msg.sender);
-            }
+        if (validator.stake > minStake - 1 && 
+            !isInActiveSet(msg.sender) && 
+            activeSet.validators.length < maxValidators
+        ) {
+            activeSet.validators.push(msg.sender);
         }
 
         if (!token.transferFrom(msg.sender, address(this), amount)) 
@@ -121,6 +205,11 @@ contract OmniCoinValidator is Ownable, ReentrancyGuard {
         emit ValidatorStaked(msg.sender, amount);
     }
 
+    /**
+     * @notice Unstakes tokens for the validator
+     * @param amount The amount of tokens to unstake
+     * @dev Claims pending rewards before updating stake
+     */
     function unstake(uint256 amount) external nonReentrant {
         Validator storage validator = validators[msg.sender];
         if (!validator.isActive) revert NotActiveValidator();
@@ -147,6 +236,10 @@ contract OmniCoinValidator is Ownable, ReentrancyGuard {
         emit ValidatorUnstaked(msg.sender, amount);
     }
 
+    /**
+     * @notice Claims accumulated rewards for the validator
+     * @dev Transfers all pending and accumulated rewards to the validator
+     */
     function claimRewards() external nonReentrant {
         Validator storage validator = validators[msg.sender];
         if (!validator.isActive) revert NotActiveValidator();
@@ -156,42 +249,63 @@ contract OmniCoinValidator is Ownable, ReentrancyGuard {
         if (totalRewards == 0) revert NoRewardsAvailable();
 
         validator.accumulatedRewards = 0;
-        validator.lastRewardTime = block.timestamp;
+        validator.lastRewardTime = block.timestamp; // solhint-disable-line not-rely-on-time
 
         if (!token.transfer(msg.sender, totalRewards)) revert RewardTransferFailed();
 
         emit RewardsClaimed(msg.sender, totalRewards);
     }
 
+    /**
+     * @notice Sets the reward rate per period
+     * @param _rate The new reward rate (in basis points, 100 = 1%)
+     */
     function setRewardRate(uint256 _rate) external onlyOwner {
         emit RewardRateUpdated(rewardRate, _rate);
         rewardRate = _rate;
     }
 
+    /**
+     * @notice Sets the reward calculation period
+     * @param _period The new reward period in seconds
+     */
     function setRewardPeriod(uint256 _period) external onlyOwner {
         emit RewardPeriodUpdated(rewardPeriod, _period);
         rewardPeriod = _period;
     }
 
+    /**
+     * @notice Sets the minimum stake required for validators
+     * @param _stake The new minimum stake amount
+     */
     function setMinStake(uint256 _stake) external onlyOwner {
         emit MinStakeUpdated(minStake, _stake);
         minStake = _stake;
         activeSet.minStake = _stake;
     }
 
+    /**
+     * @notice Sets the maximum number of validators
+     * @param _max The new maximum number of validators
+     */
     function setMaxValidators(uint256 _max) external onlyOwner {
         emit MaxValidatorsUpdated(maxValidators, _max);
         maxValidators = _max;
         activeSet.maxValidators = _max;
     }
 
+    /**
+     * @notice Calculates pending rewards for a validator
+     * @param validator The validator address
+     * @return The amount of pending rewards
+     */
     function calculateRewards(address validator) public view returns (uint256) {
         Validator storage v = validators[validator];
         if (!v.isActive || v.stake == 0) {
             return 0;
         }
 
-        uint256 timeElapsed = block.timestamp - v.lastRewardTime;
+        uint256 timeElapsed = block.timestamp - v.lastRewardTime; // solhint-disable-line not-rely-on-time
         uint256 periods = timeElapsed / rewardPeriod;
         if (periods == 0) {
             return 0;
@@ -201,27 +315,16 @@ contract OmniCoinValidator is Ownable, ReentrancyGuard {
         return rewardPerPeriod * periods;
     }
 
-    function isInActiveSet(address validator) public view returns (bool) {
-        for (uint256 i = 0; i < activeSet.validators.length; i++) {
-            if (activeSet.validators[i] == validator) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    function removeFromActiveSet(address validator) internal {
-        for (uint256 i = 0; i < activeSet.validators.length; i++) {
-            if (activeSet.validators[i] == validator) {
-                activeSet.validators[i] = activeSet.validators[
-                    activeSet.validators.length - 1
-                ];
-                activeSet.validators.pop();
-                break;
-            }
-        }
-    }
-
+    /**
+     * @notice Gets validator information
+     * @param account The validator address
+     * @return validatorAddress The validator's address
+     * @return stakeAmount The validator's stake amount
+     * @return reputation The validator's reputation score
+     * @return lastRewardTime The last time rewards were calculated
+     * @return accumulatedRewards The unclaimed reward amount
+     * @return isActive Whether the validator is active
+     */
     function getValidator(
         address account
     )
@@ -247,6 +350,13 @@ contract OmniCoinValidator is Ownable, ReentrancyGuard {
         );
     }
 
+    /**
+     * @notice Gets the active validator set information
+     * @return validatorList Array of active validator addresses
+     * @return totalStake Total amount staked by all validators
+     * @return minimumStake Minimum stake required
+     * @return maximumValidators Maximum number of validators allowed
+     */
     function getActiveSet()
         external
         view
@@ -263,5 +373,35 @@ contract OmniCoinValidator is Ownable, ReentrancyGuard {
             activeSet.minStake,
             activeSet.maxValidators
         );
+    }
+
+    /**
+     * @notice Removes a validator from the active set
+     * @param validator The validator address to remove
+     */
+    function removeFromActiveSet(address validator) internal {
+        for (uint256 i = 0; i < activeSet.validators.length; ++i) {
+            if (activeSet.validators[i] == validator) {
+                activeSet.validators[i] = activeSet.validators[
+                    activeSet.validators.length - 1
+                ];
+                activeSet.validators.pop();
+                break;
+            }
+        }
+    }
+
+    /**
+     * @notice Checks if a validator is in the active set
+     * @param validator The validator address to check
+     * @return True if the validator is in the active set
+     */
+    function isInActiveSet(address validator) internal view returns (bool) {
+        for (uint256 i = 0; i < activeSet.validators.length; ++i) {
+            if (activeSet.validators[i] == validator) {
+                return true;
+            }
+        }
+        return false;
     }
 }
