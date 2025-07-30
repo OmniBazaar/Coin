@@ -401,9 +401,9 @@ contract OmniCoinGovernor is RegistryAware, Ownable, ReentrancyGuard {
      */
     function getGovernanceToken() public view returns (address governanceToken) {
         if (usePrivateToken) {
-            governanceToken = _getContract(registry.PRIVATE_OMNICOIN());
+            governanceToken = _getContract(REGISTRY.PRIVATE_OMNICOIN());
         } else {
-            governanceToken = _getContract(registry.OMNICOIN());
+            governanceToken = _getContract(REGISTRY.OMNICOIN());
         }
         
         // Fallback to legacy token if registry not configured

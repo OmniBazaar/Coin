@@ -33,6 +33,8 @@ contract PrivateOmniCoin is PrivateERC20, AccessControl, Pausable, ReentrancyGua
     bytes32 public constant BRIDGE_ROLE = keccak256("BRIDGE_ROLE");
     /// @notice Pauser role identifier
     bytes32 public constant PAUSER_ROLE = keccak256("PAUSER_ROLE");
+    /// @notice Decimals used by the token (must match OmniCoin)
+    uint8 public constant DECIMALS = 6;
     
     // =============================================================================
     // STATE VARIABLES
@@ -90,7 +92,7 @@ contract PrivateOmniCoin is PrivateERC20, AccessControl, Pausable, ReentrancyGua
     // =============================================================================
     
     modifier onlyBridge() {
-        address bridge = registry.getContract(keccak256("OMNICOIN_BRIDGE"));
+        address bridge = REGISTRY.getContract(keccak256("OMNICOIN_BRIDGE"));
         if (msg.sender != bridge) revert OnlyBridge();
         _;
     }
@@ -373,12 +375,12 @@ contract PrivateOmniCoin is PrivateERC20, AccessControl, Pausable, ReentrancyGua
     // =============================================================================
     
     /**
-     * @notice Returns the number of decimals (6 for compatibility)
-     * @dev Returns the number of decimals (6 for compatibility)
-     * @return The number of decimals
+     * @notice Returns the number of decimals
+     * @dev Returns DECIMALS constant for easy configuration (must match OmniCoin)
+     * @return The number of decimals (configurable: 6, 12, or 18)
      */
     function decimals() public view virtual override returns (uint8) {
-        return 6;
+        return DECIMALS;
     }
     
     // =============================================================================

@@ -197,9 +197,9 @@ contract OmniCoinConfig is RegistryAware, Ownable, ReentrancyGuard {
         RegistryAware(_registry) 
         Ownable(initialOwner) {
         // Initialize default values
-        emissionRate = 100; // 100 tokens per block
+        emissionRate = 100; // 100 tokens per block (will be replaced by block subsidy calculation)
         useParticipationScore = true;
-        proposalThreshold = 10000 * 10 ** 6; // 10,000 tokens
+        proposalThreshold = 1000 * 10 ** 6; // 1,000 tokens (per design doc)
         votingPeriod = 3 days;
         quorum = 100000 * 10 ** 6; // 100,000 tokens
         isTestnetMode = false; // Default to production mode
@@ -210,34 +210,59 @@ contract OmniCoinConfig is RegistryAware, Ownable, ReentrancyGuard {
         privacyEnabled = true; // Privacy enabled by default
         tokenBridgeFee = 10 * 10 ** 6; // 10 tokens for bridging
 
-        // Initialize default staking tiers
+        // Initialize 5-tier staking system
+        // Tier 1: 1 - 999,999 XOM
         stakingTiers.push(
             StakingTier({
-                minAmount: 1000 * 10 ** 6, // 1,000 tokens
-                maxAmount: 10000 * 10 ** 6, // 10,000 tokens
-                rewardRate: 5, // 5% APY
-                lockPeriod: 30 days,
-                penaltyRate: 10 // 10% penalty
+                minAmount: 1, // 1 XOM minimum
+                maxAmount: 999_999 * 10 ** 6, // 999,999 XOM
+                rewardRate: 5, // 5% base APY
+                lockPeriod: 0, // No minimum lock
+                penaltyRate: 10 // 10% early withdrawal penalty
             })
         );
 
+        // Tier 2: 1M - 9,999,999 XOM
         stakingTiers.push(
             StakingTier({
-                minAmount: 10000 * 10 ** 6, // 10,000 tokens
-                maxAmount: 100000 * 10 ** 6, // 100,000 tokens
-                rewardRate: 10, // 10% APY
-                lockPeriod: 90 days,
-                penaltyRate: 20 // 20% penalty
+                minAmount: 1_000_000 * 10 ** 6, // 1 million XOM
+                maxAmount: 9_999_999 * 10 ** 6, // 9,999,999 XOM
+                rewardRate: 6, // 6% base APY
+                lockPeriod: 0, // No minimum lock
+                penaltyRate: 10 // 10% early withdrawal penalty
             })
         );
 
+        // Tier 3: 10M - 99,999,999 XOM
         stakingTiers.push(
             StakingTier({
-                minAmount: 100000 * 10 ** 6, // 100,000 tokens
-                maxAmount: type(uint256).max,
-                rewardRate: 20, // 20% APY
-                lockPeriod: 180 days,
-                penaltyRate: 30 // 30% penalty
+                minAmount: 10_000_000 * 10 ** 6, // 10 million XOM
+                maxAmount: 99_999_999 * 10 ** 6, // 99,999,999 XOM
+                rewardRate: 7, // 7% base APY
+                lockPeriod: 0, // No minimum lock
+                penaltyRate: 10 // 10% early withdrawal penalty
+            })
+        );
+
+        // Tier 4: 100M - 999,999,999 XOM
+        stakingTiers.push(
+            StakingTier({
+                minAmount: 100_000_000 * 10 ** 6, // 100 million XOM
+                maxAmount: 999_999_999 * 10 ** 6, // 999,999,999 XOM
+                rewardRate: 8, // 8% base APY
+                lockPeriod: 0, // No minimum lock
+                penaltyRate: 10 // 10% early withdrawal penalty
+            })
+        );
+
+        // Tier 5: 1B+ XOM
+        stakingTiers.push(
+            StakingTier({
+                minAmount: 1_000_000_000 * 10 ** 6, // 1 billion XOM
+                maxAmount: type(uint256).max, // No upper limit
+                rewardRate: 9, // 9% base APY
+                lockPeriod: 0, // No minimum lock
+                penaltyRate: 10 // 10% early withdrawal penalty
             })
         );
     }

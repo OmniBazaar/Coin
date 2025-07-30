@@ -40,10 +40,12 @@
     "health-check": "hardhat run scripts/health-check.js --network localhost"
   },
   "devDependencies": {
+    "@avalabs/avalanchejs": "^5.0.0",
     "@nomicfoundation/hardhat-toolbox": "^5.0.0",
     "@openzeppelin/hardhat-upgrades": "^3.0.0",
     "@types/jest": "^29.5.0",
     "@types/node": "^20.8.0",
+    "avalanche": "^3.16.0",
     "hardhat": "^2.22.15",
     "hardhat-contract-sizer": "^2.10.0",
     "hardhat-gas-reporter": "^1.0.9",

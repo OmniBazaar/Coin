@@ -132,7 +132,7 @@ contract OmniCoinValidator is Ownable, ReentrancyGuard, RegistryAware {
     {
         rewardRate = 100; // 1% per period
         rewardPeriod = 1 days;
-        minStake = 1000 * 10 ** 6; // 1000 tokens (6 decimals)
+        minStake = 1_000_000 * 10 ** 6; // 1,000,000 XOM (1 million tokens, 6 decimals)
         maxValidators = 100;
 
         activeSet.minStake = minStake;
@@ -397,9 +397,9 @@ contract OmniCoinValidator is Ownable, ReentrancyGuard, RegistryAware {
      */
     function _getTokenContract(bool usePrivacy) internal view returns (address) {
         if (usePrivacy) {
-            return _getContract(registry.PRIVATE_OMNICOIN());
+            return _getContract(REGISTRY.PRIVATE_OMNICOIN());
         } else {
-            return _getContract(registry.OMNICOIN());
+            return _getContract(REGISTRY.OMNICOIN());
         }
     }
     

@@ -193,9 +193,9 @@ contract ListingNFT is ERC721URIStorage, RegistryAware, Ownable, ReentrancyGuard
         // Get payment token based on privacy preference
         address paymentToken;
         if (usePrivacy) {
-            paymentToken = _getContract(registry.PRIVATE_OMNICOIN());
+            paymentToken = _getContract(REGISTRY.PRIVATE_OMNICOIN());
         } else {
-            paymentToken = _getContract(registry.OMNICOIN());
+            paymentToken = _getContract(REGISTRY.OMNICOIN());
         }
         
         if (paymentToken == address(0)) revert NotAuthorized();
@@ -335,8 +335,8 @@ contract ListingNFT is ERC721URIStorage, RegistryAware, Ownable, ReentrancyGuard
         if (_ownerOf(tokenId) == address(0)) revert ListingDoesNotExist();
         
         Transaction memory txn = transactions[tokenId];
-        address omniCoin = _getContract(registry.OMNICOIN());
-        address privateOmniCoin = _getContract(registry.PRIVATE_OMNICOIN());
+        address omniCoin = _getContract(REGISTRY.OMNICOIN());
+        address privateOmniCoin = _getContract(REGISTRY.PRIVATE_OMNICOIN());
         
         isOmniPayment = (txn.paymentToken == omniCoin || txn.paymentToken == privateOmniCoin);
         paymentToken = txn.paymentToken;

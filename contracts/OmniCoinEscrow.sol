@@ -67,12 +67,18 @@ contract OmniCoinEscrow is RegistryAware, AccessControl, ReentrancyGuard, Pausab
     bytes32 public constant FEE_MANAGER_ROLE = keccak256("FEE_MANAGER_ROLE");
     
     /// @notice Fee configuration (basis points)
-    uint256 public constant FEE_RATE = 50; // 0.5%
+    /// @dev Escrow fee paid by buyer, split 70/20/10 between Validator/Staking Pool/ODDAO
+    uint256 public constant FEE_RATE = 25; // 0.25%
     /// @notice Basis points denominator
     uint256 public constant BASIS_POINTS = 10000;
     
     /// @notice Privacy fee multiplier
     uint256 public constant PRIVACY_MULTIPLIER = 10; // 10x fee for privacy
+    
+    /// @notice Fee split percentages (in basis points)
+    uint256 public constant VALIDATOR_SHARE = 7000; // 70%
+    uint256 public constant STAKING_POOL_SHARE = 2000; // 20%
+    uint256 public constant ODDAO_SHARE = 1000; // 10%
     
     // =============================================================================
     // STATE VARIABLES
@@ -98,6 +104,15 @@ contract OmniCoinEscrow is RegistryAware, AccessControl, ReentrancyGuard, Pausab
     
     /// @notice MPC availability flag (true on COTI testnet/mainnet, false in Hardhat)
     bool public isMpcAvailable;
+    
+    /// @notice Accumulated fees for validators (token => amount)
+    mapping(address => uint256) public validatorFees;
+    
+    /// @notice Accumulated fees for staking pool (token => amount)
+    mapping(address => uint256) public stakingPoolFees;
+    
+    /// @notice Accumulated fees for ODDAO (token => amount)
+    mapping(address => uint256) public oddaoFees;
     
     // =============================================================================
     // EVENTS
@@ -275,9 +290,9 @@ contract OmniCoinEscrow is RegistryAware, AccessControl, ReentrancyGuard, Pausab
      */
     function getTokenContract(bool usePrivacy) public view returns (address) {
         if (usePrivacy) {
-            return _getContract(registry.PRIVATE_OMNICOIN());
+            return _getContract(REGISTRY.PRIVATE_OMNICOIN());
         } else {
-            return _getContract(registry.OMNICOIN());
+            return _getContract(REGISTRY.OMNICOIN());
         }
     }
     
@@ -287,7 +302,7 @@ contract OmniCoinEscrow is RegistryAware, AccessControl, ReentrancyGuard, Pausab
      * @return feeManager PrivacyFeeManager address
      */
     function getPrivacyFeeManager() public returns (address feeManager) {
-        return _getContract(registry.FEE_MANAGER());
+        return _getContract(REGISTRY.FEE_MANAGER());
     }
     
     /**
@@ -296,7 +311,7 @@ contract OmniCoinEscrow is RegistryAware, AccessControl, ReentrancyGuard, Pausab
      * @return treasury Treasury address
      */
     function getTreasury() public returns (address treasury) {
-        return _getContract(registry.TREASURY());
+        return _getContract(REGISTRY.TREASURY());
     }
     
     // =============================================================================
@@ -903,6 +918,54 @@ contract OmniCoinEscrow is RegistryAware, AccessControl, ReentrancyGuard, Pausab
         _unpause();
     }
     
+    /**
+     * @notice Withdraw accumulated validator fees
+     * @param token Token address to withdraw fees for
+     */
+    function withdrawValidatorFees(address token) external onlyRole(FEE_MANAGER_ROLE) {
+        uint256 amount = validatorFees[token];
+        if (amount == 0) revert InvalidAmount();
+        
+        validatorFees[token] = 0;
+        address validatorPool = REGISTRY.getContract(keccak256("VALIDATOR_POOL"));
+        
+        if (!IERC20(token).transfer(validatorPool, amount)) {
+            revert TransferFailed();
+        }
+    }
+    
+    /**
+     * @notice Withdraw accumulated staking pool fees
+     * @param token Token address to withdraw fees for
+     */
+    function withdrawStakingPoolFees(address token) external onlyRole(FEE_MANAGER_ROLE) {
+        uint256 amount = stakingPoolFees[token];
+        if (amount == 0) revert InvalidAmount();
+        
+        stakingPoolFees[token] = 0;
+        address stakingPool = REGISTRY.getContract(keccak256("STAKING_POOL"));
+        
+        if (!IERC20(token).transfer(stakingPool, amount)) {
+            revert TransferFailed();
+        }
+    }
+    
+    /**
+     * @notice Withdraw accumulated ODDAO fees
+     * @param token Token address to withdraw fees for
+     */
+    function withdrawOddaoFees(address token) external onlyRole(FEE_MANAGER_ROLE) {
+        uint256 amount = oddaoFees[token];
+        if (amount == 0) revert InvalidAmount();
+        
+        oddaoFees[token] = 0;
+        address oddaoTreasury = REGISTRY.getContract(keccak256("ODDAO_TREASURY"));
+        
+        if (!IERC20(token).transfer(oddaoTreasury, amount)) {
+            revert TransferFailed();
+        }
+    }
+    
     // =============================================================================
     // INTERNAL FUNCTIONS
     // =============================================================================
@@ -928,25 +991,39 @@ contract OmniCoinEscrow is RegistryAware, AccessControl, ReentrancyGuard, Pausab
     }
     
     /**
-     * @notice Distribute fee to treasury
-     * @dev Internal function to transfer collected fees
-     * @param fee Fee amount to distribute
+     * @notice Distribute fee according to 70/20/10 split
+     * @dev Internal function to accumulate fees for different recipients
+     * @param fee Fee amount to distribute (encrypted)
      */
     function _distributeFee(gtUint64 fee) internal {
+        uint256 feeAmount;
+        address tokenContract;
+        
         if (isMpcAvailable) {
             gtBool hasFee = MpcCore.gt(fee, MpcCore.setPublic64(0));
-            if (MpcCore.decrypt(hasFee)) {
-                // Always use privacy token for fee distribution since fees are encrypted
-                address tokenContract = getTokenContract(true);
-                address treasury = getTreasury();
-                uint256 feeAmount = uint256(gtUint64.unwrap(fee));
-                if (!IERC20(tokenContract).transfer(treasury, feeAmount)) {
-                    revert TransferFailed();
-                }
+            if (!MpcCore.decrypt(hasFee)) {
+                return; // No fee to distribute
             }
+            feeAmount = uint256(gtUint64.unwrap(fee));
+            tokenContract = getTokenContract(true); // Use privacy token for encrypted fees
         } else {
-            // Fallback - assume fee transfer succeeds in test mode
+            // Test mode - get raw fee amount
+            feeAmount = uint256(gtUint64.unwrap(fee));
+            if (feeAmount == 0) {
+                return; // No fee to distribute
+            }
+            tokenContract = getTokenContract(false); // Use public token in test mode
         }
+        
+        // Calculate splits (70/20/10)
+        uint256 validatorShare = (feeAmount * VALIDATOR_SHARE) / BASIS_POINTS;
+        uint256 stakingShare = (feeAmount * STAKING_POOL_SHARE) / BASIS_POINTS;
+        uint256 oddaoShare = feeAmount - validatorShare - stakingShare; // Remainder to avoid rounding issues
+        
+        // Accumulate fees for each recipient
+        validatorFees[tokenContract] += validatorShare;
+        stakingPoolFees[tokenContract] += stakingShare;
+        oddaoFees[tokenContract] += oddaoShare;
     }
     
     // =============================================================================

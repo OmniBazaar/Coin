@@ -176,7 +176,7 @@ contract OmniCoinPrivacy is RegistryAware, Ownable, ReentrancyGuard {
         if (!account.isActive) revert InactiveAccount();
 
         // Use PrivateOmniCoin for privacy operations
-        address privateToken = _getContract(registry.PRIVATE_OMNICOIN());
+        address privateToken = _getContract(REGISTRY.PRIVATE_OMNICOIN());
         if (privateToken == address(0) && address(token) != address(0)) {
             privateToken = address(token); // Backwards compatibility
         }
@@ -219,7 +219,7 @@ contract OmniCoinPrivacy is RegistryAware, Ownable, ReentrancyGuard {
         ++account.nonce;
 
         // Use PrivateOmniCoin for withdrawals
-        address privateToken = _getContract(registry.PRIVATE_OMNICOIN());
+        address privateToken = _getContract(REGISTRY.PRIVATE_OMNICOIN());
         if (privateToken == address(0) && address(token) != address(0)) {
             privateToken = address(token); // Backwards compatibility
         }

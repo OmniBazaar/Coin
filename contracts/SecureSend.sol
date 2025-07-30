@@ -174,8 +174,8 @@ contract SecureSend is ReentrancyGuard, Ownable, RegistryAware {
         
         // Transfer tokens to escrow contract
         address tokenContract = _usePrivacy ? 
-            _getContract(registry.PRIVATE_OMNICOIN()) : 
-            _getContract(registry.OMNICOIN());
+            _getContract(REGISTRY.PRIVATE_OMNICOIN()) : 
+            _getContract(REGISTRY.OMNICOIN());
         if (!IERC20(tokenContract).transferFrom(msg.sender, address(this), _amount))
             revert TransferFailed();
 
@@ -323,8 +323,8 @@ contract SecureSend is ReentrancyGuard, Ownable, RegistryAware {
         uint256 sellerAmount = escrow.amount - feeAmount;
 
         address tokenContract = escrowUsePrivacy[_escrowId] ? 
-            _getContract(registry.PRIVATE_OMNICOIN()) : 
-            _getContract(registry.OMNICOIN());
+            _getContract(REGISTRY.PRIVATE_OMNICOIN()) : 
+            _getContract(REGISTRY.OMNICOIN());
         
         if (!IERC20(tokenContract).transfer(escrow.seller, sellerAmount))
             revert TransferFailed();
@@ -350,8 +350,8 @@ contract SecureSend is ReentrancyGuard, Ownable, RegistryAware {
         uint256 buyerAmount = escrow.amount - feeAmount;
 
         address tokenContract = escrowUsePrivacy[_escrowId] ? 
-            _getContract(registry.PRIVATE_OMNICOIN()) : 
-            _getContract(registry.OMNICOIN());
+            _getContract(REGISTRY.PRIVATE_OMNICOIN()) : 
+            _getContract(REGISTRY.OMNICOIN());
         
         if (!IERC20(tokenContract).transfer(escrow.buyer, buyerAmount))
             revert TransferFailed();

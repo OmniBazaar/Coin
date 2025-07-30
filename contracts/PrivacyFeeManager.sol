@@ -184,7 +184,7 @@ contract PrivacyFeeManager is AccessControl, ReentrancyGuard, Pausable, Registry
         if (feeAmount == 0) return 0;
         
         // Transfer fee from payer to treasury
-        address omniCoin = _getContract(registry.OMNICOIN());
+        address omniCoin = _getContract(REGISTRY.OMNICOIN());
         if (!IERC20(omniCoin).transferFrom(payer, treasury, feeAmount))
             revert FeeTransferFailed();
         
@@ -219,7 +219,7 @@ contract PrivacyFeeManager is AccessControl, ReentrancyGuard, Pausable, Registry
         
         // Use PrivateOmniCoin's transferPublic function
         // This maintains privacy while collecting fees
-        address privateOmniCoin = _getContract(registry.PRIVATE_OMNICOIN());
+        address privateOmniCoin = _getContract(REGISTRY.PRIVATE_OMNICOIN());
         // Note: This needs to be called by the payer, not the fee manager
         // The actual fee collection should happen in the calling contract
         if (!IERC20(privateOmniCoin).transferFrom(payer, treasury, feeAmount))

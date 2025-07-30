@@ -363,7 +363,7 @@ contract OmniCoinPayment is RegistryAware, AccessControl, ReentrancyGuard, Pausa
         userPayments[receiver].push(paymentId);
         
         // Execute transfers using public OmniCoin
-        address publicToken = _getContract(registry.OMNICOIN());
+        address publicToken = _getContract(REGISTRY.OMNICOIN());
         if (publicToken == address(0) && token != address(0)) {
             publicToken = token; // Backwards compatibility
         }
@@ -529,7 +529,7 @@ contract OmniCoinPayment is RegistryAware, AccessControl, ReentrancyGuard, Pausa
         userStreams[receiver].push(streamId);
         
         // Transfer total amount to contract using public OmniCoin
-        address publicToken = _getContract(registry.OMNICOIN());
+        address publicToken = _getContract(REGISTRY.OMNICOIN());
         if (publicToken == address(0) && token != address(0)) {
             publicToken = token; // Backwards compatibility
         }
@@ -607,7 +607,7 @@ contract OmniCoinPayment is RegistryAware, AccessControl, ReentrancyGuard, Pausa
         userStreams[receiver].push(streamId);
         
         // Transfer total amount to contract using PrivateOmniCoin
-        address privateToken = _getContract(registry.PRIVATE_OMNICOIN());
+        address privateToken = _getContract(REGISTRY.PRIVATE_OMNICOIN());
         if (privateToken == address(0)) revert InvalidReceiver();
         
         gtUint64 totalWithFee = MpcCore.add(gtTotalAmount, fee);
@@ -665,7 +665,7 @@ contract OmniCoinPayment is RegistryAware, AccessControl, ReentrancyGuard, Pausa
         
         // Transfer to receiver
         if (isMpcAvailable) {
-            address privateToken = _getContract(registry.PRIVATE_OMNICOIN());
+            address privateToken = _getContract(REGISTRY.PRIVATE_OMNICOIN());
             if (privateToken != address(0)) {
                 uint256 withdrawableAmount = uint256(gtUint64.unwrap(withdrawable));
                 if (!IERC20(privateToken).transfer(stream.receiver, withdrawableAmount)) {
@@ -705,7 +705,7 @@ contract OmniCoinPayment is RegistryAware, AccessControl, ReentrancyGuard, Pausa
             
             gtBool hasRemaining = MpcCore.gt(remaining, MpcCore.setPublic64(0));
             if (MpcCore.decrypt(hasRemaining)) {
-                address privateToken = _getContract(registry.PRIVATE_OMNICOIN());
+                address privateToken = _getContract(REGISTRY.PRIVATE_OMNICOIN());
                 if (privateToken != address(0)) {
                     uint256 remainingAmount = uint256(gtUint64.unwrap(remaining));
                     if (!IERC20(privateToken).transfer(stream.sender, remainingAmount)) {
@@ -922,7 +922,7 @@ contract OmniCoinPayment is RegistryAware, AccessControl, ReentrancyGuard, Pausa
         // Transfer from sender to receiver
         if (isMpcAvailable) {
             // Transfer using PrivateOmniCoin for privacy payments
-            address privateToken = _getContract(registry.PRIVATE_OMNICOIN());
+            address privateToken = _getContract(REGISTRY.PRIVATE_OMNICOIN());
             if (privateToken != address(0)) {
                 uint256 totalAmountPlain = uint256(gtUint64.unwrap(totalAmount));
                 uint256 netAmountPlain = uint256(gtUint64.unwrap(netAmount));
@@ -943,8 +943,8 @@ contract OmniCoinPayment is RegistryAware, AccessControl, ReentrancyGuard, Pausa
             // Transfer fee if applicable
             gtBool hasFee = MpcCore.gt(fee, MpcCore.setPublic64(0));
             if (MpcCore.decrypt(hasFee)) {
-                address feeToken = _getContract(registry.PRIVATE_OMNICOIN());
-                address treasury = _getContract(registry.TREASURY());
+                address feeToken = _getContract(REGISTRY.PRIVATE_OMNICOIN());
+                address treasury = _getContract(REGISTRY.TREASURY());
                 if (feeToken != address(0) && treasury != address(0)) {
                     uint256 feeAmount = uint256(gtUint64.unwrap(fee));
                     if (!IERC20(feeToken).transfer(treasury, feeAmount)) {

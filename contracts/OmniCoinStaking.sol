@@ -34,6 +34,7 @@ contract OmniCoinStaking is AccessControl, ReentrancyGuard, Pausable, RegistryAw
         uint256 tier;                   // Public: staking tier for PoP calculations
         uint256 startTime;              // Public: when stake was created
         uint256 lastRewardTime;         // Public: last reward calculation time
+        uint256 commitmentDuration;     // Public: commitment duration in seconds (0 = no commitment)
         gtUint64 encryptedRewards;      // Private: accumulated rewards (encrypted)
         ctUint64 userEncryptedRewards;  // Private: rewards encrypted for user viewing
         bool isActive;                  // Public: whether stake is active
@@ -84,6 +85,25 @@ contract OmniCoinStaking is AccessControl, ReentrancyGuard, Pausable, RegistryAw
     bytes32 public constant REWARD_DISTRIBUTOR_ROLE = keccak256("REWARD_DISTRIBUTOR_ROLE");
     /// @notice Privacy fee configuration - 10x fee for privacy
     uint256 public constant PRIVACY_MULTIPLIER = 10;
+    
+    // Duration constants
+    /// @notice 1 month in seconds
+    uint256 public constant ONE_MONTH = 30 days;
+    /// @notice 6 months in seconds
+    uint256 public constant SIX_MONTHS = 180 days;
+    /// @notice 2 years in seconds
+    uint256 public constant TWO_YEARS = 730 days;
+    
+    // Duration bonus rates (in basis points, added to base APY)
+    /// @notice 1 month commitment bonus: +1% APY
+    uint256 public constant ONE_MONTH_BONUS = 100; // 1%
+    /// @notice 6 month commitment bonus: +2% APY
+    uint256 public constant SIX_MONTHS_BONUS = 200; // 2%
+    /// @notice 2 year commitment bonus: +3% APY
+    uint256 public constant TWO_YEARS_BONUS = 300; // 3%
+    
+    /// @notice Basis points denominator
+    uint256 public constant BASIS_POINTS = 10000;
     /* solhint-enable ordering */
     
     // =============================================================================
@@ -269,7 +289,7 @@ contract OmniCoinStaking is AccessControl, ReentrancyGuard, Pausable, RegistryAw
         if (address(config) != address(0)) {
             return config; // Backwards compatibility
         }
-        address configAddr = _getContract(registry.OMNICOIN_CONFIG());
+        address configAddr = _getContract(REGISTRY.OMNICOIN_CONFIG());
         return OmniCoinConfig(configAddr);
     }
     
@@ -281,9 +301,9 @@ contract OmniCoinStaking is AccessControl, ReentrancyGuard, Pausable, RegistryAw
      */
     function _getTokenContract(bool usePrivacy) internal returns (address) {
         if (usePrivacy) {
-            return _getContract(registry.PRIVATE_OMNICOIN());
+            return _getContract(REGISTRY.PRIVATE_OMNICOIN());
         } else {
-            return _getContract(registry.OMNICOIN());
+            return _getContract(REGISTRY.OMNICOIN());
         }
     }
     
@@ -296,13 +316,14 @@ contract OmniCoinStaking is AccessControl, ReentrancyGuard, Pausable, RegistryAw
      * @dev Stake tokens publicly (default, no privacy fees)
      * @param amount Amount to stake
      */
-    function stake(uint256 amount) 
+    function stake(uint256 amount, uint256 duration) 
         external 
         whenNotPaused 
         whenStakingNotPaused 
         nonReentrant 
     {
         if (amount == 0) revert InvalidStakeAmount();
+        _validateDuration(duration);
         
         // Transfer tokens using public OmniCoin
         address omniCoin = _getTokenContract(false);
@@ -311,7 +332,7 @@ contract OmniCoinStaking is AccessControl, ReentrancyGuard, Pausable, RegistryAw
         
         // Convert to garbled for internal processing
         gtUint64 gtAmount = gtUint64.wrap(uint64(amount));
-        _stakeInternal(msg.sender, gtAmount, false);
+        _stakeInternal(msg.sender, gtAmount, false, duration);
     }
     
     /**
@@ -320,7 +341,7 @@ contract OmniCoinStaking is AccessControl, ReentrancyGuard, Pausable, RegistryAw
      * @param amount Encrypted amount to stake
      * @param usePrivacy Whether to use privacy features
      */
-    function stakeWithPrivacy(itUint64 calldata amount, bool usePrivacy) 
+    function stakeWithPrivacy(itUint64 calldata amount, bool usePrivacy, uint256 duration) 
         external 
         whenNotPaused 
         whenStakingNotPaused 
@@ -328,6 +349,7 @@ contract OmniCoinStaking is AccessControl, ReentrancyGuard, Pausable, RegistryAw
     {
         if (!usePrivacy || !isMpcAvailable) revert PrivacyNotEnabled();
         if (privacyFeeManager == address(0)) revert InvalidConfiguration();
+        _validateDuration(duration);
         
         gtUint64 gtAmount = MpcCore.validateCiphertext(amount);
         
@@ -359,7 +381,7 @@ contract OmniCoinStaking is AccessControl, ReentrancyGuard, Pausable, RegistryAw
         bool transferResult = IERC20(privateToken).transferFrom(msg.sender, address(this), transferAmount);
         if (!transferResult) revert TransferFailed();
         
-        _stakeInternal(msg.sender, gtAmount, true);
+        _stakeInternal(msg.sender, gtAmount, true, duration);
     }
     
     /**
@@ -367,13 +389,14 @@ contract OmniCoinStaking is AccessControl, ReentrancyGuard, Pausable, RegistryAw
      * @dev Stake tokens with garbled amount (already encrypted)
      * @param amount Garbled amount to stake
      */
-    function stakeGarbled(gtUint64 amount, bool usePrivacy) 
+    function stakeGarbled(gtUint64 amount, bool usePrivacy, uint256 duration) 
         external 
         whenNotPaused 
         whenStakingNotPaused 
         nonReentrant 
     {
-        _stakeInternal(msg.sender, amount, usePrivacy);
+        _validateDuration(duration);
+        _stakeInternal(msg.sender, amount, usePrivacy, duration);
     }
     
     /**
@@ -383,7 +406,7 @@ contract OmniCoinStaking is AccessControl, ReentrancyGuard, Pausable, RegistryAw
      * @param gtAmount The garbled amount to stake
      * @param usePrivacy Whether using PrivateOmniCoin
      */
-    function _stakeInternal(address user, gtUint64 gtAmount, bool usePrivacy) internal {
+    function _stakeInternal(address user, gtUint64 gtAmount, bool usePrivacy, uint256 duration) internal {
         // Decrypt amount to determine tier (this is the only time we decrypt)
         uint64 plaintextAmount;
         if (isMpcAvailable) {
@@ -402,7 +425,7 @@ contract OmniCoinStaking is AccessControl, ReentrancyGuard, Pausable, RegistryAw
             _updateExistingStake(user, gtAmount, tierIndex, usePrivacy);
         } else {
             // Create new stake
-            _createNewStake(user, gtAmount, tierIndex, usePrivacy);
+            _createNewStake(user, gtAmount, tierIndex, usePrivacy, duration);
         }
     }
     
@@ -414,7 +437,7 @@ contract OmniCoinStaking is AccessControl, ReentrancyGuard, Pausable, RegistryAw
      * @param tierIndex The staking tier index
      * @param usePrivacy Whether using PrivateOmniCoin
      */
-    function _createNewStake(address user, gtUint64 gtAmount, uint256 tierIndex, bool usePrivacy) internal {
+    function _createNewStake(address user, gtUint64 gtAmount, uint256 tierIndex, bool usePrivacy, uint256 duration) internal {
         // Encrypt amount for user viewing
         ctUint64 userEncrypted;
         gtUint64 zeroRewards;
@@ -438,6 +461,7 @@ contract OmniCoinStaking is AccessControl, ReentrancyGuard, Pausable, RegistryAw
             tier: tierIndex,
             startTime: block.timestamp,  // solhint-disable-line not-rely-on-time
             lastRewardTime: block.timestamp,  // solhint-disable-line not-rely-on-time
+            commitmentDuration: duration,
             encryptedRewards: zeroRewards,
             userEncryptedRewards: userZeroRewards,
             isActive: true,
@@ -735,8 +759,9 @@ contract OmniCoinStaking is AccessControl, ReentrancyGuard, Pausable, RegistryAw
         }
         OmniCoinConfig.StakingTier memory stakingTier = _getConfig().getStakingTier(uint256(currentAmount));
         
-        // Calculate base rewards using encrypted amounts
-        gtUint64 baseReward = _calculateBaseReward(userStake.encryptedAmount, stakingTier.rewardRate, timeElapsed);
+        // Calculate base rewards using encrypted amounts with duration bonus
+        uint256 effectiveRewardRate = _getEffectiveRewardRate(stakingTier.rewardRate, userStake.commitmentDuration);
+        gtUint64 baseReward = _calculateBaseReward(userStake.encryptedAmount, effectiveRewardRate, timeElapsed);
         
         // Apply participation score multiplier if enabled
         if (_getConfig().useParticipationScore()) {
@@ -905,6 +930,44 @@ contract OmniCoinStaking is AccessControl, ReentrancyGuard, Pausable, RegistryAw
     // =============================================================================
     // INTERNAL HELPER FUNCTIONS
     // =============================================================================
+    
+    /**
+     * @notice Validate staking duration
+     * @dev Validates that the duration is one of the allowed values
+     * @param duration The commitment duration to validate
+     */
+    function _validateDuration(uint256 duration) internal pure {
+        if (
+            duration != 0 &&
+            duration != ONE_MONTH &&
+            duration != SIX_MONTHS &&
+            duration != TWO_YEARS
+        ) {
+            revert InvalidDuration();
+        }
+    }
+    
+    /**
+     * @notice Get effective reward rate including duration bonus
+     * @dev Calculates the total reward rate by adding base rate and duration bonus
+     * @param baseRate The base reward rate from staking tier
+     * @param duration The commitment duration
+     * @return The effective reward rate including bonus
+     */
+    function _getEffectiveRewardRate(uint256 baseRate, uint256 duration) internal pure returns (uint256) {
+        uint256 bonus = 0;
+        
+        if (duration == ONE_MONTH) {
+            bonus = ONE_MONTH_BONUS;
+        } else if (duration == SIX_MONTHS) {
+            bonus = SIX_MONTHS_BONUS;
+        } else if (duration == TWO_YEARS) {
+            bonus = TWO_YEARS_BONUS;
+        }
+        
+        // Add bonus to base rate (both are in percentage points)
+        return baseRate + bonus;
+    }
 
     /**
      * @notice Process token transfer for unstaking
@@ -917,7 +980,7 @@ contract OmniCoinStaking is AccessControl, ReentrancyGuard, Pausable, RegistryAw
     function _processUnstakeTransfer(address user, gtUint64 netAmount, gtUint64 penalty, bool usePrivacy) internal {
         // Get appropriate token contract
         address tokenContract = _getTokenContract(usePrivacy);
-        address treasuryAddr = _getContract(registry.TREASURY());
+        address treasuryAddr = _getContract(REGISTRY.TREASURY());
         
         // Transfer tokens back to user
         uint64 netAmountValue = uint64(gtUint64.unwrap(netAmount));
@@ -980,8 +1043,11 @@ contract OmniCoinStaking is AccessControl, ReentrancyGuard, Pausable, RegistryAw
     {
         PrivateStake storage userStake = stakes[user];
         
-        // Check if within lock period
-        if (block.timestamp > userStake.startTime + tier.lockPeriod - 1) {  // solhint-disable-line not-rely-on-time
+        // Check if within commitment period or tier lock period
+        uint256 effectiveLockPeriod = tier.lockPeriod > userStake.commitmentDuration ? 
+            tier.lockPeriod : userStake.commitmentDuration;
+            
+        if (block.timestamp > userStake.startTime + effectiveLockPeriod - 1) {  // solhint-disable-line not-rely-on-time
             if (isMpcAvailable) {
                 return MpcCore.setPublic64(0); // No penalty
             } else {

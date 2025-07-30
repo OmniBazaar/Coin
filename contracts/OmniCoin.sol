@@ -15,7 +15,7 @@ import {RegistryAware} from "./base/RegistryAware.sol";
  * @dev Main public token - users bridge to PrivateOmniCoin for privacy features
  * 
  * Features:
- * - Standard ERC20 with 6 decimals
+ * - Standard ERC20 with configurable decimals (default: 6)
  * - Role-based access control
  * - Pausable for emergency stops
  * - Burnable for supply management
@@ -48,10 +48,16 @@ contract OmniCoin is ERC20, ERC20Burnable, ERC20Pausable, AccessControl, Reentra
     /// @notice Role for bridge operations
     bytes32 public constant BRIDGE_ROLE = keccak256("BRIDGE_ROLE");
     
-    /// @notice Initial token supply (100M tokens)
-    uint256 public constant INITIAL_SUPPLY = 100_000_000 * 10**6;
-    /// @notice Maximum token supply (1B tokens)
-    uint256 public constant MAX_SUPPLY = 1_000_000_000 * 10**6;
+    /// @notice Decimals used by the token (configurable: 6, 12, or 18)
+    uint8 public constant DECIMALS = 6;
+    
+    /// @notice Initial circulating supply (~4.1 billion tokens)
+    /// @dev Already distributed: block subsidy (1.34B) + dev subsidy (2.52B) + welcome (0.02B) + referral (0.005B) + faucet/burned (0.26B)
+    uint256 public constant INITIAL_SUPPLY = 4_132_353_934 * 10**DECIMALS;
+    
+    /// @notice Maximum token supply (25 billion total)
+    /// @dev ~12.5 billion remaining to be minted over 40 years via block rewards and bonuses
+    uint256 public constant MAX_SUPPLY = 25_000_000_000 * 10**DECIMALS;
     
     /// @notice Maximum supply cap (immutable)
     uint256 public immutable MAX_SUPPLY_CAP;
@@ -148,11 +154,11 @@ contract OmniCoin is ERC20, ERC20Burnable, ERC20Pausable, AccessControl, Reentra
     
     /**
      * @notice Get the number of decimal places for the token
-     * @dev Returns 6 for COTI compatibility
-     * @return decimals Number of decimal places (6)
+     * @dev Returns DECIMALS constant for easy configuration
+     * @return decimals Number of decimal places (configurable: 6, 12, or 18)
      */
     function decimals() public view virtual override returns (uint8) {
-        return 6;
+        return DECIMALS;
     }
     
     // =============================================================================
@@ -271,7 +277,7 @@ contract OmniCoin is ERC20, ERC20Burnable, ERC20Pausable, AccessControl, Reentra
      * @param amount Amount to transfer to bridge
      */
     function transferToBridge(uint256 amount) external nonReentrant whenNotPaused {
-        address bridge = registry.getContract(keccak256("OMNICOIN_BRIDGE"));
+        address bridge = REGISTRY.getContract(keccak256("OMNICOIN_BRIDGE"));
         if (bridge == address(0)) revert ZeroAddress();
         
         _transfer(msg.sender, bridge, amount);

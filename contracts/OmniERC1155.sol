@@ -298,8 +298,8 @@ contract OmniERC1155 is
         
         // Get payment token
         address paymentToken = info.usePrivacy ?
-            _getContract(registry.PRIVATE_OMNICOIN()) :
-            _getContract(registry.OMNICOIN());
+            _getContract(REGISTRY.PRIVATE_OMNICOIN()) :
+            _getContract(REGISTRY.OMNICOIN());
         
         // Transfer payment
         if (!IERC20(paymentToken).transferFrom(msg.sender, address(this), totalPrice)) {
@@ -340,8 +340,8 @@ contract OmniERC1155 is
         
         TokenInfo storage info = tokenInfo[tokenId];
         address paymentToken = info.usePrivacy ?
-            _getContract(registry.PRIVATE_OMNICOIN()) :
-            _getContract(registry.OMNICOIN());
+            _getContract(REGISTRY.PRIVATE_OMNICOIN()) :
+            _getContract(REGISTRY.OMNICOIN());
         
         if (!IERC20(paymentToken).transfer(msg.sender, balance)) {
             revert TransferFailed();

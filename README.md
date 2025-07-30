@@ -1,6 +1,9 @@
 # OmniCoin Smart Contracts
 
-This repository contains the smart contracts for the OmniCoin project, a comprehensive blockchain solution built on the C.O.T.I. platform with enterprise-grade security.
+This repository contains the smart contracts for the OmniCoin project, a next-generation blockchain solution featuring:
+- **Public Chain**: Avalanche subnet with 1-2 second finality and 4,500+ TPS
+- **Private Chain**: COTI network for privacy-preserving transactions
+- **Radical Simplification**: 60% gas reduction through off-chain computation
 
 ## 🔒 Security Status
 
@@ -11,18 +14,31 @@ This repository contains the smart contracts for the OmniCoin project, a compreh
 - Multi-signature controls and time-locked operations
 - Comprehensive security documentation and monitoring guides
 
+## 🚀 Architecture Transformation
+
+We are implementing a dual-track development strategy:
+1. **Avalanche Migration**: Public chain moves to Avalanche subnet for superior performance
+2. **Radical Simplification**: 80% of functionality moves off-chain to validators
+
+### Key Benefits
+- **1-2 second finality** (vs 6 seconds on COTI)
+- **4,500+ TPS capacity** (vs ~1,000)
+- **60% gas reduction** through off-chain computation
+- **Unlimited validators** (vs restricted by √users)
+- **XOM as native gas token** for better economics
+
 ## Features
 
-- ERC20 token with upgradeable functionality
-- Privacy-preserving transactions with COTI V2 integration
-- Comprehensive staking and validator system
-- Reputation tracking and dispute resolution
-- Cross-chain bridging with security controls
-- Advanced escrow and arbitration system
-- DAO governance with multi-sig protection
-- **Enterprise security monitoring and automated threat detection**
-- **Comprehensive wallet integration with batch operations**
-- **Advanced NFT marketplace with privacy features**
+- ERC20 token with 6 decimal places (4.1B initial, 25B max supply)
+- Dual-chain architecture: Public (Avalanche) + Private (COTI)
+- Event-based state management with off-chain computation
+- 5-tier staking system with duration bonuses (5-9% APY)
+- Advanced marketplace with 1% fees and complex distribution
+- Cross-chain bridging between Avalanche and COTI
+- DAO governance with sophisticated fee distribution
+- Comprehensive bonus system (welcome, referral, first sale)
+- Gas-free transactions for users
+- Advanced NFT marketplace with merkle-based verification
 
 ## Security Highlights
 

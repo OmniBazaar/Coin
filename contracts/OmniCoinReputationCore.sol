@@ -590,7 +590,7 @@ contract OmniCoinReputationCore is IReputationCore, AccessControl, ReentrancyGua
         if (address(config) != address(0)) {
             return config; // Backwards compatibility
         }
-        address configAddr = _getContract(registry.OMNICOIN_CONFIG());
+        address configAddr = _getContract(REGISTRY.OMNICOIN_CONFIG());
         return OmniCoinConfig(configAddr);
     }
     

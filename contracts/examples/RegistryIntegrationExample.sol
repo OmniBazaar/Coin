@@ -37,7 +37,7 @@ contract RegistryIntegrationExample is RegistryAware {
      */
     function checkUserReputation(address user) external returns (bool) {
         // Get reputation contract dynamically
-        address reputationAddr = _getContract(registry.REPUTATION_CORE());
+        address reputationAddr = _getContract(REGISTRY.REPUTATION_CORE());
         OmniCoinReputationCore reputation = OmniCoinReputationCore(reputationAddr);
         
         // Check if user is eligible
@@ -49,7 +49,7 @@ contract RegistryIntegrationExample is RegistryAware {
      */
     function transferTokens(address to, uint256 amount) external {
         // Get token contract
-        address tokenAddr = _getContract(registry.OMNICOIN());
+        address tokenAddr = _getContract(REGISTRY.OMNICOIN());
         // OmniCoinCore is deprecated - use standard ERC20 interface
         IERC20 token = IERC20(tokenAddr);
         
@@ -67,9 +67,9 @@ contract RegistryIntegrationExample is RegistryAware {
     ) external returns (uint256) {
         // Batch get contracts for efficiency
         bytes32[] memory identifiers = new bytes32[](3);
-        identifiers[0] = registry.OMNICOIN();
-        identifiers[1] = registry.REPUTATION_CORE();
-        identifiers[2] = registry.ESCROW();
+        identifiers[0] = REGISTRY.OMNICOIN();
+        identifiers[1] = REGISTRY.REPUTATION_CORE();
+        identifiers[2] = REGISTRY.ESCROW();
         
         address[] memory contracts = _getContracts(identifiers);
         
@@ -97,9 +97,9 @@ contract RegistryIntegrationExample is RegistryAware {
      */
     function refreshContracts() external {
         // Clear specific caches after registry update
-        _clearCache(registry.OMNICOIN_CORE());
-        _clearCache(registry.REPUTATION_CORE());
-        _clearCache(registry.ESCROW());
+        _clearCache(REGISTRY.OMNICOIN_CORE());
+        _clearCache(REGISTRY.REPUTATION_CORE());
+        _clearCache(REGISTRY.ESCROW());
     }
 }
 

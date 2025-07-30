@@ -292,7 +292,7 @@ contract ValidatorRegistry is ReentrancyGuard, Pausable, AccessControl, Registry
         if (!_verifyHardwareSpecs(hardwareSpecs)) revert HardwareRequirementsNotMet();
 
         // Transfer stake (using OmniCoin by default for validators)
-        address stakingToken = _getContract(registry.OMNICOIN());
+        address stakingToken = _getContract(REGISTRY.OMNICOIN());
         IERC20(stakingToken).safeTransferFrom(msg.sender, address(this), stakeAmount);
 
         // Initialize validator info
@@ -348,7 +348,7 @@ contract ValidatorRegistry is ReentrancyGuard, Pausable, AccessControl, Registry
         if (newTotalStake > stakingConfig.maximumStake) revert StakeExceedsMaximum();
 
         // Transfer additional stake
-        address stakingToken = _getContract(registry.OMNICOIN());
+        address stakingToken = _getContract(REGISTRY.OMNICOIN());
         IERC20(stakingToken).safeTransferFrom(
             msg.sender,
             address(this),
@@ -405,7 +405,7 @@ contract ValidatorRegistry is ReentrancyGuard, Pausable, AccessControl, Registry
         --totalValidators;
 
         // Refund stake
-        address stakingToken = _getContract(registry.OMNICOIN());
+        address stakingToken = _getContract(REGISTRY.OMNICOIN());
         IERC20(stakingToken).safeTransfer(msg.sender, refundAmount);
 
         emit ValidatorDeregistered(msg.sender, refundAmount, "Voluntary exit");
@@ -494,7 +494,7 @@ contract ValidatorRegistry is ReentrancyGuard, Pausable, AccessControl, Registry
         }
 
         // Burned tokens (sent to zero address)
-        address stakingToken = _getContract(registry.OMNICOIN());
+        address stakingToken = _getContract(REGISTRY.OMNICOIN());
         IERC20(stakingToken).safeTransfer(address(0), slashAmount);
 
         emit ValidatorSlashed(
@@ -527,7 +527,7 @@ contract ValidatorRegistry is ReentrancyGuard, Pausable, AccessControl, Registry
                 validator.totalRewards += rewardAmounts[i];
 
                 // Transfer reward
-                address stakingToken = _getContract(registry.OMNICOIN());
+                address stakingToken = _getContract(REGISTRY.OMNICOIN());
                 IERC20(stakingToken).safeTransfer(
                     validatorAddresses[i],
                     rewardAmounts[i]

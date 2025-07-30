@@ -42,10 +42,33 @@ contract OmniUnifiedMarketplace is
     /// @notice Role for marketplace operators
     bytes32 public constant OPERATOR_ROLE = keccak256("OPERATOR_ROLE");
     
-    /// @notice Marketplace fee in basis points (2.5%)
-    uint256 public constant MARKETPLACE_FEE_BPS = 250;
+    /// @notice Marketplace fee in basis points (1%)
+    uint256 public constant MARKETPLACE_FEE_BPS = 100;
     /// @notice Basis points denominator
     uint256 public constant BPS_DENOMINATOR = 10000;
+    
+    // Fee split configuration (basis points)
+    /// @notice Transaction fee portion (0.5% of total 1%)
+    uint256 public constant TRANSACTION_FEE_BPS = 50;
+    /// @notice Referral fee portion (0.25% of total 1%)
+    uint256 public constant REFERRAL_FEE_BPS = 25;
+    /// @notice Listing fee portion (0.25% of total 1%)
+    uint256 public constant LISTING_FEE_BPS = 25;
+    
+    // Transaction fee splits (70/20/10)
+    uint256 public constant TRANSACTION_ODDAO_SHARE = 7000;
+    uint256 public constant TRANSACTION_VALIDATOR_SHARE = 2000;
+    uint256 public constant TRANSACTION_STAKING_SHARE = 1000;
+    
+    // Referral fee splits (70/20/10)
+    uint256 public constant REFERRAL_REFERRER_SHARE = 7000;
+    uint256 public constant REFERRAL_PARENT_SHARE = 2000;
+    uint256 public constant REFERRAL_ODDAO_SHARE = 1000;
+    
+    // Listing fee splits (70/20/10)
+    uint256 public constant LISTING_NODE_SHARE = 7000;
+    uint256 public constant LISTING_SELLING_NODE_SHARE = 2000;
+    uint256 public constant LISTING_ODDAO_SHARE = 1000;
     
     // =============================================================================
     // STATE VARIABLES
@@ -60,14 +83,44 @@ contract OmniUnifiedMarketplace is
     /// @notice Track NFTs in escrow (contract => tokenId => amount)
     mapping(address => mapping(uint256 => uint256)) public escrowedERC1155;
     
-    /// @notice Accumulated fees per payment token
+    /// @notice Accumulated fees per payment token (deprecated - kept for compatibility)
     mapping(address => uint256) public accumulatedFees;
+    
+    /// @notice Accumulated fees for ODDAO per payment token
+    mapping(address => uint256) public oddaoFees;
+    
+    /// @notice Accumulated fees for validators per payment token
+    mapping(address => uint256) public validatorFees;
+    
+    /// @notice Accumulated fees for staking pool per payment token
+    mapping(address => uint256) public stakingPoolFees;
+    
+    /// @notice Accumulated fees for referrers (address => token => amount)
+    mapping(address => mapping(address => uint256)) public referrerFees;
+    
+    /// @notice Accumulated fees for listing nodes (address => token => amount)
+    mapping(address => mapping(address => uint256)) public listingNodeFees;
+    
+    /// @notice Accumulated fees for selling nodes (address => token => amount)
+    mapping(address => mapping(address => uint256)) public sellingNodeFees;
     
     /// @notice Allowed NFT contracts
     mapping(address => bool) public allowedContracts;
     
     /// @notice User purchase limits (anti-bot)
     mapping(address => mapping(uint256 => uint256)) public userPurchases;
+    
+    /// @notice Referrer for each listing (listingId => referrer address)
+    mapping(uint256 => address) public listingReferrers;
+    
+    /// @notice Parent referrer for each user (user => parent referrer)
+    mapping(address => address) public userReferrers;
+    
+    /// @notice Listing node for each listing (listingId => node address)
+    mapping(uint256 => address) public listingNodes;
+    
+    /// @notice Selling node for each listing (listingId => node address)
+    mapping(uint256 => address) public sellingNodes;
     
     // =============================================================================
     // EVENTS (Additional to interface)
@@ -181,8 +234,8 @@ contract OmniUnifiedMarketplace is
         listingId = _listingIdCounter++;
         
         address paymentToken = usePrivacy ?
-            _getContract(registry.PRIVATE_OMNICOIN()) :
-            _getContract(registry.OMNICOIN());
+            _getContract(REGISTRY.PRIVATE_OMNICOIN()) :
+            _getContract(REGISTRY.OMNICOIN());
         
         listings[listingId] = UnifiedListing({
             listingId: listingId,
@@ -260,7 +313,13 @@ contract OmniUnifiedMarketplace is
             revert PaymentFailed();
         }
         
-        accumulatedFees[listing.paymentToken] += marketplaceFee;
+        // Distribute marketplace fees
+        _distributeFees(
+            params.listingId,
+            listing.paymentToken,
+            marketplaceFee,
+            msg.sender
+        );
         
         // Transfer NFT(s)
         if (listing.standard == TokenStandard.ERC721) {
@@ -435,7 +494,7 @@ contract OmniUnifiedMarketplace is
         
         accumulatedFees[paymentToken] = 0;
         
-        address treasury = _getContract(registry.OMNIBAZAAR_TREASURY());
+        address treasury = _getContract(REGISTRY.OMNIBAZAAR_TREASURY());
         if (!IERC20(paymentToken).transfer(treasury, amount)) {
             revert TransferFailed();
         }
@@ -453,6 +512,48 @@ contract OmniUnifiedMarketplace is
      */
     function unpause() external onlyRole(OPERATOR_ROLE) {
         _unpause();
+    }
+    
+    /**
+     * @notice Set referrer for a listing
+     * @param listingId The listing ID
+     * @param referrer The referrer address
+     */
+    function setListingReferrer(uint256 listingId, address referrer) 
+        external 
+        onlyRole(OPERATOR_ROLE) 
+    {
+        listingReferrers[listingId] = referrer;
+    }
+    
+    /**
+     * @notice Set user's parent referrer
+     * @param user The user address
+     * @param parentReferrer The parent referrer address
+     */
+    function setUserReferrer(address user, address parentReferrer) 
+        external 
+        onlyRole(OPERATOR_ROLE) 
+    {
+        userReferrers[user] = parentReferrer;
+    }
+    
+    /**
+     * @notice Set listing and selling nodes for a listing
+     * @param listingId The listing ID
+     * @param listingNode The listing node address
+     * @param sellingNode The selling node address
+     */
+    function setListingNodes(
+        uint256 listingId, 
+        address listingNode, 
+        address sellingNode
+    ) 
+        external 
+        onlyRole(OPERATOR_ROLE) 
+    {
+        listingNodes[listingId] = listingNode;
+        sellingNodes[listingId] = sellingNode;
     }
     
     // =============================================================================
@@ -498,5 +599,149 @@ contract OmniUnifiedMarketplace is
             interfaceId == type(IERC1155Receiver).interfaceId ||
             interfaceId == type(IERC721Receiver).interfaceId ||
             super.supportsInterface(interfaceId);
+    }
+    
+    // =============================================================================
+    // INTERNAL FUNCTIONS
+    // =============================================================================
+    
+    /**
+     * @notice Distribute marketplace fees according to the fee split configuration
+     * @param listingId The listing ID for tracking purposes
+     * @param paymentToken The token used for payment
+     * @param totalFee The total marketplace fee (1% of transaction)
+     * @param buyer The buyer address (for referrer tracking)
+     */
+    function _distributeFees(
+        uint256 listingId,
+        address paymentToken,
+        uint256 totalFee,
+        address buyer
+    ) internal {
+        // Calculate individual fee components
+        uint256 transactionFee = (totalFee * TRANSACTION_FEE_BPS) / MARKETPLACE_FEE_BPS;
+        uint256 referralFee = (totalFee * REFERRAL_FEE_BPS) / MARKETPLACE_FEE_BPS;
+        uint256 listingFee = (totalFee * LISTING_FEE_BPS) / MARKETPLACE_FEE_BPS;
+        
+        // Distribute transaction fee (0.5%): 70/20/10 (ODDAO/Validator/Staking Pool)
+        uint256 oddaoTransactionShare = (transactionFee * TRANSACTION_ODDAO_SHARE) / BPS_DENOMINATOR;
+        uint256 validatorTransactionShare = (transactionFee * TRANSACTION_VALIDATOR_SHARE) / BPS_DENOMINATOR;
+        uint256 stakingTransactionShare = transactionFee - oddaoTransactionShare - validatorTransactionShare;
+        
+        oddaoFees[paymentToken] += oddaoTransactionShare;
+        validatorFees[paymentToken] += validatorTransactionShare;
+        stakingPoolFees[paymentToken] += stakingTransactionShare;
+        
+        // Distribute referral fee (0.25%): 70/20/10 (Referrer/Parent Referrer/ODDAO)
+        address referrer = listingReferrers[listingId];
+        if (referrer == address(0)) {
+            referrer = userReferrers[buyer];
+        }
+        
+        if (referrer != address(0)) {
+            uint256 referrerShare = (referralFee * REFERRAL_REFERRER_SHARE) / BPS_DENOMINATOR;
+            uint256 parentReferrerShare = (referralFee * REFERRAL_PARENT_SHARE) / BPS_DENOMINATOR;
+            uint256 oddaoReferralShare = referralFee - referrerShare - parentReferrerShare;
+            
+            referrerFees[referrer][paymentToken] += referrerShare;
+            
+            address parentReferrer = userReferrers[referrer];
+            if (parentReferrer != address(0)) {
+                referrerFees[parentReferrer][paymentToken] += parentReferrerShare;
+            } else {
+                oddaoFees[paymentToken] += parentReferrerShare;
+            }
+            
+            oddaoFees[paymentToken] += oddaoReferralShare;
+        } else {
+            // No referrer - all referral fees go to ODDAO
+            oddaoFees[paymentToken] += referralFee;
+        }
+        
+        // Distribute listing fee (0.25%): 70/20/10 (Listing Node/Selling Node/ODDAO)
+        address listingNode = listingNodes[listingId];
+        address sellingNode = sellingNodes[listingId];
+        
+        if (listingNode != address(0)) {
+            uint256 listingNodeShare = (listingFee * LISTING_NODE_SHARE) / BPS_DENOMINATOR;
+            uint256 sellingNodeShare = (listingFee * LISTING_SELLING_NODE_SHARE) / BPS_DENOMINATOR;
+            uint256 oddaoListingShare = listingFee - listingNodeShare - sellingNodeShare;
+            
+            listingNodeFees[listingNode][paymentToken] += listingNodeShare;
+            
+            if (sellingNode != address(0)) {
+                sellingNodeFees[sellingNode][paymentToken] += sellingNodeShare;
+            } else {
+                oddaoFees[paymentToken] += sellingNodeShare;
+            }
+            
+            oddaoFees[paymentToken] += oddaoListingShare;
+        } else {
+            // No listing node - all listing fees go to ODDAO
+            oddaoFees[paymentToken] += listingFee;
+        }
+        
+        emit FeeCollected(listingId, paymentToken, totalFee);
+    }
+    
+    /**
+     * @notice Withdraw specific fee type
+     * @param paymentToken Token to withdraw
+     * @param feeType Type of fee to withdraw (0=ODDAO, 1=Validator, 2=Staking, 3=Referrer, 4=ListingNode, 5=SellingNode)
+     * @param recipient Recipient address (for referrer/node fees)
+     */
+    function withdrawSpecificFees(
+        address paymentToken,
+        uint8 feeType,
+        address recipient
+    ) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        uint256 amount;
+        
+        if (feeType == 0) {
+            // ODDAO fees
+            amount = oddaoFees[paymentToken];
+            if (amount > 0) {
+                oddaoFees[paymentToken] = 0;
+                address oddaoTreasury = _getContract(REGISTRY.ODDAO_TREASURY());
+                IERC20(paymentToken).transfer(oddaoTreasury, amount);
+            }
+        } else if (feeType == 1) {
+            // Validator fees
+            amount = validatorFees[paymentToken];
+            if (amount > 0) {
+                validatorFees[paymentToken] = 0;
+                address validatorPool = _getContract(REGISTRY.VALIDATOR_POOL());
+                IERC20(paymentToken).transfer(validatorPool, amount);
+            }
+        } else if (feeType == 2) {
+            // Staking pool fees
+            amount = stakingPoolFees[paymentToken];
+            if (amount > 0) {
+                stakingPoolFees[paymentToken] = 0;
+                address stakingPool = _getContract(REGISTRY.STAKING_POOL());
+                IERC20(paymentToken).transfer(stakingPool, amount);
+            }
+        } else if (feeType == 3 && recipient != address(0)) {
+            // Referrer fees
+            amount = referrerFees[recipient][paymentToken];
+            if (amount > 0) {
+                referrerFees[recipient][paymentToken] = 0;
+                IERC20(paymentToken).transfer(recipient, amount);
+            }
+        } else if (feeType == 4 && recipient != address(0)) {
+            // Listing node fees
+            amount = listingNodeFees[recipient][paymentToken];
+            if (amount > 0) {
+                listingNodeFees[recipient][paymentToken] = 0;
+                IERC20(paymentToken).transfer(recipient, amount);
+            }
+        } else if (feeType == 5 && recipient != address(0)) {
+            // Selling node fees
+            amount = sellingNodeFees[recipient][paymentToken];
+            if (amount > 0) {
+                sellingNodeFees[recipient][paymentToken] = 0;
+                IERC20(paymentToken).transfer(recipient, amount);
+            }
+        }
     }
 }

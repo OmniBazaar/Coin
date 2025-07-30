@@ -705,7 +705,7 @@ contract DEXSettlement is RegistryAware, ReentrancyGuard, Pausable, AccessContro
         
         // Check if signer is an authorized validator
         OmniCoinValidator validatorContract = OmniCoinValidator(
-            _getContract(registry.VALIDATOR_MANAGER())
+            _getContract(REGISTRY.VALIDATOR_MANAGER())
         );
         // Check if the signer is registered as a validator
         (address validatorAddress,,,,,bool isActive,) = validatorContract.getValidator(signer);
@@ -938,8 +938,8 @@ contract DEXSettlement is RegistryAware, ReentrancyGuard, Pausable, AccessContro
      * @return isOmniToken Whether the token is OmniCoin or PrivateOmniCoin
      */
     function isOmniCoinToken(address token) public view returns (bool isOmniToken) {
-        address omniCoin = _getContract(registry.OMNICOIN());
-        address privateOmniCoin = _getContract(registry.PRIVATE_OMNICOIN());
+        address omniCoin = _getContract(REGISTRY.OMNICOIN());
+        address privateOmniCoin = _getContract(REGISTRY.PRIVATE_OMNICOIN());
         return token == omniCoin || token == privateOmniCoin;
     }
     
@@ -951,7 +951,7 @@ contract DEXSettlement is RegistryAware, ReentrancyGuard, Pausable, AccessContro
      * @return Whether the trade involves privacy tokens
      */
     function isPrivacyTrade(address tokenIn, address tokenOut) public view returns (bool) {
-        address privateOmniCoin = _getContract(registry.PRIVATE_OMNICOIN());
+        address privateOmniCoin = _getContract(REGISTRY.PRIVATE_OMNICOIN());
         return tokenIn == privateOmniCoin || tokenOut == privateOmniCoin;
     }
     
@@ -961,7 +961,7 @@ contract DEXSettlement is RegistryAware, ReentrancyGuard, Pausable, AccessContro
      * @return feeManager Address of the privacy fee manager
      */
     function getPrivacyFeeManager() public view returns (address feeManager) {
-        feeManager = _getContract(registry.FEE_MANAGER());
+        feeManager = _getContract(REGISTRY.FEE_MANAGER());
         if (feeManager == address(0) && privacyFeeManager != address(0)) {
             // Fallback to stored address if registry not configured
             feeManager = privacyFeeManager;

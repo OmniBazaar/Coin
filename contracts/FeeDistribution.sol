@@ -1369,8 +1369,8 @@ contract FeeDistribution is RegistryAware, ReentrancyGuard, Pausable, AccessCont
      * @return isOmniToken Whether the token is OmniCoin or PrivateOmniCoin
      */
     function isOmniCoinToken(address token) public view returns (bool isOmniToken) {
-        address omniCoin = _getContract(registry.OMNICOIN());
-        address privateOmniCoin = _getContract(registry.PRIVATE_OMNICOIN());
+        address omniCoin = _getContract(REGISTRY.OMNICOIN());
+        address privateOmniCoin = _getContract(REGISTRY.PRIVATE_OMNICOIN());
         return token == omniCoin || token == privateOmniCoin;
     }
     
@@ -1388,10 +1388,10 @@ contract FeeDistribution is RegistryAware, ReentrancyGuard, Pausable, AccessCont
     ) external onlyRole(COLLECTOR_ROLE) {
         address token;
         if (usePrivateToken) {
-            token = _getContract(registry.PRIVATE_OMNICOIN());
+            token = _getContract(REGISTRY.PRIVATE_OMNICOIN());
             if (token == address(0)) revert InvalidToken();
         } else {
-            token = _getContract(registry.OMNICOIN());
+            token = _getContract(REGISTRY.OMNICOIN());
             if (token == address(0)) {
                 // Fallback to FEE_TOKEN if registry not configured
                 token = address(FEE_TOKEN);
@@ -1430,7 +1430,7 @@ contract FeeDistribution is RegistryAware, ReentrancyGuard, Pausable, AccessCont
      * @return token Address of the primary fee token
      */
     function getPrimaryFeeToken() public view returns (address token) {
-        token = _getContract(registry.OMNICOIN());
+        token = _getContract(REGISTRY.OMNICOIN());
         if (token == address(0)) {
             token = address(FEE_TOKEN);
         }

@@ -237,7 +237,12 @@ contract BatchProcessor is RegistryAware, AccessControl, Pausable, ReentrancyGua
         _storeBatch(batchId, operations);
         _handlePrivacyFees(operations);
         
-        emit BatchCreated(batchId, msg.sender, operations.length, block.timestamp); // solhint-disable-line not-rely-on-time
+        emit BatchCreated(
+            batchId, 
+            msg.sender, 
+            operations.length, 
+            block.timestamp // solhint-disable-line not-rely-on-time
+        );
         
         return batchId;
     }
@@ -278,7 +283,7 @@ contract BatchProcessor is RegistryAware, AccessControl, Pausable, ReentrancyGua
         
         // Collect privacy fee if applicable
         if (hasPrivacyOps) {
-            address privacyFeeManager = _getContract(registry.FEE_MANAGER());
+            address privacyFeeManager = _getContract(REGISTRY.FEE_MANAGER());
             if (privacyFeeManager != address(0)) {
                 PrivacyFeeManager(privacyFeeManager).collectPrivateFee(
                     msg.sender,
@@ -307,7 +312,9 @@ contract BatchProcessor is RegistryAware, AccessControl, Pausable, ReentrancyGua
         if (batch.timestamp == 0) revert InvalidBatchId();
         if (batch.status != BatchStatus.PENDING) revert BatchNotPending();
         if (batch.validatorApprovals[msg.sender]) revert AlreadyValidated();
-        if (block.timestamp > batch.timestamp + BATCH_TIMEOUT) revert BatchExpired(); // solhint-disable-line not-rely-on-time
+        if (block.timestamp > batch.timestamp + BATCH_TIMEOUT) { // solhint-disable-line not-rely-on-time
+            revert BatchExpired();
+        }
         
         batch.validatorApprovals[msg.sender] = true;
         ++batch.approvalCount;
@@ -404,6 +411,7 @@ contract BatchProcessor is RegistryAware, AccessControl, Pausable, ReentrancyGua
     /**
      * @notice Execute batch transfer operation
      * @dev Executes token transfers using either standard ERC20 or private transfers
+     * @param op The batch operation containing transfer details
      * @return success Whether the transfer succeeded
      * @return result Return data from the transfer
      */
@@ -417,7 +425,7 @@ contract BatchProcessor is RegistryAware, AccessControl, Pausable, ReentrancyGua
         address tokenAddress;
         if (token == address(0)) {
             // Default to public OmniCoin if no token specified
-            tokenAddress = _getContract(registry.OMNICOIN());
+            tokenAddress = _getContract(REGISTRY.OMNICOIN());
         } else {
             tokenAddress = token;
         }
@@ -425,13 +433,17 @@ contract BatchProcessor is RegistryAware, AccessControl, Pausable, ReentrancyGua
         // Execute transfer based on privacy mode
         if (op.usePrivacy) {
             // Use PrivateOmniCoin for privacy transfers
-            address privateToken = _getContract(registry.PRIVATE_OMNICOIN());
+            address privateToken = _getContract(REGISTRY.PRIVATE_OMNICOIN());
             if (tokenAddress != privateToken) {
-                return (false, "Privacy transfer requires PrivateOmniCoin");
+                return (false, "Privacy transfer needs PrivateOmniCoin");
             }
             
             // Use PrivateOmniCoin's private transfer method
-            try PrivateOmniCoin(privateToken).transferFromPrivate(op.target, to, amount) returns (bool transferSuccess) {
+            try PrivateOmniCoin(privateToken).transferFromPrivate(
+                op.target, 
+                to, 
+                amount
+            ) returns (bool transferSuccess) {
                 return (transferSuccess, "");
             } catch Error(string memory reason) {
                 return (false, bytes(reason));
@@ -453,6 +465,7 @@ contract BatchProcessor is RegistryAware, AccessControl, Pausable, ReentrancyGua
     /**
      * @notice Execute batch mint operation
      * @dev Executes token minting for authorized processors (public tokens only)
+     * @param op The batch operation containing mint details
      * @return success Whether the mint succeeded
      * @return result Return data from the mint
      */
@@ -470,16 +483,16 @@ contract BatchProcessor is RegistryAware, AccessControl, Pausable, ReentrancyGua
         // Determine which token to mint
         address tokenAddress;
         if (token == address(0)) {
-            tokenAddress = _getContract(registry.OMNICOIN());
+            tokenAddress = _getContract(REGISTRY.OMNICOIN());
         } else {
             tokenAddress = token;
         }
         
         // Check if minting private tokens
-        address privateToken = _getContract(registry.PRIVATE_OMNICOIN());
+        address privateToken = _getContract(REGISTRY.PRIVATE_OMNICOIN());
         if (tokenAddress == privateToken) {
             // Private token minting is restricted
-            return (false, "Private token minting not allowed through batch");
+            return (false, "Private mint not allowed in batch");
         }
         
         // Execute mint on public token
@@ -495,6 +508,7 @@ contract BatchProcessor is RegistryAware, AccessControl, Pausable, ReentrancyGua
     /**
      * @notice Execute batch burn operation
      * @dev Executes token burning (public tokens only, private burns not supported)
+     * @param op The batch operation containing burn details
      * @return success Whether the burn succeeded
      * @return result Return data from the burn
      */
@@ -507,7 +521,7 @@ contract BatchProcessor is RegistryAware, AccessControl, Pausable, ReentrancyGua
         // Determine which token to burn
         address tokenAddress;
         if (token == address(0)) {
-            tokenAddress = _getContract(registry.OMNICOIN());
+            tokenAddress = _getContract(REGISTRY.OMNICOIN());
         } else {
             tokenAddress = token;
         }
@@ -515,14 +529,14 @@ contract BatchProcessor is RegistryAware, AccessControl, Pausable, ReentrancyGua
         // Execute burn based on token type
         if (op.usePrivacy) {
             // Burn private tokens
-            address privateToken = _getContract(registry.PRIVATE_OMNICOIN());
+            address privateToken = _getContract(REGISTRY.PRIVATE_OMNICOIN());
             if (tokenAddress != privateToken) {
-                return (false, "Privacy burn requires PrivateOmniCoin");
+                return (false, "Privacy burn needs PrivateOmniCoin");
             }
             
             // PrivateOmniCoin burning requires bridge role
             // For batch processing, we can't burn private tokens directly
-            return (false, "Private token burning not supported in batch operations");
+            return (false, "Private burn not supported in batch");
         } else {
             // Standard burn
             try OmniCoin(tokenAddress).burnFrom(op.target, amount) {
@@ -549,7 +563,7 @@ contract BatchProcessor is RegistryAware, AccessControl, Pausable, ReentrancyGua
         (uint256 amount) = abi.decode(op.data, (uint256));
         
         // Get bridge contract
-        address bridge = _getContract(registry.OMNICOIN_BRIDGE());
+        address bridge = _getContract(REGISTRY.OMNICOIN_BRIDGE());
         if (bridge == address(0)) {
             return (false, "Bridge not configured");
         }
@@ -578,7 +592,7 @@ contract BatchProcessor is RegistryAware, AccessControl, Pausable, ReentrancyGua
         (uint256 amount) = abi.decode(op.data, (uint256));
         
         // Get bridge contract
-        address bridge = _getContract(registry.OMNICOIN_BRIDGE());
+        address bridge = _getContract(REGISTRY.OMNICOIN_BRIDGE());
         if (bridge == address(0)) {
             return (false, "Bridge not configured");
         }

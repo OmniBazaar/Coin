@@ -305,7 +305,7 @@ contract OmniCoinBridge is RegistryAware, Ownable, ReentrancyGuard {
         });
 
         // Transfer tokens from sender (use public OmniCoin for standard bridge)
-        address publicToken = _getContract(registry.OMNICOIN());
+        address publicToken = _getContract(REGISTRY.OMNICOIN());
         if (publicToken != address(0)) {
             if (!IERC20(publicToken).transferFrom(msg.sender, address(this), _amount + fee)) {
                 revert TransferFailed();
@@ -407,7 +407,7 @@ contract OmniCoinBridge is RegistryAware, Ownable, ReentrancyGuard {
         });
         
         // Transfer tokens using PrivateOmniCoin
-        address privateToken = _getContract(registry.PRIVATE_OMNICOIN());
+        address privateToken = _getContract(REGISTRY.PRIVATE_OMNICOIN());
         if (privateToken != address(0)) {
             // Calculate total amount needed (amount + fee)
             gtUint64 gtTotal = MpcCore.add(gtAmount, gtBridgeFee);
@@ -479,7 +479,7 @@ contract OmniCoinBridge is RegistryAware, Ownable, ReentrancyGuard {
         // Transfer to recipient using appropriate token
         if (transferUsePrivacy[_transferId]) {
             // Use PrivateOmniCoin for privacy transfers
-            address privateToken = _getContract(registry.PRIVATE_OMNICOIN());
+            address privateToken = _getContract(REGISTRY.PRIVATE_OMNICOIN());
             if (privateToken != address(0)) {
                 uint256 amount = ctUint64.unwrap(transfer.encryptedAmount);
                 if (!IERC20(privateToken).transfer(transfer.recipient, amount)) {
@@ -490,7 +490,7 @@ contract OmniCoinBridge is RegistryAware, Ownable, ReentrancyGuard {
             }
         } else {
             // Use OmniCoin for standard transfers
-            address publicToken = _getContract(registry.OMNICOIN());
+            address publicToken = _getContract(REGISTRY.OMNICOIN());
             if (publicToken != address(0)) {
                 if (!IERC20(publicToken).transfer(transfer.recipient, transfer.amount)) {
                     revert TransferFailed();
@@ -532,7 +532,7 @@ contract OmniCoinBridge is RegistryAware, Ownable, ReentrancyGuard {
         // Refund using appropriate token
         if (transferUsePrivacy[_transferId]) {
             // Use PrivateOmniCoin for privacy transfers
-            address privateToken = _getContract(registry.PRIVATE_OMNICOIN());
+            address privateToken = _getContract(REGISTRY.PRIVATE_OMNICOIN());
             if (privateToken != address(0)) {
                 uint256 amount = ctUint64.unwrap(transfer.encryptedAmount);
                 uint256 fee = ctUint64.unwrap(transfer.encryptedFee);
@@ -544,7 +544,7 @@ contract OmniCoinBridge is RegistryAware, Ownable, ReentrancyGuard {
             }
         } else {
             // Use OmniCoin for standard transfers
-            address publicToken = _getContract(registry.OMNICOIN());
+            address publicToken = _getContract(REGISTRY.OMNICOIN());
             if (publicToken != address(0)) {
                 if (!IERC20(publicToken).transfer(transfer.sender, transfer.amount + transfer.fee)) {
                     revert TransferFailed();
