@@ -7,8 +7,6 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {MpcCore, gtBool, gtUint64, ctUint64, itUint64} from "../coti-contracts/contracts/utils/mpc/MpcCore.sol";
 import {PrivacyFeeManager} from "./PrivacyFeeManager.sol";
 import {RegistryAware} from "./base/RegistryAware.sol";
-import {OmniCoin} from "./OmniCoin.sol";
-import {PrivateOmniCoin} from "./PrivateOmniCoin.sol";
 
 /**
  * @title OmniCoinBridge
@@ -22,12 +20,13 @@ contract OmniCoinBridge is RegistryAware, Ownable, ReentrancyGuard {
     // =============================================================================
     
     struct BridgeConfig {
-        uint256 chainId;
-        address token;
-        bool isActive;
-        uint256 minAmount;
-        uint256 maxAmount;
-        uint256 fee;
+        uint256 chainId;    // 32 bytes
+        address token;      // 20 bytes  
+        bool isActive;      // 1 byte
+        // 11 bytes padding
+        uint256 minAmount;  // 32 bytes
+        uint256 maxAmount;  // 32 bytes
+        uint256 fee;        // 32 bytes
     }
 
     struct Transfer {
@@ -210,7 +209,7 @@ contract OmniCoinBridge is RegistryAware, Ownable, ReentrancyGuard {
         token = IERC20(_token);
         privacyFeeManager = _privacyFeeManager;
         minTransferAmount = 100 * 10 ** 6; // 100 tokens
-        maxTransferAmount = 1000000 * 10 ** 6; // 1M tokens
+        maxTransferAmount = 1_000_000 * 10 ** 6; // 1M tokens
         baseFee = 1 * 10 ** 6; // 1 token
         messageTimeout = 1 hours;
         isMpcAvailable = false; // Default to false, set by admin when on COTI
@@ -267,57 +266,33 @@ contract OmniCoinBridge is RegistryAware, Ownable, ReentrancyGuard {
 
     /**
      * @notice Initiate a public cross-chain transfer
+     * @dev Validates bridge configuration and executes token transfer with fees
      * @param _targetChainId Target blockchain ID
      * @param _targetToken Token address on target chain
      * @param _recipient Recipient address on target chain
      * @param _amount Amount to transfer
      */
-    // solhint-disable-next-line code-complexity
     function initiateTransfer(
         uint256 _targetChainId,
         address _targetToken,
         address _recipient,
         uint256 _amount
     ) external nonReentrant {
-        BridgeConfig storage config = bridgeConfigs[_targetChainId];
-        if (!config.isActive) revert BridgeNotActive();
-        if (_amount < config.minAmount) revert TransferTooSmall();
-        if (_amount > config.maxAmount) revert TransferTooLarge();
-
+        BridgeConfig storage config = _validateTransferRequest(_targetChainId, _amount);
+        
         uint256 transferId = ++transferCount;
         uint256 fee = config.fee;
 
-        transfers[transferId] = Transfer({
-            id: transferId,
-            sender: msg.sender,
-            sourceChainId: block.chainid,
-            targetChainId: _targetChainId,
-            targetToken: _targetToken,
-            recipient: _recipient,
-            amount: _amount,
-            fee: fee,
-            timestamp: block.timestamp, // solhint-disable-line not-rely-on-time
-            completed: false,
-            refunded: false,
-            isPrivate: false,
-            encryptedAmount: ctUint64.wrap(0),
-            encryptedFee: ctUint64.wrap(0)
-        });
+        _createPublicTransfer(
+            transferId,
+            _targetChainId,
+            _targetToken,
+            _recipient,
+            _amount,
+            fee
+        );
 
-        // Transfer tokens from sender (use public OmniCoin for standard bridge)
-        address publicToken = _getContract(REGISTRY.OMNICOIN());
-        if (publicToken != address(0)) {
-            if (!IERC20(publicToken).transferFrom(msg.sender, address(this), _amount + fee)) {
-                revert TransferFailed();
-            }
-        } else if (address(token) != address(0)) {
-            // Backwards compatibility
-            if (!token.transferFrom(msg.sender, address(this), _amount + fee)) {
-                revert TransferFailed();
-            }
-        } else {
-            revert InvalidToken();
-        }
+        _executePublicTokenTransfer(_amount, fee);
 
         emit TransferInitiated(
             transferId,
@@ -346,83 +321,23 @@ contract OmniCoinBridge is RegistryAware, Ownable, ReentrancyGuard {
         itUint64 calldata _amount,
         bool usePrivacy
     ) external nonReentrant {
-        if (!usePrivacy || !isMpcAvailable) revert BridgeNotActive();
-        if (privacyFeeManager == address(0)) revert InvalidToken();
+        _validatePrivacyTransferPreconditions(usePrivacy, _targetChainId);
         
-        BridgeConfig storage config = bridgeConfigs[_targetChainId];
-        if (!config.isActive) revert BridgeNotActive();
-        
-        // Validate encrypted amount
-        gtUint64 gtAmount = MpcCore.validateCiphertext(_amount);
-        
-        // Check amount bounds
-        gtUint64 gtMinAmount = MpcCore.setPublic64(uint64(config.minAmount));
-        gtUint64 gtMaxAmount = MpcCore.setPublic64(uint64(config.maxAmount));
-        gtBool isAboveMin = MpcCore.ge(gtAmount, gtMinAmount);
-        gtBool isBelowMax = MpcCore.le(gtAmount, gtMaxAmount);
-        if (!MpcCore.decrypt(isAboveMin)) revert TransferTooSmall();
-        if (!MpcCore.decrypt(isBelowMax)) revert TransferTooLarge();
+        gtUint64 gtAmount = _validatePrivateAmount(_amount, _targetChainId);
         
         uint256 transferId = ++transferCount;
         
-        // Calculate privacy fee (0.5% of amount for bridge operations)
-        uint256 bridgeFeeRate = 50; // 0.5% in basis points
-        uint256 basisPoints = 10000;
-        gtUint64 feeRate = MpcCore.setPublic64(uint64(bridgeFeeRate));
-        gtUint64 basisPointsGt = MpcCore.setPublic64(uint64(basisPoints));
-        gtUint64 privacyFeeBase = MpcCore.mul(gtAmount, feeRate);
-        privacyFeeBase = MpcCore.div(privacyFeeBase, basisPointsGt);
+        _processPrivacyFee(gtAmount);
         
-        // Collect privacy fee (10x normal fee)
-        uint256 normalFee = uint64(gtUint64.unwrap(privacyFeeBase));
-        uint256 privacyFee = normalFee * PRIVACY_MULTIPLIER;
-        PrivacyFeeManager(privacyFeeManager).collectPrivateFee(
-            msg.sender,
-            keccak256("BRIDGE_TRANSFER"),
-            privacyFee
+        (, ctUint64 encryptedFee) = _createPrivateTransferData(
+            transferId,
+            _targetChainId,
+            _targetToken,
+            _recipient,
+            gtAmount
         );
         
-        // Bridge fee (encrypted)
-        gtUint64 gtBridgeFee = MpcCore.setPublic64(uint64(config.fee));
-        ctUint64 encryptedFee = MpcCore.offBoard(gtBridgeFee);
-        
-        // Store transfer with encrypted amounts
-        ctUint64 encryptedAmount = MpcCore.offBoard(gtAmount);
-        
-        transfers[transferId] = Transfer({
-            id: transferId,
-            sender: msg.sender,
-            sourceChainId: block.chainid,
-            targetChainId: _targetChainId,
-            targetToken: _targetToken,
-            recipient: _recipient,
-            amount: 0, // Use encrypted version
-            fee: 0, // Use encrypted version
-            timestamp: block.timestamp, // solhint-disable-line not-rely-on-time
-            completed: false,
-            refunded: false,
-            isPrivate: true,
-            encryptedAmount: encryptedAmount,
-            encryptedFee: encryptedFee
-        });
-        
-        // Transfer tokens using PrivateOmniCoin
-        address privateToken = _getContract(REGISTRY.PRIVATE_OMNICOIN());
-        if (privateToken != address(0)) {
-            // Calculate total amount needed (amount + fee)
-            gtUint64 gtTotal = MpcCore.add(gtAmount, gtBridgeFee);
-            uint256 totalAmount = uint64(gtUint64.unwrap(gtTotal));
-            
-            // Transfer from sender to bridge
-            if (!IERC20(privateToken).transferFrom(msg.sender, address(this), totalAmount)) {
-                revert TransferFailed();
-            }
-            
-            // Mark transfer as using privacy
-            transferUsePrivacy[transferId] = true;
-        } else {
-            revert InvalidToken();
-        }
+        _executePrivateTokenTransfer(transferId, gtAmount, encryptedFee);
         
         emit TransferInitiated(
             transferId,
@@ -447,64 +362,16 @@ contract OmniCoinBridge is RegistryAware, Ownable, ReentrancyGuard {
         bytes calldata _message,
         bytes calldata _signature
     ) external nonReentrant {
-        Transfer storage transfer = transfers[_transferId];
-        if (transfer.completed) revert TransferAlreadyCompleted();
-        if (transfer.refunded) revert TransferAlreadyRefunded();
-        // Time-based check for message validity
-        // solhint-disable-next-line not-rely-on-time
-        if (block.timestamp > transfer.timestamp + messageTimeout) {
-            revert MessageTimeout();
-        }
-
-        bytes32 messageHash = keccak256(
-            abi.encodePacked(
-                _transferId,
-                transfer.sender,
-                transfer.sourceChainId,
-                transfer.targetChainId,
-                transfer.targetToken,
-                transfer.recipient,
-                transfer.amount,
-                transfer.fee,
-                _message // Include message in hash
-            )
-        );
-
-        if (processedMessages[messageHash]) revert MessageAlreadyProcessed();
-        if (!verifyMessage(messageHash, _signature)) revert UnauthorizedValidator();
-
+        Transfer storage transfer = _validateTransferCompletion(_transferId);
+        
+        bytes32 messageHash = _generateMessageHash(_transferId, transfer, _message);
+        _verifyMessageAndSignature(messageHash, _signature);
+        
         transfer.completed = true;
         processedMessages[messageHash] = true;
-
-        // Transfer to recipient using appropriate token
-        if (transferUsePrivacy[_transferId]) {
-            // Use PrivateOmniCoin for privacy transfers
-            address privateToken = _getContract(REGISTRY.PRIVATE_OMNICOIN());
-            if (privateToken != address(0)) {
-                uint256 amount = ctUint64.unwrap(transfer.encryptedAmount);
-                if (!IERC20(privateToken).transfer(transfer.recipient, amount)) {
-                    revert TransferFailed();
-                }
-            } else {
-                revert InvalidToken();
-            }
-        } else {
-            // Use OmniCoin for standard transfers
-            address publicToken = _getContract(REGISTRY.OMNICOIN());
-            if (publicToken != address(0)) {
-                if (!IERC20(publicToken).transfer(transfer.recipient, transfer.amount)) {
-                    revert TransferFailed();
-                }
-            } else if (address(token) != address(0)) {
-                // Backwards compatibility
-                if (!token.transfer(transfer.recipient, transfer.amount)) {
-                    revert TransferFailed();
-                }
-            } else {
-                revert InvalidToken();
-            }
-        }
-
+        
+        _executeTransferToRecipient(_transferId, transfer);
+        
         emit TransferCompleted(
             _transferId,
             transfer.recipient,
@@ -517,48 +384,12 @@ contract OmniCoinBridge is RegistryAware, Ownable, ReentrancyGuard {
      * @param _transferId Transfer ID to refund
      */
     function refundTransfer(uint256 _transferId) external nonReentrant {
-        Transfer storage transfer = transfers[_transferId];
-        if (transfer.completed) revert TransferAlreadyCompleted();
-        if (transfer.refunded) revert TransferAlreadyRefunded();
-        // Time-based check required for refund eligibility
-        // solhint-disable-next-line not-rely-on-time
-        if (block.timestamp < transfer.timestamp + messageTimeout || 
-            block.timestamp == transfer.timestamp + messageTimeout) { // solhint-disable-line not-rely-on-time
-            revert MessageTimeout();
-        }
-
+        Transfer storage transfer = _validateRefundEligibility(_transferId);
+        
         transfer.refunded = true;
-
-        // Refund using appropriate token
-        if (transferUsePrivacy[_transferId]) {
-            // Use PrivateOmniCoin for privacy transfers
-            address privateToken = _getContract(REGISTRY.PRIVATE_OMNICOIN());
-            if (privateToken != address(0)) {
-                uint256 amount = ctUint64.unwrap(transfer.encryptedAmount);
-                uint256 fee = ctUint64.unwrap(transfer.encryptedFee);
-                if (!IERC20(privateToken).transfer(transfer.sender, amount + fee)) {
-                    revert TransferFailed();
-                }
-            } else {
-                revert InvalidToken();
-            }
-        } else {
-            // Use OmniCoin for standard transfers
-            address publicToken = _getContract(REGISTRY.OMNICOIN());
-            if (publicToken != address(0)) {
-                if (!IERC20(publicToken).transfer(transfer.sender, transfer.amount + transfer.fee)) {
-                    revert TransferFailed();
-                }
-            } else if (address(token) != address(0)) {
-                // Backwards compatibility
-                if (!token.transfer(transfer.sender, transfer.amount + transfer.fee)) {
-                    revert TransferFailed();
-                }
-            } else {
-                revert InvalidToken();
-            }
-        }
-
+        
+        _executeRefundToSender(_transferId, transfer);
+        
         emit TransferRefunded(
             _transferId,
             transfer.sender,
@@ -605,6 +436,23 @@ contract OmniCoinBridge is RegistryAware, Ownable, ReentrancyGuard {
         if (_timeout < 1) revert MessageTimeout();
         messageTimeout = _timeout;
         emit MessageTimeoutUpdated(_timeout);
+    }
+    
+    /**
+     * @notice Add a new validator
+     * @param _validator Validator address to add
+     */
+    function addValidator(address _validator) external onlyOwner {
+        if (_validator == address(0)) revert InvalidToken();
+        validators[_validator] = true;
+    }
+    
+    /**
+     * @notice Remove a validator
+     * @param _validator Validator address to remove
+     */
+    function removeValidator(address _validator) external onlyOwner {
+        validators[_validator] = false;
     }
 
     /**
@@ -708,24 +556,6 @@ contract OmniCoinBridge is RegistryAware, Ownable, ReentrancyGuard {
         );
     }
     
-    // Validator management functions
-    /**
-     * @notice Add a new validator
-     * @param _validator Validator address to add
-     */
-    function addValidator(address _validator) external onlyOwner {
-        if (_validator == address(0)) revert InvalidToken();
-        validators[_validator] = true;
-    }
-    
-    /**
-     * @notice Remove a validator
-     * @param _validator Validator address to remove
-     */
-    function removeValidator(address _validator) external onlyOwner {
-        validators[_validator] = false;
-    }
-    
     /**
      * @notice Check if an address is a validator
      * @param _address Address to check
@@ -735,6 +565,404 @@ contract OmniCoinBridge is RegistryAware, Ownable, ReentrancyGuard {
         return validators[_address];
     }
 
+    /**
+     * @notice Validate privacy transfer preconditions
+     * @dev Internal function to validate MPC availability and bridge config
+     * @param usePrivacy Whether privacy features are requested
+     * @param _targetChainId Target chain ID to validate
+     */
+    function _validatePrivacyTransferPreconditions(
+        bool usePrivacy,
+        uint256 _targetChainId
+    ) internal view {
+        if (!usePrivacy || !isMpcAvailable) revert BridgeNotActive();
+        if (privacyFeeManager == address(0)) revert InvalidToken();
+        
+        BridgeConfig storage config = bridgeConfigs[_targetChainId];
+        if (!config.isActive) revert BridgeNotActive();
+    }
+    
+    /**
+     * @notice Validate encrypted amount for privacy transfer
+     * @dev Internal function to validate and decrypt amount bounds
+     * @param _amount Encrypted amount to validate
+     * @param _targetChainId Target chain ID for config lookup
+     * @return gtAmount Validated encrypted amount
+     */
+    function _validatePrivateAmount(
+        itUint64 calldata _amount,
+        uint256 _targetChainId
+    ) internal view returns (gtUint64 gtAmount) {
+        BridgeConfig storage config = bridgeConfigs[_targetChainId];
+        
+        gtAmount = MpcCore.validateCiphertext(_amount);
+        
+        gtUint64 gtMinAmount = MpcCore.setPublic64(uint64(config.minAmount));
+        gtUint64 gtMaxAmount = MpcCore.setPublic64(uint64(config.maxAmount));
+        gtBool isAboveMin = MpcCore.ge(gtAmount, gtMinAmount);
+        gtBool isBelowMax = MpcCore.le(gtAmount, gtMaxAmount);
+        if (!MpcCore.decrypt(isAboveMin)) revert TransferTooSmall();
+        if (!MpcCore.decrypt(isBelowMax)) revert TransferTooLarge();
+    }
+    
+    /**
+     * @notice Process privacy fee collection
+     * @dev Internal function to calculate and collect privacy fees
+     * @param gtAmount Encrypted transfer amount
+     */
+    function _processPrivacyFee(gtUint64 gtAmount) internal {
+        uint256 bridgeFeeRate = 50; // 0.5% in basis points
+        uint256 basisPoints = 10000;
+        gtUint64 feeRate = MpcCore.setPublic64(uint64(bridgeFeeRate));
+        gtUint64 basisPointsGt = MpcCore.setPublic64(uint64(basisPoints));
+        gtUint64 privacyFeeBase = MpcCore.mul(gtAmount, feeRate);
+        privacyFeeBase = MpcCore.div(privacyFeeBase, basisPointsGt);
+        
+        uint256 normalFee = uint64(gtUint64.unwrap(privacyFeeBase));
+        uint256 privacyFee = normalFee * PRIVACY_MULTIPLIER;
+        PrivacyFeeManager(privacyFeeManager).collectPrivateFee(
+            msg.sender,
+            keccak256("BRIDGE_TRANSFER"),
+            privacyFee
+        );
+    }
+    
+    /**
+     * @notice Create private transfer data structure
+     * @dev Internal function to create encrypted transfer record
+     * @param transferId Unique transfer identifier
+     * @param _targetChainId Target chain ID
+     * @param _targetToken Token address on target chain
+     * @param _recipient Recipient address
+     * @param gtAmount Encrypted transfer amount
+     * @return encryptedAmount Encrypted amount for storage
+     * @return encryptedFee Encrypted fee for storage
+     */
+    function _createPrivateTransferData(
+        uint256 transferId,
+        uint256 _targetChainId,
+        address _targetToken,
+        address _recipient,
+        gtUint64 gtAmount
+    ) internal returns (ctUint64 encryptedAmount, ctUint64 encryptedFee) {
+        BridgeConfig storage config = bridgeConfigs[_targetChainId];
+        
+        gtUint64 gtBridgeFee = MpcCore.setPublic64(uint64(config.fee));
+        encryptedFee = MpcCore.offBoard(gtBridgeFee);
+        encryptedAmount = MpcCore.offBoard(gtAmount);
+        
+        transfers[transferId] = Transfer({
+            id: transferId,
+            sender: msg.sender,
+            sourceChainId: block.chainid,
+            targetChainId: _targetChainId,
+            targetToken: _targetToken,
+            recipient: _recipient,
+            amount: 0, // Use encrypted version
+            fee: 0, // Use encrypted version
+            timestamp: block.timestamp, // solhint-disable-line not-rely-on-time
+            completed: false,
+            refunded: false,
+            isPrivate: true,
+            encryptedAmount: encryptedAmount,
+            encryptedFee: encryptedFee
+        });
+    }
+    
+    /**
+     * @notice Execute private token transfer
+     * @dev Internal function to handle private token transfers
+     * @param transferId Transfer identifier
+     * @param gtAmount Encrypted amount
+     * @param encryptedFee Encrypted fee
+     */
+    function _executePrivateTokenTransfer(
+        uint256 transferId,
+        gtUint64 gtAmount,
+        ctUint64 encryptedFee
+    ) internal {
+        address privateToken = registry.getContract(keccak256("PRIVATE_OMNICOIN"));
+        if (privateToken != address(0)) {
+            gtUint64 gtFee = MpcCore.onBoard(encryptedFee);
+            gtUint64 gtTotal = MpcCore.add(gtAmount, gtFee);
+            uint256 totalAmount = uint64(gtUint64.unwrap(gtTotal));
+            
+            if (!IERC20(privateToken).transferFrom(msg.sender, address(this), totalAmount)) {
+                revert TransferFailed();
+            }
+            
+            transferUsePrivacy[transferId] = true;
+        } else {
+            revert InvalidToken();
+        }
+    }
+    
+    /**
+     * @notice Validate transfer request parameters
+     * @dev Internal function to validate bridge config and amount limits
+     * @param _targetChainId Target chain ID to validate
+     * @param _amount Transfer amount to validate
+     * @return config Bridge configuration for the target chain
+     */
+    function _validateTransferRequest(
+        uint256 _targetChainId,
+        uint256 _amount
+    ) internal view returns (BridgeConfig storage config) {
+        config = bridgeConfigs[_targetChainId];
+        if (!config.isActive) revert BridgeNotActive();
+        if (_amount < config.minAmount) revert TransferTooSmall();
+        if (_amount > config.maxAmount) revert TransferTooLarge();
+    }
+    
+    /**
+     * @notice Create public transfer record
+     * @dev Internal function to create transfer struct for public transfers
+     * @param transferId Unique transfer identifier
+     * @param _targetChainId Target chain ID
+     * @param _targetToken Token address on target chain
+     * @param _recipient Recipient address
+     * @param _amount Transfer amount
+     * @param fee Transfer fee
+     */
+    function _createPublicTransfer(
+        uint256 transferId,
+        uint256 _targetChainId,
+        address _targetToken,
+        address _recipient,
+        uint256 _amount,
+        uint256 fee
+    ) internal {
+        transfers[transferId] = Transfer({
+            id: transferId,
+            sender: msg.sender,
+            sourceChainId: block.chainid,
+            targetChainId: _targetChainId,
+            targetToken: _targetToken,
+            recipient: _recipient,
+            amount: _amount,
+            fee: fee,
+            timestamp: block.timestamp, // solhint-disable-line not-rely-on-time
+            completed: false,
+            refunded: false,
+            isPrivate: false,
+            encryptedAmount: ctUint64.wrap(0),
+            encryptedFee: ctUint64.wrap(0)
+        });
+    }
+    
+    /**
+     * @notice Execute token transfer for public transfers
+     * @dev Internal function to handle token transfers using public OmniCoin
+     * @param _amount Transfer amount
+     * @param fee Transfer fee
+     */
+    function _executePublicTokenTransfer(uint256 _amount, uint256 fee) internal {
+        address publicToken = registry.getContract(keccak256("OMNICOIN"));
+        if (publicToken != address(0)) {
+            if (!IERC20(publicToken).transferFrom(msg.sender, address(this), _amount + fee)) {
+                revert TransferFailed();
+            }
+        } else if (address(token) != address(0)) {
+            // Backwards compatibility
+            if (!token.transferFrom(msg.sender, address(this), _amount + fee)) {
+                revert TransferFailed();
+            }
+        } else {
+            revert InvalidToken();
+        }
+    }
+    
+    /**
+     * @notice Validate transfer completion prerequisites
+     * @dev Internal function to validate transfer state before completion
+     * @param _transferId Transfer ID to validate
+     * @return transfer Storage reference to the transfer
+     */
+    function _validateTransferCompletion(
+        uint256 _transferId
+    ) internal view returns (Transfer storage transfer) {
+        transfer = transfers[_transferId];
+        if (transfer.completed) revert TransferAlreadyCompleted();
+        if (transfer.refunded) revert TransferAlreadyRefunded();
+        // Time-based check for message validity
+        // solhint-disable-next-line not-rely-on-time
+        if (block.timestamp > transfer.timestamp + messageTimeout) {
+            revert MessageTimeout();
+        }
+    }
+    
+    /**
+     * @notice Generate message hash for validation
+     * @dev Internal function to create consistent message hashes
+     * @param _transferId Transfer ID
+     * @param transfer Transfer data structure
+     * @param _message Validator message
+     * @return messageHash Hash of the complete message
+     */
+    function _generateMessageHash(
+        uint256 _transferId,
+        Transfer storage transfer,
+        bytes calldata _message
+    ) internal pure returns (bytes32 messageHash) {
+        messageHash = keccak256(
+            abi.encodePacked(
+                _transferId,
+                transfer.sender,
+                transfer.sourceChainId,
+                transfer.targetChainId,
+                transfer.targetToken,
+                transfer.recipient,
+                transfer.amount,
+                transfer.fee,
+                _message
+            )
+        );
+    }
+    
+    /**
+     * @notice Verify message hash and signature
+     * @dev Internal function to validate message authenticity
+     * @param messageHash Hash to verify
+     * @param _signature Validator signature
+     */
+    function _verifyMessageAndSignature(
+        bytes32 messageHash,
+        bytes calldata _signature
+    ) internal view {
+        if (processedMessages[messageHash]) revert MessageAlreadyProcessed();
+        if (!verifyMessage(messageHash, _signature)) revert UnauthorizedValidator();
+    }
+    
+    /**
+     * @notice Execute token transfer to recipient
+     * @dev Internal function to handle transfers using appropriate token contract
+     * @param _transferId Transfer ID
+     * @param transfer Transfer data structure
+     */
+    function _executeTransferToRecipient(
+        uint256 _transferId,
+        Transfer storage transfer
+    ) internal {
+        if (transferUsePrivacy[_transferId]) {
+            _executePrivateTransferToRecipient(transfer);
+        } else {
+            _executePublicTransferToRecipient(transfer);
+        }
+    }
+    
+    /**
+     * @notice Execute private token transfer to recipient
+     * @dev Internal function for privacy-enabled transfers
+     * @param transfer Transfer data structure
+     */
+    function _executePrivateTransferToRecipient(Transfer storage transfer) internal {
+        address privateToken = registry.getContract(keccak256("PRIVATE_OMNICOIN"));
+        if (privateToken != address(0)) {
+            uint256 amount = ctUint64.unwrap(transfer.encryptedAmount);
+            if (!IERC20(privateToken).transfer(transfer.recipient, amount)) {
+                revert TransferFailed();
+            }
+        } else {
+            revert InvalidToken();
+        }
+    }
+    
+    /**
+     * @notice Execute public token transfer to recipient
+     * @dev Internal function for standard transfers
+     * @param transfer Transfer data structure
+     */
+    function _executePublicTransferToRecipient(Transfer storage transfer) internal {
+        address publicToken = registry.getContract(keccak256("OMNICOIN"));
+        if (publicToken != address(0)) {
+            if (!IERC20(publicToken).transfer(transfer.recipient, transfer.amount)) {
+                revert TransferFailed();
+            }
+        } else if (address(token) != address(0)) {
+            // Backwards compatibility
+            if (!token.transfer(transfer.recipient, transfer.amount)) {
+                revert TransferFailed();
+            }
+        } else {
+            revert InvalidToken();
+        }
+    }
+    
+    /**
+     * @notice Validate refund eligibility
+     * @dev Internal function to check if transfer can be refunded
+     * @param _transferId Transfer ID to validate
+     * @return transfer Storage reference to the transfer
+     */
+    function _validateRefundEligibility(
+        uint256 _transferId
+    ) internal view returns (Transfer storage transfer) {
+        transfer = transfers[_transferId];
+        if (transfer.completed) revert TransferAlreadyCompleted();
+        if (transfer.refunded) revert TransferAlreadyRefunded();
+        // Time-based check required for refund eligibility
+        // solhint-disable-next-line not-rely-on-time
+        if (block.timestamp < transfer.timestamp + messageTimeout) {
+            revert MessageTimeout();
+        }
+    }
+    
+    /**
+     * @notice Execute refund to original sender
+     * @dev Internal function to refund tokens using appropriate contract
+     * @param _transferId Transfer ID
+     * @param transfer Transfer data structure
+     */
+    function _executeRefundToSender(
+        uint256 _transferId,
+        Transfer storage transfer
+    ) internal {
+        if (transferUsePrivacy[_transferId]) {
+            _executePrivateRefund(transfer);
+        } else {
+            _executePublicRefund(transfer);
+        }
+    }
+    
+    /**
+     * @notice Execute private refund to sender
+     * @dev Internal function for privacy-enabled refunds
+     * @param transfer Transfer data structure
+     */
+    function _executePrivateRefund(Transfer storage transfer) internal {
+        address privateToken = registry.getContract(keccak256("PRIVATE_OMNICOIN"));
+        if (privateToken != address(0)) {
+            uint256 amount = ctUint64.unwrap(transfer.encryptedAmount);
+            uint256 fee = ctUint64.unwrap(transfer.encryptedFee);
+            if (!IERC20(privateToken).transfer(transfer.sender, amount + fee)) {
+                revert TransferFailed();
+            }
+        } else {
+            revert InvalidToken();
+        }
+    }
+    
+    /**
+     * @notice Execute public refund to sender
+     * @dev Internal function for standard refunds
+     * @param transfer Transfer data structure
+     */
+    function _executePublicRefund(Transfer storage transfer) internal {
+        address publicToken = registry.getContract(keccak256("OMNICOIN"));
+        if (publicToken != address(0)) {
+            if (!IERC20(publicToken).transfer(transfer.sender, transfer.amount + transfer.fee)) {
+                revert TransferFailed();
+            }
+        } else if (address(token) != address(0)) {
+            // Backwards compatibility
+            if (!token.transfer(transfer.sender, transfer.amount + transfer.fee)) {
+                revert TransferFailed();
+            }
+        } else {
+            revert InvalidToken();
+        }
+    }
+    
     /**
      * @notice Verify validator signature on message
      * @param _messageHash Hash of the message

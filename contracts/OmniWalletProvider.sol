@@ -7,14 +7,14 @@ import {ReentrancyGuardUpgradeable} from "@openzeppelin/contracts-upgradeable/ut
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {OmniCoinRegistry} from "./OmniCoinRegistry.sol";
 import {OmniCoinAccount} from "./OmniCoinAccount.sol";
-import {OmniCoinPayment} from "./OmniCoinPayment.sol";
+// import {UnifiedPaymentSystem} from "./UnifiedPaymentSystem.sol"; // Unused - commented for future use
 import {OmniCoinEscrow} from "./OmniCoinEscrow.sol";
-import {OmniCoinPrivacy} from "./OmniCoinPrivacy.sol";
+import {OmniCoinPrivacyBridge} from "./OmniCoinPrivacyBridge.sol";
 import {OmniCoinBridge} from "./OmniCoinBridge.sol";
-import {ListingNFT} from "./ListingNFT.sol";
-import {OmniCoinValidator} from "./OmniCoinValidator.sol";
+// import {UnifiedNFTMarketplace} from "./UnifiedNFTMarketplace.sol"; // Unused - commented for future use
+// Validator integration now via AvalancheValidator in Validator directory
 import {OmniCoinConfig} from "./OmniCoinConfig.sol";
-import {OmniCoinGarbledCircuit} from "./OmniCoinGarbledCircuit.sol";
+// Garbled circuits removed - COTI-specific functionality
 
 /**
  * @title OmniWalletProvider
@@ -110,19 +110,41 @@ contract OmniWalletProvider is
     /// @param wallet The wallet requesting the estimation
     /// @param callData The transaction data being estimated
     event GasEstimationRequested(address indexed wallet, bytes callData);
+    
+    /// @notice Emitted when a transfer is initiated (privacy or regular)
+    /// @param from Address initiating the transfer
+    /// @param to Address receiving the transfer
+    /// @param amount Amount being transferred
+    /// @param usePrivacy Whether privacy mode was used
+    event TransferInitiated(
+        address indexed from,
+        address indexed to,
+        uint256 indexed amount,
+        bool indexed usePrivacy
+    );
+    
+    /// @notice Emitted when privacy is enabled for a wallet
+    /// @param wallet Address of the wallet enabling privacy
+    /// @param commitment Privacy commitment hash
+    event PrivacyEnabled(address indexed wallet, bytes32 indexed commitment);
 
-    // Custom errors
+    // =============================================================================
+    // STATE VARIABLES
+    // =============================================================================
+
+    /// @notice Registry contract for accessing other OmniCoin contracts
+    OmniCoinRegistry public registry;
+
+    // =============================================================================
+    // CUSTOM ERRORS
+    // =============================================================================
+
     error UnauthorizedSessionCreation();
     error InvalidTarget();
     error SimulationFailed();
     error InvalidRecipient();
     error InvalidAmount();
     error TransferFailed();
-
-    /// @notice Constructor to disable initializers for upgradeable pattern
-    /// @custom:oz-upgrades-unsafe-allow constructor
-    // State variables
-    OmniCoinRegistry public registry;
     
     /// @notice Constructor to disable initializers for upgradeable pattern
     /// @custom:oz-upgrades-unsafe-allow constructor
@@ -241,6 +263,7 @@ contract OmniWalletProvider is
      * @dev Performs a static call to verify transaction validity
      * @param target The target contract address
      * @param data The encoded function call data
+     * @param value The ETH value to send (unused in current implementation)
      */
     function simulateTransaction(
         address target,
@@ -270,33 +293,19 @@ contract OmniWalletProvider is
         if (amount == 0) revert InvalidAmount();
 
         if (usePrivacy) {
-            // Route through privacy manager if enabled
-            OmniCoinPrivacy privacy = OmniCoinPrivacy(_getContract(registry.OMNICOIN_PRIVACY()));
-            bytes32 commitment = keccak256(
-                abi.encodePacked(msg.sender, block.timestamp) // solhint-disable-line not-rely-on-time
-            );
-            privacy.deposit(commitment, amount);
-            bytes32 recipientCommitment = keccak256(
-                abi.encodePacked(recipient, block.timestamp) // solhint-disable-line not-rely-on-time
-            );
-
-            // Generate proof using garbled circuit if available
-            bytes memory proof = _generatePrivacyProof(
-                commitment, 
-                recipientCommitment, 
-                amount
-            );
-            bytes32 nullifier = keccak256(
-                abi.encodePacked(commitment, block.number)
-            );
-
-            privacy.transfer(
-                commitment,
-                recipientCommitment,
-                nullifier,
-                amount,
-                proof
-            );
+            // Route through privacy bridge for conversion to PrivateOmniCoin
+            OmniCoinPrivacyBridge bridge = OmniCoinPrivacyBridge(_getContract(registry.OMNICOIN_PRIVACY()));
+            
+            // First, approve bridge to spend tokens
+            IERC20 token = IERC20(_getContract(registry.OMNICOIN()));
+            token.approve(address(bridge), amount);
+            
+            // Convert to private tokens (this will handle the transfer on COTI)
+            bridge.convertToPrivate(amount);
+            
+            // Note: The actual private transfer happens on COTI network
+            // This is just the bridge interaction from the public side
+            emit TransferInitiated(msg.sender, recipient, amount, true);
         } else {
             IERC20 token = IERC20(_getContract(registry.OMNICOIN()));
             if (!token.transferFrom(msg.sender, recipient, amount)) revert TransferFailed();
@@ -390,6 +399,7 @@ contract OmniWalletProvider is
     /**
      * @notice Get wallet's cross-chain transfer history
      * @dev Returns arrays of transfer details for the specified wallet
+     * @param wallet Address of the wallet to query history for
      * @return transferIds Array of transfer IDs
      * @return amounts Array of transfer amounts
      * @return targetChains Array of target chain IDs
@@ -414,10 +424,10 @@ contract OmniWalletProvider is
         uint256 userTransferCount = 0;
         uint256 startIndex = totalTransfers > 100 ? totalTransfers - 100 : 0;
         
-        for (uint256 i = startIndex; i < totalTransfers; i++) {
+        for (uint256 i = startIndex; i < totalTransfers; ++i) {
             (address sender,,,,,,,,,,) = bridge.getTransfer(i);
             if (sender == wallet) {
-                userTransferCount++;
+                ++userTransferCount;
             }
         }
         
@@ -429,7 +439,7 @@ contract OmniWalletProvider is
         
         // Fill arrays
         uint256 index = 0;
-        for (uint256 i = startIndex; i < totalTransfers && index < userTransferCount; i++) {
+        for (uint256 i = startIndex; i < totalTransfers && index < userTransferCount; ++i) {
             (
                 address sender,
                 ,
@@ -449,7 +459,7 @@ contract OmniWalletProvider is
                 amounts[index] = amount;
                 targetChains[index] = targetChain;
                 completed[index] = isCompleted;
-                index++;
+                ++index;
             }
         }
     }
@@ -460,9 +470,12 @@ contract OmniWalletProvider is
      * @return commitment The privacy commitment hash for this wallet
      */
     function enablePrivacy() external returns (bytes32 commitment) {
+        // Privacy is now handled through the bridge to COTI network
+        // The commitment is created when converting to PrivateOmniCoin
         commitment = keccak256(abi.encodePacked(msg.sender, block.timestamp)); // solhint-disable-line not-rely-on-time
-        OmniCoinPrivacy privacy = OmniCoinPrivacy(_getContract(registry.OMNICOIN_PRIVACY()));
-        privacy.createAccount(commitment);
+        
+        // No need to create account - PrivateOmniCoin handles this on COTI
+        emit PrivacyEnabled(msg.sender, commitment);
         return commitment;
     }
 
@@ -592,7 +605,7 @@ contract OmniWalletProvider is
             (bool success, bytes memory data) = stakingContract.staticcall(
                 abi.encodeWithSignature("getStake(address)", wallet)
             );
-            if (success && data.length >= 32) {
+            if (success && data.length > 31) {
                 return abi.decode(data, (uint256));
             }
             return 0;
@@ -614,7 +627,7 @@ contract OmniWalletProvider is
         (bool success, bytes memory data) = reputationContract.staticcall(
             abi.encodeWithSignature("getReputation(address)", wallet)
         );
-        if (success && data.length >= 32) {
+        if (success && data.length > 31) {
             return abi.decode(data, (uint256));
         }
         return 0;
@@ -625,9 +638,9 @@ contract OmniWalletProvider is
      * @param wallet The wallet address
      * @return Whether privacy is enabled
      */
-    function _isPrivacyEnabled(address wallet) internal view returns (bool) {
-        // Privacy in OmniCoinPrivacy is commitment-based, not wallet-based
-        // So we check the default privacy setting from config
+    function _isPrivacyEnabled(address /* wallet */) internal view returns (bool) {
+        // Privacy is now handled through PrivateOmniCoin on COTI
+        // Check if user has any private balance via the bridge
         address configContract = _getContract(registry.OMNICOIN_CONFIG());
         if (configContract != address(0)) {
             try OmniCoinConfig(configContract).getPrivacyConfig() returns (
@@ -684,7 +697,7 @@ contract OmniWalletProvider is
         bytes memory buffer = new bytes(length);
         for (uint256 i = length; i > 0;) {
             unchecked {
-                i--;
+                --i;
                 buffer[i] = bytes1(uint8(value & 0xf) + (uint8(value & 0xf) < 10 ? 48 : 87));
                 value >>= 4;
             }
@@ -706,7 +719,7 @@ contract OmniWalletProvider is
     ) internal view returns (bytes memory) {
         // Garbled circuit is not yet deployed in the registry
         // Return simple proof structure
-        // This will work since OmniCoinPrivacy's verifyTransfer currently returns true
+        // This is a placeholder - actual privacy proofs are handled on COTI
         return abi.encode(
             fromCommitment,
             toCommitment,

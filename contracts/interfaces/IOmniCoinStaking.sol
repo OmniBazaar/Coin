@@ -3,6 +3,7 @@ pragma solidity ^0.8.19;
 
 /**
  * @title IOmniCoinStaking
+ * @author OmniCoin Development Team
  * @notice Interface for OmniCoin staking contract
  * @dev This is a placeholder interface - actual implementation may vary
  */

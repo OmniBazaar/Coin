@@ -7,7 +7,7 @@ import {ReentrancyGuardUpgradeable} from "@openzeppelin/contracts-upgradeable/ut
 import {ECDSA} from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 import {MessageHashUtils} from "@openzeppelin/contracts/utils/cryptography/MessageHashUtils.sol";
 import {OmniCoin} from "./OmniCoin.sol";
-import {PrivateOmniCoin} from "./PrivateOmniCoin.sol";
+// import {PrivateOmniCoin} from "./PrivateOmniCoin.sol"; // Unused - commented for future use
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {OmniCoinRegistry} from "./OmniCoinRegistry.sol";
 
@@ -58,17 +58,8 @@ contract OmniCoinAccount is
     // =============================================================================
     // CUSTOM ERRORS
     // =============================================================================
-    
-    error NotEntryPoint();
-    error AccountAlreadyDeployed();
-    error InvalidSignature();
-    error InvalidNonce();
-    error AccountNotDeployed();
-    error InvalidAddress();
-    error AmountMustBePositive();
-    error TransferFailed();
-    error NotWhitelisted();
-    error InvalidRecipient();
+    // STATE VARIABLES
+    // =============================================================================
     
     /// @notice Registry contract for dynamic lookups
     OmniCoinRegistry public registry;
@@ -99,6 +90,21 @@ contract OmniCoinAccount is
     
     /// @notice OmniCoin token contract
     OmniCoin public omniCoin;
+    
+    // =============================================================================
+    // CUSTOM ERRORS
+    // =============================================================================
+    
+    error NotEntryPoint();
+    error AccountAlreadyDeployed();
+    error InvalidSignature();
+    error InvalidNonce();
+    error AccountNotDeployed();
+    error InvalidAddress();
+    error AmountMustBePositive();
+    error TransferFailed();
+    error NotWhitelisted();
+    error InvalidRecipient();
 
     // =============================================================================
     // EVENTS

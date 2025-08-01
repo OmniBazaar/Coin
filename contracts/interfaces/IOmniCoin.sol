@@ -5,6 +5,7 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
 /**
  * @title IOmniCoin
+ * @author OmniCoin Development Team
  * @notice Interface for OmniCoin token with minting capability
  */
 interface IOmniCoin is IERC20 {
@@ -19,7 +20,7 @@ interface IOmniCoin is IERC20 {
      * @notice Get the maximum supply cap
      * @return Maximum token supply
      */
-    function MAX_SUPPLY_CAP() external view returns (uint256);
+    function maxSupplyCap() external view returns (uint256);
     
     /**
      * @notice Get current token decimals

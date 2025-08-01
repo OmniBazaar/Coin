@@ -1,10 +1,22 @@
 # Coin Development
 
+## CRITICAL: Solidity Coding Standards
+
+**MANDATORY**: When writing ANY Solidity code, you MUST follow the standards in `Coin/SOLIDITY_CODING_STANDARDS.md`. This includes:
+- Complete NatSpec documentation for EVERY element
+- Proper ordering of contract elements
+- Gas optimizations (indexed events, custom errors, struct packing)
+- Following all solhint rules
+
+**Before writing any Solidity code, review SOLIDITY_CODING_STANDARDS.md**
+
+- Don't "reinvent the wheel". USE the WORKING tools, code, templates, references, and examples provided by Avalanche in Coin\reference\avalanche. DO NOT write your own new code if you can copy, modify, or translate some existing code. USE AVALANCHE'S CODE. That's what it is there for.
+
+Modify contracts that already exist in the \Coin\Contracts directory, rather than creating a new file. Only create a new file if it is really necessary and will truly result in less work. Remember, the existing contracts compile and have been tested.
+
 Continue the implementation of the TODO list in the \Coin directory, starting with the most critical priorities. As you work on specific functions and features, develope tests that we can use to validate the code's function, reliability, and security. If Coin\coti-contracts or Coin\test already contain tests that you can use to test your work, do so. If you can adapt existing test for our use, do so. If those tests need to be enhanced or improved, do so. If you find errors in the code, fix them. Use or reuse code that already exists in COTI V2, rather than "re-invent the wheel", whenever it is appropriate. Lint your work as you go along. Run all available tests on your code after you finish coding a contract. Be sure your work will integrate seamlessly with the other contracts that will make up the final, production version of OmniCoin.
 
-In general, we want to implement user functions in such a way that the user will be able to choose to take advantage of privacy features or not. You can set privacy "on" by default.
-
-When possible, modify contracts that already exist in the \Coin\Contracts directory, rather than creating a new file. Study this point before you work on a file and use good judgement. Only create a new file if it is really necessary and will truly result in less work. Remember, the existing contracts compile and have been tested.
+In general, we want to implement user functions in such a way that the user will be able to choose to take advantage of privacy features or not. You can set privacy "off" by default.
 
 In the case where testing finds a function that fails in the hardhat environment, but we know would pass when run in the COTI testnet, let's leave that function in place. I would rather have a test pass on testnet than pass only in hardhat but not be available in testnet.
 

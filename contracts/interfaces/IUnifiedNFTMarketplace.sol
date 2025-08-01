@@ -37,19 +37,19 @@ interface IUnifiedNFTMarketplace {
     
     struct UnifiedListing {
         uint256 listingId;
-        TokenStandard standard;
-        address tokenContract;
         uint256 tokenId;
         uint256 amount;           // 1 for ERC-721, variable for ERC-1155
         uint256 pricePerUnit;     // Price per token
         uint256 totalPrice;       // pricePerUnit * amount
-        address seller;
-        address paymentToken;     // XOM or pXOM address
-        bool usePrivacy;          // Whether using private token
-        ListingType listingType;
-        ListingStatus status;
         uint256 startTime;
         uint256 endTime;
+        address tokenContract;
+        address seller;
+        address paymentToken;     // XOM or pXOM address
+        TokenStandard standard;
+        ListingType listingType;
+        ListingStatus status;
+        bool usePrivacy;          // Whether using private token
         bool escrowEnabled;
         string metadataURI;
     }
@@ -64,6 +64,13 @@ interface IUnifiedNFTMarketplace {
     // EVENTS
     // =============================================================================
     
+    /// @notice Emitted when a new unified listing is created
+    /// @param listingId Unique identifier for the listing
+    /// @param standard Token standard (ERC721 or ERC1155)
+    /// @param tokenContract Address of the token contract
+    /// @param tokenId ID of the token being listed
+    /// @param amount Amount of tokens being listed
+    /// @param pricePerUnit Price per individual token
     event UnifiedListingCreated(
         uint256 indexed listingId,
         TokenStandard indexed standard,
@@ -73,6 +80,11 @@ interface IUnifiedNFTMarketplace {
         uint256 pricePerUnit
     );
     
+    /// @notice Emitted when a purchase is completed
+    /// @param listingId ID of the listing being purchased
+    /// @param buyer Address of the buyer
+    /// @param amount Amount of tokens purchased
+    /// @param totalPrice Total price paid for the purchase
     event UnifiedPurchase(
         uint256 indexed listingId,
         address indexed buyer,
@@ -80,10 +92,14 @@ interface IUnifiedNFTMarketplace {
         uint256 totalPrice
     );
     
+    /// @notice Emitted when a listing is updated
+    /// @param listingId ID of the listing being updated
+    /// @param newPricePerUnit New price per unit
+    /// @param newAmount New amount available
     event ListingUpdated(
         uint256 indexed listingId,
-        uint256 newPricePerUnit,
-        uint256 newAmount
+        uint256 indexed newPricePerUnit,
+        uint256 indexed newAmount
     );
     
     // =============================================================================

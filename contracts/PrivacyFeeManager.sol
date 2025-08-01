@@ -36,19 +36,9 @@ contract PrivacyFeeManager is AccessControl, ReentrancyGuard, Pausable, Registry
     // Removed immutable token variables - will use registry
     
     // =============================================================================
-    // CUSTOM ERRORS
-    // =============================================================================
-    
-    error InvalidOmniCoin();
-    error InvalidPrivateOmniCoin();
-    error InvalidTreasury();
-    error InvalidAdmin();
-    error FeeTransferFailed();
-    error FeeTooHigh();
-    
-    // =============================================================================
     // STATE VARIABLES
     // =============================================================================
+    
     /// @notice Treasury address that receives collected fees
     address public treasury;
     
@@ -94,6 +84,17 @@ contract PrivacyFeeManager is AccessControl, ReentrancyGuard, Pausable, Registry
     event TreasuryUpdated(address indexed oldTreasury, address indexed newTreasury);
     
     // =============================================================================
+    // CUSTOM ERRORS
+    // =============================================================================
+    
+    error InvalidOmniCoin();
+    error InvalidPrivateOmniCoin();
+    error InvalidTreasury();
+    error InvalidAdmin();
+    error FeeTransferFailed();
+    error FeeTooHigh();
+    
+    // =============================================================================
     // CONSTRUCTOR
     // =============================================================================
     
@@ -121,50 +122,7 @@ contract PrivacyFeeManager is AccessControl, ReentrancyGuard, Pausable, Registry
     }
     
     // =============================================================================
-    // FEE INITIALIZATION
-    // =============================================================================
-    
-    /**
-     * @notice Initialize default fee values for various operations
-     * @dev Called during contract construction to set initial fee structure
-     */
-    function _initializeDefaultFees() private {
-        // Standard operations (basis points)
-        operationFees[keccak256("TRANSFER")] = 0; // Free for basic transfers
-        operationFees[keccak256("ESCROW")] = 50; // 0.5%
-        operationFees[keccak256("PAYMENT_STREAM")] = 30; // 0.3%
-        operationFees[keccak256("STAKING")] = 20; // 0.2%
-        operationFees[keccak256("DEX")] = 10; // 0.1%
-        operationFees[keccak256("NFT_LISTING")] = 100; // 1%
-        operationFees[keccak256("ARBITRATION")] = 200; // 2%
-        
-        // Bridge conversion fee
-        operationFees[keccak256("BRIDGE_CONVERSION")] = 100; // 1% for privacy conversion
-    }
-    
-    // =============================================================================
-    // FEE CALCULATION
-    // =============================================================================
-    
-    /**
-     * @notice Calculate fee for an operation
-     * @dev Calculate fee for an operation
-     * @param operationType Type of operation
-     * @param amount Transaction amount
-     * @return feeAmount Fee in token units
-     */
-    function calculateFee(
-        bytes32 operationType,
-        uint256 amount
-    ) public view returns (uint256) {
-        uint256 feeBasisPoints = operationFees[operationType];
-        if (feeBasisPoints == 0) return 0;
-        
-        return (amount * feeBasisPoints) / BASIS_POINTS;
-    }
-    
-    // =============================================================================
-    // PUBLIC FEE COLLECTION (XOM)
+    // EXTERNAL FUNCTIONS
     // =============================================================================
     
     /**
@@ -196,10 +154,6 @@ contract PrivacyFeeManager is AccessControl, ReentrancyGuard, Pausable, Registry
         
         return feeAmount;
     }
-    
-    // =============================================================================
-    // PRIVATE FEE COLLECTION (pXOM)
-    // =============================================================================
     
     /**
      * @dev Collect fee in private OmniCoin (pXOM)
@@ -233,10 +187,6 @@ contract PrivacyFeeManager is AccessControl, ReentrancyGuard, Pausable, Registry
         return feeAmount;
     }
     
-    // =============================================================================
-    // ADMIN FUNCTIONS
-    // =============================================================================
-    
     /**
      * @notice Update fee for an operation type
      * @dev Update fee for an operation type
@@ -269,9 +219,21 @@ contract PrivacyFeeManager is AccessControl, ReentrancyGuard, Pausable, Registry
         emit TreasuryUpdated(oldTreasury, newTreasury);
     }
     
-    // =============================================================================
-    // VIEW FUNCTIONS
-    // =============================================================================
+    /**
+     * @notice Pause all fee collection operations
+     * @dev Only admin can pause the contract
+     */
+    function pause() external onlyRole(DEFAULT_ADMIN_ROLE) {
+        _pause();
+    }
+    
+    /**
+     * @notice Resume fee collection operations
+     * @dev Only admin can unpause the contract
+     */
+    function unpause() external onlyRole(DEFAULT_ADMIN_ROLE) {
+        _unpause();
+    }
     
     /**
      * @notice Get total fees collected for all operations
@@ -306,22 +268,45 @@ contract PrivacyFeeManager is AccessControl, ReentrancyGuard, Pausable, Registry
     }
     
     // =============================================================================
-    // EMERGENCY FUNCTIONS
+    // PUBLIC FUNCTIONS
     // =============================================================================
     
     /**
-     * @notice Pause all fee collection operations
-     * @dev Only admin can pause the contract
+     * @notice Calculate fee for an operation
+     * @dev Calculate fee for an operation
+     * @param operationType Type of operation
+     * @param amount Transaction amount
+     * @return feeAmount Fee in token units
      */
-    function pause() external onlyRole(DEFAULT_ADMIN_ROLE) {
-        _pause();
+    function calculateFee(
+        bytes32 operationType,
+        uint256 amount
+    ) public view returns (uint256) {
+        uint256 feeBasisPoints = operationFees[operationType];
+        if (feeBasisPoints == 0) return 0;
+        
+        return (amount * feeBasisPoints) / BASIS_POINTS;
     }
     
+    // =============================================================================
+    // PRIVATE FUNCTIONS
+    // =============================================================================
+    
     /**
-     * @notice Resume fee collection operations
-     * @dev Only admin can unpause the contract
+     * @notice Initialize default fee values for various operations
+     * @dev Called during contract construction to set initial fee structure
      */
-    function unpause() external onlyRole(DEFAULT_ADMIN_ROLE) {
-        _unpause();
+    function _initializeDefaultFees() private {
+        // Standard operations (basis points)
+        operationFees[keccak256("TRANSFER")] = 0; // Free for basic transfers
+        operationFees[keccak256("ESCROW")] = 50; // 0.5%
+        operationFees[keccak256("PAYMENT_STREAM")] = 30; // 0.3%
+        operationFees[keccak256("STAKING")] = 20; // 0.2%
+        operationFees[keccak256("DEX")] = 10; // 0.1%
+        operationFees[keccak256("NFT_LISTING")] = 100; // 1%
+        operationFees[keccak256("ARBITRATION")] = 200; // 2%
+        
+        // Bridge conversion fee
+        operationFees[keccak256("BRIDGE_CONVERSION")] = 100; // 1% for privacy conversion
     }
 }

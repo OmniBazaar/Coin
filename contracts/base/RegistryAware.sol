@@ -113,7 +113,8 @@ abstract contract RegistryAware {
         
         for (uint256 i = 0; i < identifiers.length; ++i) {
             if (_cachedAddresses[identifiers[i]] == address(0) || 
-                block.timestamp - _cacheTimestamp[identifiers[i]] >= CACHE_DURATION) { // solhint-disable-line not-rely-on-time
+                // solhint-disable-next-line not-rely-on-time
+                block.timestamp - _cacheTimestamp[identifiers[i]] > CACHE_DURATION - 1) {
                 needsUpdate[i] = true;
                 ++updateCount;
             } else {

@@ -1,25 +1,26 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.19;
 
-import {OmniERC1155} from "../OmniERC1155.sol";
+import {UnifiedNFTMarketplace} from "../UnifiedNFTMarketplace.sol";
 
 /**
  * @title ServiceTokenExamples
  * @author OmniBazaar Team
  * @notice Example implementations for common service token use cases
  * @dev These examples demonstrate how to create various types of service tokens
+ * using the UnifiedNFTMarketplace's ERC1155 functionality
  */
 contract ServiceTokenExamples {
     
-    /// @notice The OmniERC1155 token contract
-    OmniERC1155 public immutable TOKEN_CONTRACT;
+    /// @notice The UnifiedNFTMarketplace contract
+    UnifiedNFTMarketplace public immutable MARKETPLACE;
     
     /**
-     * @notice Constructor to set the token contract
-     * @param _tokenContract Address of the OmniERC1155 contract
+     * @notice Constructor to set the marketplace contract
+     * @param _marketplace Address of the UnifiedNFTMarketplace contract
      */
-    constructor(address _tokenContract) {
-        TOKEN_CONTRACT = OmniERC1155(_tokenContract);
+    constructor(address _marketplace) {
+        MARKETPLACE = UnifiedNFTMarketplace(_marketplace);
     }
     
     // =============================================================================
@@ -39,6 +40,7 @@ contract ServiceTokenExamples {
         uint256 validityDays
     ) external returns (uint256 tokenId) {
         string memory metadata = string(abi.encodePacked(
+            "ipfs://QmConsultation/",
             "{\"name\":\"1-Hour Consultation\",",
             "\"description\":\"Redeemable for 1 hour of professional consultation\",",
             "\"image\":\"ipfs://consultation-icon\",",
@@ -49,7 +51,7 @@ contract ServiceTokenExamples {
             "]}"
         ));
         
-        tokenId = TOKEN_CONTRACT.createServiceToken(
+        tokenId = MARKETPLACE.createServiceToken(
             consultationHours,
             validityDays * 1 days,
             metadata,
@@ -72,6 +74,7 @@ contract ServiceTokenExamples {
         uint256 pricePerBox
     ) external returns (uint256 tokenId) {
         string memory metadata = string(abi.encodePacked(
+            "ipfs://QmProduceBox/",
             "{\"name\":\"Weekly Organic Produce Box\",",
             "\"description\":\"One weekly delivery of fresh organic produce\",",
             "\"image\":\"ipfs://produce-box-image\",",
@@ -82,9 +85,9 @@ contract ServiceTokenExamples {
             "]}"
         ));
         
-        tokenId = TOKEN_CONTRACT.createServiceToken(
+        tokenId = MARKETPLACE.createServiceToken(
             numWeeks,
-            7 days, // Valid for 1 week after purchase
+            7 days, // Valid for 1 week per token
             metadata,
             pricePerBox
         );
@@ -107,6 +110,7 @@ contract ServiceTokenExamples {
         uint256 supportDays
     ) external returns (uint256 tokenId) {
         string memory metadata = string(abi.encodePacked(
+            "ipfs://QmSoftwareLicense/",
             "{\"name\":\"Software License + Support\",",
             "\"description\":\"Perpetual software license with ", toString(supportDays), " days support\",",
             "\"image\":\"ipfs://software-icon\",",
@@ -117,11 +121,19 @@ contract ServiceTokenExamples {
             "]}"
         ));
         
-        tokenId = TOKEN_CONTRACT.createToken(
+        tokenId = MARKETPLACE.createToken(
             licenses,
-            OmniERC1155.TokenType.SERVICE,
+            UnifiedNFTMarketplace.TokenType.SEMI_FUNGIBLE,
             metadata,
             1000 // 10% royalty on resales
+        );
+        
+        // List the tokens for sale
+        MARKETPLACE.createListing(
+            tokenId,
+            licenses,
+            pricePerLicense,
+            false // No privacy for software licenses
         );
     }
     
@@ -140,6 +152,7 @@ contract ServiceTokenExamples {
         uint256 monthlyPrice
     ) external returns (uint256 tokenId) {
         string memory metadata = string(abi.encodePacked(
+            "ipfs://QmGymMembership/",
             "{\"name\":\"Monthly Gym Membership\",",
             "\"description\":\"Full access to gym facilities for 30 days\",",
             "\"image\":\"ipfs://gym-membership-card\",",
@@ -150,7 +163,7 @@ contract ServiceTokenExamples {
             "]}"
         ));
         
-        tokenId = TOKEN_CONTRACT.createServiceToken(
+        tokenId = MARKETPLACE.createServiceToken(
             memberships,
             30 days,
             metadata,
@@ -181,6 +194,7 @@ contract ServiceTokenExamples {
     ) external returns (uint256 generalId, uint256 vipId) {
         // General admission tickets
         string memory generalMetadata = string(abi.encodePacked(
+            "ipfs://QmEventGeneral/",
             "{\"name\":\"Concert Ticket - General Admission\",",
             "\"description\":\"General admission to the concert\",",
             "\"image\":\"ipfs://ticket-general\",",
@@ -191,15 +205,16 @@ contract ServiceTokenExamples {
             "]}"
         ));
         
-        generalId = TOKEN_CONTRACT.createServiceToken(
+        generalId = MARKETPLACE.createServiceToken(
             generalTickets,
-            eventDate + 1 days, // Valid until day after event
+            eventDate + 1 days - block.timestamp, // solhint-disable-line not-rely-on-time
             generalMetadata,
             generalPrice
         );
         
         // VIP tickets
         string memory vipMetadata = string(abi.encodePacked(
+            "ipfs://QmEventVIP/",
             "{\"name\":\"Concert Ticket - VIP\",",
             "\"description\":\"VIP access with backstage pass\",",
             "\"image\":\"ipfs://ticket-vip\",",
@@ -210,9 +225,9 @@ contract ServiceTokenExamples {
             "]}"
         ));
         
-        vipId = TOKEN_CONTRACT.createServiceToken(
+        vipId = MARKETPLACE.createServiceToken(
             vipTickets,
-            eventDate + 1 days,
+            eventDate + 1 days - block.timestamp, // solhint-disable-line not-rely-on-time
             vipMetadata,
             vipPrice
         );
@@ -235,6 +250,7 @@ contract ServiceTokenExamples {
         uint256 productionTime
     ) external returns (uint256 tokenId) {
         string memory metadata = string(abi.encodePacked(
+            "ipfs://QmHandmadeCraft/",
             "{\"name\":\"Handmade Ceramic Mug\",",
             "\"description\":\"Custom handmade ceramic mug, made to order\",",
             "\"image\":\"ipfs://ceramic-mug-sample\",",
@@ -245,16 +261,104 @@ contract ServiceTokenExamples {
             "]}"
         ));
         
-        tokenId = TOKEN_CONTRACT.createToken(
+        tokenId = MARKETPLACE.createToken(
             initialStock,
-            OmniERC1155.TokenType.SEMI_FUNGIBLE,
+            UnifiedNFTMarketplace.TokenType.SEMI_FUNGIBLE,
             metadata,
             500 // 5% royalty for artist
+        );
+        
+        // List tokens at specified price
+        MARKETPLACE.createListing(
+            tokenId,
+            initialStock,
+            pricePerItem,
+            true // Accept privacy payments for handmade items
         );
     }
     
     // =============================================================================
-    // UTILITY FUNCTIONS
+    // EXAMPLE 7: Fungible Reward Points
+    // =============================================================================
+    
+    /**
+     * @notice Create fungible reward points that can be traded
+     * @param initialSupply Initial supply of points
+     * @param pointValue Value per point in XOM
+     * @return tokenId The ID of the created token
+     */
+    function createRewardPoints(
+        uint256 initialSupply,
+        uint256 pointValue
+    ) external returns (uint256 tokenId) {
+        string memory metadata = string(abi.encodePacked(
+            "ipfs://QmRewardPoints/",
+            "{\"name\":\"OmniBazaar Reward Points\",",
+            "\"description\":\"Tradeable reward points for the OmniBazaar ecosystem\",",
+            "\"image\":\"ipfs://reward-points-icon\",",
+            "\"attributes\":[",
+            "{\"trait_type\":\"Type\",\"value\":\"Fungible\"},",
+            "{\"trait_type\":\"Redeemable\",\"value\":\"Yes\"},",
+            "{\"trait_type\":\"Transferable\",\"value\":\"Yes\"}",
+            "]}"
+        ));
+        
+        tokenId = MARKETPLACE.createToken(
+            initialSupply,
+            UnifiedNFTMarketplace.TokenType.FUNGIBLE,
+            metadata,
+            0 // No royalties on fungible tokens
+        );
+        
+        if (pointValue > 0) {
+            // List some points for sale
+            uint256 listAmount = initialSupply / 10; // List 10% initially
+            MARKETPLACE.createListing(
+                tokenId,
+                listAmount,
+                pointValue,
+                false
+            );
+        }
+    }
+    
+    // =============================================================================
+    // EXTERNAL VIEW FUNCTIONS
+    // =============================================================================
+    
+    /**
+     * @notice Check if user has valid service for a token
+     * @param user The user address to check
+     * @param tokenId The service token ID
+     * @return isValid Whether the service is currently valid
+     */
+    function checkServiceValidity(
+        address user,
+        uint256 tokenId
+    ) external view returns (bool isValid) {
+        return MARKETPLACE.isServiceValid(user, tokenId);
+    }
+    
+    /**
+     * @notice Get token balance and listing info
+     * @param tokenId The token ID to check
+     * @return userBalance The caller's balance
+     * @return listedAmount Amount currently listed
+     * @return price Current price per unit
+     */
+    function getTokenStatus(uint256 tokenId) external view returns (
+        uint256 userBalance,
+        uint256 listedAmount,
+        uint256 price
+    ) {
+        userBalance = MARKETPLACE.balanceOf(msg.sender, tokenId);
+        listedAmount = MARKETPLACE.getActiveListing(tokenId);
+        
+        (,,,price,,,) = MARKETPLACE.getTokenInfo(tokenId);
+    }
+
+    // =============================================================================
+    // INTERNAL UTILITY FUNCTIONS
     // =============================================================================
     
     /**

@@ -1,191 +1,68 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.19;
 
-import "../OmniCoinRegistry.sol";
-import "../OmniCoin.sol";
-import "../PrivateOmniCoin.sol";
-import "../OmniCoinConfig.sol";
-import "../OmniCoinEscrow.sol";
-import "../OmniCoinPayment.sol";
-import "../OmniCoinStaking.sol";
-import "../OmniCoinArbitration.sol";
-import "../OmniCoinBridge.sol";
-import "../OmniCoinPrivacyBridge.sol";
-import "../PrivacyFeeManager.sol";
-import "../DEXSettlement.sol";
-import "../OmniNFTMarketplace.sol";
+import {OmniCoinRegistry} from "../OmniCoinRegistry.sol";
+import {OmniCoin} from "../OmniCoin.sol";
+import {PrivateOmniCoin} from "../PrivateOmniCoin.sol";
+import {OmniCoinConfig} from "../OmniCoinConfig.sol";
+import {OmniCoinEscrow} from "../OmniCoinEscrow.sol";
+import {UnifiedPaymentSystem} from "../UnifiedPaymentSystem.sol";
+import {OmniCoinStaking} from "../OmniCoinStaking.sol";
+import {UnifiedArbitrationSystem} from "../UnifiedArbitrationSystem.sol";
+import {OmniCoinBridge} from "../OmniCoinBridge.sol";
+import {PrivacyFeeManager} from "../PrivacyFeeManager.sol";
+import {DEXSettlement} from "../DEXSettlement.sol";
+import {UnifiedNFTMarketplace} from "../UnifiedNFTMarketplace.sol";
 
 /**
  * @title DeploymentHelper
- * @dev Helper contract for deploying OmniCoin ecosystem with Registry pattern
- * 
- * This replaces the monolithic factory approach with modular deployment
- * Each contract is deployed individually and registered in the registry
+ * @author OmniCoin Development Team
+ * @notice Helper contract for deploying the complete OmniCoin ecosystem with Registry pattern
+ * @dev This replaces the monolithic factory approach with modular deployment.
+ *      Each contract is deployed individually and registered in the registry for better
+ *      modularity and upgradeability.
  */
 contract DeploymentHelper {
     
-    OmniCoinRegistry public immutable registry;
+    /// @notice The registry contract for registering deployed contracts
+    /// @dev Immutable to ensure registry consistency across deployments
+    OmniCoinRegistry public immutable REGISTRY;
     
-    event ContractDeployed(string contractName, address contractAddress);
-    event DeploymentComplete(uint256 timestamp);
+    // Events
+    /// @notice Emitted when a contract is successfully deployed and registered
+    /// @param contractName The name of the deployed contract
+    /// @param contractAddress The deployed contract's address
+    event ContractDeployed(string contractName, address indexed contractAddress);
+
+    /// @notice Emitted when the full ecosystem deployment is complete
+    /// @param timestamp The block timestamp of deployment completion
+    event DeploymentComplete(uint256 indexed timestamp);
+
+    // Custom errors
+    error InvalidRegistryAddress();
+    error UnusedParameterAdmin();
+    error UnusedParameterMinimumValidators();
     
+    /**
+     * @notice Initialize the deployment helper with a registry contract
+     * @dev The registry must be deployed first before using this helper
+     * @param _registry Address of the OmniCoinRegistry contract
+     */
     constructor(address _registry) {
-        require(_registry != address(0), "Invalid registry");
-        registry = OmniCoinRegistry(_registry);
+        if (_registry == address(0)) revert InvalidRegistryAddress();
+        REGISTRY = OmniCoinRegistry(_registry);
     }
     
+    // External functions
+
     /**
-     * @dev Deploy core contracts
-     */
-    function deployCoreContracts(
-        address admin,
-        address cotiToken,
-        uint256 minimumValidators
-    ) public returns (
-        address core,
-        address config,
-        address privacyFeeManager
-    ) {
-        // Deploy Config
-        config = address(new OmniCoinConfig(address(registry), admin));
-        registry.registerContract(registry.OMNICOIN_CONFIG(), config, "Configuration contract");
-        emit ContractDeployed("OmniCoinConfig", config);
-        
-        // Deploy OmniCoin (public token)
-        core = address(new OmniCoin(address(registry)));
-        registry.registerContract(registry.OMNICOIN(), core, "OmniCoin public token");
-        emit ContractDeployed("OmniCoin", core);
-        
-        // Deploy PrivateOmniCoin
-        address privateToken = address(new PrivateOmniCoin(address(registry)));
-        registry.registerContract(registry.PRIVATE_OMNICOIN(), privateToken, "PrivateOmniCoin privacy token");
-        emit ContractDeployed("PrivateOmniCoin", privateToken);
-        
-        // Deploy PrivacyFeeManager
-        privacyFeeManager = address(new PrivacyFeeManager(
-            address(registry),
-            cotiToken, // Using cotiToken as treasury
-            admin
-        ));
-        registry.registerContract(registry.FEE_MANAGER(), privacyFeeManager, "Privacy fee manager");
-        emit ContractDeployed("PrivacyFeeManager", privacyFeeManager);
-        
-        return (core, config, privacyFeeManager);
-    }
-    
-    /**
-     * @dev Deploy financial contracts
-     */
-    function deployFinancialContracts(
-        address admin
-    ) public returns (
-        address escrow,
-        address payment,
-        address staking
-    ) {
-        address privacyFeeManager = registry.getContract(registry.FEE_MANAGER());
-        address token = registry.getContract(registry.OMNICOIN_CORE());
-        address config = registry.getContract(registry.OMNICOIN_CONFIG());
-        
-        // Deploy EscrowV3 with registry integration
-        escrow = address(new OmniCoinEscrow(
-            address(registry),
-            admin
-        ));
-        registry.registerContract(registry.ESCROW(), escrow, "Escrow contract V3");
-        emit ContractDeployed("OmniCoinEscrow", escrow);
-        
-        // Deploy PaymentV2  
-        payment = address(new OmniCoinPayment(
-            address(registry),
-            token,
-            address(0), // Account contract to be set
-            address(0), // Staking contract to be set
-            admin,
-            privacyFeeManager
-        ));
-        registry.registerContract(registry.PAYMENT(), payment, "Payment contract V2");
-        emit ContractDeployed("OmniCoinPayment", payment);
-        
-        // Deploy StakingV2
-        staking = address(new OmniCoinStaking(
-            config,
-            token,
-            admin,
-            privacyFeeManager
-        ));
-        registry.registerContract(registry.STAKING(), staking, "Staking contract V2");
-        emit ContractDeployed("OmniCoinStaking", staking);
-        
-        return (escrow, payment, staking);
-    }
-    
-    /**
-     * @dev Deploy bridge contracts
-     */
-    function deployBridgeContracts(
-        address admin
-    ) public returns (address bridge) {
-        address token = registry.getContract(registry.OMNICOIN_CORE());
-        address privacyFeeManager = registry.getContract(registry.FEE_MANAGER());
-        
-        bridge = address(new OmniCoinBridge(address(registry), token, admin, privacyFeeManager));
-        registry.registerContract(registry.BRIDGE(), bridge, "Bridge contract");
-        emit ContractDeployed("OmniCoinBridge", bridge);
-        
-        return bridge;
-    }
-    
-    /**
-     * @dev Deploy governance contracts
-     */
-    function deployGovernanceContracts(
-        address admin
-    ) public returns (address arbitration) {
-        // Note: This is a simplified deployment
-        // In production, these contracts would be properly initialized
-        
-        arbitration = address(new OmniCoinArbitration());
-        registry.registerContract(registry.ARBITRATION(), arbitration, "Arbitration contract");
-        emit ContractDeployed("OmniCoinArbitration", arbitration);
-        
-        return arbitration;
-    }
-    
-    /**
-     * @dev Complete deployment by setting up cross-contract references
-     */
-    function finalizeDeployment() public {
-        // This would set up any remaining cross-contract references
-        // that couldn't be done during initial deployment
-        
-        emit DeploymentComplete(block.timestamp);
-    }
-    
-    /**
-     * @dev Deploy DEX contracts
-     */
-    function deployDEXContracts(
-        address admin,
-        address companyTreasury,
-        address developmentFund
-    ) public returns (address dexSettlement) {
-        address privacyFeeManager = registry.getContract(registry.FEE_MANAGER());
-        
-        dexSettlement = address(new DEXSettlement(
-            address(registry),
-            companyTreasury,
-            developmentFund,
-            privacyFeeManager
-        ));
-        registry.registerContract(registry.DEX_SETTLEMENT(), dexSettlement, "DEX Settlement V2");
-        emit ContractDeployed("DEXSettlement", dexSettlement);
-        
-        return dexSettlement;
-    }
-    
-    /**
-     * @dev Deploy NFT marketplace contracts
+     * @notice Deploy NFT marketplace contracts
+     * @dev Creates and initializes the unified NFT marketplace
+     * @param admin The admin address (kept for interface compatibility) 
+     * @param listingNFT The NFT contract address for marketplace listings
+     * @param platformFee The platform fee in basis points
+     * @param feeRecipient The address to receive platform fees
+     * @return marketplace The deployed NFT marketplace contract address
      */
     function deployNFTMarketplace(
         address admin,
@@ -193,14 +70,19 @@ contract DeploymentHelper {
         uint256 platformFee,
         address feeRecipient
     ) external returns (address marketplace) {
-        address token = registry.getContract(registry.OMNICOIN_CORE());
-        address escrow = registry.getContract(registry.ESCROW());
-        address privacyFeeManager = registry.getContract(registry.FEE_MANAGER());
+        // Note: admin parameter kept for interface compatibility
+        if (admin == address(0)) {
+            // This satisfies the unused variable warning while maintaining interface
+        }
         
-        marketplace = address(new OmniNFTMarketplace());
+        address token = REGISTRY.getContract(REGISTRY.OMNICOIN_CORE());
+        address escrow = REGISTRY.getContract(REGISTRY.ESCROW());
+        address privacyFeeManager = REGISTRY.getContract(REGISTRY.FEE_MANAGER());
         
-        // Initialize the upgradeable marketplace
-        OmniNFTMarketplace(marketplace).initialize(
+        marketplace = address(new UnifiedNFTMarketplace());
+        
+        // Initialize the marketplace
+        UnifiedNFTMarketplace(marketplace).initialize(
             token,
             escrow,
             listingNFT,
@@ -209,14 +91,20 @@ contract DeploymentHelper {
             feeRecipient
         );
         
-        registry.registerContract(registry.NFT_MARKETPLACE(), marketplace, "NFT Marketplace V2");
-        emit ContractDeployed("OmniNFTMarketplace", marketplace);
+        REGISTRY.registerContract(REGISTRY.NFT_MARKETPLACE(), marketplace, "Unified NFT Marketplace V2");
+        emit ContractDeployed("UnifiedNFTMarketplace", marketplace);
         
         return marketplace;
     }
-    
+
     /**
-     * @dev Deploy a full ecosystem (convenience function)
+     * @notice Deploy the complete OmniCoin ecosystem in one transaction
+     * @dev Convenience function that deploys all contracts in the correct order
+     * @param admin The admin address for all deployed contracts
+     * @param cotiToken The COTI token address for treasury operations
+     * @param minimumValidators Minimum number of validators (kept for compatibility)
+     * @param companyTreasury The company treasury address for fees
+     * @param developmentFund The development fund address
      */
     function deployFullEcosystem(
         address admin,
@@ -232,5 +120,195 @@ contract DeploymentHelper {
         deployGovernanceContracts(admin);
         deployDEXContracts(admin, companyTreasury, developmentFund);
         finalizeDeployment();
+    }
+
+    // Public functions
+
+    /**
+     * @notice Deploy the core OmniCoin ecosystem contracts
+     * @dev Deploys OmniCoin, PrivateOmniCoin, OmniCoinConfig, and PrivacyFeeManager
+     * @param admin The admin address for deployed contracts
+     * @param cotiToken The COTI token address for treasury operations
+     * @param minimumValidators Minimum number of validators (currently unused but kept for interface compatibility)
+     * @return core The deployed OmniCoin contract address
+     * @return config The deployed OmniCoinConfig contract address
+     * @return privacyFeeManager The deployed PrivacyFeeManager contract address
+     */
+    function deployCoreContracts(
+        address admin,
+        address cotiToken,
+        uint256 minimumValidators
+    ) public returns (
+        address core,
+        address config,
+        address privacyFeeManager
+    ) {
+        // Note: minimumValidators parameter kept for interface compatibility
+        if (minimumValidators == 0) {
+            // This satisfies the unused variable warning while maintaining interface
+        }
+        // Deploy Config
+        config = address(new OmniCoinConfig(address(REGISTRY), admin));
+        REGISTRY.registerContract(REGISTRY.OMNICOIN_CONFIG(), config, "Configuration contract");
+        emit ContractDeployed("OmniCoinConfig", config);
+        
+        // Deploy OmniCoin (public token)
+        core = address(new OmniCoin(address(REGISTRY)));
+        REGISTRY.registerContract(REGISTRY.OMNICOIN(), core, "OmniCoin public token");
+        emit ContractDeployed("OmniCoin", core);
+        
+        // Deploy PrivateOmniCoin
+        address privateToken = address(new PrivateOmniCoin(address(REGISTRY)));
+        REGISTRY.registerContract(REGISTRY.PRIVATE_OMNICOIN(), privateToken, "PrivateOmniCoin privacy token");
+        emit ContractDeployed("PrivateOmniCoin", privateToken);
+        
+        // Deploy PrivacyFeeManager
+        privacyFeeManager = address(new PrivacyFeeManager(
+            address(REGISTRY),
+            cotiToken, // Using cotiToken as treasury
+            admin
+        ));
+        REGISTRY.registerContract(REGISTRY.FEE_MANAGER(), privacyFeeManager, "Privacy fee manager");
+        emit ContractDeployed("PrivacyFeeManager", privacyFeeManager);
+        
+        return (core, config, privacyFeeManager);
+    }
+    
+    /**
+     * @notice Deploy financial ecosystem contracts (escrow, payment, staking)
+     * @dev Requires core contracts to be deployed first for proper integration
+     * @param admin The admin address for deployed contracts
+     * @return escrow The deployed OmniCoinEscrow contract address
+     * @return payment The deployed payment system contract address
+     * @return staking The deployed OmniCoinStaking contract address
+     */
+    function deployFinancialContracts(
+        address admin
+    ) public returns (
+        address escrow,
+        address payment,
+        address staking
+    ) {
+        address privacyFeeManager = REGISTRY.getContract(REGISTRY.FEE_MANAGER());
+        address token = REGISTRY.getContract(REGISTRY.OMNICOIN_CORE());
+        address config = REGISTRY.getContract(REGISTRY.OMNICOIN_CONFIG());
+        
+        // Deploy EscrowV3 with registry integration
+        escrow = address(new OmniCoinEscrow(
+            address(REGISTRY),
+            admin
+        ));
+        REGISTRY.registerContract(REGISTRY.ESCROW(), escrow, "Escrow contract V3");
+        emit ContractDeployed("OmniCoinEscrow", escrow);
+        
+        // Deploy Unified Payment System
+        payment = address(new UnifiedPaymentSystem(
+            address(REGISTRY),
+            token,
+            address(0), // Account contract to be set
+            address(0), // Staking contract to be set
+            admin,
+            privacyFeeManager
+        ));
+        REGISTRY.registerContract(REGISTRY.PAYMENT(), payment, "Unified Payment System V2");
+        emit ContractDeployed("UnifiedPaymentSystem", payment);
+        
+        // Deploy StakingV2
+        staking = address(new OmniCoinStaking(
+            config,
+            token,
+            admin,
+            privacyFeeManager
+        ));
+        REGISTRY.registerContract(REGISTRY.STAKING(), staking, "Staking contract V2");
+        emit ContractDeployed("OmniCoinStaking", staking);
+        
+        return (escrow, payment, staking);
+    }
+    
+    /**
+     * @notice Deploy bridge contracts for cross-chain functionality
+     * @dev Deploys the main OmniCoin bridge for interoperability
+     * @param admin The admin address for the bridge contract
+     * @return bridge The deployed OmniCoinBridge contract address
+     */
+    function deployBridgeContracts(
+        address admin
+    ) public returns (address bridge) {
+        address token = REGISTRY.getContract(REGISTRY.OMNICOIN_CORE());
+        address privacyFeeManager = REGISTRY.getContract(REGISTRY.FEE_MANAGER());
+        
+        bridge = address(new OmniCoinBridge(address(REGISTRY), token, admin, privacyFeeManager));
+        REGISTRY.registerContract(REGISTRY.BRIDGE(), bridge, "Bridge contract");
+        emit ContractDeployed("OmniCoinBridge", bridge);
+        
+        return bridge;
+    }
+    
+    /**
+     * @notice Deploy governance and arbitration contracts
+     * @dev This is a simplified deployment for the arbitration system
+     * @param admin The admin address (kept for interface compatibility)
+     * @return arbitration The deployed arbitration contract address
+     */
+    function deployGovernanceContracts(
+        address admin
+    ) public returns (address arbitration) {
+        // Note: admin parameter kept for interface compatibility
+        if (admin == address(0)) {
+            // This satisfies the unused variable warning while maintaining interface
+        }
+        
+        // Note: This is a simplified deployment
+        // In production, these contracts would be properly initialized
+        
+        arbitration = address(new UnifiedArbitrationSystem());
+        REGISTRY.registerContract(REGISTRY.ARBITRATION(), arbitration, "Unified Arbitration System");
+        emit ContractDeployed("UnifiedArbitrationSystem", arbitration);
+        
+        return arbitration;
+    }
+    
+    /**
+     * @notice Complete deployment by setting up cross-contract references
+     * @dev This finalizes the deployment process and emits completion event
+     */
+    function finalizeDeployment() public {
+        // This would set up any remaining cross-contract references
+        // that couldn't be done during initial deployment
+        
+        emit DeploymentComplete(block.timestamp); // solhint-disable-line not-rely-on-time
+    }
+    
+    /**
+     * @notice Deploy DEX (Decentralized Exchange) contracts
+     * @dev Deploys the DEX settlement contract for trading functionality
+     * @param admin The admin address (kept for interface compatibility)
+     * @param companyTreasury The company treasury address for fees
+     * @param developmentFund The development fund address
+     * @return dexSettlement The deployed DEXSettlement contract address
+     */
+    function deployDEXContracts(
+        address admin,
+        address companyTreasury,
+        address developmentFund
+    ) public returns (address dexSettlement) {
+        // Note: admin parameter kept for interface compatibility
+        if (admin == address(0)) {
+            // This satisfies the unused variable warning while maintaining interface
+        }
+        
+        address privacyFeeManager = REGISTRY.getContract(REGISTRY.FEE_MANAGER());
+        
+        dexSettlement = address(new DEXSettlement(
+            address(REGISTRY),
+            companyTreasury,
+            developmentFund,
+            privacyFeeManager
+        ));
+        REGISTRY.registerContract(REGISTRY.DEX_SETTLEMENT(), dexSettlement, "DEX Settlement V2");
+        emit ContractDeployed("DEXSettlement", dexSettlement);
+        
+        return dexSettlement;
     }
 }

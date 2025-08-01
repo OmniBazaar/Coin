@@ -52,7 +52,8 @@ contract OmniCoin is ERC20, ERC20Burnable, ERC20Pausable, AccessControl, Reentra
     uint8 public constant DECIMALS = 6;
     
     /// @notice Initial circulating supply (~4.1 billion tokens)
-    /// @dev Already distributed: block subsidy (1.34B) + dev subsidy (2.52B) + welcome (0.02B) + referral (0.005B) + faucet/burned (0.26B)
+    /// @dev Already distributed: block subsidy (1.34B) + dev subsidy (2.52B) + welcome (0.02B) +
+    ///      referral (0.005B) + faucet/burned (0.26B)
     uint256 public constant INITIAL_SUPPLY = 4_132_353_934 * 10**DECIMALS;
     
     /// @notice Maximum token supply (25 billion total)
@@ -61,20 +62,6 @@ contract OmniCoin is ERC20, ERC20Burnable, ERC20Pausable, AccessControl, Reentra
     
     /// @notice Maximum supply cap (immutable)
     uint256 public immutable MAX_SUPPLY_CAP;
-    
-    // =============================================================================
-    // CUSTOM ERRORS
-    // =============================================================================
-    
-    error ExceedsMaxSupply();
-    error InvalidValidator();
-    error InvalidAmount();
-    error OperationNotFound();
-    error OperationAlreadyExecuted();
-    error UnauthorizedValidator();
-    error ZeroAddress();
-    error BridgeTransferFailed();
-    error InsufficientBalance();
     
     // =============================================================================
     // STATE VARIABLES
@@ -123,6 +110,35 @@ contract OmniCoin is ERC20, ERC20Burnable, ERC20Pausable, AccessControl, Reentra
      */
     event BridgeTransferInitiated(address indexed from, address indexed bridge, uint256 indexed amount);
     
+    /**
+     * @notice Emitted when registry update is requested
+     * @param newRegistry Address of the requested new registry
+     */
+    event RegistryUpdateRequested(address indexed newRegistry);
+    
+    // =============================================================================
+    // CUSTOM ERRORS
+    // =============================================================================
+    
+    /// @notice Thrown when minting would exceed max supply cap
+    error ExceedsMaxSupply();
+    /// @notice Thrown when validator address is invalid
+    error InvalidValidator();
+    /// @notice Thrown when amount parameter is invalid
+    error InvalidAmount();
+    /// @notice Thrown when validator operation is not found
+    error OperationNotFound();
+    /// @notice Thrown when validator operation has already been executed
+    error OperationAlreadyExecuted();
+    /// @notice Thrown when caller is not an authorized validator
+    error UnauthorizedValidator();
+    /// @notice Thrown when address parameter is zero address
+    error ZeroAddress();
+    /// @notice Thrown when bridge transfer operation fails
+    error BridgeTransferFailed();
+    /// @notice Thrown when account has insufficient balance for operation
+    error InsufficientBalance();
+    
     // =============================================================================
     // CONSTRUCTOR
     // =============================================================================
@@ -149,19 +165,6 @@ contract OmniCoin is ERC20, ERC20Burnable, ERC20Pausable, AccessControl, Reentra
     }
     
     // =============================================================================
-    // DECIMALS
-    // =============================================================================
-    
-    /**
-     * @notice Get the number of decimal places for the token
-     * @dev Returns DECIMALS constant for easy configuration
-     * @return decimals Number of decimal places (configurable: 6, 12, or 18)
-     */
-    function decimals() public view virtual override returns (uint8) {
-        return DECIMALS;
-    }
-    
-    // =============================================================================
     // MINTING & BURNING
     // =============================================================================
     
@@ -176,19 +179,6 @@ contract OmniCoin is ERC20, ERC20Burnable, ERC20Pausable, AccessControl, Reentra
         _mint(to, amount);
     }
     
-    /**
-     * @notice Burn tokens from a specific address
-     * @dev Restricted to BRIDGE_ROLE for bridge operations
-     * @param from Address to burn tokens from
-     * @param amount Amount to burn
-     */
-    function burnFrom(address from, uint256 amount) 
-        public 
-        override 
-        onlyRole(BRIDGE_ROLE) 
-    {
-        _burn(from, amount);
-    }
     
     // =============================================================================
     // VALIDATOR MANAGEMENT
@@ -215,15 +205,6 @@ contract OmniCoin is ERC20, ERC20Burnable, ERC20Pausable, AccessControl, Reentra
         emit ValidatorRemoved(validator);
     }
     
-    /**
-     * @notice Check if an address is a validator
-     * @dev Checks both the validators mapping and VALIDATOR_ROLE
-     * @param account Address to check
-     * @return bool True if the address is a validator
-     */
-    function isValidator(address account) public view returns (bool) {
-        return validators[account] || hasRole(VALIDATOR_ROLE, account);
-    }
     
     // =============================================================================
     // VALIDATOR OPERATIONS
@@ -304,8 +285,57 @@ contract OmniCoin is ERC20, ERC20Burnable, ERC20Pausable, AccessControl, Reentra
         _unpause();
     }
     
+    /**
+     * @notice Update the registry address (admin only)
+     * @dev Emits RegistryUpdateRequested event for tracking
+     * @param newRegistry New registry address
+     */
+    function setRegistry(address newRegistry) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        if (newRegistry == address(0)) revert InvalidRegistry();
+        // Note: registry is immutable in RegistryAware, so this would need refactoring
+        // For now, emit event to track intention
+        emit RegistryUpdateRequested(newRegistry);
+    }
+    
     // =============================================================================
-    // OVERRIDES
+    // PUBLIC FUNCTIONS
+    // =============================================================================
+    
+    /**
+     * @notice Burn tokens from a specific address
+     * @dev Restricted to BRIDGE_ROLE for bridge operations
+     * @param from Address to burn tokens from
+     * @param amount Amount to burn
+     */
+    function burnFrom(address from, uint256 amount) 
+        public 
+        override 
+        onlyRole(BRIDGE_ROLE) 
+    {
+        _burn(from, amount);
+    }
+    
+    /**
+     * @notice Get the number of decimal places for the token
+     * @dev Returns DECIMALS constant for easy configuration
+     * @return decimals Number of decimal places (configurable: 6, 12, or 18)
+     */
+    function decimals() public view virtual override returns (uint8) {
+        return DECIMALS;
+    }
+    
+    /**
+     * @notice Check if an address is a validator
+     * @dev Checks both the validators mapping and VALIDATOR_ROLE
+     * @param account Address to check
+     * @return bool True if the address is a validator
+     */
+    function isValidator(address account) public view returns (bool) {
+        return validators[account] || hasRole(VALIDATOR_ROLE, account);
+    }
+    
+    // =============================================================================
+    // INTERNAL FUNCTIONS
     // =============================================================================
     
     /**
@@ -322,26 +352,4 @@ contract OmniCoin is ERC20, ERC20Burnable, ERC20Pausable, AccessControl, Reentra
     ) internal override(ERC20, ERC20Pausable) {
         super._update(from, to, value);
     }
-    
-    // =============================================================================
-    // REGISTRY UPDATES
-    // =============================================================================
-    
-    /**
-     * @notice Update the registry address (admin only)
-     * @dev Emits RegistryUpdateRequested event for tracking
-     * @param newRegistry New registry address
-     */
-    function setRegistry(address newRegistry) external onlyRole(DEFAULT_ADMIN_ROLE) {
-        if (newRegistry == address(0)) revert InvalidRegistry();
-        // Note: registry is immutable in RegistryAware, so this would need refactoring
-        // For now, emit event to track intention
-        emit RegistryUpdateRequested(newRegistry);
-    }
-    
-    /**
-     * @notice Emitted when registry update is requested
-     * @param newRegistry Address of the requested new registry
-     */
-    event RegistryUpdateRequested(address indexed newRegistry);
 }

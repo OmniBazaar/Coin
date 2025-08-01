@@ -13,6 +13,7 @@ Analysis reveals significant opportunities to reduce on-chain state by 40-60% ac
 ### 1. OmniCoinStaking.sol
 
 **Current State Variables:**
+
 ```solidity
 mapping(address => Stake) public stakes;                    // MUST KEEP
 mapping(address => uint256) public participationScore;      // MOVE TO VALIDATORS
@@ -30,6 +31,7 @@ uint256 public totalStaked;                                 // MUST KEEP
 ### 2. OmniCoinEscrow.sol
 
 **Current State Variables:**
+
 ```solidity
 mapping(uint256 => Escrow) public escrows;        // MUST KEEP (active only)
 mapping(address => uint256[]) userEscrows;        // ELIMINATE (use events)
@@ -45,6 +47,7 @@ mapping(address => uint256) completedEscrows;     // MOVE OFF-CHAIN
 ### 3. OmniCoinReputationCore.sol
 
 **Current State Variables:**
+
 ```solidity
 mapping(address => ReputationData) scores;           // MOVE TO MERKLE TREE
 mapping(address => TransactionHistory) history;      // ELIMINATE (events)
@@ -53,6 +56,7 @@ uint256 public totalUsers;                          // ELIMINATE
 ```
 
 **Recommendation:** Make stateless with merkle proofs
+
 ```solidity
 contract ReputationCoreV2 {
     bytes32 public reputationRoot;  // Only store merkle root
@@ -72,6 +76,7 @@ contract ReputationCoreV2 {
 ### 4. ValidatorRegistry.sol
 
 **Current State Variables:**
+
 ```solidity
 mapping(address => Validator) validators;     // MUST KEEP
 address[] public validatorList;               // ELIMINATE (use events)
@@ -87,6 +92,7 @@ mapping(uint256 => address) validatorByIndex; // ELIMINATE
 ### 5. OmniCoinPayment.sol
 
 **Current State Variables:**
+
 ```solidity
 mapping(uint256 => PaymentStream) streams;        // KEEP (active only)
 mapping(address => uint256[]) userStreams;        // ELIMINATE
@@ -102,6 +108,7 @@ uint256 public streamIdCounter;                   // MUST KEEP
 ### 6. FeeDistribution.sol
 
 **Current State Variables:**
+
 ```solidity
 mapping(address => uint256) public pendingRewards;              // MUST KEEP
 mapping(address => mapping(address => uint256)) contributions;  // AGGREGATE OFF-CHAIN
@@ -111,6 +118,7 @@ mapping(address => uint256) lastClaimBlock;                     // MUST KEEP
 ```
 
 **Recommendation:** Minimal state
+
 ```solidity
 contract FeeDistributionV2 {
     // Only track claimable balances
@@ -136,6 +144,7 @@ contract FeeDistributionV2 {
 ### 8. ListingNFT.sol
 
 **Current State Variables:**
+
 ```solidity
 mapping(uint256 => ListingData) listings;      // MUST KEEP (active)
 mapping(address => uint256[]) userListings;    // ELIMINATE
@@ -146,6 +155,7 @@ uint256 public totalListings;                  // DERIVE FROM EVENTS
 ## State Migration Patterns
 
 ### Pattern 1: Event-Based History
+
 ```solidity
 // Before: Expensive storage
 mapping(address => Transaction[]) public userHistory;
@@ -160,6 +170,7 @@ function getUserHistory(address user) external view returns (Transaction[] memor
 ```
 
 ### Pattern 2: Merkle Tree Aggregation
+
 ```solidity
 // Before: Individual storage per user
 mapping(address => uint256) public scores;
@@ -175,6 +186,7 @@ function updateScoresRoot(bytes32 newRoot, uint256 epoch) external onlyValidator
 ```
 
 ### Pattern 3: Validator Oracle Pattern
+
 ```solidity
 contract ReputationOracle {
     address public trustedValidator;
@@ -225,6 +237,7 @@ contract ReputationOracle {
 - **No complex proxy patterns needed**: For most contracts
 
 ### Example: FeeDistribution Before/After
+
 ```solidity
 // Before: 500KB deployed size, 50k gas per distribution
 // After: 100KB deployed size, 10k gas per distribution

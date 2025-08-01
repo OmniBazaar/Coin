@@ -6,7 +6,6 @@ import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol
 import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
 import {RegistryAware} from "./base/RegistryAware.sol";
 import {IOmniCoin} from "./interfaces/IOmniCoin.sol";
-import {IOmniCoinStaking} from "./interfaces/IOmniCoinStaking.sol";
 
 /**
  * @title OmniBlockRewards
@@ -32,14 +31,14 @@ contract OmniBlockRewards is AccessControl, ReentrancyGuard, Pausable, RegistryA
     /// @notice Basis points denominator
     uint256 public constant BASIS_POINTS = 10000;
     
-    /// @notice Block reward amount per block (configurable)
-    uint256 public blockRewardAmount;
-    
     /// @notice Minimum block interval between rewards
     uint256 public constant MIN_BLOCK_INTERVAL = 1;
     
     /// @notice Approximate blocks per year (assuming 2 second blocks)
-    uint256 public constant BLOCKS_PER_YEAR = 15768000; // 365.25 * 24 * 60 * 60 / 2
+    uint256 public constant BLOCKS_PER_YEAR = 15_768_000; // 365.25 * 24 * 60 * 60 / 2
+    
+    /// @notice Block reward amount per block (configurable)
+    uint256 public blockRewardAmount;
     
     // =============================================================================
     // STATE VARIABLES
@@ -76,33 +75,52 @@ contract OmniBlockRewards is AccessControl, ReentrancyGuard, Pausable, RegistryA
     // EVENTS
     // =============================================================================
     
+    /// @notice Emitted when block rewards are distributed
+    /// @param blockNumber Block number that received rewards
+    /// @param validator Address of the validator who produced the block
+    /// @param validatorReward Amount given to validator
+    /// @param oddaoReward Amount allocated to ODDAO
+    /// @param stakingReward Amount allocated to staking pool
+    /// @param totalReward Total reward distributed
     event BlockRewardDistributed(
         uint256 indexed blockNumber,
         address indexed validator,
-        uint256 validatorReward,
+        uint256 indexed validatorReward,
         uint256 oddaoReward,
         uint256 stakingReward,
         uint256 totalReward
     );
     
+    /// @notice Emitted when validator claims their rewards
+    /// @param validator Address of the validator claiming rewards
+    /// @param amount Amount of rewards claimed
     event ValidatorRewardClaimed(
         address indexed validator,
-        uint256 amount
+        uint256 indexed amount
     );
     
+    /// @notice Emitted when ODDAO rewards are withdrawn
+    /// @param recipient Address receiving the ODDAO rewards
+    /// @param amount Amount of rewards withdrawn
     event ODDAORewardWithdrawn(
         address indexed recipient,
-        uint256 amount
+        uint256 indexed amount
     );
     
+    /// @notice Emitted when staking rewards are withdrawn
+    /// @param recipient Address receiving the staking rewards
+    /// @param amount Amount of rewards withdrawn
     event StakingRewardWithdrawn(
         address indexed recipient,
-        uint256 amount
+        uint256 indexed amount
     );
     
+    /// @notice Emitted when block reward amount is updated
+    /// @param oldAmount Previous block reward amount
+    /// @param newAmount New block reward amount
     event BlockRewardAmountUpdated(
-        uint256 oldAmount,
-        uint256 newAmount
+        uint256 indexed oldAmount,
+        uint256 indexed newAmount
     );
     
     // =============================================================================
@@ -152,7 +170,7 @@ contract OmniBlockRewards is AccessControl, ReentrancyGuard, Pausable, RegistryA
         uint256 currentBlock = block.number;
         
         // Ensure we haven't already rewarded this block
-        if (currentBlock <= lastRewardedBlock) revert AlreadyRewarded();
+        if (currentBlock < lastRewardedBlock + 1) revert AlreadyRewarded();
         
         // Get total block reward
         uint256 totalReward = blockRewardAmount;
@@ -170,7 +188,7 @@ contract OmniBlockRewards is AccessControl, ReentrancyGuard, Pausable, RegistryA
         uint256 validatorReward = remainingAfterStaking - oddaoReward;
         
         // Get OmniCoin contract
-        address omniCoin = REGISTRY.getContract(keccak256("OMNICOIN"));
+        address omniCoin = registry.getContract(keccak256("OMNICOIN"));
         
         // Mint rewards
         IOmniCoin(omniCoin).mint(address(this), totalReward);
@@ -212,7 +230,7 @@ contract OmniBlockRewards is AccessControl, ReentrancyGuard, Pausable, RegistryA
         validatorRewards[msg.sender] = 0;
         validatorRewardsClaimed[msg.sender] += rewards;
         
-        address omniCoin = REGISTRY.getContract(keccak256("OMNICOIN"));
+        address omniCoin = registry.getContract(keccak256("OMNICOIN"));
         if (!IOmniCoin(omniCoin).transfer(msg.sender, rewards)) {
             revert TransferFailed();
         }
@@ -236,7 +254,7 @@ contract OmniBlockRewards is AccessControl, ReentrancyGuard, Pausable, RegistryA
         
         pendingODDAORewards = 0;
         
-        address omniCoin = REGISTRY.getContract(keccak256("OMNICOIN"));
+        address omniCoin = registry.getContract(keccak256("OMNICOIN"));
         if (!IOmniCoin(omniCoin).transfer(recipient, rewards)) {
             revert TransferFailed();
         }
@@ -260,7 +278,7 @@ contract OmniBlockRewards is AccessControl, ReentrancyGuard, Pausable, RegistryA
         
         pendingStakingRewards = 0;
         
-        address omniCoin = REGISTRY.getContract(keccak256("OMNICOIN"));
+        address omniCoin = registry.getContract(keccak256("OMNICOIN"));
         if (!IOmniCoin(omniCoin).transfer(recipient, rewards)) {
             revert TransferFailed();
         }

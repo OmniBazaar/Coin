@@ -21,18 +21,19 @@ contract OmniCoinGovernor is RegistryAware, Ownable, ReentrancyGuard {
     }
     
     struct Proposal {
-        uint256 id;
-        address proposer;
-        uint256 startTime;
-        uint256 endTime;
-        uint256 forVotes;
-        uint256 againstVotes;
-        uint256 abstainVotes;
-        bool executed;
-        bool canceled;
-        string description;
-        mapping(address => bool) hasVoted;
-        mapping(address => uint256) votes;
+        uint256 id;                             // 32 bytes
+        uint256 startTime;                      // 32 bytes
+        uint256 endTime;                        // 32 bytes
+        uint256 forVotes;                       // 32 bytes
+        uint256 againstVotes;                   // 32 bytes
+        uint256 abstainVotes;                   // 32 bytes
+        address proposer;                       // 20 bytes
+        bool executed;                          // 1 byte (packed with address)
+        bool canceled;                          // 1 byte (packed with address)
+        string description;                     // 32 bytes (dynamic)
+        mapping(address => bool) hasVoted;      // separate slot
+        mapping(address => uint256) votes;      // separate slot
+        // Total: ~8 storage slots (optimized packing)
     }
     
     struct ProposalAction {
@@ -41,18 +42,9 @@ contract OmniCoinGovernor is RegistryAware, Ownable, ReentrancyGuard {
         bytes data;
     }
     
-    // Custom errors
-    error InsufficientBalance();
-    error ProposalNotFound();
-    error ProposalNotActive();
-    error ProposalNotPending();
-    error AlreadyVoted();
-    error InvalidVoteType();
-    error ProposalNotPassed();
-    error ProposalAlreadyExecuted();
-    error InvalidVotingPeriod();
-    error InvalidProposalThreshold();
-    error InvalidQuorum();
+    // =============================================================================
+    // STATE VARIABLES
+    // =============================================================================
 
     /// @notice OmniCoin token contract (deprecated, use registry)
     IERC20 public token;
@@ -71,6 +63,22 @@ contract OmniCoinGovernor is RegistryAware, Ownable, ReentrancyGuard {
     mapping(uint256 => Proposal) public proposals;
     /// @notice Mapping from proposal ID to proposal actions
     mapping(uint256 => ProposalAction[]) public proposalActions;
+    
+    // =============================================================================
+    // CUSTOM ERRORS
+    // =============================================================================
+
+    error InsufficientBalance();
+    error ProposalNotFound();
+    error ProposalNotActive();
+    error ProposalNotPending();
+    error AlreadyVoted();
+    error InvalidVoteType();
+    error ProposalNotPassed();
+    error ProposalAlreadyExecuted();
+    error InvalidVotingPeriod();
+    error InvalidProposalThreshold();
+    error InvalidQuorum();
 
     /**
      * @notice Emitted when a proposal is created

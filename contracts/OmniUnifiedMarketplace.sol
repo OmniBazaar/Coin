@@ -56,18 +56,27 @@ contract OmniUnifiedMarketplace is
     uint256 public constant LISTING_FEE_BPS = 25;
     
     // Transaction fee splits (70/20/10)
+    /// @notice ODDAO share of transaction fees (70%)
     uint256 public constant TRANSACTION_ODDAO_SHARE = 7000;
+    /// @notice Validator share of transaction fees (20%)
     uint256 public constant TRANSACTION_VALIDATOR_SHARE = 2000;
+    /// @notice Staking pool share of transaction fees (10%)
     uint256 public constant TRANSACTION_STAKING_SHARE = 1000;
     
     // Referral fee splits (70/20/10)
+    /// @notice Referrer share of referral fees (70%)
     uint256 public constant REFERRAL_REFERRER_SHARE = 7000;
+    /// @notice Parent referrer share of referral fees (20%)
     uint256 public constant REFERRAL_PARENT_SHARE = 2000;
+    /// @notice ODDAO share of referral fees (10%)
     uint256 public constant REFERRAL_ODDAO_SHARE = 1000;
     
     // Listing fee splits (70/20/10)
+    /// @notice Listing node share of listing fees (70%)
     uint256 public constant LISTING_NODE_SHARE = 7000;
+    /// @notice Selling node share of listing fees (20%)
     uint256 public constant LISTING_SELLING_NODE_SHARE = 2000;
+    /// @notice ODDAO share of listing fees (10%)
     uint256 public constant LISTING_ODDAO_SHARE = 1000;
     
     // =============================================================================
@@ -126,18 +135,29 @@ contract OmniUnifiedMarketplace is
     // EVENTS (Additional to interface)
     // =============================================================================
     
+    /// @notice Emitted when marketplace fees are collected
+    /// @param listingId The listing ID that generated fees
+    /// @param paymentToken The token used for payment
+    /// @param feeAmount The total fee amount collected
     event FeeCollected(
         uint256 indexed listingId,
         address indexed paymentToken,
         uint256 indexed feeAmount
     );
     
+    /// @notice Emitted when NFTs are deposited into escrow
+    /// @param tokenContract The NFT contract address
+    /// @param tokenId The token ID deposited
+    /// @param amount The amount deposited (1 for ERC721)
     event EscrowDeposited(
         address indexed tokenContract,
         uint256 indexed tokenId,
         uint256 indexed amount
     );
     
+    /// @notice Emitted when contract allowlist is updated
+    /// @param tokenContract The contract address updated
+    /// @param allowed Whether the contract is now allowed
     event ContractAllowlistUpdated(
         address indexed tokenContract,
         bool indexed allowed
@@ -173,6 +193,10 @@ contract OmniUnifiedMarketplace is
     // CONSTRUCTOR
     // =============================================================================
     
+    /**
+     * @notice Initialize the unified marketplace
+     * @param _registry Address of the OmniCoin registry contract
+     */
     constructor(address _registry) RegistryAware(_registry) {
         _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
         _grantRole(OPERATOR_ROLE, msg.sender);
@@ -231,7 +255,7 @@ contract OmniUnifiedMarketplace is
         }
         
         // Create listing
-        listingId = _listingIdCounter++;
+        listingId = ++_listingIdCounter;
         
         address paymentToken = usePrivacy ?
             _getContract(REGISTRY.PRIVATE_OMNICOIN()) :
@@ -250,8 +274,8 @@ contract OmniUnifiedMarketplace is
             usePrivacy: usePrivacy,
             listingType: listingType,
             status: ListingStatus.ACTIVE,
-            startTime: block.timestamp,
-            endTime: block.timestamp + duration,
+            startTime: block.timestamp, // solhint-disable-line not-rely-on-time
+            endTime: block.timestamp + duration, // solhint-disable-line not-rely-on-time
             escrowEnabled: true,
             metadataURI: ""
         });
@@ -283,7 +307,7 @@ contract OmniUnifiedMarketplace is
         
         // Validate listing
         if (listing.status != ListingStatus.ACTIVE) revert ListingNotActive();
-        if (block.timestamp > listing.endTime) {
+        if (block.timestamp > listing.endTime) { // solhint-disable-line not-rely-on-time
             listing.status = ListingStatus.EXPIRED;
             revert ListingNotActive();
         }
@@ -432,39 +456,6 @@ contract OmniUnifiedMarketplace is
     }
     
     // =============================================================================
-    // VIEW FUNCTIONS
-    // =============================================================================
-    
-    /**
-     * @notice Get listing details
-     * @inheritdoc IUnifiedNFTMarketplace
-     */
-    function getListing(uint256 listingId) 
-        external 
-        view 
-        override 
-        returns (UnifiedListing memory) 
-    {
-        return listings[listingId];
-    }
-    
-    /**
-     * @notice Check if a listing is still available
-     * @inheritdoc IUnifiedNFTMarketplace
-     */
-    function isAvailable(uint256 listingId, uint256 amount) 
-        external 
-        view 
-        override 
-        returns (bool) 
-    {
-        UnifiedListing storage listing = listings[listingId];
-        return listing.status == ListingStatus.ACTIVE && 
-               listing.amount >= amount &&
-               block.timestamp <= listing.endTime;
-    }
-    
-    // =============================================================================
     // ADMIN FUNCTIONS
     // =============================================================================
     
@@ -556,39 +547,164 @@ contract OmniUnifiedMarketplace is
         sellingNodes[listingId] = sellingNode;
     }
     
+    /**
+     * @notice Withdraw specific fee type
+     * @param paymentToken Token to withdraw
+     * @param feeType Fee type (0=ODDAO, 1=Validator, 2=Staking, 3=Referrer, 4=ListingNode, 5=SellingNode)
+     * @param recipient Recipient address (for referrer/node fees)
+     */
+    function withdrawSpecificFees(
+        address paymentToken,
+        uint8 feeType,
+        address recipient
+    ) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        uint256 amount;
+        
+        if (feeType == 0) {
+            // ODDAO fees
+            amount = oddaoFees[paymentToken];
+            if (amount > 0) {
+                oddaoFees[paymentToken] = 0;
+                address oddaoTreasury = _getContract(REGISTRY.ODDAO_TREASURY());
+                IERC20(paymentToken).transfer(oddaoTreasury, amount);
+            }
+        } else if (feeType == 1) {
+            // Validator fees
+            amount = validatorFees[paymentToken];
+            if (amount > 0) {
+                validatorFees[paymentToken] = 0;
+                address validatorPool = _getContract(REGISTRY.VALIDATOR_POOL());
+                IERC20(paymentToken).transfer(validatorPool, amount);
+            }
+        } else if (feeType == 2) {
+            // Staking pool fees
+            amount = stakingPoolFees[paymentToken];
+            if (amount > 0) {
+                stakingPoolFees[paymentToken] = 0;
+                address stakingPool = _getContract(REGISTRY.STAKING_POOL());
+                IERC20(paymentToken).transfer(stakingPool, amount);
+            }
+        } else if (feeType == 3 && recipient != address(0)) {
+            // Referrer fees
+            amount = referrerFees[recipient][paymentToken];
+            if (amount > 0) {
+                referrerFees[recipient][paymentToken] = 0;
+                IERC20(paymentToken).transfer(recipient, amount);
+            }
+        } else if (feeType == 4 && recipient != address(0)) {
+            // Listing node fees
+            amount = listingNodeFees[recipient][paymentToken];
+            if (amount > 0) {
+                listingNodeFees[recipient][paymentToken] = 0;
+                IERC20(paymentToken).transfer(recipient, amount);
+            }
+        } else if (feeType == 5 && recipient != address(0)) {
+            // Selling node fees
+            amount = sellingNodeFees[recipient][paymentToken];
+            if (amount > 0) {
+                sellingNodeFees[recipient][paymentToken] = 0;
+                IERC20(paymentToken).transfer(recipient, amount);
+            }
+        }
+    }
+    
+    // =============================================================================
+    // VIEW FUNCTIONS
+    // =============================================================================
+    
+    /**
+     * @notice Get listing details
+     * @inheritdoc IUnifiedNFTMarketplace
+     */
+    function getListing(uint256 listingId) 
+        external 
+        view 
+        override 
+        returns (UnifiedListing memory) 
+    {
+        return listings[listingId];
+    }
+    
+    /**
+     * @notice Check if a listing is still available
+     * @inheritdoc IUnifiedNFTMarketplace
+     */
+    function isAvailable(uint256 listingId, uint256 amount) 
+        external 
+        view 
+        override 
+        returns (bool) 
+    {
+        UnifiedListing storage listing = listings[listingId];
+        return listing.status == ListingStatus.ACTIVE && 
+               listing.amount > amount &&
+               block.timestamp < listing.endTime; // solhint-disable-line not-rely-on-time
+    }
+    
     // =============================================================================
     // RECEIVER FUNCTIONS
     // =============================================================================
     
+    /**
+     * @notice Handle ERC721 token reception
+     * @param operator The address which called `safeTransferFrom`
+     * @param from The address which previously owned the token
+     * @param tokenId The NFT identifier which is being transferred
+     * @param data Additional data with no specified format
+     * @return bytes4 The selector to confirm token transfer
+     */
     function onERC721Received(
-        address,
-        address,
-        uint256,
-        bytes calldata
+        address /* operator */,
+        address /* from */,
+        uint256 /* tokenId */,
+        bytes calldata /* data */
     ) external pure override returns (bytes4) {
         return IERC721Receiver.onERC721Received.selector;
     }
     
+    /**
+     * @notice Handle ERC1155 token reception
+     * @param operator The address which called `safeTransferFrom`
+     * @param from The address which previously owned the token
+     * @param id The token type being transferred
+     * @param value The amount of tokens being transferred
+     * @param data Additional data with no specified format
+     * @return bytes4 The selector to confirm token transfer
+     */
     function onERC1155Received(
-        address,
-        address,
-        uint256,
-        uint256,
-        bytes calldata
+        address /* operator */,
+        address /* from */,
+        uint256 /* id */,
+        uint256 /* value */,
+        bytes calldata /* data */
     ) external pure override returns (bytes4) {
         return IERC1155Receiver.onERC1155Received.selector;
     }
     
+    /**
+     * @notice Handle ERC1155 batch token reception
+     * @param operator The address which called `safeBatchTransferFrom`
+     * @param from The address which previously owned the tokens
+     * @param ids An array containing ids of each token being transferred
+     * @param values An array containing amounts of each token being transferred
+     * @param data Additional data with no specified format
+     * @return bytes4 The selector to confirm batch token transfer
+     */
     function onERC1155BatchReceived(
-        address,
-        address,
-        uint256[] calldata,
-        uint256[] calldata,
-        bytes calldata
+        address /* operator */,
+        address /* from */,
+        uint256[] calldata /* ids */,
+        uint256[] calldata /* values */,
+        bytes calldata /* data */
     ) external pure override returns (bytes4) {
         return IERC1155Receiver.onERC1155BatchReceived.selector;
     }
     
+    /**
+     * @notice Check if contract supports a given interface
+     * @param interfaceId The interface identifier to check
+     * @return bool True if the interface is supported
+     */
     function supportsInterface(bytes4 interfaceId) 
         public 
         view 
@@ -682,66 +798,5 @@ contract OmniUnifiedMarketplace is
         }
         
         emit FeeCollected(listingId, paymentToken, totalFee);
-    }
-    
-    /**
-     * @notice Withdraw specific fee type
-     * @param paymentToken Token to withdraw
-     * @param feeType Type of fee to withdraw (0=ODDAO, 1=Validator, 2=Staking, 3=Referrer, 4=ListingNode, 5=SellingNode)
-     * @param recipient Recipient address (for referrer/node fees)
-     */
-    function withdrawSpecificFees(
-        address paymentToken,
-        uint8 feeType,
-        address recipient
-    ) external onlyRole(DEFAULT_ADMIN_ROLE) {
-        uint256 amount;
-        
-        if (feeType == 0) {
-            // ODDAO fees
-            amount = oddaoFees[paymentToken];
-            if (amount > 0) {
-                oddaoFees[paymentToken] = 0;
-                address oddaoTreasury = _getContract(REGISTRY.ODDAO_TREASURY());
-                IERC20(paymentToken).transfer(oddaoTreasury, amount);
-            }
-        } else if (feeType == 1) {
-            // Validator fees
-            amount = validatorFees[paymentToken];
-            if (amount > 0) {
-                validatorFees[paymentToken] = 0;
-                address validatorPool = _getContract(REGISTRY.VALIDATOR_POOL());
-                IERC20(paymentToken).transfer(validatorPool, amount);
-            }
-        } else if (feeType == 2) {
-            // Staking pool fees
-            amount = stakingPoolFees[paymentToken];
-            if (amount > 0) {
-                stakingPoolFees[paymentToken] = 0;
-                address stakingPool = _getContract(REGISTRY.STAKING_POOL());
-                IERC20(paymentToken).transfer(stakingPool, amount);
-            }
-        } else if (feeType == 3 && recipient != address(0)) {
-            // Referrer fees
-            amount = referrerFees[recipient][paymentToken];
-            if (amount > 0) {
-                referrerFees[recipient][paymentToken] = 0;
-                IERC20(paymentToken).transfer(recipient, amount);
-            }
-        } else if (feeType == 4 && recipient != address(0)) {
-            // Listing node fees
-            amount = listingNodeFees[recipient][paymentToken];
-            if (amount > 0) {
-                listingNodeFees[recipient][paymentToken] = 0;
-                IERC20(paymentToken).transfer(recipient, amount);
-            }
-        } else if (feeType == 5 && recipient != address(0)) {
-            // Selling node fees
-            amount = sellingNodeFees[recipient][paymentToken];
-            if (amount > 0) {
-                sellingNodeFees[recipient][paymentToken] = 0;
-                IERC20(paymentToken).transfer(recipient, amount);
-            }
-        }
     }
 }

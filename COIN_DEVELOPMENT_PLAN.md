@@ -37,6 +37,7 @@
 ## 🏗️ Final Architecture
 
 ### Public Chain (Avalanche Subnet)
+
 ```text
 ┌─────────────────────────────────────────────────────────┐
 │           12 Core Contracts on Avalanche                │
@@ -61,6 +62,7 @@
 ```
 
 ### Validator Network (Avalanche-Native)
+
 ```text
 ┌─────────────────────────────────────────────────────────┐
 │      Avalanche-Native Validator Infrastructure         │
@@ -158,6 +160,7 @@
 ## 🛠️ Development Environment
 
 ### Installed Dependencies
+
 ```json
 {
   "devDependencies": {

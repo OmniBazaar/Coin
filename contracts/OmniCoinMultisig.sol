@@ -13,25 +13,6 @@ import {RegistryAware} from "./base/RegistryAware.sol";
  */
 contract OmniCoinMultisig is RegistryAware, Ownable, ReentrancyGuard {
     // =============================================================================
-    // CUSTOM ERRORS
-    // =============================================================================
-    
-    error ZeroTarget();
-    error InsufficientSignatures();
-    error TooManySignatures();
-    error TransactionNotFound();
-    error TransactionAlreadyExecuted();
-    error TransactionCanceled();
-    error AlreadySigned();
-    error NotSigner();
-    error AlreadyActiveSigner();
-    error InactiveSigners();
-    error TransactionExecutionFailed();
-    error NotOwnerOrSigner();
-    error InvalidMinSignatures();
-    error InvalidTimeout();
-    
-    // =============================================================================
     // STRUCTS
     // =============================================================================
     
@@ -135,6 +116,25 @@ contract OmniCoinMultisig is RegistryAware, Ownable, ReentrancyGuard {
      * @param newTimeout New timeout
      */
     event SignerTimeoutUpdated(uint256 indexed oldTimeout, uint256 indexed newTimeout);
+    
+    // =============================================================================
+    // CUSTOM ERRORS
+    // =============================================================================
+    
+    error ZeroTarget();
+    error InsufficientSignatures();
+    error TooManySignatures();
+    error TransactionNotFound();
+    error TransactionAlreadyExecuted();
+    error TransactionCanceled();
+    error AlreadySigned();
+    error NotSigner();
+    error AlreadyActiveSigner();
+    error InactiveSigners();
+    error TransactionExecutionFailed();
+    error NotOwnerOrSigner();
+    error InvalidMinSignatures();
+    error InvalidTimeout();
 
     /**
      * @notice Initialize the multisig contract
@@ -261,26 +261,6 @@ contract OmniCoinMultisig is RegistryAware, Ownable, ReentrancyGuard {
     }
 
     /**
-     * @notice Remove a signer from the multisig
-     * @param signer The signer address to remove
-     */
-    function removeSigner(address signer) public onlyOwner nonReentrant {
-        if (!signers[signer].isActive) revert NotSigner();
-
-        signers[signer].isActive = false;
-
-        for (uint256 i = 0; i < activeSigners.length; ++i) {
-            if (activeSigners[i] == signer) {
-                activeSigners[i] = activeSigners[activeSigners.length - 1];
-                activeSigners.pop();
-                break;
-            }
-        }
-
-        emit SignerRemoved(signer);
-    }
-
-    /**
      * @notice Update signer activity timestamp
      * @param signer The signer address to update
      */
@@ -315,6 +295,26 @@ contract OmniCoinMultisig is RegistryAware, Ownable, ReentrancyGuard {
     function setSignerTimeout(uint256 _timeout) external onlyOwner {
         emit SignerTimeoutUpdated(signerTimeout, _timeout);
         signerTimeout = _timeout;
+    }
+
+    /**
+     * @notice Remove a signer from the multisig
+     * @param signer The signer address to remove
+     */
+    function removeSigner(address signer) public onlyOwner nonReentrant {
+        if (!signers[signer].isActive) revert NotSigner();
+
+        signers[signer].isActive = false;
+
+        for (uint256 i = 0; i < activeSigners.length; ++i) {
+            if (activeSigners[i] == signer) {
+                activeSigners[i] = activeSigners[activeSigners.length - 1];
+                activeSigners.pop();
+                break;
+            }
+        }
+
+        emit SignerRemoved(signer);
     }
 
     /**
@@ -409,6 +409,8 @@ contract OmniCoinMultisig is RegistryAware, Ownable, ReentrancyGuard {
     /**
      * @notice Check if a transfer is approved
      * @dev Simplified implementation - small amounts auto-approved, large amounts need explicit multisig
+     * @param from Address sending the transfer (unused in current implementation)
+     * @param to Address receiving the transfer (unused in current implementation)
      * @param amount Transfer amount
      * @return Whether the transfer is approved
      */

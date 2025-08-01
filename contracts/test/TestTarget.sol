@@ -1,18 +1,27 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.0;
+pragma solidity ^0.8.19;
 
 /**
  * @title TestTarget
- * @dev Simple test contract for governance proposal execution testing
+ * @author OmniCoin Development Team
+ * @notice Simple test contract for governance proposal execution testing
+ * @dev Used for testing governance proposal execution
  */
 contract TestTarget {
+    /// @notice Current stored value
     uint256 public value;
     
-    event ValueSet(uint256 newValue);
-    event EtherReceived(address sender, uint256 amount);
+    /// @notice Emitted when value is updated
+    /// @param newValue The new value that was set
+    event ValueSet(uint256 indexed newValue);
+    
+    /// @notice Emitted when ether is received
+    /// @param sender Address that sent the ether
+    /// @param amount Amount of ether received
+    event EtherReceived(address indexed sender, uint256 indexed amount);
     
     /**
-     * @dev Sets a new value
+     * @notice Sets a new value
      * @param _value The new value to set
      */
     function setValue(uint256 _value) external {
@@ -21,15 +30,15 @@ contract TestTarget {
     }
     
     /**
-     * @dev Receives ether
+     * @notice Receives ether with validation
      */
     function receiveEther() external payable {
-        require(msg.value > 0, "Must send ether");
+        if (msg.value == 0) revert("Must send ether");
         emit EtherReceived(msg.sender, msg.value);
     }
     
     /**
-     * @dev Fallback function to receive ether
+     * @notice Fallback function to receive ether
      */
     receive() external payable {
         emit EtherReceived(msg.sender, msg.value);

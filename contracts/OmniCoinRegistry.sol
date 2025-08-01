@@ -33,21 +33,6 @@ contract OmniCoinRegistry is AccessControl, Pausable {
     }
     
     // =============================================================================
-    // CUSTOM ERRORS
-    // =============================================================================
-    
-    error InvalidAddress();
-    error ContractAlreadyRegistered();
-    error ContractNotRegistered();
-    error ContractNotActive();
-    error InvalidIdentifier();
-    error UnauthorizedUpgrade();
-    error VersionMismatch();
-    error BatchSizeMismatch();
-    error InvalidVersion();
-    error NoTargetContract();
-    
-    // =============================================================================
     // ROLES
     // =============================================================================
     
@@ -227,6 +212,21 @@ contract OmniCoinRegistry is AccessControl, Pausable {
     );
     
     // =============================================================================
+    // CUSTOM ERRORS
+    // =============================================================================
+    
+    error InvalidAddress();
+    error ContractAlreadyRegistered();
+    error ContractNotRegistered();
+    error ContractNotActive();
+    error InvalidIdentifier();
+    error UnauthorizedUpgrade();
+    error VersionMismatch();
+    error BatchSizeMismatch();
+    error InvalidVersion();
+    error NoTargetContract();
+    
+    // =============================================================================
     // CONSTRUCTOR
     // =============================================================================
     
@@ -374,6 +374,54 @@ contract OmniCoinRegistry is AccessControl, Pausable {
     }
     
     // =============================================================================
+    // EMERGENCY FUNCTIONS
+    // =============================================================================
+    
+    /**
+     * @notice Update emergency admin
+     * @param newAdmin New emergency admin address
+     */
+    function updateEmergencyAdmin(address newAdmin) external {
+        if (msg.sender != emergencyAdmin) revert UnauthorizedUpgrade();
+        if (newAdmin == address(0)) revert InvalidAddress();
+        
+        address oldAdmin = emergencyAdmin;
+        emergencyAdmin = newAdmin;
+        
+        emit EmergencyAdminUpdated(oldAdmin, newAdmin);
+    }
+    
+    /**
+     * @notice Update emergency fallback address
+     * @param identifier Contract identifier
+     * @param newFallback New emergency fallback address
+     */
+    function updateEmergencyFallback(bytes32 identifier, address newFallback) external onlyRole(ADMIN_ROLE) {
+        if (newFallback == address(0)) revert InvalidAddress();
+        
+        address oldFallback = emergencyFallback[identifier];
+        emergencyFallback[identifier] = newFallback;
+        
+        emit EmergencyFallbackUpdated(identifier, oldFallback, newFallback);
+    }
+    
+    /**
+     * @notice Emergency pause the registry
+     */
+    function emergencyPause() external {
+        if (msg.sender != emergencyAdmin) 
+            revert UnauthorizedUpgrade();
+        _pause();
+    }
+    
+    /**
+     * @notice Unpause the registry
+     */
+    function unpause() external onlyRole(ADMIN_ROLE) {
+        _unpause();
+    }
+    
+    // =============================================================================
     // GETTER FUNCTIONS
     // =============================================================================
     
@@ -457,54 +505,6 @@ contract OmniCoinRegistry is AccessControl, Pausable {
             }
         }
         return false;
-    }
-    
-    // =============================================================================
-    // EMERGENCY FUNCTIONS
-    // =============================================================================
-    
-    /**
-     * @notice Update emergency admin
-     * @param newAdmin New emergency admin address
-     */
-    function updateEmergencyAdmin(address newAdmin) external {
-        if (msg.sender != emergencyAdmin) revert UnauthorizedUpgrade();
-        if (newAdmin == address(0)) revert InvalidAddress();
-        
-        address oldAdmin = emergencyAdmin;
-        emergencyAdmin = newAdmin;
-        
-        emit EmergencyAdminUpdated(oldAdmin, newAdmin);
-    }
-    
-    /**
-     * @notice Update emergency fallback address
-     * @param identifier Contract identifier
-     * @param newFallback New emergency fallback address
-     */
-    function updateEmergencyFallback(bytes32 identifier, address newFallback) external onlyRole(ADMIN_ROLE) {
-        if (newFallback == address(0)) revert InvalidAddress();
-        
-        address oldFallback = emergencyFallback[identifier];
-        emergencyFallback[identifier] = newFallback;
-        
-        emit EmergencyFallbackUpdated(identifier, oldFallback, newFallback);
-    }
-    
-    /**
-     * @notice Emergency pause the registry
-     */
-    function emergencyPause() external {
-        if (msg.sender != emergencyAdmin) 
-            revert UnauthorizedUpgrade();
-        _pause();
-    }
-    
-    /**
-     * @notice Unpause the registry
-     */
-    function unpause() external onlyRole(ADMIN_ROLE) {
-        _unpause();
     }
     
     // =============================================================================

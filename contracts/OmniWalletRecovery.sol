@@ -38,14 +38,15 @@ contract OmniWalletRecovery is
 
     // Core structures
     struct WalletRecoveryConfig {
-        address walletAddress;
-        address[] guardians;
-        address backupAddress;
-        uint256 threshold;
-        uint256 recoveryDelay;
-        uint256 lastUpdate;
-        RecoveryMethod preferredMethod;
-        bool isActive;
+        address walletAddress;          // 20 bytes
+        address backupAddress;          // 20 bytes  
+        uint256 threshold;              // 32 bytes
+        uint256 recoveryDelay;          // 32 bytes
+        uint256 lastUpdate;             // 32 bytes
+        address[] guardians;            // 32 bytes (dynamic array, separate slot)
+        RecoveryMethod preferredMethod; // 1 byte
+        bool isActive;                  // 1 byte
+        // Total: ~6 storage slots (addresses + fixed-size + packed small types)
     }
 
     struct RecoveryRequest {
@@ -64,12 +65,13 @@ contract OmniWalletRecovery is
     }
 
     struct GuardianInfo {
-        address guardian;
-        string name;
-        string contact;
-        uint256 reputation;
-        uint256 joinedAt;
-        bool isActive;
+        address guardian;               // 20 bytes
+        uint256 reputation;             // 32 bytes
+        uint256 joinedAt;               // 32 bytes  
+        string name;                    // 32 bytes (dynamic)
+        string contact;                 // 32 bytes (dynamic)
+        bool isActive;                  // 1 byte (packed with address)
+        // Total: ~5 storage slots (optimized packing)
     }
 
     struct BackupData {
@@ -81,6 +83,9 @@ contract OmniWalletRecovery is
     }
 
     // State variables
+
+    /// @notice Registry contract for accessing other OmniCoin contracts
+    OmniCoinRegistry public registry;
 
     /// @notice Recovery configuration for each wallet address
     mapping(address => WalletRecoveryConfig) public walletConfigs;
@@ -196,11 +201,6 @@ contract OmniWalletRecovery is
     error TooFewGuardians();
     error GuardianNotFound();
 
-    /// @custom:oz-upgrades-unsafe-allow constructor
-    /// @notice Disables initializers to ensure the contract can only be initialized through a proxy
-    // State variables
-    OmniCoinRegistry public registry;
-    
     /// @custom:oz-upgrades-unsafe-allow constructor
     /// @notice Disables initializers to ensure the contract can only be initialized through a proxy
     constructor() {

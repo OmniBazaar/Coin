@@ -248,25 +248,25 @@ This report analyzes OmniCoin contracts to identify opportunities for state redu
 
 ### Medium Priority Changes
 
-4. **ValidatorRegistry.sol**: Remove redundant tracking
+1. **ValidatorRegistry.sol**: Remove redundant tracking
    - Eliminate arrays and counters
    - Use events for indexing
    - Save ~40% storage costs
    - Impact: MEDIUM
 
-5. **OmniCoinStaking.sol**: Move participation scores off-chain
+2. **OmniCoinStaking.sol**: Move participation scores off-chain
    - Keep only stake amounts
    - Save ~30% storage costs
    - Impact: MEDIUM
 
 ### Low Priority Changes
 
-6. **OmniCoinEscrow.sol**: Separate dispute handling
+1. **OmniCoinEscrow.sol**: Separate dispute handling
    - Move disputes to arbitration contract
    - Save ~20% storage costs
    - Impact: LOW
 
-7. **ListingNFT.sol**: Remove transaction tracking
+2. **ListingNFT.sol**: Remove transaction tracking
    - Use events for history
    - Save ~25% storage costs
    - Impact: LOW

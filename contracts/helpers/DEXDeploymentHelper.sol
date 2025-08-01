@@ -6,23 +6,47 @@ import "../DEXSettlement.sol";
 
 /**
  * @title DEXDeploymentHelper
- * @dev Specialized deployment helper for DEX-related contracts
- * 
- * This helper focuses on deploying the DEX settlement layer that works
+ * @author OmniCoin Development Team
+ * @notice Specialized deployment helper for DEX-related contracts
+ * @dev This helper focuses on deploying the DEX settlement layer that works
  * with the OmniBazaar validator network. The validator network handles
  * order matching and routing off-chain, while settlements happen on COTI V2.
  */
 contract DEXDeploymentHelper {
     
-    OmniCoinRegistry public immutable registry;
+    /// @notice Registry contract for accessing other system contracts
+    OmniCoinRegistry public immutable REGISTRY;
     
-    event ContractDeployed(string contractName, address contractAddress);
-    event DEXConfigured(address dexSettlement, address dexRouter, uint256 timestamp);
-    event ValidatorRegistered(address validator, uint256 participationScore);
+    /// @notice Emitted when a contract is deployed
+    /// @param contractName Name of the deployed contract
+    /// @param contractAddress Address of the deployed contract
+    event ContractDeployed(string contractName, address indexed contractAddress);
     
+    /// @notice Emitted when DEX is configured
+    /// @param dexSettlement Address of the DEX settlement contract
+    /// @param dexRouter Address of the DEX router contract
+    /// @param timestamp When the configuration occurred
+    event DEXConfigured(
+        address indexed dexSettlement, 
+        address indexed dexRouter, 
+        uint256 indexed timestamp
+    );
+    
+    /// @notice Emitted when a validator is registered
+    /// @param validator Address of the registered validator
+    /// @param participationScore Initial participation score
+    event ValidatorRegistered(
+        address indexed validator, 
+        uint256 indexed participationScore
+    );
+    
+    /**
+     * @notice Initialize the DEX deployment helper
+     * @param _registry Address of the OmniCoin registry contract
+     */
     constructor(address _registry) {
         require(_registry != address(0), "Invalid registry");
-        registry = OmniCoinRegistry(_registry);
+        REGISTRY = OmniCoinRegistry(_registry);
     }
     
     /**

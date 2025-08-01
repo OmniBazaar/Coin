@@ -5,7 +5,7 @@ import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
 import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {PrivateERC20} from "../coti-contracts/contracts/token/PrivateERC20/PrivateERC20.sol";
-import {MpcCore, gtUint64, ctUint64, gtBool} from "../coti-contracts/contracts/utils/mpc/MpcCore.sol";
+import {MpcCore, gtUint64, ctUint64} from "../coti-contracts/contracts/utils/mpc/MpcCore.sol";
 import {RegistryAware} from "./base/RegistryAware.sol";
 
 /**
@@ -357,6 +357,7 @@ contract PrivateOmniCoin is PrivateERC20, AccessControl, Pausable, ReentrancyGua
     /**
      * @notice Get balance as public value (decrypts in test mode)
      * @dev Get balance as public value (decrypts in test mode)
+     * @param account Address to get balance for
      * @return balance Public balance value
      */
     function balanceOfPublic(address /* account */) external view returns (uint256) {
