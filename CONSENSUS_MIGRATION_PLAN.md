@@ -51,7 +51,7 @@ Validator Module (Already Built)
 
 ### Key Decisions Already Made
 - **Subnet Parameters**: 1-2 second blocks, unlimited validators
-- **Gas Token**: XOM with 6 decimals (per OmniBazaar Design Checkpoint)
+- **Gas Token**: XOM with 18 decimals (updated for standard EVM compatibility)
 - **Validator Requirements**: 1M XOM stake, participation score 50+
 - **API Format**: GraphQL with specific schema already defined
 - **Fee Structure**: 70/20/10 split implemented in validator

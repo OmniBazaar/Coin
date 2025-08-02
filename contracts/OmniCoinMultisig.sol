@@ -421,6 +421,6 @@ contract OmniCoinMultisig is RegistryAware, Ownable, ReentrancyGuard {
     ) external view returns (bool) {
         // For now, return true for small amounts, false for large amounts requiring multisig
         // In a real implementation, this would check if a specific transaction has been approved
-        return amount < 1000 * 10 ** 6; // Amounts under 1000 tokens (6 decimals) don't need multisig approval
+        return amount < 1000 * 10 ** 18; // Amounts under 1000 tokens (18 decimals) don't need multisig approval
     }
 }

@@ -72,7 +72,7 @@ contract UnifiedArbitrationSystem is AccessControl, ReentrancyGuard, Pausable, R
     /// @notice Multiplier for privacy-enabled dispute fees
     uint256 public constant PRIVACY_MULTIPLIER = 10;
     /// @notice Minimum stake required to become an arbitrator (100k XOM)
-    uint256 public constant MIN_ARBITRATOR_STAKE = 100000 * 1e6; // 100k XOM
+    uint256 public constant MIN_ARBITRATOR_STAKE = 100000 * 1e18; // 100k XOM
     /// @notice Default timeout period for dispute resolution
     uint256 public constant DISPUTE_TIMEOUT = 7 days;
     /// @notice Number of arbitrators required for panel disputes

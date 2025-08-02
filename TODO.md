@@ -1,68 +1,89 @@
-# OmniCoin Development Plan - Avalanche Migration + Simplification
+# OmniCoin Development Plan - Radical Simplification
 
-**Last Updated:** 2025-07-31 16:38 UTC
+**Last Updated:** 2025-08-01 21:12 UTC
 
-## 🎯 MAJOR PROGRESS UPDATE
+## 🚨 MAJOR ARCHITECTURAL SHIFT PLANNED
 
-Contract consolidation and Avalanche integration are COMPLETE! All major contracts have been updated with event-based architecture and merkle root patterns. Ready for compilation and testing.
+After successful consolidation, we're pivoting to RADICAL SIMPLIFICATION: reducing from 26 contracts to just 6 ultra-lean contracts by moving almost everything off-chain to validators.
 
-### What We Accomplished Today:
+### Critical New Direction (2025-08-01):
 
-1. **Contract Consolidation ✅**
-   - Unified 5 reputation contracts → 1
-   - Unified 3 payment contracts → 1  
-   - Enhanced NFT marketplace with ERC1155
-   - Created simplified arbitration system
-   - Created event-based game asset bridge
+1. **Simplification Analysis ✅**
+   - Analyzed all 26 contracts for off-chain migration potential
+   - Identified 6 core contracts that MUST stay on-chain
+   - Planned complete off-chain migration for 20 contracts
+   - Created comprehensive migration documentation
 
-2. **State Reduction Complete ✅**
-   - 60-95% state reduction achieved
-   - All arrays and mappings removed
-   - Event-based architecture implemented
-   - Merkle root verification throughout
+2. **Key Architectural Decisions ✅**
+   - **Config**: Move entirely off-chain to validators
+   - **Staking**: Keep only lock/unlock on-chain
+   - **Multisig**: Replace with minimal 2-of-3 escrow
+   - **Everything Else**: Off-chain with merkle roots
 
-3. **Ready for Testing**
-   - All contracts updated for Avalanche
-   - Import issues resolved
-   - VS Code restart pending for compilation
+3. **Documentation Created ✅**
+   - `CONTRACT_SIMPLIFICATION_PLAN.md` - Complete roadmap
+   - `MINIMAL_ESCROW_SECURITY_ANALYSIS.md` - Security analysis
 
-## 🚀 IMMEDIATE NEXT STEPS
+## 🎯 NEW IMMEDIATE PRIORITIES
 
-### After VS Code Restart (Day 1)
-- [x] Contract consolidation ✅
-- [x] State reduction implementation ✅
-- [ ] **Compilation & Error Resolution**
-  ```bash
-  npx hardhat compile
-  ```
-  - Fix any remaining import errors
-  - Resolve type mismatches
-  - Update missing interfaces
-
-### Testing Phase (Day 2-3)
-- [ ] **Local Avalanche Deployment**
-  - Deploy all contracts to local network
-  - Verify contract interactions
-  - Test event emission rates
+### Phase 1: Core Consolidation (Week 1-2)
+- [ ] **Create OmniCore.sol**
+  - Merge Registry + Config + Validators
+  - Implement minimal staking (lock/unlock only)
+  - Single master merkle root for ALL data
   
-- [ ] **Integration with AvalancheValidator**
-  - Connect contracts to validator in Validator module
-  - Test GraphQL queries
-  - Verify merkle proof generation
-  - Test state reconstruction from events
+- [ ] **Create MasterMerkleEngine**
+  - Unified merkle tree in validators
+  - Covers config, users, marketplace, compliance
+  - Single root update mechanism
 
-### Performance Validation (Day 4-5)
-- [ ] **Load Testing**
-  - Test at 4,500 TPS target
-  - Measure gas costs with XOM
-  - Verify 1-2 second finality
-  - Check memory/storage usage
+- [ ] **Migrate Config to Validators**
+  - Create ConfigService.ts
+  - Move all parameters off-chain
+  - Implement consensus mechanism
 
-- [ ] **Security Review**
-  - Audit event emission patterns
-  - Verify merkle proof security
-  - Test access controls
-  - Check for reentrancy
+### Phase 2: Marketplace Simplification (Week 3-4)
+- [ ] **Implement MinimalEscrow.sol**
+  - Ultra-simple 2-of-3 multisig
+  - Delayed arbitrator assignment
+  - Commit-reveal for security
+  - ~200 lines total
+
+- [ ] **Consolidate OmniMarketplace.sol**
+  - Merge NFT + Unified marketplaces
+  - Just payment routing
+  - Everything else off-chain
+
+- [ ] **Create ArbitrationService**
+  - Off-chain dispute resolution
+  - Arbitrator selection logic
+  - Integration with escrow
+
+### Phase 3: Complete Migration (Week 5-6)
+- [ ] **Eliminate 20 Contracts**
+  - Move UnifiedReputationSystem → validators
+  - Move UnifiedArbitrationSystem → validators
+  - Move FeeDistribution → validators
+  - Move all others per CONTRACT_SIMPLIFICATION_PLAN.md
+
+- [ ] **Create Validator Services**
+  - StakingService.ts (calculations)
+  - FeeService.ts (distribution)
+  - DEXService.ts (order matching)
+  - RecoveryService.ts (social recovery)
+
+### Phase 4: Testing & Deployment (Week 7-8)
+- [ ] **Security Audit**
+  - Test minimal escrow security
+  - Verify merkle root integrity
+  - Audit gas optimizations
+  - Check all attack vectors
+
+- [ ] **Performance Validation**
+  - Target: 70-90% gas reduction
+  - Deploy cost: <$1000
+  - Transaction speed: <3 seconds
+  - Contract count: ≤6
 
 ## 📋 Completed Tasks
 

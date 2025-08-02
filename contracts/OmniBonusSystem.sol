@@ -65,7 +65,7 @@ contract OmniBonusSystem is AccessControl, ReentrancyGuard, Pausable, RegistryAw
     bytes32 public constant AVALANCHE_VALIDATOR_ROLE = keccak256("AVALANCHE_VALIDATOR_ROLE");
     
     /// @notice Number of decimal places for bonus calculations
-    uint256 public constant DECIMALS = 6;
+    uint256 public constant DECIMALS = 18;
     
     // =============================================================================
     // EVENTS - VALIDATOR COMPATIBLE

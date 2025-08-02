@@ -385,7 +385,7 @@ contract OmniCoinEscrow is RegistryAware, AccessControl, ReentrancyGuard, Pausab
         
         if (escrow.usePrivacy) {
             // In production, decrypt amount here
-            amount = 1000 * 10**6; // Placeholder
+            amount = 1000 * 10**18; // Placeholder
         }
         
         IERC20(token).safeTransfer(escrow.seller, amount);
@@ -423,7 +423,7 @@ contract OmniCoinEscrow is RegistryAware, AccessControl, ReentrancyGuard, Pausab
         uint256 amount = escrow.amount;
         
         if (escrow.usePrivacy) {
-            amount = 1000 * 10**6; // Placeholder
+            amount = 1000 * 10**18; // Placeholder
         }
         
         IERC20(token).safeTransfer(escrow.buyer, amount);

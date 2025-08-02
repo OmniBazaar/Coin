@@ -43,7 +43,7 @@ async function main() {
     "OmniCoin",
     "XOM",
     1000000000, // 1B tokens
-    6 // decimals
+    18 // decimals
   );
   await omniCoin.deployed();
   console.log("OmniCoinCore deployed to:", omniCoin.address);

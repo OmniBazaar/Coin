@@ -49,7 +49,7 @@ contract OmniCoin is ERC20, ERC20Burnable, ERC20Pausable, AccessControl, Reentra
     bytes32 public constant BRIDGE_ROLE = keccak256("BRIDGE_ROLE");
     
     /// @notice Decimals used by the token (configurable: 6, 12, or 18)
-    uint8 public constant DECIMALS = 6;
+    uint8 public constant DECIMALS = 18;
     
     /// @notice Initial circulating supply (~4.1 billion tokens)
     /// @dev Already distributed: block subsidy (1.34B) + dev subsidy (2.52B) + welcome (0.02B) +

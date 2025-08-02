@@ -34,7 +34,7 @@ contract PrivateOmniCoin is PrivateERC20, AccessControl, Pausable, ReentrancyGua
     /// @notice Pauser role identifier
     bytes32 public constant PAUSER_ROLE = keccak256("PAUSER_ROLE");
     /// @notice Decimals used by the token (must match OmniCoin)
-    uint8 public constant DECIMALS = 6;
+    uint8 public constant DECIMALS = 18;
     
     // =============================================================================
     // STATE VARIABLES

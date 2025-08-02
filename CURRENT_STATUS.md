@@ -1,11 +1,40 @@
 # OmniCoin Module Current Status
 
-**Last Updated:** 2025-07-31 16:38 UTC  
-**Current Focus:** Contract consolidation and Avalanche migration COMPLETE - Ready for VS Code restart, compilation, and testing
+**Last Updated:** 2025-08-01 21:12 UTC  
+**Current Focus:** Contract simplification from 26 to 6 contracts - Major architectural shift planned
 
 ## Executive Summary
 
-Successfully completed comprehensive contract consolidation and Avalanche integration. Achieved 60-95% state reduction across all major contracts through event-based architecture and merkle root patterns. Ready for compilation and testing after VS Code restart.
+After comprehensive contract consolidation achieving 60-95% state reduction, we've identified an opportunity for radical simplification. Planning to reduce from current 26 contracts to just 6 ultra-lean contracts by moving most functionality off-chain to validators. This will achieve 70-90% gas savings and make OmniCoin one of the most efficient blockchain projects.
+
+## Critical Update (2025-08-01)
+
+### Contract Simplification Analysis
+
+Following user directive to move ALL possible functionality off-chain, we've developed a plan to achieve unprecedented simplification:
+
+**Current State**: 26 contracts (even after consolidation)
+**Target State**: 6 contracts maximum
+
+**New Architecture**:
+1. **OmniCoin.sol** - Core ERC20 token only
+2. **PrivateOmniCoin.sol** - COTI privacy wrapper only
+3. **OmniCore.sol** - Registry + minimal staking + master merkle root
+4. **OmniGovernance.sol** - On-chain voting only
+5. **OmniBridge.sol** - Cross-chain transfers only
+6. **OmniMarketplace.sol** - Minimal payment routing + simple escrow
+
+**Key Decisions**:
+- Config → Move entirely off-chain to validators
+- Staking → Keep only lock/unlock on-chain, all calculations off-chain
+- Multisig → Implement minimal 2-of-3 escrow with delayed arbitrator assignment
+- Reputation, KYC, Rewards → Completely off-chain with merkle roots
+
+**Documentation Created**:
+- `CONTRACT_SIMPLIFICATION_PLAN.md` - Detailed migration roadmap
+- `MINIMAL_ESCROW_SECURITY_ANALYSIS.md` - Security analysis for new escrow design
+
+See these documents for complete implementation details.
 
 ## Recent Accomplishments (2025-07-31)
 

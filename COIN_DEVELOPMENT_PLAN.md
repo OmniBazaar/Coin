@@ -1,63 +1,74 @@
-# OmniCoin Development Plan - Avalanche Migration + Radical Simplification
+# OmniCoin Development Plan - Ultra-Lean Architecture
 
 **Created**: 2025-07-24  
-**Last Updated**: 2025-07-30 18:07 UTC  
-**Status**: DUAL TRACK - Avalanche Migration + Simplification Sprint  
-**Critical Change**: Simultaneous development of simplified architecture and Avalanche subnet migration
+**Last Updated**: 2025-08-01 21:12 UTC  
+**Status**: RADICAL SIMPLIFICATION - From 26 to 6 contracts  
+**Critical Change**: Moving from consolidation to elimination - targeting 6 contracts maximum
 
 ---
 
-## 🚨 DUAL ARCHITECTURAL TRANSFORMATION
+## 🚨 ULTRA-LEAN TRANSFORMATION
 
-### New Strategy: Parallel Development
-1. **Radical Simplification** - Moving 80% computation off-chain (unchanged)
-2. **Avalanche Subnet Migration** - Public chain moves to Avalanche for performance
+### New Strategy: Maximum Simplification
+1. **From 26 to 6 Contracts** - Eliminating 77% of contracts entirely
+2. **Everything Off-Chain** - Only critical security functions remain on-chain
+3. **Single Master Merkle Root** - One root to rule them all
 
-### Why This Works
-- **Validators need rewriting anyway** → Build for Avalanche from start
-- **Privacy already separate** → PrivateOmniCoin stays on COTI unchanged
-- **Same effort, better result** → 4-6 weeks saved vs sequential
-- **No throwaway work** → Design once for final architecture
+### Critical Decisions Made
+- **Config** → Entirely off-chain in validators
+- **Staking** → Only lock/unlock on-chain, calculations off-chain
+- **Multisig** → Minimal 2-of-3 escrow with delayed arbitrator
+- **Reputation/KYC/Rewards** → Completely off-chain
 
----
-
-## 📊 Combined Benefits
-
-| Metric | Current | Simplified | + Avalanche | Total Improvement |
-|--------|---------|------------|-------------|-------------------|
-| Contract Count | 30+ | 12 | 12 | **60% reduction** |
-| Storage Slots | ~50,000 | ~5,000 | ~5,000 | **90% reduction** |
-| Gas per Transaction | 100% | 40% | 35% | **65% reduction** |
-| Finality Time | 6s | 6s | 1-2s | **67-83% faster** |
-| TPS Capacity | ~1,000 | ~1,000 | 4,500+ | **4.5x increase** |
-| Validator Limit | Restricted | Restricted | Unlimited | **∞ improvement** |
+### Reference Documents
+- **CONTRACT_SIMPLIFICATION_PLAN.md** - Complete migration roadmap
+- **MINIMAL_ESCROW_SECURITY_ANALYSIS.md** - Security analysis for new escrow
 
 ---
 
-## 🏗️ Final Architecture
+## 📊 Ultra-Lean Benefits
 
-### Public Chain (Avalanche Subnet)
+| Metric | Current | Consolidated | Ultra-Lean | Total Improvement |
+|--------|---------|--------------|------------|-------------------|
+| Contract Count | 30+ | 26 | **6** | **80% reduction** |
+| Storage Slots | ~50,000 | ~10,000 | **~1,000** | **98% reduction** |
+| Gas per Transaction | 100% | 40% | **10-15%** | **85-90% reduction** |
+| Deployment Cost | ~$10,000 | ~$5,000 | **<$1,000** | **90% reduction** |
+| Upgrade Complexity | High | Medium | **Minimal** | **90% simpler** |
+| Attack Surface | Large | Medium | **Tiny** | **80% reduction** |
+
+---
+
+## 🏗️ Final Architecture (6 Contracts Only)
+
+### On-Chain (Minimal)
 
 ```text
 ┌─────────────────────────────────────────────────────────┐
-│           12 Core Contracts on Avalanche                │
+│              6 Ultra-Lean Contracts                     │
 ├─────────────────────────────────────────────────────────┤
-│ • Minimal state (balances, active items only)          │
-│ • Event emission for all history                       │
-│ • XOM as native gas token                              │
-│ • 1-2 second finality                                  │
-│ • Unlimited validators                                 │
+│ 1. OmniCoin.sol - Core ERC20 token                    │
+│ 2. PrivateOmniCoin.sol - COTI privacy wrapper         │
+│ 3. OmniCore.sol - Registry + staking + master root    │
+│ 4. OmniGovernance.sol - On-chain voting only          │
+│ 5. OmniBridge.sol - Cross-chain transfers             │
+│ 6. OmniMarketplace.sol - Payments + minimal escrow    │
 └─────────────────────────────────────────────────────────┘
                             │
-                     Bridge │
+                  Master Merkle Root
+                            │
                             ▼
 ┌─────────────────────────────────────────────────────────┐
-│         Private Chain (COTI Network)                    │
+│         Off-Chain (Validators Handle Everything)        │
 ├─────────────────────────────────────────────────────────┤
-│ • PrivateOmniCoin.sol (unchanged)                     │
-│ • Full MPC/encryption support                          │
-│ • COTI handles gas and privacy                         │
-│ • No changes needed                                    │
+│ • Config management & consensus                        │
+│ • Staking calculations & rewards                       │
+│ • Reputation tracking & scoring                        │
+│ • KYC compliance & volume tracking                     │
+│ • Order matching & DEX operations                      │
+│ • Fee distribution & treasury                          │
+│ • Arbitration & dispute resolution                     │
+│ • Social recovery & wallet services                    │
 └─────────────────────────────────────────────────────────┘
 ```
 
@@ -77,83 +88,94 @@
 
 ---
 
-## 📋 6-Week Parallel Development Plan
+## 📋 8-Week Ultra-Lean Development Plan
 
-## Week 1: Foundation + Understanding
+## Week 1-2: Core Consolidation
 
-### Smart Contracts Track
-- **Day 1-2**: Study Avalanche differences
-  - [ ] Block structure and gas mechanics
-  - [ ] Event patterns for fast blocks
-  - [ ] Subnet configuration options
+### Contract Development
+- **Create OmniCore.sol**
+  - [ ] Merge Registry + minimal validator list
+  - [ ] Implement lock/unlock staking only
+  - [ ] Single master merkle root
   
-- **Day 3-5**: Begin simplification
-  - [ ] Remove arrays from first 10 contracts
-  - [ ] Design events for Avalanche throughput
-  - [ ] Update tests for event-based queries
-
-### Validator Track
-- **Day 1-3**: Avalanche SDK deep dive
-  - [ ] Install and explore SDK
-  - [ ] Understand consensus participation
-  - [ ] Design validator architecture
-  
-- **Day 4-5**: Prototype development
-  - [ ] Basic event listener using Avalanche SDK
-  - [ ] Plan merkle tree implementation
-
-## Week 2-3: Core Development
-
-### Contract Consolidation (Avalanche-Optimized)
-- [ ] **Merge Reputation (5→1)**: Design for Avalanche events
-- [ ] **Merge Payments (3→1)**: Optimize for fast finality
-- [ ] **Merge NFT (3→1)**: High-volume marketplace ready
-- [ ] **Remove 15+ redundant contracts**
+- **Create MinimalEscrow**
+  - [ ] 2-of-3 multisig implementation
+  - [ ] Commit-reveal for disputes
+  - [ ] Deterministic arbitrator selection
 
 ### Validator Development
-- [ ] **Event indexing**: Avalanche-specific implementation
-- [ ] **State reconstruction**: From Avalanche events
-- [ ] **Merkle tree generation**: For proof submission
-- [ ] **API development**: GraphQL interface
+- **MasterMerkleEngine**
+  - [ ] Unified tree structure
+  - [ ] Single root generation
+  - [ ] Efficient proof generation
+  
+- **ConfigService**
+  - [ ] Move all parameters off-chain
+  - [ ] Consensus mechanism
+  - [ ] Update notifications
 
-## Week 4: Avalanche Testing
+## Week 3-4: Marketplace Simplification
 
-### Deployment to Fuji Testnet
-- [ ] Deploy simplified contracts
-- [ ] Test event emission rates
-- [ ] Measure actual gas costs
-- [ ] Validate performance metrics
+- **Consolidate Marketplaces**
+  - [ ] Merge NFT + Unified
+  - [ ] Remove all storage
+  - [ ] Event-only architecture
+  
+- **Create Validator Services**
+  - [ ] ArbitrationService
+  - [ ] ListingService
+  - [ ] OrderMatchingService
 
-### Bridge Updates
-- [ ] Update bridge to point to Avalanche
-- [ ] Test OmniCoin ↔ PrivateOmniCoin flow
-- [ ] Ensure COTI privacy side unchanged
+## Week 5-6: Complete Migration
 
-## Week 5: Integration
+- **Eliminate 20 Contracts**
+  - [ ] Move each to validators
+  - [ ] Create service modules
+  - [ ] Test data integrity
+  
+- **Integration Testing**
+  - [ ] End-to-end flows
+  - [ ] Gas measurements
+  - [ ] Performance validation
 
-### Subnet Configuration
-- [ ] Configure XOM as gas token
-- [ ] Set block time parameters
-- [ ] Define validator requirements
-- [ ] Test consensus participation
+## Week 7-8: Security & Deployment
 
-### System Integration
-- [ ] Validator oracle submissions
-- [ ] Merkle proof verification
-- [ ] End-to-end transaction tests
+- **Security Audit**
+  - [ ] Formal verification
+  - [ ] Attack vector testing
+  - [ ] Economic analysis
+  
+- **Production Deployment**
+  - [ ] Testnet first
+  - [ ] Migration scripts
+  - [ ] Monitoring setup
 
-## Week 6: Production Prep
+---
 
-### Final Testing
-- [ ] Load testing on testnet
-- [ ] Security review
-- [ ] Performance optimization
-- [ ] Documentation updates
+## 🎯 Success Metrics
 
-### Launch Preparation
-- [ ] Mainnet subnet configuration
-- [ ] Validator onboarding guide
-- [ ] Migration plan from current system
+- **Contract Count**: ≤6 (from 26+)
+- **Gas Reduction**: 70-90%
+- **Deployment Cost**: <$1,000
+- **Code Complexity**: 80% simpler
+- **Maintenance Burden**: Minimal
+
+## 📚 Key References
+
+1. **CONTRACT_SIMPLIFICATION_PLAN.md** - Detailed implementation roadmap
+2. **MINIMAL_ESCROW_SECURITY_ANALYSIS.md** - Security considerations
+3. **SOLIDITY_CODING_STANDARDS.md** - Must follow for all new contracts
+4. **TYPESCRIPT_CODING_STANDARDS.md** - Must follow for validator services
+
+## ⚠️ Critical Reminders
+
+- **ALWAYS** check if functionality can move off-chain
+- **NEVER** add storage that validators can compute
+- **MINIMIZE** on-chain operations to absolute essentials
+- **FOLLOW** coding standards from day one
+- **TEST** security thoroughly before deployment
+
+
 
 ---
 

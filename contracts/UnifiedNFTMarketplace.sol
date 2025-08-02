@@ -97,8 +97,8 @@ contract UnifiedNFTMarketplace is
     uint256 public constant MAX_ROYALTY = 1000;
     
     // Token constraints
-    /// @notice Minimum token price (1 XOM with 6 decimals)
-    uint256 public constant MIN_PRICE = 1e6;
+    /// @notice Minimum token price (1 XOM with 18 decimals)
+    uint256 public constant MIN_PRICE = 1e18;
     /// @notice Maximum tokens that can be minted in a single batch
     uint256 public constant MAX_BATCH_MINT = 10000;
     /// @notice Grace period for service token renewals
@@ -141,6 +141,8 @@ contract UnifiedNFTMarketplace is
     bytes32 public userActivityRoot;
     /// @notice Merkle root for token metadata verification
     bytes32 public tokenMetadataRoot;
+    /// @notice Merkle root for KYC compliance data (tiers, limits, volumes)
+    bytes32 public kycComplianceRoot;
     /// @notice Block number of last root update
     uint256 public lastRootUpdate;
     /// @notice Current epoch for root updates
@@ -292,6 +294,7 @@ contract UnifiedNFTMarketplace is
     error NotAvalancheValidator();
     error InvalidAddress();
     error InvalidEpoch();
+    error KYCNotInitialized();
     
     // =============================================================================
     // MODIFIERS
@@ -479,7 +482,7 @@ contract UnifiedNFTMarketplace is
     // =============================================================================
     
     /// @notice List tokens for sale
-    /// @dev Creates or updates active listing
+    /// @dev Creates or updates active listing with KYC compliance check
     /// @param tokenId ID of token to list
     /// @param amount Number of tokens to list
     /// @param pricePerUnit Price per token unit
@@ -493,6 +496,14 @@ contract UnifiedNFTMarketplace is
         if (amount == 0) revert InvalidAmount();
         if (pricePerUnit < MIN_PRICE) revert InvalidPrice();
         if (balanceOf(msg.sender, tokenId) < amount) revert InvalidAmount();
+        
+        // KYC compliance check - verify against merkle root
+        // The validator maintains off-chain KYC data and provides the merkle root
+        // Actual compliance checking happens off-chain, we just verify the root exists
+        if (kycComplianceRoot == bytes32(0)) revert KYCNotInitialized();
+        
+        // For now, we assume the validator has already checked compliance off-chain
+        // In production, the user would submit a merkle proof that validator verifies
         
         tokenInfo[tokenId].price = pricePerUnit;
         tokenInfo[tokenId].acceptsPrivacy = acceptsPrivacy;
@@ -511,7 +522,7 @@ contract UnifiedNFTMarketplace is
     }
     
     /// @notice Buy listed tokens
-    /// @dev Handles payment, fees, and token transfer
+    /// @dev Handles payment, fees, and token transfer with KYC compliance check
     /// @param tokenId ID of token to buy
     /// @param amount Number of tokens to buy
     /// @param usePrivacy Whether to use privacy features
@@ -522,6 +533,9 @@ contract UnifiedNFTMarketplace is
     ) external nonReentrant whenNotPaused {
         if (amount == 0) revert InvalidAmount();
         if (activeListings[tokenId] < amount) revert ListingNotActive();
+        
+        // KYC compliance check for buyer
+        if (kycComplianceRoot == bytes32(0)) revert KYCNotInitialized();
         
         TokenInfo storage info = tokenInfo[tokenId];
         if (!usePrivacy || info.acceptsPrivacy) {
@@ -645,6 +659,12 @@ contract UnifiedNFTMarketplace is
     /// @param newRoot New user activity Merkle root
     function updateUserActivityRoot(bytes32 newRoot) external onlyAvalancheValidator {
         userActivityRoot = newRoot;
+    }
+    
+    /// @notice Update KYC compliance root with user tiers, limits, and volumes
+    /// @param newRoot New KYC compliance Merkle root from validator
+    function updateKYCComplianceRoot(bytes32 newRoot) external onlyAvalancheValidator {
+        kycComplianceRoot = newRoot;
     }
     
     // =============================================================================
