@@ -1,0 +1,741 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
+
+import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
+import {OwnableUpgradeable} from "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
+import {ReentrancyGuardUpgradeable} from "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {OmniCoinRegistry} from "./OmniCoinRegistry.sol";
+import {OmniCoinAccount} from "./OmniCoinAccount.sol";
+// import {UnifiedPaymentSystem} from "./UnifiedPaymentSystem.sol"; // Unused - commented for future use
+import {OmniCoinEscrow} from "./OmniCoinEscrow.sol";
+import {OmniCoinPrivacyBridge} from "./OmniCoinPrivacyBridge.sol";
+import {OmniCoinBridge} from "./OmniCoinBridge.sol";
+// import {UnifiedNFTMarketplace} from "./UnifiedNFTMarketplace.sol"; // Unused - commented for future use
+// Validator integration now via AvalancheValidator in Validator directory
+import {OmniCoinConfig} from "./OmniCoinConfig.sol";
+// Garbled circuits removed - COTI-specific functionality
+
+/**
+ * @title OmniWalletProvider
+ * @author OmniBazaar Team
+ * @notice Unified interface for wallet operations, providing simplified access to all OmniCoin functionality
+ * @dev This contract serves as the main integration point for the OmniBazaar wallet
+ */
+contract OmniWalletProvider is
+    Initializable,
+    OwnableUpgradeable,
+    ReentrancyGuardUpgradeable
+{
+    // Wallet-specific structures
+    /// @notice Comprehensive wallet information structure
+    struct WalletInfo {
+        address walletAddress;
+        bool privacyEnabled;          // Pack with address (20 + 1 = 21 bytes)
+        uint256 balance;
+        uint256 stakedAmount;
+        uint256 reputationScore;
+        uint256 nftCount;
+        uint256 pendingTransactions;
+        string username;
+    }
+
+    /// @notice Gas estimation result structure
+    struct TransactionEstimate {
+        uint256 gasEstimate;
+        uint256 gasPrice;
+        uint256 totalCost;
+        bool canExecute;
+        string errorMessage;
+    }
+
+    /// @notice Wallet session management structure
+    struct WalletSession {
+        address wallet;
+        bool isActive;            // Pack with address (20 + 1 = 21 bytes)
+        uint256 sessionId;
+        uint256 expiryTime;
+        mapping(bytes4 => bool) approvedMethods;
+    }
+
+    // State variables
+
+    // State variables
+    /// @notice Mapping of wallet addresses to their active sessions
+    mapping(address => WalletSession) public sessions;
+    /// @notice Mapping of authorized wallet addresses
+    mapping(address => bool) public authorizedWallets;
+    /// @notice Nonce tracking for each wallet
+    mapping(address => uint256) public nonces;
+    /// @notice Duration for wallet sessions in seconds
+    uint256 public sessionDuration;
+    /// @notice Counter for generating unique session IDs
+    uint256 public sessionCounter;
+
+    // Events
+    /// @notice Emitted when a wallet is authorized for advanced operations
+    /// @param wallet The address of the authorized wallet
+    event WalletAuthorized(address indexed wallet);
+    
+    /// @notice Emitted when a wallet authorization is revoked
+    /// @param wallet The address of the deauthorized wallet
+    event WalletDeauthorized(address indexed wallet);
+    
+    /// @notice Emitted when a new wallet session is created
+    /// @param wallet The wallet address creating the session
+    /// @param sessionId The unique identifier for this session
+    /// @param expiryTime The timestamp when this session expires
+    event SessionCreated(
+        address indexed wallet,
+        uint256 indexed sessionId,
+        uint256 indexed expiryTime
+    );
+    
+    /// @notice Emitted when a wallet session expires
+    /// @param wallet The wallet address whose session expired
+    /// @param sessionId The expired session identifier
+    event SessionExpired(address indexed wallet, uint256 indexed sessionId);
+    
+    /// @notice Emitted when a batch of transactions is executed
+    /// @param wallet The wallet executing the batch
+    /// @param count Number of transactions in the batch
+    /// @param success Whether the batch execution succeeded
+    event BatchTransactionExecuted(
+        address indexed wallet,
+        uint256 indexed count,
+        bool indexed success
+    );
+    
+    /// @notice Emitted when gas estimation is requested
+    /// @param wallet The wallet requesting the estimation
+    /// @param callData The transaction data being estimated
+    event GasEstimationRequested(address indexed wallet, bytes callData);
+    
+    /// @notice Emitted when a transfer is initiated (privacy or regular)
+    /// @param from Address initiating the transfer
+    /// @param to Address receiving the transfer
+    /// @param amount Amount being transferred
+    /// @param usePrivacy Whether privacy mode was used
+    event TransferInitiated(
+        address indexed from,
+        address indexed to,
+        uint256 indexed amount,
+        bool indexed usePrivacy
+    );
+    
+    /// @notice Emitted when privacy is enabled for a wallet
+    /// @param wallet Address of the wallet enabling privacy
+    /// @param commitment Privacy commitment hash
+    event PrivacyEnabled(address indexed wallet, bytes32 indexed commitment);
+
+    // =============================================================================
+    // STATE VARIABLES
+    // =============================================================================
+
+    /// @notice Registry contract for accessing other OmniCoin contracts
+    OmniCoinRegistry public registry;
+
+    // =============================================================================
+    // CUSTOM ERRORS
+    // =============================================================================
+
+    error UnauthorizedSessionCreation();
+    error InvalidTarget();
+    error SimulationFailed();
+    error InvalidRecipient();
+    error InvalidAmount();
+    error TransferFailed();
+    
+    /// @notice Constructor to disable initializers for upgradeable pattern
+    /// @custom:oz-upgrades-unsafe-allow constructor
+    constructor() {
+        _disableInitializers();
+    }
+    
+    /**
+     * @notice Get contract address from registry
+     * @param identifier The contract identifier
+     * @return The contract address
+     */
+    function _getContract(bytes32 identifier) internal view returns (address) {
+        return registry.getContract(identifier);
+    }
+
+    /**
+     * @notice Initializes the wallet provider with registry address
+     * @dev Sets up registry integration and default values
+     * @param _registry Address of the OmniCoinRegistry contract
+     */
+    function initialize(
+        address _registry
+    ) public initializer {
+        __Ownable_init(msg.sender);
+        __ReentrancyGuard_init();
+        // Store registry reference
+        registry = OmniCoinRegistry(_registry);
+
+        sessionDuration = 24 hours;
+        sessionCounter = 0;
+    }
+
+    /**
+     * @notice Get comprehensive wallet information
+     * @dev Aggregates data from multiple contracts to provide complete wallet status
+     * @param wallet The wallet address to query
+     * @return WalletInfo structure containing all wallet details
+     */
+    function getWalletInfo(
+        address wallet
+    ) external view returns (WalletInfo memory) {
+        return
+            WalletInfo({
+                walletAddress: wallet,
+                balance: _getWalletBalance(wallet, false),
+                stakedAmount: _getStakedAmount(wallet),
+                reputationScore: _getReputationScore(wallet),
+                privacyEnabled: _isPrivacyEnabled(wallet),
+                username: _getUsername(wallet),
+                nftCount: _getNFTCount(wallet),
+                pendingTransactions: _getPendingTransactions(wallet)
+            });
+    }
+
+    /**
+     * @notice Create a wallet session for authenticated operations
+     * @dev Creates a new session with configurable duration for the calling wallet
+     * @param wallet The wallet address to create a session for
+     * @return sessionId The unique identifier for the created session
+     */
+    function createSession(
+        address wallet
+    ) external returns (uint256 sessionId) {
+        if (wallet != msg.sender) revert UnauthorizedSessionCreation();
+
+        ++sessionCounter;
+        sessionId = sessionCounter;
+        uint256 expiryTime = block.timestamp + sessionDuration; // solhint-disable-line not-rely-on-time
+
+        WalletSession storage session = sessions[wallet];
+        session.wallet = wallet;
+        session.sessionId = sessionId;
+        session.expiryTime = expiryTime;
+        session.isActive = true;
+
+        emit SessionCreated(wallet, sessionId, expiryTime);
+    }
+
+    /**
+     * @notice Estimate gas for a transaction
+     * @dev Simulates transaction execution to provide gas estimates
+     * @param target The target contract address
+     * @param data The encoded function call data
+     * @param value The ETH value to send with the transaction
+     * @return TransactionEstimate structure with gas and cost information
+     */
+    function estimateGas(
+        address target,
+        bytes calldata data,
+        uint256 value
+    ) external view returns (TransactionEstimate memory) {
+        try this.simulateTransaction(target, data, value) {
+            return
+                TransactionEstimate({
+                    gasEstimate: 21000, // Base gas + estimated execution
+                    gasPrice: tx.gasprice,
+                    totalCost: 21000 * tx.gasprice,
+                    canExecute: true,
+                    errorMessage: ""
+                });
+        } catch Error(string memory reason) {
+            return
+                TransactionEstimate({
+                    gasEstimate: 0,
+                    gasPrice: 0,
+                    totalCost: 0,
+                    canExecute: false,
+                    errorMessage: reason
+                });
+        }
+    }
+
+    /**
+     * @notice Simulate transaction for gas estimation
+     * @dev Performs a static call to verify transaction validity
+     * @param target The target contract address
+     * @param data The encoded function call data
+     * @param value The ETH value to send (unused in current implementation)
+     */
+    function simulateTransaction(
+        address target,
+        bytes calldata data,
+        uint256 // value
+    ) external view {
+        if (target == address(0)) revert InvalidTarget();
+        // This function is used for simulation only
+        (bool success, ) = target.staticcall(data);
+        if (!success) revert SimulationFailed();
+    }
+
+    /**
+     * @notice Quick send tokens with automatic gas estimation
+     * @dev Handles both public and privacy-enabled transfers
+     * @param recipient The address to send tokens to
+     * @param amount The amount of tokens to send
+     * @param usePrivacy Whether to use privacy features for this transfer
+     * @return success Whether the transfer was successful
+     */
+    function quickSend(
+        address recipient,
+        uint256 amount,
+        bool usePrivacy
+    ) external nonReentrant returns (bool success) {
+        if (recipient == address(0)) revert InvalidRecipient();
+        if (amount == 0) revert InvalidAmount();
+
+        if (usePrivacy) {
+            // Route through privacy bridge for conversion to PrivateOmniCoin
+            OmniCoinPrivacyBridge bridge = OmniCoinPrivacyBridge(_getContract(registry.OMNICOIN_PRIVACY()));
+            
+            // First, approve bridge to spend tokens
+            IERC20 token = IERC20(_getContract(registry.OMNICOIN()));
+            token.approve(address(bridge), amount);
+            
+            // Convert to private tokens (this will handle the transfer on COTI)
+            bridge.convertToPrivate(amount);
+            
+            // Note: The actual private transfer happens on COTI network
+            // This is just the bridge interaction from the public side
+            emit TransferInitiated(msg.sender, recipient, amount, true);
+        } else {
+            IERC20 token = IERC20(_getContract(registry.OMNICOIN()));
+            if (!token.transferFrom(msg.sender, recipient, amount)) revert TransferFailed();
+        }
+
+        return true;
+    }
+
+    /**
+     * @notice Create NFT listing for marketplace
+     * @dev Mints NFT and creates associated marketplace transaction
+     * @param tokenURI The metadata URI for the NFT
+     * @param buyer The intended buyer address
+     * @param price The price in OmniCoin
+     * @param quantity The quantity of items
+     * @return tokenId The ID of the minted NFT
+     */
+    function createNFTListing(
+        string calldata tokenURI,
+        address buyer,
+        uint256 price,
+        uint256 quantity
+    ) external nonReentrant returns (uint256 tokenId) {
+        // Mint NFT
+        ListingNFT nft = ListingNFT(_getContract(registry.LISTING_NFT()));
+        tokenId = nft.mint(msg.sender, tokenURI);
+
+        // Create transaction for marketplace
+        nft.createTransaction(tokenId, buyer, quantity, price, false); // false = no privacy
+
+        return tokenId;
+    }
+
+    /**
+     * @notice Create escrow for marketplace transaction
+     * @dev Initializes escrow with specified parameters
+     * @param buyer The buyer address in the escrow
+     * @param arbitrator The arbitrator address for disputes
+     * @param amount The amount to be held in escrow
+     * @param duration The duration of the escrow in seconds
+     * @return success Whether the escrow was created successfully
+     */
+    function createMarketplaceEscrow(
+        address buyer,
+        address arbitrator,
+        uint256 amount,
+        uint256 duration
+    ) external nonReentrant returns (bool success) {
+        // TODO: Check allowance with encrypted types
+        // require(
+        //     omniCoin.allowance(msg.sender, address(escrowManager)) >= amount,
+        //     "Insufficient allowance"
+        // );
+
+        OmniCoinEscrow escrow = OmniCoinEscrow(_getContract(registry.ESCROW()));
+        escrow.createEscrow(buyer, arbitrator, amount, duration);
+        return true;
+    }
+
+    /**
+     * @notice Initiate cross-chain transfer
+     * @dev Starts a bridge transfer to another blockchain
+     * @param targetChainId The destination chain ID
+     * @param targetToken The token address on the target chain
+     * @param recipient The recipient address on the target chain
+     * @param amount The amount to transfer
+     * @return success Whether the transfer was initiated successfully
+     */
+    function initiateCrossChainTransfer(
+        uint256 targetChainId,
+        address targetToken,
+        address recipient,
+        uint256 amount
+    ) external nonReentrant returns (bool success) {
+        // TODO: Check allowance with encrypted types
+        // require(
+        //     omniCoin.allowance(msg.sender, address(bridgeManager)) >= amount,
+        //     "Insufficient allowance"
+        // );
+
+        OmniCoinBridge bridge = OmniCoinBridge(_getContract(registry.OMNICOIN_BRIDGE()));
+        bridge.initiateTransfer(
+            targetChainId,
+            targetToken,
+            recipient,
+            amount
+        );
+        return true;
+    }
+
+    /**
+     * @notice Get wallet's cross-chain transfer history
+     * @dev Returns arrays of transfer details for the specified wallet
+     * @param wallet Address of the wallet to query history for
+     * @return transferIds Array of transfer IDs
+     * @return amounts Array of transfer amounts
+     * @return targetChains Array of target chain IDs
+     * @return completed Array of completion statuses
+     */
+    function getCrossChainHistory(
+        address wallet
+    )
+        external
+        view
+        returns (
+            uint256[] memory transferIds,
+            uint256[] memory amounts,
+            uint256[] memory targetChains,
+            bool[] memory completed
+        )
+    {
+        OmniCoinBridge bridge = OmniCoinBridge(_getContract(registry.OMNICOIN_BRIDGE()));
+        uint256 totalTransfers = bridge.transferCount();
+        
+        // Count user's transfers (limited to recent 100 for gas efficiency)
+        uint256 userTransferCount = 0;
+        uint256 startIndex = totalTransfers > 100 ? totalTransfers - 100 : 0;
+        
+        for (uint256 i = startIndex; i < totalTransfers; ++i) {
+            (address sender,,,,,,,,,,) = bridge.getTransfer(i);
+            if (sender == wallet) {
+                ++userTransferCount;
+            }
+        }
+        
+        // Allocate arrays
+        transferIds = new uint256[](userTransferCount);
+        amounts = new uint256[](userTransferCount);
+        targetChains = new uint256[](userTransferCount);
+        completed = new bool[](userTransferCount);
+        
+        // Fill arrays
+        uint256 index = 0;
+        for (uint256 i = startIndex; i < totalTransfers && index < userTransferCount; ++i) {
+            (
+                address sender,
+                ,
+                uint256 targetChain,
+                ,
+                ,
+                uint256 amount,
+                ,
+                ,
+                bool isCompleted,
+                ,
+                
+            ) = bridge.getTransfer(i);
+            
+            if (sender == wallet) {
+                transferIds[index] = i;
+                amounts[index] = amount;
+                targetChains[index] = targetChain;
+                completed[index] = isCompleted;
+                ++index;
+            }
+        }
+    }
+
+    /**
+     * @notice Enable privacy features for wallet
+     * @dev Creates a privacy account for the calling wallet
+     * @return commitment The privacy commitment hash for this wallet
+     */
+    function enablePrivacy() external returns (bytes32 commitment) {
+        // Privacy is now handled through the bridge to COTI network
+        // The commitment is created when converting to PrivateOmniCoin
+        commitment = keccak256(abi.encodePacked(msg.sender, block.timestamp)); // solhint-disable-line not-rely-on-time
+        
+        // No need to create account - PrivateOmniCoin handles this on COTI
+        emit PrivacyEnabled(msg.sender, commitment);
+        return commitment;
+    }
+
+    /**
+     * @notice Get wallet's NFT portfolio
+     * @dev Returns all NFT information for the specified wallet
+     * @param wallet The wallet address to query
+     * @return tokenIds Array of NFT token IDs owned
+     * @return tokenURIs Array of metadata URIs for each NFT
+     * @return transactionCounts Array of transaction counts for each NFT
+     */
+    function getNFTPortfolio(
+        address wallet
+    )
+        external
+        view
+        returns (
+            uint256[] memory tokenIds,
+            string[] memory tokenURIs,
+            uint256[] memory transactionCounts
+        )
+    {
+        ListingNFT nft = ListingNFT(_getContract(registry.LISTING_NFT()));
+        uint256[] memory listings = nft.getUserListings(wallet);
+        tokenIds = listings;
+
+        tokenURIs = new string[](listings.length);
+        transactionCounts = new uint256[](listings.length);
+
+        for (uint256 i = 0; i < listings.length; ++i) {
+            tokenURIs[i] = nft.tokenURI(listings[i]);
+            // Get transaction count for each NFT
+            transactionCounts[i] = 1; // Placeholder
+        }
+    }
+
+    /**
+     * @notice Authorize a wallet for advanced operations
+     * @dev Only owner can authorize wallets
+     * @param wallet The wallet address to authorize
+     */
+    function authorizeWallet(address wallet) external onlyOwner {
+        authorizedWallets[wallet] = true;
+        emit WalletAuthorized(wallet);
+    }
+
+    /**
+     * @notice Deauthorize a wallet
+     * @dev Only owner can deauthorize wallets
+     * @param wallet The wallet address to deauthorize
+     */
+    function deauthorizeWallet(address wallet) external onlyOwner {
+        authorizedWallets[wallet] = false;
+        emit WalletDeauthorized(wallet);
+    }
+
+    /**
+     * @notice Check if wallet session is valid
+     * @dev Verifies session is active and not expired
+     * @param wallet The wallet address to check
+     * @return Whether the session is valid
+     */
+    function isValidSession(address wallet) external view returns (bool) {
+        WalletSession storage session = sessions[wallet];
+        return session.isActive && block.timestamp < session.expiryTime; // solhint-disable-line not-rely-on-time
+    }
+
+    /**
+     * @notice Get current nonce for wallet
+     * @dev Returns the current transaction nonce
+     * @param wallet The wallet address to query
+     * @return The current nonce value
+     */
+    function getCurrentNonce(address wallet) external view returns (uint256) {
+        return nonces[wallet];
+    }
+
+    /**
+     * @notice Update session duration (owner only)
+     * @dev Allows owner to change the default session duration
+     * @param newDuration The new session duration in seconds
+     */
+    function updateSessionDuration(uint256 newDuration) external onlyOwner {
+        sessionDuration = newDuration;
+    }
+
+    // Internal helper functions
+
+    /**
+     * @notice Get wallet balance for specified token
+     * @param wallet The wallet address
+     * @param usePrivacy Whether to check private token balance
+     * @return Balance amount
+     */
+    function _getWalletBalance(address wallet, bool usePrivacy) internal view returns (uint256) {
+        address tokenContract = usePrivacy ? 
+            _getContract(registry.PRIVATE_OMNICOIN()) : 
+            _getContract(registry.OMNICOIN());
+        return IERC20(tokenContract).balanceOf(wallet);
+    }
+
+    /**
+     * @notice Get staked amount for wallet
+     * @param wallet The wallet address
+     * @return Staked amount
+     */
+    function _getStakedAmount(address wallet) internal view returns (uint256) {
+        // Get validator contract for staking info
+        address validatorContract = _getContract(registry.VALIDATOR_MANAGER());
+        if (validatorContract == address(0)) {
+            return 0;
+        }
+        
+        try OmniCoinValidator(validatorContract).getValidator(wallet) returns (
+            address, uint256 stake, uint256, uint256, uint256, bool, bool
+        ) {
+            return stake;
+        } catch {
+            // Check if staking contract exists
+            address stakingContract = _getContract(registry.STAKING());
+            if (stakingContract == address(0)) {
+                return 0;
+            }
+            
+            // If validator check fails, try general staking contract
+            // Using a generic call since we don't have the interface
+            (bool success, bytes memory data) = stakingContract.staticcall(
+                abi.encodeWithSignature("getStake(address)", wallet)
+            );
+            if (success && data.length > 31) {
+                return abi.decode(data, (uint256));
+            }
+            return 0;
+        }
+    }
+
+    /**
+     * @notice Get reputation score for wallet
+     * @param wallet The wallet address
+     * @return Reputation score
+     */
+    function _getReputationScore(address wallet) internal view returns (uint256) {
+        address reputationContract = _getContract(registry.REPUTATION_CORE());
+        if (reputationContract == address(0)) {
+            return 0;
+        }
+        
+        // Call reputation contract to get score
+        (bool success, bytes memory data) = reputationContract.staticcall(
+            abi.encodeWithSignature("getReputation(address)", wallet)
+        );
+        if (success && data.length > 31) {
+            return abi.decode(data, (uint256));
+        }
+        return 0;
+    }
+
+    /**
+     * @notice Check if privacy is enabled for wallet
+     * @param wallet The wallet address
+     * @return Whether privacy is enabled
+     */
+    function _isPrivacyEnabled(address /* wallet */) internal view returns (bool) {
+        // Privacy is now handled through PrivateOmniCoin on COTI
+        // Check if user has any private balance via the bridge
+        address configContract = _getContract(registry.OMNICOIN_CONFIG());
+        if (configContract != address(0)) {
+            try OmniCoinConfig(configContract).getPrivacyConfig() returns (
+                uint256, uint256, bool enabled, uint256
+            ) {
+                return enabled;
+            } catch {
+                return false;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * @notice Get username for wallet
+     * @param wallet The wallet address
+     * @return Username string
+     */
+    function _getUsername(address wallet) internal view returns (string memory) {
+        address identityContract = _getContract(registry.IDENTITY_VERIFICATION());
+        if (identityContract == address(0)) {
+            return "";
+        }
+        
+        // Call identity contract to get username
+        (bool success, bytes memory data) = identityContract.staticcall(
+            abi.encodeWithSignature("getUsername(address)", wallet)
+        );
+        if (success && data.length > 0) {
+            return abi.decode(data, (string));
+        }
+        
+        // Fallback: return shortened address as username
+        return string(abi.encodePacked("0x", _toHexString(uint160(wallet), 6)));
+    }
+
+    /**
+     * @notice Get NFT count for wallet
+     * @param wallet The wallet address
+     * @return NFT count
+     */
+    function _getNFTCount(address wallet) internal view returns (uint256) {
+        ListingNFT nft = ListingNFT(_getContract(registry.LISTING_NFT()));
+        return nft.getUserListings(wallet).length;
+    }
+    
+    /**
+     * @notice Convert address to hex string
+     * @param value The address value as uint160
+     * @param length Number of hex characters to return
+     * @return The hex string representation
+     */
+    function _toHexString(uint160 value, uint256 length) internal pure returns (string memory) {
+        bytes memory buffer = new bytes(length);
+        for (uint256 i = length; i > 0;) {
+            unchecked {
+                --i;
+                buffer[i] = bytes1(uint8(value & 0xf) + (uint8(value & 0xf) < 10 ? 48 : 87));
+                value >>= 4;
+            }
+        }
+        return string(buffer);
+    }
+    
+    /**
+     * @notice Generate privacy proof for transfer
+     * @param fromCommitment Source commitment
+     * @param toCommitment Destination commitment
+     * @param amount Transfer amount
+     * @return proof The generated proof bytes
+     */
+    function _generatePrivacyProof(
+        bytes32 fromCommitment,
+        bytes32 toCommitment,
+        uint256 amount
+    ) internal view returns (bytes memory) {
+        // Garbled circuit is not yet deployed in the registry
+        // Return simple proof structure
+        // This is a placeholder - actual privacy proofs are handled on COTI
+        return abi.encode(
+            fromCommitment,
+            toCommitment,
+            amount,
+            block.timestamp, // solhint-disable-line not-rely-on-time
+            msg.sender
+        );
+    }
+
+    /**
+     * @notice Get pending transaction count
+     * @param wallet The wallet address
+     * @return Pending transaction count
+     */
+    function _getPendingTransactions(address wallet) internal view returns (uint256) {
+        OmniCoinAccount account = OmniCoinAccount(_getContract(registry.OMNICOIN_ACCOUNT()));
+        return account.getNonce(wallet);
+    }
+}
