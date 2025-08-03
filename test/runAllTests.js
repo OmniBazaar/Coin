@@ -1,46 +1,20 @@
 const { exec } = require('child_process');
 const chalk = require('chalk');
 
-// Test categories
+// Test categories for simplified architecture
 const testCategories = {
   'Core Contracts': [
     'test/OmniCoin.test.js',
-    'test/OmniCoinRegistry.test.js',
-    'test/DualTokenArchitecture.test.js',
-    'test/DualTokenIntegration.test.js'
-  ],
-  'ERC-1155 Support': [
-    'test/OmniERC1155.test.js',
-    'test/OmniUnifiedMarketplace.test.js',
-    'test/OmniERC1155Bridge.test.js'
+    'test/PrivateOmniCoin.test.js',
+    'test/OmniCore.test.js'
   ],
   'Business Logic': [
-    'test/OmniCoinEscrowV2.business-logic.test.js',
-    'test/OmniCoinPaymentV2.business-logic.test.js',
-    'test/OmniCoinStakingV2.test.js',
-    'test/OmniCoinArbitration.test.js'
+    'test/MinimalEscrow.test.js',
+    'test/OmniMarketplace.test.js',
+    'test/OmniGovernance.test.js'
   ],
-  'Privacy Features': [
-    'test/privacy/OmniCoinCore.privacy.test.js',
-    'test/privacy/OmniCoinEscrow.privacy.test.js',
-    'test/privacy/OmniCoinPayment.privacy.test.js',
-    'test/privacy/OmniCoinStaking.privacy.test.js',
-    'test/privacy/OmniCoinArbitration.privacy.test.js',
-    'test/privacy/OmniCoinBridge.privacy.test.js',
-    'test/privacy/DEXSettlement.privacy.test.js',
-    'test/privacy/OmniNFTMarketplace.privacy.test.js'
-  ],
-  'Reputation System': [
-    'test/reputation/OmniCoinReputationCore.test.js',
-    'test/reputation/OmniCoinIdentityVerification.test.js',
-    'test/reputation/OmniCoinReferralSystem.test.js',
-    'test/reputation/OmniCoinTrustSystem.test.js'
-  ],
-  'Security': [
-    'test/security/OmniCoin.security-fixed.test.js'
-  ],
-  'Integration': [
-    'test/integration/OmniCoin.integration.test.js'
+  'Cross-Chain': [
+    'test/OmniBridge.test.js'
   ]
 };
 
@@ -98,7 +72,7 @@ async function runCategory(categoryName, testFiles) {
 
 // Main test runner
 async function runAllTests() {
-  console.log(chalk.bold.magenta('OmniCoin Comprehensive Test Suite'));
+  console.log(chalk.bold.magenta('OmniCoin Simplified Architecture Test Suite'));
   console.log(chalk.bold.magenta(`${'='.repeat(60)}\n`));
   
   const startTime = Date.now();

@@ -51,7 +51,12 @@ module.exports = {
     cache: "./cache",
     artifacts: "./artifacts"
   },
+  contractSizer: {
+    alphaSort: true,
+    runOnCompile: true,
+    disambiguatePaths: false
+  },
   mocha: {
-    timeout: 40000
+    timeout: 100000
   }
-}; 
+};

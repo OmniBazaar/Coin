@@ -196,6 +196,7 @@ contract OmniBridge is ReentrancyGuard {
     error TransferNotFound();
     error AlreadyProcessed();
     error InvalidRecipient();
+    error InvalidChainId();
 
     /**
      * @notice Initialize bridge with core contract

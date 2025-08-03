@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.19;
 
-import {ReentrancyGuard} from "@openzeppelin/contracts/security/ReentrancyGuard.sol";
+import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 
@@ -146,24 +146,29 @@ contract MinimalEscrow is ReentrancyGuard {
         REGISTRY = _registry;
         arbitratorSeed = uint256(keccak256(abi.encodePacked(
             block.timestamp, 
-            block.difficulty
+            block.prevrandao
         ))); // solhint-disable-line not-rely-on-time
     }
 
     /**
      * @notice Create a new escrow
-     * @dev Buyer creates escrow with just seller address
+     * @dev Buyer creates escrow with seller address and token amount
      * @param seller Seller address
+     * @param amount Amount of OmniCoin tokens to escrow
      * @param duration Escrow duration in seconds
      * @return escrowId Unique escrow identifier
      */
     function createEscrow(
         address seller,
+        uint256 amount,
         uint256 duration
-    ) external payable nonReentrant returns (uint256 escrowId) {
+    ) external nonReentrant returns (uint256 escrowId) {
         if (seller == address(0) || seller == msg.sender) revert InvalidAddress();
-        if (msg.value == 0) revert InvalidAmount();
+        if (amount == 0) revert InvalidAmount();
         if (duration < MIN_DURATION || duration > MAX_DURATION) revert InvalidDuration();
+        
+        // Transfer tokens from buyer to escrow
+        OMNI_COIN.safeTransferFrom(msg.sender, address(this), amount);
         
         escrowId = ++escrowCounter;
         
@@ -171,7 +176,7 @@ contract MinimalEscrow is ReentrancyGuard {
             buyer: msg.sender,
             seller: seller,
             arbitrator: address(0),
-            amount: msg.value,
+            amount: amount,
             expiry: block.timestamp + duration, // solhint-disable-line not-rely-on-time
             createdAt: block.timestamp, // solhint-disable-line not-rely-on-time
             releaseVotes: 0,
@@ -180,7 +185,7 @@ contract MinimalEscrow is ReentrancyGuard {
             disputed: false
         });
         
-        emit EscrowCreated(escrowId, msg.sender, seller, msg.value, escrows[escrowId].expiry);
+        emit EscrowCreated(escrowId, msg.sender, seller, amount, escrows[escrowId].expiry);
     }
 
     /**
@@ -201,7 +206,7 @@ contract MinimalEscrow is ReentrancyGuard {
             uint256 amount = escrow.amount;
             escrow.amount = 0;
             
-            payable(escrow.seller).transfer(amount);
+            OMNI_COIN.safeTransfer(escrow.seller, amount);
             emit EscrowResolved(escrowId, escrow.seller, amount);
         }
     }
@@ -234,7 +239,7 @@ contract MinimalEscrow is ReentrancyGuard {
             uint256 amount = escrow.amount;
             escrow.amount = 0;
             
-            payable(escrow.buyer).transfer(amount);
+            OMNI_COIN.safeTransfer(escrow.buyer, amount);
             emit EscrowResolved(escrowId, escrow.buyer, amount);
         }
     }
@@ -245,7 +250,7 @@ contract MinimalEscrow is ReentrancyGuard {
      * @param escrowId Escrow to dispute
      * @param commitment Hash of (escrowId, nonce, msg.sender)
      */
-    function commitDispute(uint256 escrowId, bytes32 commitment) external payable {
+    function commitDispute(uint256 escrowId, bytes32 commitment) external {
         Escrow storage escrow = escrows[escrowId];
         
         if (escrow.buyer == address(0)) revert EscrowNotFound();
@@ -257,9 +262,9 @@ contract MinimalEscrow is ReentrancyGuard {
         uint256 disputeEarliest = escrow.createdAt + ARBITRATOR_DELAY;
         if (block.timestamp < disputeEarliest) revert DisputeTooEarly(); // solhint-disable-line not-rely-on-time
         
-        // Require dispute stake
+        // Require dispute stake (paid in OmniCoin)
         uint256 requiredStake = (escrow.amount * DISPUTE_STAKE_BASIS) / BASIS_POINTS;
-        if (msg.value < requiredStake) revert InsufficientStake();
+        OMNI_COIN.safeTransferFrom(msg.sender, address(this), requiredStake);
         
         disputeCommitments[escrowId] = DisputeCommitment({
             commitment: commitment,
@@ -344,24 +349,24 @@ contract MinimalEscrow is ReentrancyGuard {
         uint256 amount = escrow.amount;
         escrow.amount = 0;
         
-        payable(recipient).transfer(amount);
+        OMNI_COIN.safeTransfer(recipient, amount);
         emit EscrowResolved(escrowId, recipient, amount);
     }
 
     /**
      * @notice Validate vote eligibility
-     * @dev Checks dispute status, resolution, and participation
+     * @dev Checks resolution status and participation
      * @param escrow Escrow data
      * @param escrowId Escrow identifier
      */
     function _validateVote(Escrow storage escrow, uint256 escrowId) private view {
-        if (!escrow.disputed) revert NotParticipant();
         if (escrow.resolved) revert AlreadyResolved();
         if (hasVoted[escrowId][msg.sender]) revert AlreadyVoted();
         
+        // For disputed escrows, arbitrator can also vote
         bool isParticipant = msg.sender == escrow.buyer || 
                            msg.sender == escrow.seller || 
-                           msg.sender == escrow.arbitrator;
+                           (escrow.disputed && msg.sender == escrow.arbitrator);
         if (!isParticipant) revert NotParticipant();
     }
 

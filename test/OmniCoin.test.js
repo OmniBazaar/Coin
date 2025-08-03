@@ -2,246 +2,332 @@ const { expect } = require("chai");
 const { ethers } = require("hardhat");
 const { time } = require("@nomicfoundation/hardhat-network-helpers");
 
-describe("OmniCoin Integration", function () {
+describe("OmniCoin", function () {
   let omniCoin;
-  let reputation;
-  let staking;
-  let validator;
-  let privacy;
-  let arbitration;
-  let bridge;
-  let owner;
-  let user1;
-  let user2;
-  let user3;
-
+  let owner, minter, burner, user1, user2, user3;
+  
+  const INITIAL_SUPPLY = ethers.parseEther("1000000000"); // 1 billion
+  
   beforeEach(async function () {
-    [owner, user1, user2, user3] = await ethers.getSigners();
-
-    // Deploy all contracts
-    const OmniCoin = await ethers.getContractFactory("OmniCoin");
-    omniCoin = await upgrades.deployProxy(OmniCoin, [], {
-      initializer: "initialize",
-    });
-
-    const OmniCoinReputation = await ethers.getContractFactory("OmniCoinReputation");
-    reputation = await upgrades.deployProxy(
-      OmniCoinReputation,
-      [
-        await omniCoin.getAddress(),
-        1000, // minReputationForValidator
-        30 * 24 * 60 * 60, // reputationDecayPeriod (30 days)
-        5 // reputationDecayFactor (5%)
-      ],
-      { initializer: "initialize" }
-    );
-
-    const OmniCoinStaking = await ethers.getContractFactory("OmniCoinStaking");
-    staking = await upgrades.deployProxy(
-      OmniCoinStaking,
-      [await omniCoin.getAddress()],
-      { initializer: "initialize" }
-    );
-
-    const OmniCoinValidator = await ethers.getContractFactory("OmniCoinValidator");
-    validator = await upgrades.deployProxy(
-      OmniCoinValidator,
-      [
-        await omniCoin.getAddress(),
-        await reputation.getAddress(),
-        await staking.getAddress(),
-        ethers.parseEther("10000"), // minStakeAmount
-        100, // maxValidators
-        24 * 60 * 60, // rewardInterval (1 day)
-        60 * 60, // heartbeatInterval (1 hour)
-        10 // slashingPenalty (10%)
-      ],
-      { initializer: "initialize" }
-    );
-
-    const OmniCoinPrivacy = await ethers.getContractFactory("OmniCoinPrivacy");
-    privacy = await upgrades.deployProxy(
-      OmniCoinPrivacy,
-      [
-        await omniCoin.getAddress(),
-        await omniCoin.getAddress(),
-        ethers.parseEther("0.1"), // basePrivacyFee
-        3, // maxPrivacyLevel
-        60 * 60 // minCooldownPeriod (1 hour)
-      ],
-      { initializer: "initialize" }
-    );
-
-    const OmniCoinArbitration = await ethers.getContractFactory("OmniCoinArbitration");
-    arbitration = await upgrades.deployProxy(
-      OmniCoinArbitration,
-      [
-        await omniCoin.getAddress(),
-        await reputation.getAddress(),
-        ethers.parseEther("100"), // minArbitrationFee
-        7 * 24 * 60 * 60, // maxArbitrationPeriod (7 days)
-        3 // maxArbitrators
-      ],
-      { initializer: "initialize" }
-    );
-
-    const OmniCoinBridge = await ethers.getContractFactory("OmniCoinBridge");
-    bridge = await upgrades.deployProxy(
-      OmniCoinBridge,
-      [
-        await omniCoin.getAddress(),
-        ethers.parseEther("0.01"), // bridgeFee
-        60 * 60 // bridgeTimeout (1 hour)
-      ],
-      { initializer: "initialize" }
-    );
-
-    // Set up permissions and roles
-    await omniCoin.grantRole(await omniCoin.MINTER_ROLE(), await validator.getAddress());
-    await omniCoin.grantRole(await omniCoin.MINTER_ROLE(), await bridge.getAddress());
+    [owner, minter, burner, user1, user2, user3] = await ethers.getSigners();
     
-    // Transfer ownership
-    await omniCoin.transferOwnership(await validator.getAddress());
-    await reputation.transferOwnership(await validator.getAddress());
-    await staking.transferOwnership(await validator.getAddress());
-    await privacy.transferOwnership(await validator.getAddress());
-    await arbitration.transferOwnership(await validator.getAddress());
-    await bridge.transferOwnership(await validator.getAddress());
-
+    // Deploy OmniCoin
+    const OmniCoin = await ethers.getContractFactory("OmniCoin");
+    omniCoin = await OmniCoin.deploy();
+    await omniCoin.initialize();
+    
+    // Grant roles
+    await omniCoin.grantRole(await omniCoin.MINTER_ROLE(), minter.address);
+    await omniCoin.grantRole(await omniCoin.BURNER_ROLE(), burner.address);
+    
     // Mint some tokens to users for testing
-    await omniCoin.mint(user1.address, ethers.parseEther("100000"));
-    await omniCoin.mint(user2.address, ethers.parseEther("100000"));
-    await omniCoin.mint(user3.address, ethers.parseEther("100000"));
+    await omniCoin.connect(minter).mint(user1.address, ethers.parseEther("100000"));
+    await omniCoin.connect(minter).mint(user2.address, ethers.parseEther("100000"));
+    await omniCoin.connect(minter).mint(user3.address, ethers.parseEther("100000"));
   });
-
-  describe("Staking and Validator Integration", function () {
-    it("Should allow users to stake and become validators", async function () {
-      // User1 stakes tokens
-      await omniCoin.connect(user1).approve(staking.getAddress(), ethers.parseEther("20000"));
-      await staking.connect(user1).stake(ethers.parseEther("20000"));
-
-      // Update reputation for user1
-      await reputation.connect(user1).updateReputation(user1.address, 1500);
-
-      // User1 should be able to register as validator
-      await validator.connect(user1).registerValidator();
-      expect(await validator.isValidator(user1.address)).to.be.true;
+  
+  describe("Deployment and Initialization", function () {
+    it("Should set correct name and symbol", async function () {
+      expect(await omniCoin.name()).to.equal("OmniCoin");
+      expect(await omniCoin.symbol()).to.equal("XOM");
     });
-
-    it("Should distribute rewards to validators", async function () {
-      // Setup validators
-      await omniCoin.connect(user1).approve(staking.getAddress(), ethers.parseEther("20000"));
-      await staking.connect(user1).stake(ethers.parseEther("20000"));
-      await reputation.connect(user1).updateReputation(user1.address, 1500);
-      await validator.connect(user1).registerValidator();
-
-      // Advance time to trigger rewards
-      await time.increase(24 * 60 * 60); // 1 day
-
-      // Distribute rewards
-      await validator.connect(user1).distributeRewards();
-
-      // Check if rewards were distributed
-      const balance = await omniCoin.balanceOf(user1.address);
-      expect(balance).to.be.gt(ethers.parseEther("100000")); // Should have received rewards
+    
+    it("Should have 18 decimals", async function () {
+      expect(await omniCoin.decimals()).to.equal(18);
+    });
+    
+    it("Should have correct initial supply", async function () {
+      // Initial supply + minted tokens
+      const expectedSupply = INITIAL_SUPPLY + ethers.parseEther("300000");
+      expect(await omniCoin.totalSupply()).to.equal(expectedSupply);
+    });
+    
+    it("Should assign initial supply to owner", async function () {
+      expect(await omniCoin.balanceOf(owner.address)).to.equal(INITIAL_SUPPLY);
+    });
+    
+    it("Should set up roles correctly", async function () {
+      expect(await omniCoin.hasRole(await omniCoin.DEFAULT_ADMIN_ROLE(), owner.address)).to.be.true;
+      expect(await omniCoin.hasRole(await omniCoin.MINTER_ROLE(), minter.address)).to.be.true;
+      expect(await omniCoin.hasRole(await omniCoin.BURNER_ROLE(), burner.address)).to.be.true;
     });
   });
-
-  describe("Privacy Features", function () {
-    it("Should allow private transactions", async function () {
+  
+  describe("ERC20 Functionality", function () {
+    it("Should transfer tokens between accounts", async function () {
       const amount = ethers.parseEther("1000");
-      const privacyLevel = 2;
-
-      // Create private transaction
-      await omniCoin.connect(user1).approve(privacy.getAddress(), amount);
-      await privacy.connect(user1).createPrivateTransaction(
-        user2.address,
-        amount,
-        privacyLevel
-      );
-
-      // Complete private transaction
-      await privacy.connect(user2).completePrivateTransaction(0);
-
-      // Check balances
-      const balance = await omniCoin.balanceOf(user2.address);
-      expect(balance).to.be.gt(ethers.parseEther("100000")); // Should have received tokens
+      
+      await omniCoin.connect(user1).transfer(user2.address, amount);
+      
+      expect(await omniCoin.balanceOf(user1.address)).to.equal(ethers.parseEther("99000"));
+      expect(await omniCoin.balanceOf(user2.address)).to.equal(ethers.parseEther("101000"));
     });
-  });
-
-  describe("Arbitration System", function () {
-    it("Should handle dispute resolution", async function () {
-      // Create a dispute
-      const disputeAmount = ethers.parseEther("1000");
-      await omniCoin.connect(user1).approve(arbitration.getAddress(), disputeAmount);
-      await arbitration.connect(user1).createDispute(
-        user2.address,
-        disputeAmount,
-        "Test dispute"
-      );
-
-      // Assign arbitrators
-      await arbitration.connect(user3).registerArbitrator();
-      await arbitration.connect(user3).assignArbitrator(0);
-
-      // Resolve dispute
-      await arbitration.connect(user3).resolveDispute(0, true);
-
-      // Check if funds were released
-      const balance = await omniCoin.balanceOf(user1.address);
-      expect(balance).to.be.gt(ethers.parseEther("100000")); // Should have received funds back
-    });
-  });
-
-  describe("Bridge Integration", function () {
-    it("Should handle cross-chain transfers", async function () {
+    
+    it("Should approve and transferFrom", async function () {
       const amount = ethers.parseEther("1000");
-      const targetChain = "ethereum";
-      const targetAddress = user2.address;
-
-      // Initiate bridge transfer
-      await omniCoin.connect(user1).approve(bridge.getAddress(), amount);
-      await bridge.connect(user1).initiateTransfer(
-        amount,
-        targetChain,
-        targetAddress
-      );
-
-      // Complete bridge transfer
-      await bridge.connect(user2).completeTransfer(0);
-
-      // Check if tokens were received
-      const balance = await omniCoin.balanceOf(user2.address);
-      expect(balance).to.be.gt(ethers.parseEther("100000")); // Should have received tokens
+      
+      await omniCoin.connect(user1).approve(user2.address, amount);
+      expect(await omniCoin.allowance(user1.address, user2.address)).to.equal(amount);
+      
+      await omniCoin.connect(user2).transferFrom(user1.address, user3.address, amount);
+      
+      expect(await omniCoin.balanceOf(user1.address)).to.equal(ethers.parseEther("99000"));
+      expect(await omniCoin.balanceOf(user3.address)).to.equal(ethers.parseEther("101000"));
+    });
+    
+    it("Should fail transfer with insufficient balance", async function () {
+      const amount = ethers.parseEther("200000");
+      
+      await expect(
+        omniCoin.connect(user1).transfer(user2.address, amount)
+      ).to.be.revertedWithCustomError(omniCoin, "ERC20InsufficientBalance");
+    });
+    
+    it("Should emit Transfer event", async function () {
+      const amount = ethers.parseEther("1000");
+      
+      await expect(omniCoin.connect(user1).transfer(user2.address, amount))
+        .to.emit(omniCoin, "Transfer")
+        .withArgs(user1.address, user2.address, amount);
     });
   });
-
-  describe("Reputation System", function () {
-    it("Should track and update user reputation", async function () {
-      // Initial reputation update
-      await reputation.connect(user1).updateReputation(user1.address, 1000);
-
-      // Record successful transaction
-      await reputation.connect(user1).recordSuccessfulTransaction(user1.address);
-
-      // Record failed transaction
-      await reputation.connect(user1).recordFailedTransaction(user1.address);
-
-      // Check final reputation
-      const finalReputation = await reputation.getReputationScore(user1.address);
-      expect(finalReputation).to.be.gt(0);
+  
+  describe("Minting", function () {
+    it("Should allow minter to mint tokens", async function () {
+      const amount = ethers.parseEther("10000");
+      const balanceBefore = await omniCoin.balanceOf(user1.address);
+      
+      await omniCoin.connect(minter).mint(user1.address, amount);
+      
+      const balanceAfter = await omniCoin.balanceOf(user1.address);
+      expect(balanceAfter - balanceBefore).to.equal(amount);
     });
-
-    it("Should handle reputation decay", async function () {
-      // Set initial reputation
-      await reputation.connect(user1).updateReputation(user1.address, 1000);
-
-      // Advance time to trigger decay
-      await time.increase(31 * 24 * 60 * 60); // 31 days
-
-      // Check decayed reputation
-      const decayedReputation = await reputation.getReputationScore(user1.address);
-      expect(decayedReputation).to.be.lt(1000);
+    
+    it("Should increase total supply when minting", async function () {
+      const amount = ethers.parseEther("10000");
+      const supplyBefore = await omniCoin.totalSupply();
+      
+      await omniCoin.connect(minter).mint(user1.address, amount);
+      
+      const supplyAfter = await omniCoin.totalSupply();
+      expect(supplyAfter - supplyBefore).to.equal(amount);
+    });
+    
+    it("Should prevent non-minter from minting", async function () {
+      await expect(
+        omniCoin.connect(user1).mint(user2.address, ethers.parseEther("1000"))
+      ).to.be.revertedWithCustomError(omniCoin, "AccessControlUnauthorizedAccount");
+    });
+    
+    it("Should prevent minting to zero address", async function () {
+      await expect(
+        omniCoin.connect(minter).mint(ethers.ZeroAddress, ethers.parseEther("1000"))
+      ).to.be.revertedWithCustomError(omniCoin, "ERC20InvalidReceiver");
     });
   });
-}); 
+  
+  describe("Burning", function () {
+    it("Should allow burner to burn tokens", async function () {
+      const amount = ethers.parseEther("10000");
+      const balanceBefore = await omniCoin.balanceOf(user1.address);
+      
+      await omniCoin.connect(burner).burnFrom(user1.address, amount);
+      
+      const balanceAfter = await omniCoin.balanceOf(user1.address);
+      expect(balanceBefore - balanceAfter).to.equal(amount);
+    });
+    
+    it("Should decrease total supply when burning", async function () {
+      const amount = ethers.parseEther("10000");
+      const supplyBefore = await omniCoin.totalSupply();
+      
+      await omniCoin.connect(burner).burnFrom(user1.address, amount);
+      
+      const supplyAfter = await omniCoin.totalSupply();
+      expect(supplyBefore - supplyAfter).to.equal(amount);
+    });
+    
+    it("Should prevent non-burner from burning", async function () {
+      await expect(
+        omniCoin.connect(user1).burnFrom(user2.address, ethers.parseEther("1000"))
+      ).to.be.revertedWithCustomError(omniCoin, "AccessControlUnauthorizedAccount");
+    });
+    
+    it("Should allow users to burn their own tokens", async function () {
+      const amount = ethers.parseEther("1000");
+      const balanceBefore = await omniCoin.balanceOf(user1.address);
+      
+      await omniCoin.connect(user1).burn(amount);
+      
+      const balanceAfter = await omniCoin.balanceOf(user1.address);
+      expect(balanceBefore - balanceAfter).to.equal(amount);
+    });
+  });
+  
+  describe("Role Management", function () {
+    it("Should allow admin to grant roles", async function () {
+      const newMinter = user3.address;
+      
+      await omniCoin.grantRole(await omniCoin.MINTER_ROLE(), newMinter);
+      
+      expect(await omniCoin.hasRole(await omniCoin.MINTER_ROLE(), newMinter)).to.be.true;
+    });
+    
+    it("Should allow admin to revoke roles", async function () {
+      await omniCoin.revokeRole(await omniCoin.MINTER_ROLE(), minter.address);
+      
+      expect(await omniCoin.hasRole(await omniCoin.MINTER_ROLE(), minter.address)).to.be.false;
+    });
+    
+    it("Should prevent non-admin from granting roles", async function () {
+      await expect(
+        omniCoin.connect(user1).grantRole(await omniCoin.MINTER_ROLE(), user2.address)
+      ).to.be.revertedWithCustomError(omniCoin, "AccessControlUnauthorizedAccount");
+    });
+    
+    it("Should allow role renunciation", async function () {
+      await omniCoin.connect(minter).renounceRole(await omniCoin.MINTER_ROLE(), minter.address);
+      
+      expect(await omniCoin.hasRole(await omniCoin.MINTER_ROLE(), minter.address)).to.be.false;
+    });
+  });
+  
+  describe("Pausable Functionality", function () {
+    it("Should allow owner to pause transfers", async function () {
+      await omniCoin.pause();
+      
+      expect(await omniCoin.paused()).to.be.true;
+    });
+    
+    it("Should prevent transfers when paused", async function () {
+      await omniCoin.pause();
+      
+      await expect(
+        omniCoin.connect(user1).transfer(user2.address, ethers.parseEther("1000"))
+      ).to.be.revertedWithCustomError(omniCoin, "EnforcedPause");
+    });
+    
+    it("Should allow owner to unpause", async function () {
+      await omniCoin.pause();
+      await omniCoin.unpause();
+      
+      expect(await omniCoin.paused()).to.be.false;
+      
+      // Should allow transfers again
+      await omniCoin.connect(user1).transfer(user2.address, ethers.parseEther("1000"));
+    });
+    
+    it("Should prevent non-owner from pausing", async function () {
+      await expect(
+        omniCoin.connect(user1).pause()
+      ).to.be.revertedWithCustomError(omniCoin, "AccessControlUnauthorizedAccount");
+    });
+  });
+  
+  describe("ERC20Permit Functionality", function () {
+    it("Should support permit", async function () {
+      const amount = ethers.parseEther("1000");
+      const deadline = ethers.MaxUint256;
+      
+      // Create permit signature
+      const nonce = await omniCoin.nonces(user1.address);
+      const domain = {
+        name: await omniCoin.name(),
+        version: "1",
+        chainId: (await ethers.provider.getNetwork()).chainId,
+        verifyingContract: await omniCoin.getAddress()
+      };
+      
+      const types = {
+        Permit: [
+          { name: "owner", type: "address" },
+          { name: "spender", type: "address" },
+          { name: "value", type: "uint256" },
+          { name: "nonce", type: "uint256" },
+          { name: "deadline", type: "uint256" }
+        ]
+      };
+      
+      const value = {
+        owner: user1.address,
+        spender: user2.address,
+        value: amount,
+        nonce: nonce,
+        deadline: deadline
+      };
+      
+      const signature = await user1.signTypedData(domain, types, value);
+      const { v, r, s } = ethers.Signature.from(signature);
+      
+      // Use permit
+      await omniCoin.permit(user1.address, user2.address, amount, deadline, v, r, s);
+      
+      expect(await omniCoin.allowance(user1.address, user2.address)).to.equal(amount);
+    });
+  });
+  
+  describe("Events", function () {
+    it("Should emit RoleGranted event", async function () {
+      const role = await omniCoin.MINTER_ROLE();
+      const account = user3.address;
+      
+      await expect(omniCoin.grantRole(role, account))
+        .to.emit(omniCoin, "RoleGranted")
+        .withArgs(role, account, owner.address);
+    });
+    
+    it("Should emit RoleRevoked event", async function () {
+      const role = await omniCoin.MINTER_ROLE();
+      
+      await expect(omniCoin.revokeRole(role, minter.address))
+        .to.emit(omniCoin, "RoleRevoked")
+        .withArgs(role, minter.address, owner.address);
+    });
+    
+    it("Should emit Paused event", async function () {
+      await expect(omniCoin.pause())
+        .to.emit(omniCoin, "Paused")
+        .withArgs(owner.address);
+    });
+    
+    it("Should emit Unpaused event", async function () {
+      await omniCoin.pause();
+      
+      await expect(omniCoin.unpause())
+        .to.emit(omniCoin, "Unpaused")
+        .withArgs(owner.address);
+    });
+  });
+  
+  describe("Integration Scenarios", function () {
+    it("Should handle complex transfer scenarios", async function () {
+      // User1 transfers to User2
+      await omniCoin.connect(user1).transfer(user2.address, ethers.parseEther("10000"));
+      
+      // User2 approves User3
+      await omniCoin.connect(user2).approve(user3.address, ethers.parseEther("5000"));
+      
+      // User3 transfers from User2 to User1
+      await omniCoin.connect(user3).transferFrom(user2.address, user1.address, ethers.parseEther("5000"));
+      
+      // Check final balances
+      expect(await omniCoin.balanceOf(user1.address)).to.equal(ethers.parseEther("95000"));
+      expect(await omniCoin.balanceOf(user2.address)).to.equal(ethers.parseEther("105000"));
+      expect(await omniCoin.balanceOf(user3.address)).to.equal(ethers.parseEther("100000"));
+    });
+    
+    it("Should handle role-based operations", async function () {
+      // Minter mints tokens
+      await omniCoin.connect(minter).mint(user1.address, ethers.parseEther("50000"));
+      
+      // User1 burns some of their tokens
+      await omniCoin.connect(user1).burn(ethers.parseEther("25000"));
+      
+      // Burner burns from User1 (would need approval in real scenario)
+      await omniCoin.connect(burner).burnFrom(user1.address, ethers.parseEther("25000"));
+      
+      // Check final balance
+      expect(await omniCoin.balanceOf(user1.address)).to.equal(ethers.parseEther("100000"));
+    });
+  });
+});

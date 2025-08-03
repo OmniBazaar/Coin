@@ -66,7 +66,7 @@ contract MinimalEntryPoint {
         bytes32 indexed userOpHash,
         address indexed sender,
         address indexed factory,
-        address indexed paymaster
+        address paymaster
     );
 
     // Custom errors

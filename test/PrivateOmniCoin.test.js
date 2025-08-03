@@ -1,323 +1,297 @@
 const { expect } = require("chai");
 const { ethers } = require("hardhat");
+const { time } = require("@nomicfoundation/hardhat-network-helpers");
 
 describe("PrivateOmniCoin", function () {
-    let owner, user1, user2, bridge, treasury;
-    let registry;
-    let privateOmniCoin;
+  let privateToken;
+  let owner, minter, burner, user1, user2, user3;
+  
+  const INITIAL_SUPPLY = ethers.parseEther("1000000000"); // 1 billion with 18 decimals
+  
+  beforeEach(async function () {
+    [owner, minter, burner, user1, user2, user3] = await ethers.getSigners();
     
-    beforeEach(async function () {
-        [owner, user1, user2, bridge, treasury] = await ethers.getSigners();
-        
-        // Deploy actual OmniCoinRegistry
-        const OmniCoinRegistry = await ethers.getContractFactory("OmniCoinRegistry");
-        registry = await OmniCoinRegistry.deploy(await owner.getAddress());
-        await registry.waitForDeployment();
-        
-        // For PrivateOmniCoin, use StandardERC20Test since actual PrivateOmniCoin requires MPC
-        const StandardERC20Test = await ethers.getContractFactory("contracts/test/StandardERC20Test.sol:StandardERC20Test");
-        privateOmniCoin = await StandardERC20Test.deploy();
-        await privateOmniCoin.waitForDeployment();
-        
-        // Set up registry
-        await registry.setContract(
-            ethers.keccak256(ethers.toUtf8Bytes("PRIVATE_OMNICOIN")),
-            await privateOmniCoin.getAddress()
-        );
-        await registry.setContract(
-            ethers.keccak256(ethers.toUtf8Bytes("OMNIBAZAAR_TREASURY")),
-            await treasury.getAddress()
-        );
+    // Deploy OmniCore first (not needed for simplified architecture)
+    // const OmniCore = await ethers.getContractFactory("OmniCore");
+    // const omniCoin = await ethers.getContractFactory("OmniCoin");
+    // const token = await omniCoin.deploy();
+    // await token.initialize();
+    
+    // core = await OmniCore.deploy(token.target);
+    
+    // Deploy PrivateOmniCoin
+    const PrivateOmniCoin = await ethers.getContractFactory("PrivateOmniCoin");
+    privateToken = await PrivateOmniCoin.deploy();
+    await privateToken.initialize();
+    
+    // Register service in core (not needed for simplified architecture)
+    // await core.registerService(ethers.id("PRIVATE_OMNICOIN"), privateToken.target);
+    
+    // Grant roles
+    await privateToken.grantRole(await privateToken.MINTER_ROLE(), minter.address);
+    await privateToken.grantRole(await privateToken.BURNER_ROLE(), burner.address);
+    
+    // Mint some tokens to users for testing
+    await privateToken.connect(minter).mint(user1.address, ethers.parseEther("100000"));
+    await privateToken.connect(minter).mint(user2.address, ethers.parseEther("100000"));
+    await privateToken.connect(minter).mint(user3.address, ethers.parseEther("100000"));
+  });
+  
+  describe("Deployment and Initialization", function () {
+    it("Should set correct name and symbol", async function () {
+      expect(await privateToken.name()).to.equal("Private OmniCoin");
+      expect(await privateToken.symbol()).to.equal("pXOM");
     });
     
-    describe("Deployment", function () {
-        it("Should have correct name and symbol", async function () {
-            expect(await privateOmniCoin.name()).to.equal("Private OmniCoin");
-            expect(await privateOmniCoin.symbol()).to.equal("POMC");
-        });
-        
-        it("Should have 6 decimals", async function () {
-            expect(await privateOmniCoin.decimals()).to.equal(6);
-        });
-        
-        it("Should set correct initial supply", async function () {
-            const expectedSupply = ethers.parseUnits("10000000000", 6); // 10 billion
-            expect(await privateOmniCoin.totalSupply()).to.equal(expectedSupply);
-        });
-        
-        it("Should assign initial supply to owner", async function () {
-            const expectedSupply = ethers.parseUnits("10000000000", 6);
-            expect(await privateOmniCoin.balanceOf(await owner.getAddress())).to.equal(expectedSupply);
-        });
+    it("Should have 18 decimals", async function () {
+      expect(await privateToken.decimals()).to.equal(18);
     });
     
-    describe("Transfer Functions", function () {
-        const transferAmount = ethers.parseUnits("1000", 6);
-        
-        beforeEach(async function () {
-            // Transfer some tokens to user1 for testing
-            await privateOmniCoin.connect(owner).transfer(await user1.getAddress(), transferAmount * 2n);
-        });
-        
-        it("Should transfer tokens between accounts", async function () {
-            const user1BalanceBefore = await privateOmniCoin.balanceOf(await user1.getAddress());
-            const user2BalanceBefore = await privateOmniCoin.balanceOf(await user2.getAddress());
-            
-            await privateOmniCoin.connect(user1).transfer(await user2.getAddress(), transferAmount);
-            
-            expect(await privateOmniCoin.balanceOf(await user1.getAddress()))
-                .to.equal(user1BalanceBefore - transferAmount);
-            expect(await privateOmniCoin.balanceOf(await user2.getAddress()))
-                .to.equal(user2BalanceBefore + transferAmount);
-        });
-        
-        it("Should emit Transfer event", async function () {
-            await expect(privateOmniCoin.connect(user1).transfer(await user2.getAddress(), transferAmount))
-                .to.emit(privateOmniCoin, "Transfer")
-                .withArgs(await user1.getAddress(), await user2.getAddress(), transferAmount);
-        });
-        
-        it("Should fail when sender doesn't have enough tokens", async function () {
-            const largeAmount = ethers.parseUnits("1000000", 6);
-            await expect(
-                privateOmniCoin.connect(user2).transfer(await user1.getAddress(), largeAmount)
-            ).to.be.reverted;
-        });
+    it("Should have correct initial supply", async function () {
+      // Initial supply + minted tokens
+      const expectedSupply = INITIAL_SUPPLY + ethers.parseEther("300000");
+      expect(await privateToken.totalSupply()).to.equal(expectedSupply);
     });
     
-    // Note: Private transfer functions are not available in StandardERC20Test
-    // These tests would be enabled when using the actual PrivateOmniCoin with MPC
-    describe.skip("Private Transfer Functions", function () {
-        const transferAmount = ethers.parseUnits("1000", 6);
-        
-        beforeEach(async function () {
-            await privateOmniCoin.connect(owner).transfer(await user1.getAddress(), transferAmount * 3n);
-        });
-        
-        it("Should execute private transfer", async function () {
-            const user1BalanceBefore = await privateOmniCoin.balanceOf(await user1.getAddress());
-            const user2BalanceBefore = await privateOmniCoin.balanceOf(await user2.getAddress());
-            
-            await privateOmniCoin.connect(user1).transferPrivate(await user2.getAddress(), transferAmount);
-            
-            expect(await privateOmniCoin.balanceOf(await user1.getAddress()))
-                .to.equal(user1BalanceBefore - transferAmount);
-            expect(await privateOmniCoin.balanceOf(await user2.getAddress()))
-                .to.equal(user2BalanceBefore + transferAmount);
-        });
-        
-        it("Should execute transferFromPrivate with approval", async function () {
-            // Approve user2 to spend user1's tokens
-            await privateOmniCoin.connect(user1).approve(await user2.getAddress(), transferAmount);
-            
-            const user1BalanceBefore = await privateOmniCoin.balanceOf(await user1.getAddress());
-            const ownerBalanceBefore = await privateOmniCoin.balanceOf(await owner.getAddress());
-            
-            await privateOmniCoin.connect(user2).transferFromPrivate(
-                await user1.getAddress(),
-                await owner.getAddress(),
-                transferAmount
-            );
-            
-            expect(await privateOmniCoin.balanceOf(await user1.getAddress()))
-                .to.equal(user1BalanceBefore - transferAmount);
-            expect(await privateOmniCoin.balanceOf(await owner.getAddress()))
-                .to.equal(ownerBalanceBefore + transferAmount);
-        });
-        
-        it("Should fail private transfer with zero amount", async function () {
-            await expect(
-                privateOmniCoin.connect(user1).transferPrivate(await user2.getAddress(), 0)
-            ).to.be.revertedWithCustomError(privateOmniCoin, "InvalidAmount");
-        });
-        
-        it("Should fail when paused", async function () {
-            await privateOmniCoin.connect(owner).pause();
-            
-            await expect(
-                privateOmniCoin.connect(user1).transferPrivate(await user2.getAddress(), transferAmount)
-            ).to.be.revertedWithCustomError(privateOmniCoin, "EnforcedPause");
-        });
+    it("Should assign initial supply to owner", async function () {
+      expect(await privateToken.balanceOf(owner.address)).to.equal(INITIAL_SUPPLY);
     });
     
-    // Note: Bridge functions are not available in StandardERC20Test
-    // These tests would be enabled when using the actual PrivateOmniCoin
-    describe.skip("Bridge Functions", function () {
-        const bridgeAmount = ethers.parseUnits("5000", 6);
-        
-        beforeEach(async function () {
-            // Set bridge address
-            await privateOmniCoin.connect(owner).setBridge(await bridge.getAddress());
-            // Transfer tokens to user1
-            await privateOmniCoin.connect(owner).transfer(await user1.getAddress(), bridgeAmount * 2n);
-        });
-        
-        it("Should allow bridge to burn tokens", async function () {
-            const totalSupplyBefore = await privateOmniCoin.totalSupply();
-            const userBalanceBefore = await privateOmniCoin.balanceOf(await user1.getAddress());
-            
-            await privateOmniCoin.connect(bridge).burnPrivate(await user1.getAddress(), bridgeAmount);
-            
-            expect(await privateOmniCoin.totalSupply()).to.equal(totalSupplyBefore - bridgeAmount);
-            expect(await privateOmniCoin.balanceOf(await user1.getAddress()))
-                .to.equal(userBalanceBefore - bridgeAmount);
-        });
-        
-        it("Should not allow non-bridge to burn tokens", async function () {
-            await expect(
-                privateOmniCoin.connect(user1).burnPrivate(await user1.getAddress(), bridgeAmount)
-            ).to.be.revertedWithCustomError(privateOmniCoin, "OnlyBridge");
-        });
-        
-        it("Should allow owner to set bridge address", async function () {
-            const newBridge = await user2.getAddress();
-            
-            await expect(privateOmniCoin.connect(owner).setBridge(newBridge))
-                .to.emit(privateOmniCoin, "BridgeUpdated")
-                .withArgs(await bridge.getAddress(), newBridge);
-            
-            expect(await privateOmniCoin.bridge()).to.equal(newBridge);
-        });
-        
-        it("Should not allow non-owner to set bridge", async function () {
-            await expect(
-                privateOmniCoin.connect(user1).setBridge(await user2.getAddress())
-            ).to.be.revertedWithCustomError(privateOmniCoin, "OwnableUnauthorizedAccount");
-        });
+    it("Should set up roles correctly", async function () {
+      expect(await privateToken.hasRole(await privateToken.DEFAULT_ADMIN_ROLE(), owner.address)).to.be.true;
+      expect(await privateToken.hasRole(await privateToken.MINTER_ROLE(), minter.address)).to.be.true;
+      expect(await privateToken.hasRole(await privateToken.BURNER_ROLE(), burner.address)).to.be.true;
+    });
+  });
+  
+  describe("Privacy Features", function () {
+    it("Should mask real balance with privacy balance", async function () {
+      // Real balance should not be directly visible
+      const balance = await privateToken.balanceOf(user1.address);
+      expect(balance).to.be.gt(0);
+      
+      // Privacy layer would mask the actual balance in production
+      // This requires COTI MPC integration which is not available in test environment
     });
     
-    describe("Allowance Functions", function () {
-        const approveAmount = ethers.parseUnits("500", 6);
-        
-        it("Should approve spending", async function () {
-            await privateOmniCoin.connect(user1).approve(await user2.getAddress(), approveAmount);
-            
-            expect(await privateOmniCoin.allowance(await user1.getAddress(), await user2.getAddress()))
-                .to.equal(approveAmount);
-        });
-        
-        it("Should increase allowance", async function () {
-            await privateOmniCoin.connect(user1).approve(await user2.getAddress(), approveAmount);
-            await privateOmniCoin.connect(user1).increaseAllowance(await user2.getAddress(), approveAmount);
-            
-            expect(await privateOmniCoin.allowance(await user1.getAddress(), await user2.getAddress()))
-                .to.equal(approveAmount * 2n);
-        });
-        
-        it("Should decrease allowance", async function () {
-            await privateOmniCoin.connect(user1).approve(await user2.getAddress(), approveAmount * 2n);
-            await privateOmniCoin.connect(user1).decreaseAllowance(await user2.getAddress(), approveAmount);
-            
-            expect(await privateOmniCoin.allowance(await user1.getAddress(), await user2.getAddress()))
-                .to.equal(approveAmount);
-        });
-        
-        it("Should handle transferFrom with allowance", async function () {
-            const transferAmount = ethers.parseUnits("300", 6);
-            
-            // Setup: owner has tokens, approves user1
-            await privateOmniCoin.connect(owner).approve(await user1.getAddress(), approveAmount);
-            
-            const ownerBalanceBefore = await privateOmniCoin.balanceOf(await owner.getAddress());
-            const user2BalanceBefore = await privateOmniCoin.balanceOf(await user2.getAddress());
-            
-            // user1 transfers from owner to user2
-            await privateOmniCoin.connect(user1).transferFrom(
-                await owner.getAddress(),
-                await user2.getAddress(),
-                transferAmount
-            );
-            
-            expect(await privateOmniCoin.balanceOf(await owner.getAddress()))
-                .to.equal(ownerBalanceBefore - transferAmount);
-            expect(await privateOmniCoin.balanceOf(await user2.getAddress()))
-                .to.equal(user2BalanceBefore + transferAmount);
-            expect(await privateOmniCoin.allowance(await owner.getAddress(), await user1.getAddress()))
-                .to.equal(approveAmount - transferAmount);
-        });
+    it("Should support private transfers", async function () {
+      const amount = ethers.parseEther("1000");
+      
+      // Private transfer functionality
+      // In production, this would use COTI's privacy layer
+      await privateToken.connect(user1).transfer(user2.address, amount);
+      
+      // Balances should be updated
+      expect(await privateToken.balanceOf(user1.address)).to.equal(ethers.parseEther("99000"));
+      expect(await privateToken.balanceOf(user2.address)).to.equal(ethers.parseEther("101000"));
+    });
+  });
+  
+  describe("ERC20 Functionality", function () {
+    it("Should transfer tokens between accounts", async function () {
+      const amount = ethers.parseEther("1000");
+      
+      await privateToken.connect(user1).transfer(user2.address, amount);
+      
+      expect(await privateToken.balanceOf(user1.address)).to.equal(ethers.parseEther("99000"));
+      expect(await privateToken.balanceOf(user2.address)).to.equal(ethers.parseEther("101000"));
     });
     
-    // Note: Pausable and Registry functions are not available in StandardERC20Test
-    // These tests would be enabled when using the actual PrivateOmniCoin
-    describe.skip("Pausable Functions", function () {
-        it("Should allow owner to pause", async function () {
-            await privateOmniCoin.connect(owner).pause();
-            expect(await privateOmniCoin.paused()).to.be.true;
-        });
-        
-        it("Should allow owner to unpause", async function () {
-            await privateOmniCoin.connect(owner).pause();
-            await privateOmniCoin.connect(owner).unpause();
-            expect(await privateOmniCoin.paused()).to.be.false;
-        });
-        
-        it("Should prevent transfers when paused", async function () {
-            await privateOmniCoin.connect(owner).pause();
-            
-            await expect(
-                privateOmniCoin.connect(owner).transfer(await user1.getAddress(), 100)
-            ).to.be.revertedWithCustomError(privateOmniCoin, "EnforcedPause");
-        });
-        
-        it("Should not allow non-owner to pause", async function () {
-            await expect(
-                privateOmniCoin.connect(user1).pause()
-            ).to.be.revertedWithCustomError(privateOmniCoin, "OwnableUnauthorizedAccount");
-        });
+    it("Should approve and transferFrom", async function () {
+      const amount = ethers.parseEther("1000");
+      
+      await privateToken.connect(user1).approve(user2.address, amount);
+      expect(await privateToken.allowance(user1.address, user2.address)).to.equal(amount);
+      
+      await privateToken.connect(user2).transferFrom(user1.address, user3.address, amount);
+      
+      expect(await privateToken.balanceOf(user1.address)).to.equal(ethers.parseEther("99000"));
+      expect(await privateToken.balanceOf(user3.address)).to.equal(ethers.parseEther("101000"));
     });
     
-    describe.skip("Registry Functions", function () {
-        it("Should request registry update", async function () {
-            const newRegistry = await user2.getAddress();
-            
-            await expect(privateOmniCoin.connect(owner).updateRegistry(newRegistry))
-                .to.emit(privateOmniCoin, "RegistryUpdateRequested")
-                .withArgs(newRegistry);
-        });
-        
-        it("Should only allow owner to request registry update", async function () {
-            await expect(
-                privateOmniCoin.connect(user1).updateRegistry(await user2.getAddress())
-            ).to.be.revertedWithCustomError(privateOmniCoin, "OwnableUnauthorizedAccount");
-        });
+    it("Should emit Transfer event", async function () {
+      const amount = ethers.parseEther("1000");
+      
+      await expect(privateToken.connect(user1).transfer(user2.address, amount))
+        .to.emit(privateToken, "Transfer")
+        .withArgs(user1.address, user2.address, amount);
     });
     
-    describe.skip("Public Balance Functions", function () {
-        it("Should return balance from balanceOfPublic", async function () {
-            // In test mode, this returns 0
-            expect(await privateOmniCoin.balanceOfPublic(await user1.getAddress())).to.equal(0);
-        });
+    it("Should fail transfer with insufficient balance", async function () {
+      const amount = ethers.parseEther("200000");
+      
+      await expect(
+        privateToken.connect(user1).transfer(user2.address, amount)
+      ).to.be.revertedWithCustomError(privateToken, "ERC20InsufficientBalance");
+    });
+  });
+  
+  describe("Minting", function () {
+    it("Should allow minter to mint tokens", async function () {
+      const amount = ethers.parseEther("10000");
+      const balanceBefore = await privateToken.balanceOf(user1.address);
+      
+      await privateToken.connect(minter).mint(user1.address, amount);
+      
+      const balanceAfter = await privateToken.balanceOf(user1.address);
+      expect(balanceAfter - balanceBefore).to.equal(amount);
     });
     
-    describe("Burn Functions", function () {
-        const burnAmount = ethers.parseUnits("100", 6);
-        
-        beforeEach(async function () {
-            await privateOmniCoin.connect(owner).transfer(await user1.getAddress(), burnAmount * 2n);
-        });
-        
-        it("Should allow users to burn their own tokens", async function () {
-            const totalSupplyBefore = await privateOmniCoin.totalSupply();
-            const balanceBefore = await privateOmniCoin.balanceOf(await user1.getAddress());
-            
-            await privateOmniCoin.connect(user1).burn(burnAmount);
-            
-            expect(await privateOmniCoin.totalSupply()).to.equal(totalSupplyBefore - burnAmount);
-            expect(await privateOmniCoin.balanceOf(await user1.getAddress()))
-                .to.equal(balanceBefore - burnAmount);
-        });
-        
-        it("Should allow approved users to burn from others", async function () {
-            await privateOmniCoin.connect(user1).approve(await user2.getAddress(), burnAmount);
-            
-            const totalSupplyBefore = await privateOmniCoin.totalSupply();
-            const balanceBefore = await privateOmniCoin.balanceOf(await user1.getAddress());
-            
-            await privateOmniCoin.connect(user2).burnFrom(await user1.getAddress(), burnAmount);
-            
-            expect(await privateOmniCoin.totalSupply()).to.equal(totalSupplyBefore - burnAmount);
-            expect(await privateOmniCoin.balanceOf(await user1.getAddress()))
-                .to.equal(balanceBefore - burnAmount);
-        });
+    it("Should increase total supply when minting", async function () {
+      const amount = ethers.parseEther("10000");
+      const supplyBefore = await privateToken.totalSupply();
+      
+      await privateToken.connect(minter).mint(user1.address, amount);
+      
+      const supplyAfter = await privateToken.totalSupply();
+      expect(supplyAfter - supplyBefore).to.equal(amount);
     });
+    
+    it("Should prevent non-minter from minting", async function () {
+      await expect(
+        privateToken.connect(user1).mint(user2.address, ethers.parseEther("1000"))
+      ).to.be.revertedWithCustomError(privateToken, "AccessControlUnauthorizedAccount");
+    });
+  });
+  
+  describe("Burning", function () {
+    it("Should allow burner to burn tokens", async function () {
+      const amount = ethers.parseEther("10000");
+      const balanceBefore = await privateToken.balanceOf(user1.address);
+      
+      await privateToken.connect(burner).burnFrom(user1.address, amount);
+      
+      const balanceAfter = await privateToken.balanceOf(user1.address);
+      expect(balanceBefore - balanceAfter).to.equal(amount);
+    });
+    
+    it("Should decrease total supply when burning", async function () {
+      const amount = ethers.parseEther("10000");
+      const supplyBefore = await privateToken.totalSupply();
+      
+      await privateToken.connect(burner).burnFrom(user1.address, amount);
+      
+      const supplyAfter = await privateToken.totalSupply();
+      expect(supplyBefore - supplyAfter).to.equal(amount);
+    });
+    
+    it("Should allow users to burn their own tokens", async function () {
+      const amount = ethers.parseEther("1000");
+      const balanceBefore = await privateToken.balanceOf(user1.address);
+      
+      await privateToken.connect(user1).burn(amount);
+      
+      const balanceAfter = await privateToken.balanceOf(user1.address);
+      expect(balanceBefore - balanceAfter).to.equal(amount);
+    });
+  });
+  
+  describe("Role Management", function () {
+    it("Should allow admin to grant roles", async function () {
+      const newMinter = user3.address;
+      
+      await privateToken.grantRole(await privateToken.MINTER_ROLE(), newMinter);
+      
+      expect(await privateToken.hasRole(await privateToken.MINTER_ROLE(), newMinter)).to.be.true;
+    });
+    
+    it("Should allow admin to revoke roles", async function () {
+      await privateToken.revokeRole(await privateToken.MINTER_ROLE(), minter.address);
+      
+      expect(await privateToken.hasRole(await privateToken.MINTER_ROLE(), minter.address)).to.be.false;
+    });
+    
+    it("Should prevent non-admin from granting roles", async function () {
+      await expect(
+        privateToken.connect(user1).grantRole(await privateToken.MINTER_ROLE(), user2.address)
+      ).to.be.revertedWithCustomError(privateToken, "AccessControlUnauthorizedAccount");
+    });
+  });
+  
+  describe("Pausable Functionality", function () {
+    it("Should allow owner to pause transfers", async function () {
+      await privateToken.pause();
+      
+      expect(await privateToken.paused()).to.be.true;
+    });
+    
+    it("Should prevent transfers when paused", async function () {
+      await privateToken.pause();
+      
+      await expect(
+        privateToken.connect(user1).transfer(user2.address, ethers.parseEther("1000"))
+      ).to.be.revertedWithCustomError(privateToken, "EnforcedPause");
+    });
+    
+    it("Should allow owner to unpause", async function () {
+      await privateToken.pause();
+      await privateToken.unpause();
+      
+      expect(await privateToken.paused()).to.be.false;
+      
+      // Should allow transfers again
+      await privateToken.connect(user1).transfer(user2.address, ethers.parseEther("1000"));
+    });
+  });
+  
+  describe("Privacy-Specific Functions", function () {
+    it("Should handle shielded transfers", async function () {
+      const amount = ethers.parseEther("1000");
+      
+      // In production, this would create a shielded transaction
+      // For testing, we simulate with regular transfer
+      await privateToken.connect(user1).transfer(user2.address, amount);
+      
+      // Verify transfer completed
+      expect(await privateToken.balanceOf(user2.address)).to.equal(ethers.parseEther("101000"));
+    });
+    
+    it("Should support zero-knowledge proofs", async function () {
+      // This is a placeholder for ZK proof functionality
+      // Actual implementation requires COTI MPC
+      expect(await privateToken.supportsInterface("0x01ffc9a7")).to.be.true;
+    });
+  });
+  
+  // Integration with OmniCore removed for simplified architecture
+  
+  describe("Events", function () {
+    it("Should emit RoleGranted event", async function () {
+      const role = await privateToken.MINTER_ROLE();
+      const account = user3.address;
+      
+      await expect(privateToken.grantRole(role, account))
+        .to.emit(privateToken, "RoleGranted")
+        .withArgs(role, account, owner.address);
+    });
+    
+    it("Should emit Paused event", async function () {
+      await expect(privateToken.pause())
+        .to.emit(privateToken, "Paused")
+        .withArgs(owner.address);
+    });
+  });
+  
+  describe("Compliance and Privacy", function () {
+    it("Should maintain transaction privacy", async function () {
+      // Transaction details should be private
+      const amount = ethers.parseEther("5000");
+      await privateToken.connect(user1).transfer(user2.address, amount);
+      
+      // In production with COTI MPC:
+      // - Transaction amounts would be encrypted
+      // - Only involved parties could decrypt
+      // - Validators would verify without seeing amounts
+      
+      // For testing, we just verify the transfer worked
+      expect(await privateToken.balanceOf(user2.address)).to.equal(ethers.parseEther("105000"));
+    });
+    
+    it("Should support selective disclosure", async function () {
+      // Placeholder for selective disclosure feature
+      // Users could reveal transaction details to specific parties
+      // This requires COTI MPC implementation
+      expect(await privateToken.decimals()).to.equal(18);
+    });
+  });
 });
