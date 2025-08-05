@@ -19,9 +19,9 @@ describe("OmniGovernance", function () {
     token = await Token.deploy();
     await token.initialize();
     
-    // Deploy OmniCore
+    // Deploy OmniCore with all required constructor arguments
     const OmniCore = await ethers.getContractFactory("OmniCore");
-    const core = await OmniCore.deploy(owner.address, token.target);
+    const core = await OmniCore.deploy(owner.address, token.target, owner.address, owner.address);
     
     // Register OmniCoin service in core
     await core.setService(ethers.id("OMNICOIN"), token.target);

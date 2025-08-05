@@ -2,13 +2,20 @@
 
 ## CRITICAL: Solidity Coding Standards
 
-**MANDATORY**: When writing ANY Solidity code, you MUST follow the standards in `Coin/SOLIDITY_CODING_STANDARDS.md`. This includes:
+### Solidity Development
+**MANDATORY**: When writing ANY Solidity code, you MUST READ and follow the standards in `Coin/SOLIDITY_CODING_STANDARDS.md`. READ THE FILE NOW. This includes:
 - Complete NatSpec documentation for EVERY element
 - Proper ordering of contract elements
 - Gas optimizations (indexed events, custom errors, struct packing)
 - Following all solhint rules
+- Run `npx solhint` to verify compliance
 
-**Before writing any Solidity code, review SOLIDITY_CODING_STANDARDS.md**
+### TypeScript Development
+**MANDATORY**: When writing ANY TypeScript code, you MUST READ follow the standards in `TYPESCRIPT_CODING_STANDARDS.md`. READ THE FILE NOW. This includes:
+- Complete JSDoc documentation for all exports
+- Proper type safety (no `any` types)
+- Following ESLint rules
+- Consistent code organization
 
 - Don't "reinvent the wheel". USE the WORKING tools, code, templates, references, and examples provided by Avalanche in Coin\reference\avalanche. DO NOT write your own new code if you can copy, modify, or translate some existing code. USE AVALANCHE'S CODE. That's what it is there for.
 

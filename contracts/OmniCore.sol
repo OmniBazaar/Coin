@@ -32,6 +32,18 @@ contract OmniCore is AccessControl, ReentrancyGuard {
     /// @notice Role for Avalanche validators to update merkle roots
     bytes32 public constant AVALANCHE_VALIDATOR_ROLE = keccak256("AVALANCHE_VALIDATOR_ROLE");
     
+    /// @notice Fee percentage for ODDAO (70% = 7000 basis points)
+    uint256 public constant ODDAO_FEE_BPS = 7000;
+    
+    /// @notice Fee percentage for staking pool (20% = 2000 basis points)
+    uint256 public constant STAKING_FEE_BPS = 2000;
+    
+    /// @notice Fee percentage for validator (10% = 1000 basis points)
+    uint256 public constant VALIDATOR_FEE_BPS = 1000;
+    
+    /// @notice Total basis points for percentage calculations
+    uint256 public constant BASIS_POINTS = 10000;
+    
     // Immutable state variables
     /// @notice OmniCoin token address
     IERC20 public immutable OMNI_COIN;
@@ -54,6 +66,15 @@ contract OmniCore is AccessControl, ReentrancyGuard {
     
     /// @notice Total staked amount for security
     uint256 public totalStaked;
+    
+    /// @notice DEX balances for settlement (user => token => amount)
+    mapping(address => mapping(address => uint256)) public dexBalances;
+    
+    /// @notice ODDAO address for receiving 70% of DEX fees
+    address public oddaoAddress;
+    
+    /// @notice Staking pool address for receiving 20% of DEX fees
+    address public stakingPoolAddress;
 
     // Events
     /// @notice Emitted when a service is registered or updated
@@ -63,7 +84,7 @@ contract OmniCore is AccessControl, ReentrancyGuard {
     event ServiceUpdated(
         bytes32 indexed name,
         address indexed serviceAddress,
-        uint256 timestamp
+        uint256 indexed timestamp
     );
 
     /// @notice Emitted when a validator is added or removed
@@ -73,7 +94,7 @@ contract OmniCore is AccessControl, ReentrancyGuard {
     event ValidatorUpdated(
         address indexed validator,
         bool indexed active,
-        uint256 timestamp
+        uint256 indexed timestamp
     );
 
     /// @notice Emitted when master merkle root is updated
@@ -83,7 +104,7 @@ contract OmniCore is AccessControl, ReentrancyGuard {
     event MasterRootUpdated(
         bytes32 indexed newRoot,
         uint256 indexed epoch,
-        uint256 timestamp
+        uint256 indexed timestamp
     );
 
     /// @notice Emitted when tokens are staked
@@ -105,7 +126,29 @@ contract OmniCore is AccessControl, ReentrancyGuard {
     event TokensUnlocked(
         address indexed user,
         uint256 indexed amount,
-        uint256 timestamp
+        uint256 indexed timestamp
+    );
+
+    /// @notice Emitted when DEX trade is settled
+    /// @param buyer Buyer address
+    /// @param seller Seller address
+    /// @param token Token traded
+    /// @param amount Amount traded
+    /// @param orderId Off-chain order ID
+    event DEXSettlement(
+        address indexed buyer,
+        address indexed seller,
+        address indexed token,
+        uint256 amount,
+        bytes32 orderId
+    );
+    
+    /// @notice Emitted when batch settlement occurs
+    /// @param batchId Batch identifier
+    /// @param count Number of settlements
+    event BatchSettlement(
+        bytes32 indexed batchId,
+        uint256 indexed count
     );
 
     // Custom errors
@@ -120,13 +163,25 @@ contract OmniCore is AccessControl, ReentrancyGuard {
      * @notice Initialize OmniCore with admin and token
      * @param admin Address to grant admin role
      * @param _omniCoin Address of OmniCoin token
+     * @param _oddaoAddress ODDAO fee recipient (70% of fees)
+     * @param _stakingPoolAddress Staking pool fee recipient (20% of fees)
      */
-    constructor(address admin, address _omniCoin) {
-        if (admin == address(0) || _omniCoin == address(0)) revert InvalidAddress();
+    constructor(
+        address admin, 
+        address _omniCoin,
+        address _oddaoAddress,
+        address _stakingPoolAddress
+    ) {
+        if (admin == address(0) || _omniCoin == address(0) || 
+            _oddaoAddress == address(0) || _stakingPoolAddress == address(0)) {
+            revert InvalidAddress();
+        }
         
         _grantRole(DEFAULT_ADMIN_ROLE, admin);
         _grantRole(ADMIN_ROLE, admin);
         OMNI_COIN = IERC20(_omniCoin);
+        oddaoAddress = _oddaoAddress;
+        stakingPoolAddress = _stakingPoolAddress;
     }
 
     /**
@@ -262,33 +317,127 @@ contract OmniCore is AccessControl, ReentrancyGuard {
         emit TokensUnlocked(user, totalAmount, block.timestamp); // solhint-disable-line not-rely-on-time
     }
 
+    // =============================================================================
+    // DEX Settlement Functions (Ultra-Minimal)
+    // =============================================================================
+    
     /**
-     * @notice Verify a merkle proof against the master root
-     * @dev Simplified verification - actual implementation in validators
-     * @param user User address
-     * @param amount Amount to verify
-     * @param proof Merkle proof path
-     * @return valid Whether the proof is valid
+     * @notice Settle a DEX trade
+     * @dev All order matching happens off-chain in validators
+     * @param buyer Buyer address
+     * @param seller Seller address
+     * @param token Token being traded
+     * @param amount Amount of tokens
+     * @param orderId Off-chain order identifier
      */
-    function verifyProof(
-        address user,
+    function settleDEXTrade(
+        address buyer,
+        address seller,
+        address token,
         uint256 amount,
-        bytes32[] calldata proof
-    ) public view returns (bool valid) {
-        // Simplified verification - actual logic in MasterMerkleEngine
-        bytes32 leaf = keccak256(abi.encodePacked(user, amount));
-        bytes32 computedHash = leaf;
+        bytes32 orderId
+    ) external onlyRole(AVALANCHE_VALIDATOR_ROLE) {
+        if (buyer == address(0) || seller == address(0) || token == address(0)) {
+            revert InvalidAddress();
+        }
+        if (amount == 0) revert InvalidAmount();
         
-        for (uint256 i = 0; i < proof.length; ++i) {
-            bytes32 proofElement = proof[i];
-            if (computedHash < proofElement || computedHash == proofElement) {
-                computedHash = keccak256(abi.encodePacked(computedHash, proofElement));
-            } else {
-                computedHash = keccak256(abi.encodePacked(proofElement, computedHash));
+        // Simple balance transfer
+        if (dexBalances[seller][token] < amount) revert InvalidAmount();
+        
+        dexBalances[seller][token] -= amount;
+        dexBalances[buyer][token] += amount;
+        
+        emit DEXSettlement(buyer, seller, token, amount, orderId);
+    }
+    
+    /**
+     * @notice Batch settle multiple DEX trades
+     * @dev Efficient batch processing for gas optimization
+     * @param buyers Array of buyer addresses
+     * @param sellers Array of seller addresses
+     * @param tokens Array of token addresses
+     * @param amounts Array of amounts
+     * @param batchId Batch identifier
+     */
+    function batchSettleDEX(
+        address[] calldata buyers,
+        address[] calldata sellers,
+        address[] calldata tokens,
+        uint256[] calldata amounts,
+        bytes32 batchId
+    ) external onlyRole(AVALANCHE_VALIDATOR_ROLE) {
+        uint256 length = buyers.length;
+        if (length == 0 || length != sellers.length || 
+            length != tokens.length || length != amounts.length) {
+            revert InvalidAmount();
+        }
+        
+        for (uint256 i = 0; i < length; ++i) {
+            if (dexBalances[sellers[i]][tokens[i]] > amounts[i] || dexBalances[sellers[i]][tokens[i]] == amounts[i]) {
+                dexBalances[sellers[i]][tokens[i]] -= amounts[i];
+                dexBalances[buyers[i]][tokens[i]] += amounts[i];
             }
         }
         
-        return computedHash == masterRoot;
+        emit BatchSettlement(batchId, length);
+    }
+    
+    /**
+     * @notice Distribute DEX fees
+     * @dev Called by validators to distribute fees according to tokenomics
+     * @param token Fee token
+     * @param totalFee Total fee amount
+     * @param validator Validator processing the transaction
+     */
+    function distributeDEXFees(
+        address token,
+        uint256 totalFee,
+        address validator
+    ) external onlyRole(AVALANCHE_VALIDATOR_ROLE) {
+        if (totalFee == 0) return;
+        
+        // Calculate fee splits using basis points for precision
+        uint256 oddaoFee = (totalFee * ODDAO_FEE_BPS) / BASIS_POINTS;
+        uint256 stakingFee = (totalFee * STAKING_FEE_BPS) / BASIS_POINTS;
+        uint256 validatorFee = totalFee - oddaoFee - stakingFee; // Remainder to avoid rounding loss
+        
+        if (oddaoFee > 0) {
+            dexBalances[oddaoAddress][token] += oddaoFee;
+        }
+        if (stakingFee > 0) {
+            dexBalances[stakingPoolAddress][token] += stakingFee;
+        }
+        if (validatorFee > 0) {
+            dexBalances[validator][token] += validatorFee;
+        }
+    }
+    
+    /**
+     * @notice Deposit tokens to DEX
+     * @dev Simple deposit for trading
+     * @param token Token to deposit
+     * @param amount Amount to deposit
+     */
+    function depositToDEX(address token, uint256 amount) external nonReentrant {
+        if (token == address(0) || amount == 0) revert InvalidAmount();
+        
+        IERC20(token).safeTransferFrom(msg.sender, address(this), amount);
+        dexBalances[msg.sender][token] += amount;
+    }
+    
+    /**
+     * @notice Withdraw tokens from DEX
+     * @dev Simple withdrawal
+     * @param token Token to withdraw
+     * @param amount Amount to withdraw
+     */
+    function withdrawFromDEX(address token, uint256 amount) external nonReentrant {
+        if (amount == 0) revert InvalidAmount();
+        if (dexBalances[msg.sender][token] < amount) revert InvalidAmount();
+        
+        dexBalances[msg.sender][token] -= amount;
+        IERC20(token).safeTransfer(msg.sender, amount);
     }
 
     /**
@@ -316,5 +465,44 @@ contract OmniCore is AccessControl, ReentrancyGuard {
      */
     function getStake(address user) external view returns (Stake memory) {
         return stakes[user];
+    }
+    
+    /**
+     * @notice Get DEX balance for a user
+     * @param user User address
+     * @param token Token address
+     * @return balance DEX balance
+     */
+    function getDEXBalance(address user, address token) external view returns (uint256 balance) {
+        return dexBalances[user][token];
+    }
+
+    /**
+     * @notice Verify a merkle proof against the master root
+     * @dev Simplified verification - actual implementation in validators
+     * @param user User address
+     * @param amount Amount to verify
+     * @param proof Merkle proof path
+     * @return valid Whether the proof is valid
+     */
+    function verifyProof(
+        address user,
+        uint256 amount,
+        bytes32[] calldata proof
+    ) public view returns (bool valid) {
+        // Simplified verification - actual logic in MasterMerkleEngine
+        bytes32 leaf = keccak256(abi.encodePacked(user, amount));
+        bytes32 computedHash = leaf;
+        
+        for (uint256 i = 0; i < proof.length; ++i) {
+            bytes32 proofElement = proof[i];
+            if (computedHash < proofElement || computedHash == proofElement) {
+                computedHash = keccak256(abi.encodePacked(computedHash, proofElement));
+            } else {
+                computedHash = keccak256(abi.encodePacked(proofElement, computedHash));
+            }
+        }
+        
+        return computedHash == masterRoot;
     }
 }

@@ -18,9 +18,9 @@ describe("OmniCore", function () {
     token = await Token.deploy();
     await token.initialize();
     
-    // Deploy OmniCore
+    // Deploy OmniCore with all required constructor arguments
     const OmniCore = await ethers.getContractFactory("OmniCore");
-    core = await OmniCore.deploy(owner.address, token.target);
+    core = await OmniCore.deploy(owner.address, token.target, owner.address, owner.address);
     
     // Grant MINTER_ROLE to core contract so it can mint rewards
     await token.grantRole(await token.MINTER_ROLE(), core.target);

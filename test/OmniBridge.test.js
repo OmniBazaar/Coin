@@ -57,9 +57,9 @@ describe("OmniBridge", function () {
     privateToken = await PrivateToken.deploy();
     await privateToken.initialize();
     
-    // Deploy OmniCore
+    // Deploy OmniCore with all required constructor arguments
     const OmniCore = await ethers.getContractFactory("OmniCore");
-    core = await OmniCore.deploy(admin.address, token.target);
+    core = await OmniCore.deploy(admin.address, token.target, admin.address, admin.address);
     
     // Register services
     await core.connect(admin).setService(ethers.id("OMNICOIN"), token.target);

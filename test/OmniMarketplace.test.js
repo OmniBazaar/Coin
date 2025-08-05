@@ -15,9 +15,9 @@ describe("OmniMarketplace", function () {
     const token = await Token.deploy();
     await token.initialize();
     
-    // Deploy OmniCore
+    // Deploy OmniCore with all required constructor arguments
     const OmniCore = await ethers.getContractFactory("OmniCore");
-    core = await OmniCore.deploy(owner.address, token.target);
+    core = await OmniCore.deploy(owner.address, token.target, owner.address, owner.address);
     
     // Deploy OmniMarketplace
     const OmniMarketplace = await ethers.getContractFactory("OmniMarketplace");
