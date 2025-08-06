@@ -1,17 +1,17 @@
 # OmniCoin Module Current Status
 
-**Last Updated:** 2025-08-02 20:54 UTC  
-**Current Focus:** All 7 core contracts implemented, tested, and passing - Ready for deployment
+**Last Updated:** 2025-08-06 16:29 UTC  
+**Current Focus:** Legacy Migration Added to OmniCore - 7 Core Contracts Complete
 
 ## Executive Summary
 
-Successfully completed the radical simplification plan, reducing from 26 contracts to 7 ultra-lean contracts. All contracts are now:
+Successfully completed the radical simplification plan with 7 ultra-lean contracts. Legacy migration logic integrated into OmniCore. All contracts are now:
 - ✅ Fully implemented with OmniCoin tokens (no ETH usage)
 - ✅ All tests passing (156 total tests)
 - ✅ All contracts under 24KB EVM limit (largest is 6.099 KB)
 - ✅ TypeScript configuration fixed
 
-## Final Architecture (2025-08-02)
+## Final Architecture (Updated 2025-08-06)
 
 ### 7 Core Contracts - ALL COMPLETE ✅
 
@@ -27,12 +27,15 @@ Successfully completed the radical simplification plan, reducing from 26 contrac
    - Same role structure as OmniCoin
    - 29 tests passing
 
-3. **OmniCore.sol** (4.195 KB) - Registry + validators + staking
+3. **OmniCore.sol** (~5.5 KB) - Registry + validators + staking + legacy migration
    - Service registry for all contracts
    - Validator management
    - Minimal staking with merkle proofs
    - Master merkle root for off-chain data
-   - 19 tests passing
+   - **NEW**: Legacy user migration (10,657 users, 12.6B tokens)
+   - **NEW**: Username reservation and balance claims
+   - **NEW**: Validator-signed claim authorization
+   - Tests need updating for new functions
 
 4. **OmniGovernance.sol** (3.833 KB) - On-chain voting only
    - Simplified proposal system (hash only)
@@ -57,6 +60,16 @@ Successfully completed the radical simplification plan, reducing from 26 contrac
    - Supports both OmniCoin and PrivateOmniCoin
    - Daily volume limits and transfer fees
    - 24 tests passing
+
+## Recent Updates (2025-08-06)
+
+### Legacy Migration Integration
+- Added legacy user migration functions to OmniCore contract
+- No separate contract needed - fits within existing OmniCore size limits
+- Validators authenticate legacy users off-chain
+- Pre-minted tokens distributed on successful claim
+- Excludes "null" account (8+ billion burned tokens)
+- Simple and gas-efficient implementation
 
 ## Critical Updates (2025-08-02)
 

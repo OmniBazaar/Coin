@@ -75,6 +75,22 @@ contract OmniCore is AccessControl, ReentrancyGuard {
     
     /// @notice Staking pool address for receiving 20% of DEX fees
     address public stakingPoolAddress;
+    
+    // Legacy Migration State (added 2025-08-06)
+    /// @notice Reserved legacy usernames (username hash => reserved)
+    mapping(bytes32 => bool) public legacyUsernames;
+    
+    /// @notice Legacy balances to be claimed (username hash => amount in 18 decimals)
+    mapping(bytes32 => uint256) public legacyBalances;
+    
+    /// @notice Claimed legacy accounts (username hash => claim address)
+    mapping(bytes32 => address) public legacyClaimed;
+    
+    /// @notice Total legacy tokens to distribute
+    uint256 public totalLegacySupply;
+    
+    /// @notice Total legacy tokens claimed so far
+    uint256 public totalLegacyClaimed;
 
     // Events
     /// @notice Emitted when a service is registered or updated
@@ -95,6 +111,26 @@ contract OmniCore is AccessControl, ReentrancyGuard {
         address indexed validator,
         bool indexed active,
         uint256 indexed timestamp
+    );
+
+    /// @notice Emitted when a legacy balance is claimed
+    /// @param username Legacy username being claimed
+    /// @param claimAddress Address receiving the tokens
+    /// @param amount Amount of tokens claimed (18 decimals)
+    /// @param timestamp Block timestamp of claim
+    event LegacyBalanceClaimed(
+        string indexed username,
+        address indexed claimAddress,
+        uint256 indexed amount,
+        uint256 timestamp
+    );
+    
+    /// @notice Emitted when legacy users are registered
+    /// @param count Number of users registered
+    /// @param totalAmount Total amount reserved for distribution
+    event LegacyUsersRegistered(
+        uint256 indexed count,
+        uint256 indexed totalAmount
     );
 
     /// @notice Emitted when master merkle root is updated
@@ -154,6 +190,7 @@ contract OmniCore is AccessControl, ReentrancyGuard {
     // Custom errors
     error InvalidAddress();
     error InvalidAmount();
+    error InvalidSignature();
     error StakeNotFound();
     error StakeLocked();
     error InvalidProof();
@@ -504,5 +541,153 @@ contract OmniCore is AccessControl, ReentrancyGuard {
         }
         
         return computedHash == masterRoot;
+    }
+
+    // =============================================================================
+    // Legacy Migration Functions (Added 2025-08-06)
+    // =============================================================================
+    
+    /**
+     * @notice Register legacy users and their balances
+     * @dev Only callable by admin during initialization
+     * @param usernames Array of legacy usernames to reserve
+     * @param balances Array of balances in 18 decimal precision
+     */
+    function registerLegacyUsers(
+        string[] calldata usernames,
+        uint256[] calldata balances
+    ) external onlyRole(ADMIN_ROLE) {
+        if (usernames.length != balances.length) revert InvalidAmount();
+        if (usernames.length > 100) revert InvalidAmount(); // Gas limit protection
+        
+        uint256 totalAmount = 0;
+        
+        for (uint256 i = 0; i < usernames.length; ++i) {
+            bytes32 usernameHash = keccak256(abi.encodePacked(usernames[i]));
+            
+            // Skip if already registered
+            if (legacyUsernames[usernameHash]) continue;
+            
+            // Reserve username and store balance
+            legacyUsernames[usernameHash] = true;
+            legacyBalances[usernameHash] = balances[i];
+            totalAmount += balances[i];
+        }
+        
+        totalLegacySupply += totalAmount;
+        
+        emit LegacyUsersRegistered(usernames.length, totalAmount);
+    }
+    
+    /**
+     * @notice Claim legacy balance after off-chain validation
+     * @dev Validators verify legacy credentials off-chain before authorizing claim
+     * @param username Legacy username
+     * @param claimAddress Address to receive the tokens
+     * @param nonce Unique nonce to prevent replay
+     * @param signature Validator signature authorizing the claim
+     */
+    function claimLegacyBalance(
+        string calldata username,
+        address claimAddress,
+        bytes32 nonce,
+        bytes calldata signature
+    ) external nonReentrant {
+        if (claimAddress == address(0)) revert InvalidAddress();
+        
+        bytes32 usernameHash = keccak256(abi.encodePacked(username));
+        
+        // Check username is registered and not claimed
+        if (!legacyUsernames[usernameHash]) revert InvalidAddress();
+        if (legacyClaimed[usernameHash] != address(0)) revert InvalidAmount();
+        
+        // Verify validator signature
+        bytes32 messageHash = keccak256(abi.encodePacked(
+            username,
+            claimAddress,
+            nonce,
+            address(this),
+            block.chainid
+        ));
+        
+        bytes32 ethSignedMessageHash = keccak256(abi.encodePacked(
+            "\x19Ethereum Signed Message:\n32",
+            messageHash
+        ));
+        
+        address signer = _recoverSigner(ethSignedMessageHash, signature);
+        if (!validators[signer]) revert InvalidSignature();
+        
+        // Get balance and mark as claimed
+        uint256 amount = legacyBalances[usernameHash];
+        legacyClaimed[usernameHash] = claimAddress;
+        totalLegacyClaimed += amount;
+        
+        // Transfer tokens (must be pre-minted to this contract)
+        OMNI_COIN.safeTransfer(claimAddress, amount);
+        
+        emit LegacyBalanceClaimed(
+            username,
+            claimAddress,
+            amount,
+            block.timestamp // solhint-disable-line not-rely-on-time
+        );
+    }
+    
+    /**
+     * @notice Check if a legacy username is available
+     * @param username Username to check
+     * @return available True if not reserved by legacy system
+     */
+    function isUsernameAvailable(string calldata username) external view returns (bool available) {
+        bytes32 usernameHash = keccak256(abi.encodePacked(username));
+        return !legacyUsernames[usernameHash];
+    }
+    
+    /**
+     * @notice Get legacy migration status for a username
+     * @param username Legacy username
+     * @return reserved Whether username is reserved
+     * @return balance Legacy balance to claim
+     * @return claimed Whether balance has been claimed
+     * @return claimAddress Address that claimed (if any)
+     */
+    function getLegacyStatus(string calldata username) external view returns (
+        bool reserved,
+        uint256 balance,
+        bool claimed,
+        address claimAddress
+    ) {
+        bytes32 usernameHash = keccak256(abi.encodePacked(username));
+        reserved = legacyUsernames[usernameHash];
+        balance = legacyBalances[usernameHash];
+        claimAddress = legacyClaimed[usernameHash];
+        claimed = (claimAddress != address(0));
+    }
+    
+    /**
+     * @notice Internal function to recover signer from signature
+     * @param messageHash Hash of the signed message
+     * @param signature Signature bytes
+     * @return Recovered signer address
+     */
+    function _recoverSigner(
+        bytes32 messageHash,
+        bytes memory signature
+    ) internal pure returns (address) {
+        if (signature.length != 65) revert InvalidSignature();
+        
+        bytes32 r;
+        bytes32 s;
+        uint8 v;
+        
+        // solhint-disable-next-line no-inline-assembly
+        assembly {
+            r := mload(add(signature, 32))
+            s := mload(add(signature, 64))
+            v := byte(0, mload(add(signature, 96)))
+        }
+        
+        return ecrecover(messageHash, v, r, s);
     }
 }
