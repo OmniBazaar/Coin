@@ -1,25 +1,28 @@
 # OmniCoin Module Current Status
 
-**Last Updated:** 2025-08-06 16:29 UTC  
-**Current Focus:** Legacy Migration Added to OmniCore - 7 Core Contracts Complete
+**Last Updated:** 2025-08-08 16:15 UTC  
+**Current Focus:** Marketplace Contract Removed - Pure P2P Architecture
 
 ## Executive Summary
 
-Successfully completed the radical simplification plan with 7 ultra-lean contracts. Legacy migration logic integrated into OmniCore. All contracts are now:
-- ✅ Fully implemented with OmniCoin tokens (no ETH usage)
-- ✅ All tests passing (156 total tests)
-- ✅ All contracts under 24KB EVM limit (largest is 6.099 KB)
-- ✅ TypeScript configuration fixed
+Major architectural decision implemented: **OmniMarketplace.sol removed entirely** in favor of pure P2P marketplace with zero on-chain listing storage. Now have 6 core contracts with simplified fee distribution through batch transfers.
 
-## Final Architecture (Updated 2025-08-06)
+Key changes:
+- ✅ OmniMarketplace.sol REMOVED (no on-chain listings)
+- ✅ Added simple batchTransfer to OmniCoin for fee splits
+- ✅ All fee calculations moved off-chain
+- ✅ True P2P marketplace with no middleman role
 
-### 7 Core Contracts - ALL COMPLETE ✅
+## Current Architecture (Updated 2025-08-08)
+
+### 6 Core Contracts
 
 1. **OmniCoin.sol** (6.099 KB) - Core ERC20 token
    - Standard ERC20 with mint/burn capabilities
    - Role-based access control
    - Pausable functionality
-   - 32 tests passing
+   - **NEW**: batchTransfer for multi-recipient payments
+   - 32 tests passing (needs update for batchTransfer)
 
 2. **PrivateOmniCoin.sol** (4.290 KB) - Privacy wrapper for COTI
    - ERC20 compatible privacy token
@@ -32,10 +35,10 @@ Successfully completed the radical simplification plan with 7 ultra-lean contrac
    - Validator management
    - Minimal staking with merkle proofs
    - Master merkle root for off-chain data
-   - **NEW**: Legacy user migration (10,657 users, 12.6B tokens)
-   - **NEW**: Username reservation and balance claims
-   - **NEW**: Validator-signed claim authorization
-   - Tests need updating for new functions
+   - Legacy user migration (10,657 users, 12.6B tokens)
+   - Username reservation and balance claims
+   - Validator-signed claim authorization
+   - Tests need updating
 
 4. **OmniGovernance.sol** (3.833 KB) - On-chain voting only
    - Simplified proposal system (hash only)
@@ -43,11 +46,10 @@ Successfully completed the radical simplification plan with 7 ultra-lean contrac
    - 4% quorum requirement
    - 13 tests passing
 
-5. **OmniMarketplace.sol** (1.423 KB) - Minimal listing storage
-   - Only stores listing hashes
-   - All data off-chain
-   - Integrates with escrow for payments
-   - 16 tests passing
+5. **~~OmniMarketplace.sol~~** - **REMOVED**
+   - All listing data now off-chain in P2P network
+   - Purchases via direct token transfers with fee splits
+   - No gas fees for listings
 
 6. **MinimalEscrow.sol** (4.266 KB) - 2-of-3 multisig escrow
    - Uses OmniCoin tokens exclusively (not ETH)

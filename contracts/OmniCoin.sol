@@ -89,6 +89,28 @@ contract OmniCoin is ERC20, ERC20Burnable, ERC20Pausable, ERC20Permit, AccessCon
     }
     
     /**
+     * @notice Batch transfer to multiple recipients
+     * @dev Useful for marketplace fee splits - saves gas vs multiple transfers
+     * @param recipients Array of recipient addresses
+     * @param amounts Array of amounts to send to each recipient
+     * @return success Whether all transfers succeeded
+     */
+    function batchTransfer(
+        address[] calldata recipients,
+        uint256[] calldata amounts
+    ) external whenNotPaused returns (bool success) {
+        require(recipients.length == amounts.length, "Arrays length mismatch");
+        require(recipients.length <= 10, "Too many recipients"); // Prevent gas issues
+        
+        for (uint256 i = 0; i < recipients.length; i++) {
+            require(recipients[i] != address(0), "Invalid recipient");
+            _transfer(msg.sender, recipients[i], amounts[i]);
+        }
+        
+        return true;
+    }
+    
+    /**
      * @notice Override required for multiple inheritance
      * @dev Applies pausable check before transfers
      */

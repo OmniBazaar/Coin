@@ -1,14 +1,13 @@
 const fs = require('fs');
 const path = require('path');
 
-// Current contracts (7 remaining)
+// Current contracts (6 remaining - OmniMarketplace removed)
 const currentContracts = [
   'MinimalEscrow',
   'OmniBridge', 
   'OmniCoin',
   'OmniCore',
   'OmniGovernance',
-  'OmniMarketplace',
   'PrivateOmniCoin'
 ];
 

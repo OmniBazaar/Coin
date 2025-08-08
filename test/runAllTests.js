@@ -10,7 +10,6 @@ const testCategories = {
   ],
   'Business Logic': [
     'test/MinimalEscrow.test.js',
-    'test/OmniMarketplace.test.js',
     'test/OmniGovernance.test.js'
   ],
   'Cross-Chain': [
