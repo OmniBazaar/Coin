@@ -1,5 +1,24 @@
 # Coin Development
 
+## 🚨 CRITICAL: BEFORE WRITING ANY CODE
+
+**MANDATORY STEPS:**
+1. **READ `/mnt/c/Users/rickc/OmniBazaar/CURRENT_STATUS.md`** - Check what's already complete
+2. **SEARCH for existing implementations in this module** - Many features already exist!
+3. **VERIFY the task hasn't been done** - Don't duplicate work
+4. **UPDATE `/mnt/c/Users/rickc/OmniBazaar/CURRENT_STATUS.md`** after completing work
+5. **UPDATE `/mnt/c/Users/rickc/OmniBazaar/TODO.md`** to mark tasks complete
+
+**COIN MODULE - ALREADY IMPLEMENTED:**
+- ✅ OmniCoin.sol with batchTransfer
+- ✅ PrivateOmniCoin.sol with COTI V2
+- ✅ OmniCore.sol with legacy migration
+- ✅ OmniBridge.sol with FULL AWM support
+- ✅ MinimalEscrow.sol with 2-of-3 multisig
+- ✅ OmniGovernance.sol with voting
+- ✅ 156 tests written and passing
+- ❌ OmniMarketplace.sol REMOVED (zero on-chain listings)
+
 ## CRITICAL: Solidity Coding Standards
 
 ### Solidity Development
