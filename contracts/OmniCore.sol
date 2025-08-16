@@ -25,6 +25,16 @@ contract OmniCore is AccessControl, ReentrancyGuard {
         bool active;
     }
 
+    /// @notice Node info for discovery
+    struct NodeInfo {
+        string httpEndpoint;
+        string wsEndpoint;
+        string region;
+        uint8 nodeType; // 0=gateway, 1=computation, 2=listing
+        bool active;
+        uint256 lastUpdate;
+    }
+
     // Constants
     /// @notice Admin role for governance operations
     bytes32 public constant ADMIN_ROLE = keccak256("ADMIN_ROLE");
@@ -75,6 +85,19 @@ contract OmniCore is AccessControl, ReentrancyGuard {
     
     /// @notice Staking pool address for receiving 20% of DEX fees
     address public stakingPoolAddress;
+    
+    // Node Discovery Registry State (added 2025-08-16)
+    /// @notice Registry of node endpoints for discovery
+    mapping(address => NodeInfo) public nodeRegistry;
+    
+    /// @notice Count of active nodes by type
+    mapping(uint8 => uint256) public activeNodeCounts;
+    
+    /// @notice List of all registered node addresses
+    address[] public registeredNodes;
+    
+    /// @notice Mapping to track node address index in array
+    mapping(address => uint256) public nodeIndex;
     
     // Legacy Migration State (added 2025-08-06)
     /// @notice Reserved legacy usernames (username hash => reserved)
@@ -187,6 +210,26 @@ contract OmniCore is AccessControl, ReentrancyGuard {
         uint256 indexed count
     );
 
+    /// @notice Emitted when a node registers or updates its endpoints
+    /// @param nodeAddress Address of the node
+    /// @param nodeType Type of node (0=gateway, 1=computation, 2=listing)
+    /// @param httpEndpoint HTTP endpoint URL
+    /// @param active Whether node is active
+    event NodeRegistered(
+        address indexed nodeAddress,
+        uint8 indexed nodeType,
+        string httpEndpoint,
+        bool indexed active
+    );
+
+    /// @notice Emitted when a node is deactivated
+    /// @param nodeAddress Address of the node
+    /// @param reason Reason for deactivation
+    event NodeDeactivated(
+        address indexed nodeAddress,
+        string reason
+    );
+
     // Custom errors
     error InvalidAddress();
     error InvalidAmount();
@@ -265,6 +308,189 @@ contract OmniCore is AccessControl, ReentrancyGuard {
         masterRoot = newRoot;
         lastRootUpdate = epoch;
         emit MasterRootUpdated(newRoot, epoch, block.timestamp); // solhint-disable-line not-rely-on-time
+    }
+
+    // =============================================================================
+    // Node Discovery Registry Functions (Added 2025-08-16)
+    // =============================================================================
+
+    /**
+     * @notice Register or update node endpoints for discovery
+     * @dev Nodes self-register their endpoints, no expensive heartbeats required
+     * @param httpEndpoint HTTP endpoint URL (e.g. "https://node1.omnibazaar.com")
+     * @param wsEndpoint WebSocket endpoint URL (optional)
+     * @param region Geographic region code (e.g. "US", "EU", "ASIA")
+     * @param nodeType Type of node: 0=gateway, 1=computation, 2=listing
+     */
+    function registerNode(
+        string calldata httpEndpoint,
+        string calldata wsEndpoint,
+        string calldata region,
+        uint8 nodeType
+    ) external {
+        if (nodeType > 2) revert InvalidAmount();
+        if (bytes(httpEndpoint).length == 0) revert InvalidAddress();
+        
+        NodeInfo storage info = nodeRegistry[msg.sender];
+        
+        // If first time registration, add to array
+        if (bytes(info.httpEndpoint).length == 0) {
+            nodeIndex[msg.sender] = registeredNodes.length;
+            registeredNodes.push(msg.sender);
+        }
+        
+        // Update active count if status changes
+        if (!info.active && nodeType < 3) {
+            ++activeNodeCounts[nodeType];
+        }
+        
+        // Update node info
+        info.httpEndpoint = httpEndpoint;
+        info.wsEndpoint = wsEndpoint;
+        info.region = region;
+        info.nodeType = nodeType;
+        info.active = true;
+        info.lastUpdate = block.timestamp; // solhint-disable-line not-rely-on-time
+        
+        emit NodeRegistered(msg.sender, nodeType, httpEndpoint, true);
+    }
+
+    /**
+     * @notice Deactivate a node (self-deactivation)
+     * @dev Nodes can deactivate themselves when going offline
+     * @param reason Reason for deactivation
+     */
+    function deactivateNode(string calldata reason) external {
+        NodeInfo storage info = nodeRegistry[msg.sender];
+        
+        if (!info.active) revert InvalidAddress();
+        
+        info.active = false;
+        
+        // Update active count
+        if (info.nodeType < 3) {
+            if (activeNodeCounts[info.nodeType] > 0) {
+                --activeNodeCounts[info.nodeType];
+            }
+        }
+        
+        emit NodeDeactivated(msg.sender, reason);
+    }
+
+    /**
+     * @notice Admin force-deactivate a node
+     * @dev Only admin can force deactivate misbehaving nodes
+     * @param nodeAddress Address of the node to deactivate
+     * @param reason Reason for deactivation
+     */
+    function adminDeactivateNode(
+        address nodeAddress, 
+        string calldata reason
+    ) external onlyRole(ADMIN_ROLE) {
+        NodeInfo storage info = nodeRegistry[nodeAddress];
+        
+        if (!info.active) revert InvalidAddress();
+        
+        info.active = false;
+        
+        // Update active count
+        if (info.nodeType < 3) {
+            if (activeNodeCounts[info.nodeType] > 0) {
+                --activeNodeCounts[info.nodeType];
+            }
+        }
+        
+        emit NodeDeactivated(nodeAddress, reason);
+    }
+
+    /**
+     * @notice Get active nodes by type
+     * @dev Returns array of active node addresses of specified type
+     * @param nodeType Type of nodes to retrieve (0=gateway, 1=computation, 2=listing)
+     * @param limit Maximum number of nodes to return (gas optimization)
+     * @return nodes Array of active node addresses
+     */
+    function getActiveNodes(
+        uint8 nodeType,
+        uint256 limit
+    ) external view returns (address[] memory nodes) {
+        if (nodeType > 2) revert InvalidAmount();
+        
+        uint256 count = 0;
+        uint256 maxCount = limit;
+        if (maxCount > registeredNodes.length) {
+            maxCount = registeredNodes.length;
+        }
+        
+        // Count active nodes of this type
+        for (uint256 i = 0; i < registeredNodes.length && count < maxCount; ++i) {
+            NodeInfo storage info = nodeRegistry[registeredNodes[i]];
+            if (info.active && info.nodeType == nodeType) {
+                ++count;
+            }
+        }
+        
+        // Allocate array
+        nodes = new address[](count);
+        uint256 index = 0;
+        
+        // Fill array
+        for (uint256 i = 0; i < registeredNodes.length && index < count; ++i) {
+            NodeInfo storage info = nodeRegistry[registeredNodes[i]];
+            if (info.active && info.nodeType == nodeType) {
+                nodes[index] = registeredNodes[i];
+                ++index;
+            }
+        }
+        
+        return nodes;
+    }
+
+    /**
+     * @notice Get node information
+     * @param nodeAddress Address of the node
+     * @return httpEndpoint HTTP endpoint URL
+     * @return wsEndpoint WebSocket endpoint URL
+     * @return region Geographic region
+     * @return nodeType Type of node
+     * @return active Whether node is active
+     * @return lastUpdate Last update timestamp
+     */
+    function getNodeInfo(address nodeAddress) external view returns (
+        string memory httpEndpoint,
+        string memory wsEndpoint,
+        string memory region,
+        uint8 nodeType,
+        bool active,
+        uint256 lastUpdate
+    ) {
+        NodeInfo storage info = nodeRegistry[nodeAddress];
+        return (
+            info.httpEndpoint,
+            info.wsEndpoint,
+            info.region,
+            info.nodeType,
+            info.active,
+            info.lastUpdate
+        );
+    }
+
+    /**
+     * @notice Get count of active nodes by type
+     * @param nodeType Type of nodes (0=gateway, 1=computation, 2=listing)
+     * @return count Number of active nodes
+     */
+    function getActiveNodeCount(uint8 nodeType) external view returns (uint256 count) {
+        if (nodeType > 2) revert InvalidAmount();
+        return activeNodeCounts[nodeType];
+    }
+
+    /**
+     * @notice Get total registered node count
+     * @return count Total number of registered nodes (active and inactive)
+     */
+    function getTotalNodeCount() external view returns (uint256 count) {
+        return registeredNodes.length;
     }
 
     /**
