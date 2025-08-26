@@ -12,6 +12,17 @@ contract MockWarpMessenger {
         bytes payload;
     }
     
+    struct WarpBlockHash {
+        bytes32 sourceChainID;
+        bytes32 blockHash;
+    }
+    
+    event SendWarpMessage(
+        address indexed sender,
+        bytes32 indexed messageID,
+        bytes message
+    );
+    
     bytes32 public mockBlockchainID = keccak256("test-chain");
     WarpMessage[] public messages;
     mapping(bytes32 => uint32) public messageIndices;
@@ -33,6 +44,8 @@ contract MockWarpMessenger {
         messageIndices[messageId] = messageCounter;
         messageCounter++;
         
+        emit SendWarpMessage(msg.sender, messageId, payload);
+        
         return messageId;
     }
     
@@ -50,5 +63,14 @@ contract MockWarpMessenger {
             originSenderAddress: originSenderAddress,
             payload: payload
         }));
+    }
+    
+    function getVerifiedWarpBlockHash(uint32 /* index */) external view returns (WarpBlockHash memory warpBlockHash, bool valid) {
+        // Mock implementation - return dummy data
+        warpBlockHash = WarpBlockHash({
+            sourceChainID: mockBlockchainID,
+            blockHash: blockhash(block.number - 1)
+        });
+        valid = true;
     }
 }
