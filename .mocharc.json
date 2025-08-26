@@ -1,0 +1,8 @@
+{
+  "exclude": [
+    "test/deprecated/**/*.js",
+    "test/deprecated/**/*.test.js"
+  ],
+  "timeout": 100000,
+  "parallel": false
+}
