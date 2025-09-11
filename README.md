@@ -64,10 +64,14 @@ git clone https://github.com/your-org/omnicoin.git
 cd omnicoin
 ```
 
-1. Install dependencies:
+2. Install dependencies:
 
 ```bash
+# From OmniBazaar root directory
+cd ..
 npm install
+
+# Note: Dependencies are now managed at the root level in /home/rickc/OmniBazaar/node_modules
 ```
 
 1. Create a `.env` file in the root directory with the following variables:
@@ -140,6 +144,35 @@ The contracts are designed to work together seamlessly:
 - Access control using OpenZeppelin's roles
 - Reentrancy protection
 - Pausable functionality for emergency situations
+
+## Integration Testing
+
+The Coin module is integrated with the OmniBazaar test suite:
+
+### Cross-Module Integration Testing
+
+```bash
+# Run all integration tests from OmniBazaar root
+cd /home/rickc/OmniBazaar
+npm run test:integration
+
+# Run coin-specific integration tests
+npm run test:integration -- coin
+
+# Run cross-module tests involving smart contracts
+npm run test:integration -- cross-module
+```
+
+### Integration Test Categories
+
+- **Smart Contract Integration**: Tests contract interactions across modules
+- **Bridge Testing**: Tests cross-chain functionality with Avalanche and COTI
+- **DEX Integration**: Tests token operations with DEX module
+- **Wallet Integration**: Tests wallet interactions with smart contracts
+
+For detailed integration testing documentation, see:
+- [Integration Test Suite](/home/rickc/OmniBazaar/tests/integration/README.md)
+- [Cross-Module Testing](/home/rickc/OmniBazaar/tests/integration/features/cross-module)
 
 ## Testing
 
