@@ -77,7 +77,7 @@ async function main() {
   
   for (const update of updates) {
     const tx = await registry.setContract(
-      ethers.utils.id(update.name),
+      ethers.id(update.name),
       update.address
     );
     await tx.wait();
@@ -138,7 +138,7 @@ async function main() {
   console.log("\n7. Verifying deployment...");
   
   for (const update of updates) {
-    const registered = await registry.getContract(ethers.utils.id(update.name));
+    const registered = await registry.getContract(ethers.id(update.name));
     const isCorrect = registered === update.address;
     console.log(`- Registry has ${update.name}:`, isCorrect ? "✓" : "✗");
     if (!isCorrect) {

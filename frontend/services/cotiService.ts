@@ -180,14 +180,14 @@ export class CotiService {
    * Format units for display
    */
   formatUnits(value: ethers.BigNumber, decimals: number = 18): string {
-    return ethers.utils.formatUnits(value, decimals);
+    return ethers.formatUnits(value, decimals);
   }
   
   /**
    * Parse units from string
    */
   parseUnits(value: string, decimals: number = 18): ethers.BigNumber {
-    return ethers.utils.parseUnits(value, decimals);
+    return ethers.parseUnits(value, decimals);
   }
   
   /**

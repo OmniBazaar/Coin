@@ -86,7 +86,7 @@ async function main() {
     50,
     30 * 24 * 60 * 60, // 30 days validity
     "consultation-hours",
-    ethers.utils.parseUnits("100", 6) // 100 XOM per hour
+    ethers.parseUnits("100", 6) // 100 XOM per hour
   );
   receipt = await tx.wait();
   event = receipt.events.find(e => e.event === "TokenCreated");

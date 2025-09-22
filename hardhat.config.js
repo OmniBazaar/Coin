@@ -1,6 +1,7 @@
 require("@nomicfoundation/hardhat-toolbox");
 require("@openzeppelin/hardhat-upgrades");
 require("hardhat-contract-sizer");
+require("@typechain/hardhat");
 require("dotenv").config();
 
 /** @type import('hardhat/config').HardhatUserConfig */
@@ -58,5 +59,10 @@ module.exports = {
   },
   mocha: {
     timeout: 100000
+  },
+  gasReporter: {
+    enabled: process.env.REPORT_GAS !== undefined,
+    currency: "USD",
+    gasPrice: 30
   }
 };

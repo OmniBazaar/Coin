@@ -50,19 +50,19 @@ async function main() {
     // 6. Register contracts in registry
     console.log("\nRegistering contracts...");
     await registry.registerContract(
-        hre.ethers.utils.keccak256(hre.ethers.utils.toUtf8Bytes("OMNICOIN")),
+        hre.ethers.keccak256(hre.ethers.toUtf8Bytes("OMNICOIN")),
         omniCoin.address,
         "OmniCoin public token"
     );
     
     await registry.registerContract(
-        hre.ethers.utils.keccak256(hre.ethers.utils.toUtf8Bytes("PRIVATE_OMNICOIN")),
+        hre.ethers.keccak256(hre.ethers.toUtf8Bytes("PRIVATE_OMNICOIN")),
         privateOmniCoin.address,
         "PrivateOmniCoin encrypted token"
     );
     
     await registry.registerContract(
-        hre.ethers.utils.keccak256(hre.ethers.utils.toUtf8Bytes("OMNICOIN_BRIDGE")),
+        hre.ethers.keccak256(hre.ethers.toUtf8Bytes("OMNICOIN_BRIDGE")),
         bridge.address,
         "Privacy bridge"
     );
@@ -72,19 +72,19 @@ async function main() {
     
     // Grant bridge role on private token
     await privateOmniCoin.grantRole(
-        hre.ethers.utils.keccak256(hre.ethers.utils.toUtf8Bytes("BRIDGE_ROLE")),
+        hre.ethers.keccak256(hre.ethers.toUtf8Bytes("BRIDGE_ROLE")),
         bridge.address
     );
     
     // Grant bridge role on public token for burnFrom
     await omniCoin.grantRole(
-        hre.ethers.utils.keccak256(hre.ethers.utils.toUtf8Bytes("BRIDGE_ROLE")),
+        hre.ethers.keccak256(hre.ethers.toUtf8Bytes("BRIDGE_ROLE")),
         bridge.address
     );
     
     // Grant fee manager role to bridge
     await feeManager.grantRole(
-        hre.ethers.utils.keccak256(hre.ethers.utils.toUtf8Bytes("FEE_MANAGER_ROLE")),
+        hre.ethers.keccak256(hre.ethers.toUtf8Bytes("FEE_MANAGER_ROLE")),
         bridge.address
     );
     
@@ -102,14 +102,14 @@ async function main() {
     
     // Check balances
     const deployerBalance = await omniCoin.balanceOf(deployer.address);
-    console.log("Deployer XOM balance:", hre.ethers.utils.formatUnits(deployerBalance, 6));
+    console.log("Deployer XOM balance:", hre.ethers.formatUnits(deployerBalance, 6));
     
     // Test conversion to private
-    const convertAmount = hre.ethers.utils.parseUnits("100", 6); // 100 XOM
+    const convertAmount = hre.ethers.parseUnits("100", 6); // 100 XOM
     
     // Approve bridge
     await omniCoin.approve(bridge.address, convertAmount);
-    console.log("Approved bridge to spend", hre.ethers.utils.formatUnits(convertAmount, 6), "XOM");
+    console.log("Approved bridge to spend", hre.ethers.formatUnits(convertAmount, 6), "XOM");
     
     // Convert to private
     const tx = await bridge.convertToPrivate(convertAmount);
@@ -119,7 +119,7 @@ async function main() {
     // Check fee
     const fee = await bridge.bridgeFee();
     const expectedPrivate = convertAmount.mul(10000 - fee).div(10000);
-    console.log("Expected pXOM received:", hre.ethers.utils.formatUnits(expectedPrivate, 6));
+    console.log("Expected pXOM received:", hre.ethers.formatUnits(expectedPrivate, 6));
     
     console.log("\n✅ Dual-token system deployed and tested successfully!");
 }

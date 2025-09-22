@@ -35,17 +35,20 @@ This comprehensive test suite covers all OmniCoin contracts including the new ER
 ## Running Tests
 
 ### Prerequisites
+
 ```bash
 npm install
 npx hardhat compile
 ```
 
 ### Run All Tests
+
 ```bash
 node test/runAllTests.js
 ```
 
 ### Run Category Tests
+
 ```bash
 # Core contracts only
 npx hardhat test test/OmniCoin*.test.js
@@ -58,11 +61,13 @@ node test/privacy/runAllPrivacyTests.js
 ```
 
 ### Run Individual Test
+
 ```bash
 npx hardhat test test/OmniERC1155.test.js
 ```
 
 ### Run with Coverage
+
 ```bash
 npx hardhat coverage
 ```
@@ -80,7 +85,8 @@ npx hardhat node
 Required for full privacy functionality testing.
 
 Create `.env` file:
-```
+
+```text
 COTI_TESTNET_RPC=https://testnet.coti.io
 PRIVATE_KEY=your_private_key
 MPC_ENABLED=true
@@ -89,14 +95,15 @@ MPC_ENABLED=true
 ## Writing New Tests
 
 ### Test Structure Template
+
 ```javascript
 describe("ContractName", function () {
     let contract, owner, user1, user2;
-    
+
     beforeEach(async function () {
         // Setup code
     });
-    
+
     describe("Feature Category", function () {
         it("Should perform specific action", async function () {
             // Test implementation
@@ -108,6 +115,7 @@ describe("ContractName", function () {
 ### Key Testing Patterns
 
 #### 1. Dual-Token Testing
+
 ```javascript
 // Test both public and private token paths
 for (const usePrivacy of [false, true]) {
@@ -118,14 +126,16 @@ for (const usePrivacy of [false, true]) {
 ```
 
 #### 2. Registry Integration
+
 ```javascript
 // Always use registry for contract discovery
-const tokenAddress = usePrivacy ? 
+const tokenAddress = usePrivacy ?
     await registry.getContract(registry.PRIVATE_OMNICOIN()) :
     await registry.getContract(registry.OMNICOIN());
 ```
 
 #### 3. ERC-1155 Testing
+
 ```javascript
 // Test different token types
 const TokenType = {
@@ -173,12 +183,14 @@ const TokenType = {
 ## Debugging Tests
 
 ### Enable Detailed Logging
+
 ```javascript
 const { ethers } = require("hardhat");
 ethers.utils.Logger.setLogLevel(ethers.utils.Logger.levels.DEBUG);
 ```
 
 ### Gas Usage Analysis
+
 ```javascript
 const tx = await contract.someMethod();
 const receipt = await tx.wait();
@@ -186,6 +198,7 @@ console.log("Gas used:", receipt.gasUsed.toString());
 ```
 
 ### Event Verification
+
 ```javascript
 await expect(contract.someMethod())
     .to.emit(contract, "EventName")
@@ -195,6 +208,7 @@ await expect(contract.someMethod())
 ## Continuous Integration
 
 ### GitHub Actions Configuration
+
 ```yaml
 name: Test Suite
 on: [push, pull_request]

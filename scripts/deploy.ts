@@ -26,28 +26,28 @@ async function main() {
 
     // Set token economics
     await config.setTokenEconomics(
-        ethers.utils.parseUnits("1000000000", 6), // 1 billion tokens
-        ethers.utils.parseUnits("1000", 6), // 1000 tokens per block
-        ethers.utils.parseUnits("2000000000", 6) // 2 billion max supply
+        ethers.parseUnits("1000000000", 6), // 1 billion tokens
+        ethers.parseUnits("1000", 6), // 1000 tokens per block
+        ethers.parseUnits("2000000000", 6) // 2 billion max supply
     );
 
     // Add staking tiers
     await config.addStakingTier(
-        ethers.utils.parseUnits("1000", 6),
+        ethers.parseUnits("1000", 6),
         100, // 1x multiplier
         30 * 24 * 60 * 60, // 30 days
         10 // 10% penalty
     );
 
     await config.addStakingTier(
-        ethers.utils.parseUnits("10000", 6),
+        ethers.parseUnits("10000", 6),
         150, // 1.5x multiplier
         90 * 24 * 60 * 60, // 90 days
         15 // 15% penalty
     );
 
     await config.addStakingTier(
-        ethers.utils.parseUnits("100000", 6),
+        ethers.parseUnits("100000", 6),
         200, // 2x multiplier
         180 * 24 * 60 * 60, // 180 days
         20 // 20% penalty
@@ -55,9 +55,9 @@ async function main() {
 
     // Set governance parameters
     await config.setGovernanceParams(
-        ethers.utils.parseUnits("10000", 6), // 10k tokens for governance
+        ethers.parseUnits("10000", 6), // 10k tokens for governance
         50, // 50 participation score
-        ethers.utils.parseUnits("100000", 6), // 100k tokens for proposal
+        ethers.parseUnits("100000", 6), // 100k tokens for proposal
         3 * 24 * 60 * 60, // 3 days voting period
         20 // 20% quorum
     );

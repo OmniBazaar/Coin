@@ -5,10 +5,10 @@ const chalk = require('chalk');
 const CONFIG = {
   baseURI: "https://omnibazaar.com/metadata/",
   registryIdentifiers: {
-    OMNI_ERC1155: ethers.utils.keccak256(ethers.utils.toUtf8Bytes("OMNI_ERC1155")),
-    UNIFIED_NFT_MARKETPLACE: ethers.utils.keccak256(ethers.utils.toUtf8Bytes("UNIFIED_NFT_MARKETPLACE")),
-    ERC1155_BRIDGE: ethers.utils.keccak256(ethers.utils.toUtf8Bytes("ERC1155_BRIDGE")),
-    SERVICE_TOKEN_EXAMPLES: ethers.utils.keccak256(ethers.utils.toUtf8Bytes("SERVICE_TOKEN_EXAMPLES"))
+    OMNI_ERC1155: ethers.keccak256(ethers.toUtf8Bytes("OMNI_ERC1155")),
+    UNIFIED_NFT_MARKETPLACE: ethers.keccak256(ethers.toUtf8Bytes("UNIFIED_NFT_MARKETPLACE")),
+    ERC1155_BRIDGE: ethers.keccak256(ethers.toUtf8Bytes("ERC1155_BRIDGE")),
+    SERVICE_TOKEN_EXAMPLES: ethers.keccak256(ethers.toUtf8Bytes("SERVICE_TOKEN_EXAMPLES"))
   }
 };
 
@@ -21,7 +21,7 @@ async function main() {
   console.log(chalk.yellow("Deploying contracts with account:"), deployer.address);
   
   const balance = await deployer.getBalance();
-  console.log(chalk.yellow("Account balance:"), ethers.utils.formatEther(balance), "ETH\n");
+  console.log(chalk.yellow("Account balance:"), ethers.formatEther(balance), "ETH\n");
 
   // Step 1: Get Registry address
   const registryAddress = process.env.REGISTRY_ADDRESS;

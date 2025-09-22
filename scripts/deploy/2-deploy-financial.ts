@@ -79,7 +79,7 @@ async function main() {
   
   for (const update of updates) {
     const tx = await registry.setContract(
-      ethers.utils.id(update.name),
+      ethers.id(update.name),
       update.address
     );
     await tx.wait();
@@ -95,7 +95,7 @@ async function main() {
   await configTx.wait();
   console.log("- Set staking reward rate to 1%");
   
-  configTx = await staking.setMinStakingAmount(ethers.utils.parseUnits("100", 6)); // 100 XOM minimum
+  configTx = await staking.setMinStakingAmount(ethers.parseUnits("100", 6)); // 100 XOM minimum
   await configTx.wait();
   console.log("- Set minimum staking amount to 100 XOM");
   
@@ -116,7 +116,7 @@ async function main() {
   console.log("\n7. Verifying deployment...");
   
   for (const update of updates) {
-    const registered = await registry.getContract(ethers.utils.id(update.name));
+    const registered = await registry.getContract(ethers.id(update.name));
     console.log(`- Registry has ${update.name}:`, registered === update.address ? "✓" : "✗");
   }
   
@@ -127,7 +127,7 @@ async function main() {
   try {
     const escrow = await ethers.getContractAt("OmniCoinEscrow", escrowAddress);
     const minDeposit = await escrow.minEscrowAmount();
-    console.log("- Escrow minimum deposit:", ethers.utils.formatUnits(minDeposit, 6), "XOM ✓");
+    console.log("- Escrow minimum deposit:", ethers.formatUnits(minDeposit, 6), "XOM ✓");
   } catch (error) {
     console.log("- Escrow test failed:", error.message);
   }

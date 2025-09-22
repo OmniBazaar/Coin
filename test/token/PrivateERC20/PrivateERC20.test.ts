@@ -1,8 +1,8 @@
 import hre from "hardhat"
 import { expect } from "chai"
 
-import { setupAccounts } from "../../utils/accounts"
-import { PrivateERC20Mock, PrivateERC20WalletMock } from "../../../typechain-types"
+import { setupAccounts } from "../../utils/accounts.js"
+import { PrivateERC20Mock, PrivateERC20WalletMock } from "../../../typechain-types/coti"
 import { itUint, Wallet, ZeroAddress } from "@coti-io/coti-ethers"
 
 const GAS_LIMIT = 12000000

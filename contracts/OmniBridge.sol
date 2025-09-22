@@ -98,12 +98,12 @@ contract OmniBridge is ReentrancyGuard {
 
     /// @notice Chain configuration
     struct ChainConfig {
-        bool isActive;
-        uint256 minTransfer;
-        uint256 maxTransfer;
-        uint256 dailyLimit;
-        uint256 transferFee; // basis points
-        address teleporterAddress; // Avalanche Teleporter contract
+        address teleporterAddress;  // slot 1: 20 bytes - Avalanche Teleporter contract
+        bool isActive;              // slot 1: 1 byte (total: 21 bytes in slot 1)
+        uint256 minTransfer;        // slot 2: 32 bytes
+        uint256 maxTransfer;        // slot 3: 32 bytes
+        uint256 dailyLimit;         // slot 4: 32 bytes
+        uint256 transferFee;        // slot 5: 32 bytes - basis points
     }
 
     // Constants
@@ -174,7 +174,7 @@ contract OmniBridge is ReentrancyGuard {
     event TransferCompleted(
         uint256 indexed transferId,
         address indexed recipient,
-        uint256 amount
+        uint256 indexed amount
     );
 
     /// @notice Emitted when chain config is updated
@@ -183,8 +183,8 @@ contract OmniBridge is ReentrancyGuard {
     /// @param teleporterAddress Teleporter contract address
     event ChainConfigUpdated(
         uint256 indexed chainId,
-        bool isActive,
-        address teleporterAddress
+        bool indexed isActive,
+        address indexed teleporterAddress
     );
 
     // Custom errors
@@ -378,12 +378,12 @@ contract OmniBridge is ReentrancyGuard {
         if (minTransfer >= maxTransfer) revert InvalidAmount();
         
         chainConfigs[chainId] = ChainConfig({
+            teleporterAddress: teleporterAddress,
             isActive: isActive,
             minTransfer: minTransfer,
             maxTransfer: maxTransfer,
             dailyLimit: dailyLimit,
-            transferFee: transferFee,
-            teleporterAddress: teleporterAddress
+            transferFee: transferFee
         });
         
         // Map blockchain ID to chain ID

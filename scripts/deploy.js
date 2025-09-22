@@ -41,7 +41,7 @@ class OmniCoinDeployer {
         this.deployer = deployer;
         
         console.log(`Deployer address: ${deployer.address}`);
-        console.log(`Deployer balance: ${ethers.utils.formatEther(await deployer.getBalance())} ETH`);
+        console.log(`Deployer balance: ${ethers.formatEther(await deployer.getBalance())} ETH`);
         
         // Validate network
         const network = await ethers.provider.getNetwork();
@@ -57,7 +57,7 @@ class OmniCoinDeployer {
         
         // Deploy OmniCoin main contract
         await this.deployContract("OmniCoin", [], {
-            initialSupply: ethers.utils.parseEther("1000000000"), // 1B tokens
+            initialSupply: ethers.parseEther("1000000000"), // 1B tokens
             name: "OmniCoin",
             symbol: "XOM"
         });

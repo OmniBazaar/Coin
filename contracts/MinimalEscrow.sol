@@ -17,17 +17,16 @@ contract MinimalEscrow is ReentrancyGuard {
     // Type declarations
     /// @notice Escrow state information
     struct Escrow {
-        address buyer;
-        address seller;
-        address arbitrator;
-        uint256 amount;
-        uint256 expiry;
-        uint256 createdAt;
-        uint8 releaseVotes;
-        uint8 refundVotes;
-        bool resolved;
-        bool disputed;
-        // 28 bytes used in last slot (address = 20, uint8 = 1, bool = 1)
+        address buyer;        // slot 1: 20 bytes
+        address seller;       // slot 2: 20 bytes
+        address arbitrator;   // slot 3: 20 bytes
+        uint8 releaseVotes;   // slot 3: 1 byte
+        uint8 refundVotes;    // slot 3: 1 byte
+        bool resolved;        // slot 3: 1 byte
+        bool disputed;        // slot 3: 1 byte (total: 24 bytes in slot 3)
+        uint256 amount;       // slot 4: 32 bytes
+        uint256 expiry;       // slot 5: 32 bytes
+        uint256 createdAt;    // slot 6: 32 bytes
     }
 
     /// @notice Dispute commitment for commit-reveal pattern
@@ -107,7 +106,7 @@ contract MinimalEscrow is ReentrancyGuard {
     event EscrowResolved(
         uint256 indexed escrowId,
         address indexed winner,
-        uint256 amount
+        uint256 indexed amount
     );
 
     /// @notice Emitted when vote is cast
@@ -117,7 +116,7 @@ contract MinimalEscrow is ReentrancyGuard {
     event VoteCast(
         uint256 indexed escrowId,
         address indexed voter,
-        bool voteFor
+        bool indexed voteFor
     );
 
     // Custom errors
@@ -144,10 +143,11 @@ contract MinimalEscrow is ReentrancyGuard {
         if (_omniCoin == address(0) || _registry == address(0)) revert InvalidAddress();
         OMNI_COIN = IERC20(_omniCoin);
         REGISTRY = _registry;
+        // solhint-disable-next-line not-rely-on-time
         arbitratorSeed = uint256(keccak256(abi.encodePacked(
-            block.timestamp, 
+            block.timestamp,
             block.prevrandao
-        ))); // solhint-disable-line not-rely-on-time
+        )));
     }
 
     /**
@@ -283,7 +283,8 @@ contract MinimalEscrow is ReentrancyGuard {
         Escrow storage escrow = escrows[escrowId];
         DisputeCommitment storage commitment = disputeCommitments[escrowId];
         
-        if (block.timestamp > commitment.revealDeadline) revert RevealDeadlinePassed(); // solhint-disable-line not-rely-on-time
+        // solhint-disable-next-line not-rely-on-time
+        if (block.timestamp > commitment.revealDeadline) revert RevealDeadlinePassed();
         if (commitment.revealed) revert AlreadyDisputed();
         
         // Verify commitment

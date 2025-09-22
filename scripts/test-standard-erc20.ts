@@ -27,11 +27,11 @@ async function main() {
   
   // Check balance
   const balance = await token.balanceOf(deployer.address);
-  console.log("- Deployer balance:", ethers.utils.formatUnits(balance, 18));
+  console.log("- Deployer balance:", ethers.formatUnits(balance, 18));
   
   // Test transfer
   const recipient = "0x" + "1".repeat(40); // dummy address
-  const transferAmount = ethers.utils.parseUnits("100", 18);
+  const transferAmount = ethers.parseUnits("100", 18);
   
   console.log("- Transferring 100 tokens to", recipient);
   const tx = await token.transfer(recipient, transferAmount);
@@ -42,8 +42,8 @@ async function main() {
   const newBalance = await token.balanceOf(deployer.address);
   const recipientBalance = await token.balanceOf(recipient);
   
-  console.log("- New deployer balance:", ethers.utils.formatUnits(newBalance, 18));
-  console.log("- Recipient balance:", ethers.utils.formatUnits(recipientBalance, 18));
+  console.log("- New deployer balance:", ethers.formatUnits(newBalance, 18));
+  console.log("- Recipient balance:", ethers.formatUnits(recipientBalance, 18));
   
   console.log("\n✅ Standard ERC20 works perfectly on COTI V2!");
   console.log("This proves COTI V2 supports regular, non-encrypted contracts.");

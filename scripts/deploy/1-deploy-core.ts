@@ -34,7 +34,7 @@ async function main() {
   console.log("Deploying with account:", deployer.address);
   
   const balance = await deployer.getBalance();
-  console.log("Account balance:", ethers.utils.formatEther(balance));
+  console.log("Account balance:", ethers.formatEther(balance));
   
   // 1. Deploy OmniCoinCore
   console.log("\n1. Deploying OmniCoinCore...");
@@ -70,14 +70,14 @@ async function main() {
   
   // Set core contracts in registry
   let tx = await registry.setContract(
-    ethers.utils.id("OMNICOIN_CORE"),
+    ethers.id("OMNICOIN_CORE"),
     omniCoin.address
   );
   await tx.wait();
   console.log("- Set OMNICOIN_CORE in registry");
   
   tx = await registry.setContract(
-    ethers.utils.id("PRIVACY_FEE_MANAGER"),
+    ethers.id("PRIVACY_FEE_MANAGER"),
     privacyFeeManager.address
   );
   await tx.wait();
@@ -105,14 +105,14 @@ async function main() {
   
   // Verify deployment
   console.log("\n7. Verifying deployment...");
-  const registeredCore = await registry.getContract(ethers.utils.id("OMNICOIN_CORE"));
+  const registeredCore = await registry.getContract(ethers.id("OMNICOIN_CORE"));
   console.log("- Registry has OmniCoinCore:", registeredCore === omniCoin.address ? "✓" : "✗");
   
-  const registeredPFM = await registry.getContract(ethers.utils.id("PRIVACY_FEE_MANAGER"));
+  const registeredPFM = await registry.getContract(ethers.id("PRIVACY_FEE_MANAGER"));
   console.log("- Registry has PrivacyFeeManager:", registeredPFM === privacyFeeManager.address ? "✓" : "✗");
   
   const totalSupply = await omniCoin.totalSupply();
-  console.log("- OmniCoin total supply:", ethers.utils.formatUnits(totalSupply, 6), "XOM");
+  console.log("- OmniCoin total supply:", ethers.formatUnits(totalSupply, 6), "XOM");
 }
 
 main()

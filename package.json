@@ -26,7 +26,7 @@
     "test:security": "hardhat test test/security/",
     "test:integration": "hardhat test test/integration/",
     "test:validator": "jest test/validator-blockchain-integration.test.ts",
-    "test:gas": "hardhat test --gas-reporter",
+    "test:gas": "REPORT_GAS=true hardhat test",
     "security:monitor": "node scripts/simple-security-monitor.js",
     "security:validate": "npm run security:monitor && echo 'Security validation passed'",
     "deploy:local": "hardhat run scripts/deploy.js --network localhost",
@@ -43,6 +43,8 @@
     "@avalabs/avalanchejs": "^5.0.0",
     "@nomicfoundation/hardhat-toolbox": "^5.0.0",
     "@openzeppelin/hardhat-upgrades": "^3.0.0",
+    "@typechain/ethers-v6": "^0.5.1",
+    "@typechain/hardhat": "^9.1.0",
     "@types/jest": "^29.5.0",
     "@types/node": "^20.8.0",
     "avalanche": "^3.16.0",
@@ -55,6 +57,7 @@
     "solhint": "^6.0.0",
     "solidity-coverage": "^0.8.5",
     "ts-jest": "^29.1.0",
+    "typechain": "^8.3.2",
     "typescript": "^5.2.0"
   },
   "dependencies": {

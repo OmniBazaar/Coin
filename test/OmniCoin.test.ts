@@ -1,19 +1,14 @@
 import { expect } from "chai";
 import { ethers } from "hardhat";
-import { SignerWithAddress } from "@nomiclabs/hardhat-ethers/signers";
-import {
+import type { Signer } from "ethers";
+import type {
     OmniCoin,
-    OmniCoinConfig,
-    OmniCoinReputation,
-    OmniCoinStaking,
-    OmniCoinValidator,
-    OmniCoinMultisig,
-    OmniCoinPrivacy,
-    OmniCoinGarbledCircuit,
-    OmniCoinGovernor,
-    OmniCoinEscrow,
-    OmniCoinBridge
-} from "../typechain-types";
+    OmniCore,
+    OmniBridge,
+    OmniGovernance,
+    MinimalEscrow,
+    PrivateOmniCoin
+} from "../typechain-types/index.js";
 
 describe("OmniCoin Integration", function () {
     let omniCoin: OmniCoin;
@@ -28,12 +23,12 @@ describe("OmniCoin Integration", function () {
     let escrow: OmniCoinEscrow;
     let bridge: OmniCoinBridge;
 
-    let owner: SignerWithAddress;
-    let user1: SignerWithAddress;
-    let user2: SignerWithAddress;
-    let validator1: SignerWithAddress;
+    let owner: Signer;
+    let user1: Signer;
+    let user2: Signer;
+    let validator1: Signer;
 
-    const INITIAL_SUPPLY = ethers.utils.parseUnits("1000000000", 6); // 1 billion tokens
+    const INITIAL_SUPPLY = ethers.parseUnits("1000000000", 6); // 1 billion tokens
 
     beforeEach(async function () {
         [owner, user1, user2, validator1] = await ethers.getSigners();
@@ -147,8 +142,8 @@ describe("OmniCoin Integration", function () {
 
     describe("Escrow System", function () {
         it("Should create and release an escrow", async function () {
-            const amount = ethers.utils.parseUnits("1000", 6);
-            const conditions = ethers.utils.id("test conditions");
+            const amount = ethers.parseUnits("1000", 6);
+            const conditions = ethers.id("test conditions");
 
             // Create escrow
             const tx = await omniCoin.connect(user1).createEscrow(user2.address, amount, conditions);
@@ -162,8 +157,8 @@ describe("OmniCoin Integration", function () {
         });
 
         it("Should create and refund an escrow", async function () {
-            const amount = ethers.utils.parseUnits("1000", 6);
-            const conditions = ethers.utils.id("test conditions");
+            const amount = ethers.parseUnits("1000", 6);
+            const conditions = ethers.id("test conditions");
 
             // Create escrow
             const tx = await omniCoin.connect(user1).createEscrow(user2.address, amount, conditions);
@@ -179,7 +174,7 @@ describe("OmniCoin Integration", function () {
 
     describe("Bridge System", function () {
         it("Should perform a bridge transfer", async function () {
-            const amount = ethers.utils.parseUnits("1000", 6);
+            const amount = ethers.parseUnits("1000", 6);
             const chainName = "ethereum";
 
             // Add bridge
@@ -208,7 +203,7 @@ describe("OmniCoin Integration", function () {
         });
 
         it("Should enforce multi-sig for large transfers", async function () {
-            const amount = ethers.utils.parseUnits("1000000", 6); // 1 million tokens
+            const amount = ethers.parseUnits("1000000", 6); // 1 million tokens
 
             await expect(omniCoin.connect(user1).transfer(user2.address, amount))
                 .to.be.revertedWith("Multi-sig required");

@@ -21,16 +21,17 @@ async function main() {
   const proposalThreshold = await governor.proposalThreshold();
   
   if (balance.lt(proposalThreshold)) {
-    throw new Error(`Insufficient balance. Required: ${ethers.utils.formatEther(proposalThreshold)} tokens`);
+    throw new Error(`Insufficient balance. Required: ${ethers.formatEther(proposalThreshold)} tokens`);
   }
 
   // Example proposal: Update bridge parameters
   const targets = [process.env.BRIDGE_ADDRESS];
   const values = [0];
+  const abiCoder = new ethers.AbiCoder();
   const calldatas = [
-    ethers.utils.defaultAbiCoder.encode(
+    abiCoder.encode(
       ["uint16", "bytes"],
-      [1, ethers.utils.defaultAbiCoder.encode(["address"], ["0x..."])] // Example parameters
+      [1, abiCoder.encode(["address"], ["0x..."])] // Example parameters
     )
   ];
   const description = "Update bridge parameters for chain ID 1";

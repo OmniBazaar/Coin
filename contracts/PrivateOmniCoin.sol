@@ -22,28 +22,18 @@ import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
  * NOTE: Full privacy features require COTI V2 deployment
  */
 contract PrivateOmniCoin is ERC20, ERC20Burnable, ERC20Pausable, AccessControl {
-    // Roles
-    bytes32 public constant MINTER_ROLE = keccak256("MINTER_ROLE");
-    bytes32 public constant BURNER_ROLE = keccak256("BURNER_ROLE");
-    
     // Constants
+    /// @notice Role identifier for minting permissions
+    bytes32 public constant MINTER_ROLE = keccak256("MINTER_ROLE");
+
+    /// @notice Role identifier for burning permissions
+    bytes32 public constant BURNER_ROLE = keccak256("BURNER_ROLE");
+
+    /// @notice Initial token supply (1 billion tokens with 18 decimals)
     uint256 public constant INITIAL_SUPPLY = 1_000_000_000 * 10**18; // 1 billion tokens
-    
-    /**
-     * @notice Initialize PrivateOmniCoin token
-     * @dev Mints initial supply to deployer
-     */
-    function initialize() external {
-        require(totalSupply() == 0, "Already initialized");
-        
-        // Grant roles to deployer
-        _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
-        _grantRole(MINTER_ROLE, msg.sender);
-        _grantRole(BURNER_ROLE, msg.sender);
-        
-        // Mint initial supply
-        _mint(msg.sender, INITIAL_SUPPLY);
-    }
+
+    // Custom errors for gas optimization
+    error AlreadyInitialized();
     
     /**
      * @notice Constructor for PrivateOmniCoin
@@ -51,6 +41,22 @@ contract PrivateOmniCoin is ERC20, ERC20Burnable, ERC20Pausable, AccessControl {
      */
     constructor() ERC20("Private OmniCoin", "pXOM") {
         // Empty constructor - initialization done in initialize()
+    }
+
+    /**
+     * @notice Initialize PrivateOmniCoin token
+     * @dev Mints initial supply to deployer
+     */
+    function initialize() external {
+        if (totalSupply() != 0) revert AlreadyInitialized();
+
+        // Grant roles to deployer
+        _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
+        _grantRole(MINTER_ROLE, msg.sender);
+        _grantRole(BURNER_ROLE, msg.sender);
+
+        // Mint initial supply
+        _mint(msg.sender, INITIAL_SUPPLY);
     }
     
     /**
@@ -92,6 +98,9 @@ contract PrivateOmniCoin is ERC20, ERC20Burnable, ERC20Pausable, AccessControl {
     /**
      * @notice Override required for multiple inheritance
      * @dev Applies pausable check before transfers
+     * @param from Address tokens are transferred from
+     * @param to Address tokens are transferred to
+     * @param amount Amount of tokens to transfer
      */
     function _update(
         address from,

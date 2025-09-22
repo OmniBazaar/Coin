@@ -1,6 +1,6 @@
 import { expect } from "chai";
 import { ethers, upgrades } from "hardhat";
-import { SignerWithAddress } from "@nomiclabs/hardhat-ethers/signers";
+import { HardhatEthersSigner } from "@nomicfoundation/hardhat-ethers/signers";
 import {
   OmniCoinArbitration,
   OmniCoin,
@@ -14,18 +14,18 @@ describe("OmniCoinArbitration", function () {
   let omniCoinAccount: OmniCoinAccount;
   let omniCoinEscrow: OmniCoinEscrow;
   
-  let owner: SignerWithAddress;
-  let arbitrator1: SignerWithAddress;
-  let arbitrator2: SignerWithAddress;
-  let arbitrator3: SignerWithAddress;
-  let buyer: SignerWithAddress;
-  let seller: SignerWithAddress;
-  let user1: SignerWithAddress;
+  let owner: HardhatEthersSigner;
+  let arbitrator1: HardhatEthersSigner;
+  let arbitrator2: HardhatEthersSigner;
+  let arbitrator3: HardhatEthersSigner;
+  let buyer: HardhatEthersSigner;
+  let seller: HardhatEthersSigner;
+  let user1: HardhatEthersSigner;
 
   // Test constants
   const MIN_REPUTATION = 750;
   const MIN_PARTICIPATION_INDEX = 500;
-  const MIN_STAKING_AMOUNT = ethers.utils.parseEther("10000"); // 10,000 XOM
+  const MIN_STAKING_AMOUNT = ethers.parseEther("10000"); // 10,000 XOM
   const MAX_ACTIVE_DISPUTES = 5;
   const DISPUTE_TIMEOUT = 7 * 24 * 60 * 60; // 7 days
   const RATING_WEIGHT = 10; // 10%
@@ -75,11 +75,11 @@ describe("OmniCoinArbitration", function () {
     await arbitration.deployed();
 
     // Setup initial token balances for testing
-    await omniCoin.mint(arbitrator1.address, ethers.utils.parseEther("50000"));
-    await omniCoin.mint(arbitrator2.address, ethers.utils.parseEther("50000"));
-    await omniCoin.mint(arbitrator3.address, ethers.utils.parseEther("50000"));
-    await omniCoin.mint(buyer.address, ethers.utils.parseEther("100000"));
-    await omniCoin.mint(seller.address, ethers.utils.parseEther("100000"));
+    await omniCoin.mint(arbitrator1.address, ethers.parseEther("50000"));
+    await omniCoin.mint(arbitrator2.address, ethers.parseEther("50000"));
+    await omniCoin.mint(arbitrator3.address, ethers.parseEther("50000"));
+    await omniCoin.mint(buyer.address, ethers.parseEther("100000"));
+    await omniCoin.mint(seller.address, ethers.parseEther("100000"));
 
     // Setup mock reputation scores
     await omniCoinAccount.setReputationScore(arbitrator1.address, 850);
@@ -162,7 +162,7 @@ describe("OmniCoinArbitration", function () {
     });
 
     it("Should fail to register with insufficient staking amount", async function () {
-      const insufficientAmount = ethers.utils.parseEther("5000");
+      const insufficientAmount = ethers.parseEther("5000");
       await omniCoin.connect(arbitrator1).approve(arbitration.address, insufficientAmount);
 
       await expect(
@@ -187,7 +187,7 @@ describe("OmniCoinArbitration", function () {
     it("Should increase arbitrator stake", async function () {
       await arbitration.connect(arbitrator1).registerArbitrator(MIN_STAKING_AMOUNT, SPEC_DIGITAL_GOODS);
       
-      const additionalStake = ethers.utils.parseEther("5000");
+      const additionalStake = ethers.parseEther("5000");
       await omniCoin.connect(arbitrator1).approve(arbitration.address, additionalStake);
 
       await expect(
@@ -202,11 +202,11 @@ describe("OmniCoinArbitration", function () {
   });
 
   describe("Dispute Creation", function () {
-    const escrowId = ethers.utils.formatBytes32String("escrow1");
-    const disputedAmount = ethers.utils.parseEther("1000");
-    const buyerClaim = ethers.utils.parseEther("800");
-    const sellerClaim = ethers.utils.parseEther("200");
-    const evidenceHash = ethers.utils.keccak256(ethers.utils.toUtf8Bytes("evidence"));
+    const escrowId = ethers.formatBytes32String("escrow1");
+    const disputedAmount = ethers.parseEther("1000");
+    const buyerClaim = ethers.parseEther("800");
+    const sellerClaim = ethers.parseEther("200");
+    const evidenceHash = ethers.keccak256(ethers.toUtf8Bytes("evidence"));
 
     beforeEach(async function () {
       // Register arbitrators
@@ -266,7 +266,7 @@ describe("OmniCoinArbitration", function () {
     });
 
     it("Should fail to create dispute if escrow not disputed", async function () {
-      const nonDisputedEscrow = ethers.utils.formatBytes32String("escrow2");
+      const nonDisputedEscrow = ethers.formatBytes32String("escrow2");
       await omniCoinEscrow.setEscrow(
         nonDisputedEscrow,
         seller.address,
@@ -310,12 +310,12 @@ describe("OmniCoinArbitration", function () {
   });
 
   describe("Dispute Resolution", function () {
-    const escrowId = ethers.utils.formatBytes32String("escrow1");
-    const disputedAmount = ethers.utils.parseEther("1000");
-    const buyerClaim = ethers.utils.parseEther("800");
-    const sellerClaim = ethers.utils.parseEther("200");
-    const evidenceHash = ethers.utils.keccak256(ethers.utils.toUtf8Bytes("evidence"));
-    const resolutionHash = ethers.utils.keccak256(ethers.utils.toUtf8Bytes("resolution"));
+    const escrowId = ethers.formatBytes32String("escrow1");
+    const disputedAmount = ethers.parseEther("1000");
+    const buyerClaim = ethers.parseEther("800");
+    const sellerClaim = ethers.parseEther("200");
+    const evidenceHash = ethers.keccak256(ethers.toUtf8Bytes("evidence"));
+    const resolutionHash = ethers.keccak256(ethers.toUtf8Bytes("resolution"));
 
     beforeEach(async function () {
       // Register arbitrator
@@ -344,8 +344,8 @@ describe("OmniCoinArbitration", function () {
     });
 
     it("Should resolve dispute successfully", async function () {
-      const buyerPayout = ethers.utils.parseEther("700");
-      const sellerPayout = ethers.utils.parseEther("300");
+      const buyerPayout = ethers.parseEther("700");
+      const sellerPayout = ethers.parseEther("300");
 
       await expect(
         arbitration.connect(arbitrator1).resolveConfidentialDispute(
@@ -356,7 +356,7 @@ describe("OmniCoinArbitration", function () {
         )
       )
         .to.emit(arbitration, "ConfidentialDisputeResolved")
-        .withArgs(escrowId, resolutionHash, await ethers.provider.getBlockNumber() + 1, ethers.utils.keccak256("0x"));
+        .withArgs(escrowId, resolutionHash, await ethers.provider.getBlockNumber() + 1, ethers.keccak256("0x"));
 
       expect(await arbitration.isDisputeResolved(escrowId)).to.be.true;
 
@@ -369,8 +369,8 @@ describe("OmniCoinArbitration", function () {
     });
 
     it("Should fail to resolve if not authorized arbitrator", async function () {
-      const buyerPayout = ethers.utils.parseEther("700");
-      const sellerPayout = ethers.utils.parseEther("300");
+      const buyerPayout = ethers.parseEther("700");
+      const sellerPayout = ethers.parseEther("300");
 
       await expect(
         arbitration.connect(user1).resolveConfidentialDispute(
@@ -383,8 +383,8 @@ describe("OmniCoinArbitration", function () {
     });
 
     it("Should fail to resolve already resolved dispute", async function () {
-      const buyerPayout = ethers.utils.parseEther("700");
-      const sellerPayout = ethers.utils.parseEther("300");
+      const buyerPayout = ethers.parseEther("700");
+      const sellerPayout = ethers.parseEther("300");
 
       await arbitration.connect(arbitrator1).resolveConfidentialDispute(
         escrowId,
@@ -404,8 +404,8 @@ describe("OmniCoinArbitration", function () {
     });
 
     it("Should distribute arbitration fees correctly", async function () {
-      const buyerPayout = ethers.utils.parseEther("700");
-      const sellerPayout = ethers.utils.parseEther("300");
+      const buyerPayout = ethers.parseEther("700");
+      const sellerPayout = ethers.parseEther("300");
 
       await expect(
         arbitration.connect(arbitrator1).resolveConfidentialDispute(
@@ -427,12 +427,12 @@ describe("OmniCoinArbitration", function () {
   });
 
   describe("Rating System", function () {
-    const escrowId = ethers.utils.formatBytes32String("escrow1");
-    const disputedAmount = ethers.utils.parseEther("1000");
-    const buyerClaim = ethers.utils.parseEther("800");
-    const sellerClaim = ethers.utils.parseEther("200");
-    const evidenceHash = ethers.utils.keccak256(ethers.utils.toUtf8Bytes("evidence"));
-    const resolutionHash = ethers.utils.keccak256(ethers.utils.toUtf8Bytes("resolution"));
+    const escrowId = ethers.formatBytes32String("escrow1");
+    const disputedAmount = ethers.parseEther("1000");
+    const buyerClaim = ethers.parseEther("800");
+    const sellerClaim = ethers.parseEther("200");
+    const evidenceHash = ethers.keccak256(ethers.toUtf8Bytes("evidence"));
+    const resolutionHash = ethers.keccak256(ethers.toUtf8Bytes("resolution"));
 
     beforeEach(async function () {
       // Setup and resolve a dispute
@@ -457,8 +457,8 @@ describe("OmniCoinArbitration", function () {
         evidenceHash
       );
 
-      const buyerPayout = ethers.utils.parseEther("700");
-      const sellerPayout = ethers.utils.parseEther("300");
+      const buyerPayout = ethers.parseEther("700");
+      const sellerPayout = ethers.parseEther("300");
 
       await arbitration.connect(arbitrator1).resolveConfidentialDispute(
         escrowId,
@@ -512,7 +512,7 @@ describe("OmniCoinArbitration", function () {
     });
 
     it("Should fail to rate unresolved dispute", async function () {
-      const escrowId2 = ethers.utils.formatBytes32String("escrow2");
+      const escrowId2 = ethers.formatBytes32String("escrow2");
       await omniCoinEscrow.setEscrow(
         escrowId2,
         seller.address,
@@ -556,11 +556,11 @@ describe("OmniCoinArbitration", function () {
   });
 
   describe("Privacy and Access Control", function () {
-    const escrowId = ethers.utils.formatBytes32String("escrow1");
-    const disputedAmount = ethers.utils.parseEther("1000");
-    const buyerClaim = ethers.utils.parseEther("800");
-    const sellerClaim = ethers.utils.parseEther("200");
-    const evidenceHash = ethers.utils.keccak256(ethers.utils.toUtf8Bytes("evidence"));
+    const escrowId = ethers.formatBytes32String("escrow1");
+    const disputedAmount = ethers.parseEther("1000");
+    const buyerClaim = ethers.parseEther("800");
+    const sellerClaim = ethers.parseEther("200");
+    const evidenceHash = ethers.keccak256(ethers.toUtf8Bytes("evidence"));
 
     beforeEach(async function () {
       await omniCoin.connect(arbitrator1).approve(arbitration.address, MIN_STAKING_AMOUNT);
@@ -676,11 +676,11 @@ describe("OmniCoinArbitration", function () {
       expect((await arbitration.getUserDisputes(seller.address)).length).to.equal(0);
 
       // Create a dispute
-      const escrowId = ethers.utils.formatBytes32String("escrow1");
-      const disputedAmount = ethers.utils.parseEther("1000");
-      const buyerClaim = ethers.utils.parseEther("800");
-      const sellerClaim = ethers.utils.parseEther("200");
-      const evidenceHash = ethers.utils.keccak256(ethers.utils.toUtf8Bytes("evidence"));
+      const escrowId = ethers.formatBytes32String("escrow1");
+      const disputedAmount = ethers.parseEther("1000");
+      const buyerClaim = ethers.parseEther("800");
+      const sellerClaim = ethers.parseEther("200");
+      const evidenceHash = ethers.keccak256(ethers.toUtf8Bytes("evidence"));
 
       await omniCoin.connect(arbitrator1).approve(arbitration.address, MIN_STAKING_AMOUNT);
       await arbitration.connect(arbitrator1).registerArbitrator(MIN_STAKING_AMOUNT, SPEC_DIGITAL_GOODS);
@@ -719,11 +719,11 @@ describe("OmniCoinArbitration", function () {
 
   describe("Edge Cases and Error Handling", function () {
     it("Should handle dispute deadline correctly", async function () {
-      const escrowId = ethers.utils.formatBytes32String("escrow1");
-      const disputedAmount = ethers.utils.parseEther("1000");
-      const buyerClaim = ethers.utils.parseEther("800");
-      const sellerClaim = ethers.utils.parseEther("200");
-      const evidenceHash = ethers.utils.keccak256(ethers.utils.toUtf8Bytes("evidence"));
+      const escrowId = ethers.formatBytes32String("escrow1");
+      const disputedAmount = ethers.parseEther("1000");
+      const buyerClaim = ethers.parseEther("800");
+      const sellerClaim = ethers.parseEther("200");
+      const evidenceHash = ethers.keccak256(ethers.toUtf8Bytes("evidence"));
 
       await omniCoin.connect(arbitrator1).approve(arbitration.address, MIN_STAKING_AMOUNT);
       await arbitration.connect(arbitrator1).registerArbitrator(MIN_STAKING_AMOUNT, SPEC_DIGITAL_GOODS);
@@ -754,7 +754,7 @@ describe("OmniCoinArbitration", function () {
     });
 
     it("Should handle non-existent disputes gracefully", async function () {
-      const nonExistentEscrow = ethers.utils.formatBytes32String("nonexistent");
+      const nonExistentEscrow = ethers.formatBytes32String("nonexistent");
       
       expect(await arbitration.isDisputeResolved(nonExistentEscrow)).to.be.false;
       expect(await arbitration.getDisputeDeadline(nonExistentEscrow)).to.equal(0);

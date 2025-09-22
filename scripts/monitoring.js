@@ -6,7 +6,7 @@ const path = require("path");
 const MONITORING_CONFIG = {
     checkInterval: 60000, // 1 minute
     alertThresholds: {
-        gasPrice: ethers.utils.parseUnits("100", "gwei"),
+        gasPrice: ethers.parseUnits("100", "gwei"),
         blockTime: 30000, // 30 seconds
         failedTransactions: 5,
         suspiciousActivity: 10
@@ -87,11 +87,11 @@ class OmniCoinMonitor {
         
         console.log(`Network: ${network.name} (${network.chainId})`);
         console.log(`Block: ${blockNumber}`);
-        console.log(`Gas Price: ${ethers.utils.formatUnits(gasPrice, 'gwei')} gwei`);
+        console.log(`Gas Price: ${ethers.formatUnits(gasPrice, 'gwei')} gwei`);
         
         // Check if gas price is too high
         if (gasPrice.gt(MONITORING_CONFIG.alertThresholds.gasPrice)) {
-            this.sendAlert("HIGH_GAS_PRICE", `Gas price is ${ethers.utils.formatUnits(gasPrice, 'gwei')} gwei`);
+            this.sendAlert("HIGH_GAS_PRICE", `Gas price is ${ethers.formatUnits(gasPrice, 'gwei')} gwei`);
         }
         
         // Check contract balances
@@ -109,12 +109,12 @@ class OmniCoinMonitor {
         for (const [name, contract] of Object.entries(this.contracts)) {
             try {
                 const balance = await ethers.provider.getBalance(contract.address);
-                const formattedBalance = ethers.utils.formatEther(balance);
+                const formattedBalance = ethers.formatEther(balance);
                 
                 console.log(`${name}: ${formattedBalance} ETH`);
                 
                 // Alert if balance is too low for operational contracts
-                if (balance.lt(ethers.utils.parseEther("0.1")) && 
+                if (balance.lt(ethers.parseEther("0.1")) && 
                     ['OmniCoinPayment', 'OmniCoinBridge', 'OmniCoinEscrow'].includes(name)) {
                     this.sendAlert("LOW_BALANCE", `${name} balance is ${formattedBalance} ETH`);
                 }
@@ -240,7 +240,7 @@ class OmniCoinMonitor {
                         return event.event === 'Transfer' && 
                                event.args && 
                                event.args.value && 
-                               event.args.value.gt(ethers.utils.parseEther("1000000"));
+                               event.args.value.gt(ethers.parseEther("1000000"));
                     });
                     
                     if (suspiciousEvents.length > 0) {

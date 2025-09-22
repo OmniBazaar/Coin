@@ -1,6 +1,6 @@
 import hre from "hardhat"
 import { expect } from "chai"
-import { setupAccounts } from "../accounts"
+import { setupAccounts } from "../accounts.js"
 
 const gasLimit = 12000000
 let last_random_value = 0

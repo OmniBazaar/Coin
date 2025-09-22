@@ -21,35 +21,44 @@ import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
  * - Initial supply of 1 billion tokens
  */
 contract OmniCoin is ERC20, ERC20Burnable, ERC20Pausable, ERC20Permit, AccessControl {
-    // Roles
-    bytes32 public constant MINTER_ROLE = keccak256("MINTER_ROLE");
-    bytes32 public constant BURNER_ROLE = keccak256("BURNER_ROLE");
-    
     // Constants
+    /// @notice Role identifier for minting permissions
+    bytes32 public constant MINTER_ROLE = keccak256("MINTER_ROLE");
+
+    /// @notice Role identifier for burning permissions
+    bytes32 public constant BURNER_ROLE = keccak256("BURNER_ROLE");
+
+    /// @notice Initial token supply (1 billion tokens with 18 decimals)
     uint256 public constant INITIAL_SUPPLY = 1_000_000_000 * 10**18; // 1 billion tokens
-    
-    /**
-     * @notice Initialize OmniCoin token
-     * @dev Mints initial supply to deployer
-     */
-    function initialize() external {
-        require(totalSupply() == 0, "Already initialized");
-        
-        // Grant roles to deployer
-        _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
-        _grantRole(MINTER_ROLE, msg.sender);
-        _grantRole(BURNER_ROLE, msg.sender);
-        
-        // Mint initial supply
-        _mint(msg.sender, INITIAL_SUPPLY);
-    }
-    
+
+    // Custom errors for gas optimization
+    error AlreadyInitialized();
+    error ArrayLengthMismatch();
+    error TooManyRecipients();
+    error InvalidRecipient();
+
     /**
      * @notice Constructor for OmniCoin
      * @dev Sets up ERC20 with name, symbol, and ERC20Permit
      */
     constructor() ERC20("OmniCoin", "XOM") ERC20Permit("OmniCoin") {
         // Empty constructor - initialization done in initialize()
+    }
+
+    /**
+     * @notice Initialize OmniCoin token
+     * @dev Mints initial supply to deployer
+     */
+    function initialize() external {
+        if (totalSupply() != 0) revert AlreadyInitialized();
+
+        // Grant roles to deployer
+        _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
+        _grantRole(MINTER_ROLE, msg.sender);
+        _grantRole(BURNER_ROLE, msg.sender);
+
+        // Mint initial supply
+        _mint(msg.sender, INITIAL_SUPPLY);
     }
     
     /**
@@ -99,11 +108,11 @@ contract OmniCoin is ERC20, ERC20Burnable, ERC20Pausable, ERC20Permit, AccessCon
         address[] calldata recipients,
         uint256[] calldata amounts
     ) external whenNotPaused returns (bool success) {
-        require(recipients.length == amounts.length, "Arrays length mismatch");
-        require(recipients.length <= 10, "Too many recipients"); // Prevent gas issues
-        
-        for (uint256 i = 0; i < recipients.length; i++) {
-            require(recipients[i] != address(0), "Invalid recipient");
+        if (recipients.length != amounts.length) revert ArrayLengthMismatch();
+        if (recipients.length > 10) revert TooManyRecipients(); // Prevent gas issues
+
+        for (uint256 i = 0; i < recipients.length; ++i) {
+            if (recipients[i] == address(0)) revert InvalidRecipient();
             _transfer(msg.sender, recipients[i], amounts[i]);
         }
         
@@ -113,6 +122,9 @@ contract OmniCoin is ERC20, ERC20Burnable, ERC20Pausable, ERC20Permit, AccessCon
     /**
      * @notice Override required for multiple inheritance
      * @dev Applies pausable check before transfers
+     * @param from Address tokens are transferred from
+     * @param to Address tokens are transferred to
+     * @param amount Amount of tokens to transfer
      */
     function _update(
         address from,

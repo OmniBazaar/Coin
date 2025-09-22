@@ -73,7 +73,7 @@ describe('OmniBazaar Integration Tests (Ultra-lean Architecture)', function() {
       contracts = {
         omniCoin: await ethers.getContractAt('OmniCoin', process.env.OMNICOIN_ADDRESS || '0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512'),
         omniCore: await ethers.getContractAt('OmniCore', process.env.OMNICORE_ADDRESS || '0xCf7Ed3AccA5a467e9e704C703E8D87F634fB0Fc9'),
-        privateOmniCoin: await ethers.getContractAt('PrivateOmniCoin', process.env.PRIVATE_OMNICOIN_ADDRESS || '0x9fE46736679d2D9a65F0992F2272dE9f3c7fa6e0')
+        privateOmniCoin: await ethers.getContractAt('PrivateOmniCoin', process.env.PRIVATEOMNICOIN_ADDRESS || '0x9fE46736679d2D9a65F0992F2272dE9f3c7fa6e0')
       };
 
       logger.log('Loaded contracts:', {
@@ -85,7 +85,7 @@ describe('OmniBazaar Integration Tests (Ultra-lean Architecture)', function() {
       // Validator endpoints
       gatewayValidator = process.env.GATEWAY_VALIDATOR_PORT ? 
         `http://localhost:${process.env.GATEWAY_VALIDATOR_PORT}` : 
-        'http://localhost:8080';
+        'http://localhost:4000';
       
       computationNodes = [
         process.env.COMPUTATION_NODE_1_PORT ? 
@@ -121,8 +121,8 @@ describe('OmniBazaar Integration Tests (Ultra-lean Architecture)', function() {
   describe('🏗️ Validator Network Infrastructure', function() {
     it('should have Gateway Validator running and healthy', async function() {
       try {
-        // REST API is on port 8090
-        const restApiUrl = gatewayValidator.replace('8080', '8090');
+        // REST API is on port 4010
+        const restApiUrl = gatewayValidator.replace('4000', '4010');
         const response = await axios.get(`${restApiUrl}/health`);
         
         expect(response.status).to.equal(200);
@@ -159,7 +159,7 @@ describe('OmniBazaar Integration Tests (Ultra-lean Architecture)', function() {
 
     it('should establish P2P network between validators', async function() {
       try {
-        const restApiUrl = gatewayValidator.replace('8080', '8090');
+        const restApiUrl = gatewayValidator.replace('4000', '4010');
         const response = await axios.get(`${restApiUrl}/api/p2p/peers`);
         expect(response.data.peers).to.be.an('array');
         logger.log(`✅ Gateway has ${response.data.peers.length} P2P peers`);
@@ -188,7 +188,7 @@ describe('OmniBazaar Integration Tests (Ultra-lean Architecture)', function() {
       };
 
       try {
-        const restApiUrl = gatewayValidator.replace('8080', '8090');
+        const restApiUrl = gatewayValidator.replace('4000', '4010');
         const response = await axios.post(`${restApiUrl}/api/marketplace/listings`, listing);
         expect(response.data).to.have.property('listingId');
         testListingId = response.data.listingId;
@@ -217,7 +217,7 @@ describe('OmniBazaar Integration Tests (Ultra-lean Architecture)', function() {
       }
 
       try {
-        const restApiUrl = gatewayValidator.replace('8080', '8090');
+        const restApiUrl = gatewayValidator.replace('4000', '4010');
         const response = await axios.get(`${restApiUrl}/api/marketplace/listings/${testListingId}`);
         expect(response.data.title).to.equal('Integration Test Product');
         expect(response.data.status).to.equal('active');
@@ -237,7 +237,7 @@ describe('OmniBazaar Integration Tests (Ultra-lean Architecture)', function() {
           limit: 10
         };
 
-        const restApiUrl = gatewayValidator.replace('8080', '8090');
+        const restApiUrl = gatewayValidator.replace('4000', '4010');
         const response = await axios.post(`${restApiUrl}/api/marketplace/search`, searchParams);
         expect(response.data.results).to.be.an('array');
         logger.log(`✅ Search returned ${response.data.results.length} results`);
@@ -255,7 +255,7 @@ describe('OmniBazaar Integration Tests (Ultra-lean Architecture)', function() {
 
       try {
         // Request conversion validation
-        const restApiUrl = gatewayValidator.replace('8080', '8090');
+        const restApiUrl = gatewayValidator.replace('4000', '4010');
         const response = await axios.post(`${restApiUrl}/api/privacy/validate-conversion`, {
           from: signers[0].address,
           amount: amount.toString(),
@@ -303,7 +303,7 @@ describe('OmniBazaar Integration Tests (Ultra-lean Architecture)', function() {
       };
 
       try {
-        const restApiUrl = gatewayValidator.replace('8080', '8090');
+        const restApiUrl = gatewayValidator.replace('4000', '4010');
         const response = await axios.post(`${restApiUrl}/api/storage/upload`, {
           data: JSON.stringify(testData),
           filename: 'test-data.json'
@@ -324,7 +324,7 @@ describe('OmniBazaar Integration Tests (Ultra-lean Architecture)', function() {
       }
 
       try {
-        const restApiUrl = gatewayValidator.replace('8080', '8090');
+        const restApiUrl = gatewayValidator.replace('4000', '4010');
         const response = await axios.get(`${restApiUrl}/api/storage/ipfs/${testCID}`);
         const data = JSON.parse(response.data);
         expect(data.type).to.equal('integration-test');
@@ -340,7 +340,7 @@ describe('OmniBazaar Integration Tests (Ultra-lean Architecture)', function() {
     it('should compute merkle roots across validators', async function() {
       try {
         // Request merkle root computation
-        const restApiUrl = gatewayValidator.replace('8080', '8090');
+        const restApiUrl = gatewayValidator.replace('4000', '4010');
         const response = await axios.post(`${restApiUrl}/api/consensus/compute`, {
           treeType: 'user_balances',
           blockHeight: await ethers.provider.getBlockNumber()
@@ -357,7 +357,7 @@ describe('OmniBazaar Integration Tests (Ultra-lean Architecture)', function() {
 
     it('should achieve consensus on state transitions', async function() {
       try {
-        const restApiUrl = gatewayValidator.replace('8080', '8090');
+        const restApiUrl = gatewayValidator.replace('4000', '4010');
         const response = await axios.get(`${restApiUrl}/api/consensus/latest`);
         expect(response.data).to.have.property('epochNumber');
         expect(response.data).to.have.property('validators');
@@ -374,7 +374,7 @@ describe('OmniBazaar Integration Tests (Ultra-lean Architecture)', function() {
       const saleAmount = ethers.parseEther('1000'); // 1000 XOM sale
 
       try {
-        const restApiUrl = gatewayValidator.replace('8080', '8090');
+        const restApiUrl = gatewayValidator.replace('4000', '4010');
         const response = await axios.post(`${restApiUrl}/api/fees/calculate`, {
           saleAmount: saleAmount.toString(),
           feeType: 'marketplace'
@@ -404,7 +404,7 @@ describe('OmniBazaar Integration Tests (Ultra-lean Architecture)', function() {
       
       // Send 10 concurrent requests
       for (let i = 0; i < 10; i++) {
-        const restApiUrl = gatewayValidator.replace('8080', '8090');
+        const restApiUrl = gatewayValidator.replace('4000', '4010');
         requests.push(axios.get(`${restApiUrl}/api/health`));
       }
 
@@ -427,7 +427,7 @@ describe('OmniBazaar Integration Tests (Ultra-lean Architecture)', function() {
 
     it('should report system metrics', async function() {
       try {
-        const restApiUrl = gatewayValidator.replace('8080', '8090');
+        const restApiUrl = gatewayValidator.replace('4000', '4010');
         const response = await axios.get(`${restApiUrl}/api/metrics`);
         expect(response.data).to.have.property('uptime');
         expect(response.data).to.have.property('memoryUsage');

@@ -30,7 +30,7 @@ async function main() {
     timelock.address,
     1, // voting delay (1 block)
     45818, // voting period (1 week)
-    ethers.utils.parseEther("100000"), // proposal threshold (100k tokens)
+    ethers.parseEther("100000"), // proposal threshold (100k tokens)
     4 // quorum numerator (4%)
   ], {
     initializer: "initialize",

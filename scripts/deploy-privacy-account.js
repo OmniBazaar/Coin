@@ -14,7 +14,7 @@ async function main() {
   console.log("\nDeploying OmniCoinGarbledCircuit...");
   const OmniCoinGarbledCircuit = await ethers.getContractFactory("OmniCoinGarbledCircuit");
   const garbledCircuit = await upgrades.deployProxy(OmniCoinGarbledCircuit, [
-    ethers.utils.parseEther("0.01") // verificationFee: 0.01 ETH
+    ethers.parseEther("0.01") // verificationFee: 0.01 ETH
   ], {
     initializer: "initialize",
   });
