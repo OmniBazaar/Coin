@@ -41,7 +41,7 @@ class OmniCoinDeployer {
         this.deployer = deployer;
         
         console.log(`Deployer address: ${deployer.address}`);
-        console.log(`Deployer balance: ${ethers.formatEther(await deployer.getBalance())} ETH`);
+        console.log(`Deployer balance: ${ethers.formatEther(await ethers.provider.getBalance(deployer.address))} ETH`);
         
         // Validate network
         const network = await ethers.provider.getNetwork();
