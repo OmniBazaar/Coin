@@ -23,6 +23,10 @@ async function main() {
     const omniCoinAddress = await omniCoin.getAddress();
     console.log("OmniCoin deployed to:", omniCoinAddress);
 
+    // Initialize OmniCoin (grants roles and mints initial supply)
+    await omniCoin.initialize();
+    console.log("OmniCoin initialized");
+
     // Deploy PrivateOmniCoin (pXOM)
     console.log("\n=== Deploying PrivateOmniCoin ===");
     const PrivateOmniCoin = await ethers.getContractFactory("PrivateOmniCoin");
@@ -44,40 +48,27 @@ async function main() {
     const escrowAddress = await escrow.getAddress();
     console.log("MinimalEscrow deployed to:", escrowAddress);
 
-    // Deploy MockWarpMessenger for local testing
-    console.log("\n=== Deploying MockWarpMessenger ===");
-    const MockWarpMessenger = await ethers.getContractFactory("MockWarpMessenger");
-    const warpMessenger = await MockWarpMessenger.deploy();
-    await warpMessenger.waitForDeployment();
-    const warpMessengerAddress = await warpMessenger.getAddress();
-    console.log("MockWarpMessenger deployed to:", warpMessengerAddress);
+    // Deploy placeholder addresses for ODDAO and StakingPool
+    // In production, these would be proper DAO and staking pool contracts
+    const oddaoAddress = deployer.address; // Temporary: use deployer as ODDAO
+    const stakingPoolAddress = deployer.address; // Temporary: use deployer as staking pool
 
-    // Deploy OmniBridge
-    console.log("\n=== Deploying OmniBridge ===");
-    const OmniBridge = await ethers.getContractFactory("OmniBridge");
-    const bridge = await OmniBridge.deploy(
-        omniCoinAddress,
-        privateOmniCoinAddress,
-        warpMessengerAddress
-    );
-    await bridge.waitForDeployment();
-    const bridgeAddress = await bridge.getAddress();
-    console.log("OmniBridge deployed to:", bridgeAddress);
-
-    // Deploy OmniCore (upgradeable with UUPS)
-    console.log("\n=== Deploying OmniCore (Upgradeable) ===");
+    // Deploy OmniCore (constructor-based, not upgradeable)
+    console.log("\n=== Deploying OmniCore ===");
     const OmniCore = await ethers.getContractFactory("OmniCore");
-    const omniCore = await upgrades.deployProxy(
-        OmniCore,
-        [omniCoinAddress, escrowAddress],
-        {
-            initializer: "initialize",
-            kind: "uups"
-        }
+    const omniCore = await OmniCore.deploy(
+        deployer.address,      // admin
+        omniCoinAddress,       // OmniCoin token
+        oddaoAddress,          // ODDAO address (70% fees)
+        stakingPoolAddress     // Staking pool address (20% fees)
     );
     await omniCore.waitForDeployment();
     const omniCoreAddress = await omniCore.getAddress();
     console.log("OmniCore deployed to:", omniCoreAddress);
+
+    // Skip OmniBridge deployment for local Hardhat (requires Avalanche Warp precompile)
+    // OmniBridge constructor calls WARP_MESSENGER.getBlockchainID() which only works on Avalanche
+    console.log("\n⏭️  Skipping OmniBridge (requires Avalanche Warp precompile)");
 
     // Deploy OmniGovernance (needs OmniCore address)
     console.log("\n=== Deploying OmniGovernance ===");
@@ -97,10 +88,8 @@ async function main() {
             OmniCoin: omniCoinAddress,
             PrivateOmniCoin: privateOmniCoinAddress,
             MinimalEscrow: escrowAddress,
-            OmniGovernance: governanceAddress,
-            MockWarpMessenger: warpMessengerAddress,
-            OmniBridge: bridgeAddress,
-            OmniCore: omniCoreAddress
+            OmniCore: omniCoreAddress,
+            OmniGovernance: governanceAddress
         }
     };
 
@@ -113,38 +102,18 @@ async function main() {
     fs.writeFileSync(deploymentFile, JSON.stringify(deployments, null, 2));
     console.log("\n✅ Deployment addresses saved to:", deploymentFile);
 
-    // Initialize contracts
-    console.log("\n=== Initializing Contracts ===");
-
-    // Grant minter role to bridge in both tokens
-    const MINTER_ROLE = await omniCoin.MINTER_ROLE();
-    await omniCoin.grantRole(MINTER_ROLE, bridgeAddress);
-    console.log("✓ Granted MINTER_ROLE to bridge in OmniCoin");
-
-    await privateOmniCoin.grantRole(MINTER_ROLE, bridgeAddress);
-    console.log("✓ Granted MINTER_ROLE to bridge in PrivateOmniCoin");
-
-    // Grant burner role to bridge in both tokens
-    const BURNER_ROLE = await omniCoin.BURNER_ROLE();
-    await omniCoin.grantRole(BURNER_ROLE, bridgeAddress);
-    console.log("✓ Granted BURNER_ROLE to bridge in OmniCoin");
-
-    await privateOmniCoin.grantRole(BURNER_ROLE, bridgeAddress);
-    console.log("✓ Granted BURNER_ROLE to bridge in PrivateOmniCoin");
-
-    // Mint initial supply to deployer for testing
-    const initialSupply = ethers.parseEther("1000000"); // 1M XOM
-    await omniCoin.mint(deployer.address, initialSupply);
-    console.log("✓ Minted", ethers.formatEther(initialSupply), "XOM to deployer");
+    // All initialization complete (OmniCoin.initialize() already granted roles and minted supply)
+    console.log("\n=== Deployment Summary ===");
+    const xomBalance = await omniCoin.balanceOf(deployer.address);
+    console.log("✓ Deployer XOM balance:", ethers.formatEther(xomBalance));
 
     console.log("\n🎉 Local deployment complete!");
     console.log("\nYou can interact with the contracts using:");
     console.log("- OmniCoin:", omniCoinAddress);
     console.log("- PrivateOmniCoin:", privateOmniCoinAddress);
-    console.log("- OmniBridge:", bridgeAddress);
     console.log("- MinimalEscrow:", escrowAddress);
-    console.log("- OmniGovernance:", governanceAddress);
     console.log("- OmniCore:", omniCoreAddress);
+    console.log("- OmniGovernance:", governanceAddress);
 }
 
 main()

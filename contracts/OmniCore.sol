@@ -27,12 +27,13 @@ contract OmniCore is AccessControl, ReentrancyGuard {
 
     /// @notice Node info for discovery
     struct NodeInfo {
-        string httpEndpoint;
-        string wsEndpoint;
-        string region;
-        uint8 nodeType; // 0=gateway, 1=computation, 2=listing
-        bool active;
-        uint256 lastUpdate;
+        string multiaddr;      // libp2p multiaddr for P2P connections (e.g., "/ip4/1.2.3.4/tcp/14002/p2p/12D3...")
+        string httpEndpoint;   // HTTP API endpoint
+        string wsEndpoint;     // WebSocket endpoint
+        string region;         // Geographic region
+        uint8 nodeType;        // 0=gateway, 1=computation, 2=listing
+        bool active;           // Whether node is currently active
+        uint256 lastUpdate;    // Last update timestamp
     }
 
     // Constants
@@ -317,12 +318,14 @@ contract OmniCore is AccessControl, ReentrancyGuard {
     /**
      * @notice Register or update node endpoints for discovery
      * @dev Nodes self-register their endpoints, no expensive heartbeats required
+     * @param multiaddr libp2p multiaddr for P2P connections (e.g., "/ip4/1.2.3.4/tcp/14002/p2p/12D3...")
      * @param httpEndpoint HTTP endpoint URL (e.g. "https://node1.omnibazaar.com")
      * @param wsEndpoint WebSocket endpoint URL (optional)
      * @param region Geographic region code (e.g. "US", "EU", "ASIA")
      * @param nodeType Type of node: 0=gateway, 1=computation, 2=listing
      */
     function registerNode(
+        string calldata multiaddr,
         string calldata httpEndpoint,
         string calldata wsEndpoint,
         string calldata region,
@@ -330,28 +333,31 @@ contract OmniCore is AccessControl, ReentrancyGuard {
     ) external {
         if (nodeType > 2) revert InvalidAmount();
         if (bytes(httpEndpoint).length == 0) revert InvalidAddress();
-        
+        // multiaddr is required for gateway validators (nodeType 0) for P2P bootstrap
+        if (nodeType == 0 && bytes(multiaddr).length == 0) revert InvalidAddress();
+
         NodeInfo storage info = nodeRegistry[msg.sender];
-        
+
         // If first time registration, add to array
         if (bytes(info.httpEndpoint).length == 0) {
             nodeIndex[msg.sender] = registeredNodes.length;
             registeredNodes.push(msg.sender);
         }
-        
+
         // Update active count if status changes
         if (!info.active && nodeType < 3) {
             ++activeNodeCounts[nodeType];
         }
-        
+
         // Update node info
+        info.multiaddr = multiaddr;
         info.httpEndpoint = httpEndpoint;
         info.wsEndpoint = wsEndpoint;
         info.region = region;
         info.nodeType = nodeType;
         info.active = true;
         info.lastUpdate = block.timestamp; // solhint-disable-line not-rely-on-time
-        
+
         emit NodeRegistered(msg.sender, nodeType, httpEndpoint, true);
     }
 
@@ -449,6 +455,7 @@ contract OmniCore is AccessControl, ReentrancyGuard {
     /**
      * @notice Get node information
      * @param nodeAddress Address of the node
+     * @return multiaddr libp2p multiaddr for P2P connections
      * @return httpEndpoint HTTP endpoint URL
      * @return wsEndpoint WebSocket endpoint URL
      * @return region Geographic region
@@ -457,6 +464,7 @@ contract OmniCore is AccessControl, ReentrancyGuard {
      * @return lastUpdate Last update timestamp
      */
     function getNodeInfo(address nodeAddress) external view returns (
+        string memory multiaddr,
         string memory httpEndpoint,
         string memory wsEndpoint,
         string memory region,
@@ -466,6 +474,7 @@ contract OmniCore is AccessControl, ReentrancyGuard {
     ) {
         NodeInfo storage info = nodeRegistry[nodeAddress];
         return (
+            info.multiaddr,
             info.httpEndpoint,
             info.wsEndpoint,
             info.region,
@@ -491,6 +500,53 @@ contract OmniCore is AccessControl, ReentrancyGuard {
      */
     function getTotalNodeCount() external view returns (uint256 count) {
         return registeredNodes.length;
+    }
+
+    /**
+     * @notice Get active nodes within a time window
+     * @dev Returns nodes that have been active within the specified time period
+     * @param nodeType Type of nodes to retrieve (0=gateway, 1=computation, 2=listing)
+     * @param timeWindowSeconds Time window in seconds (e.g., 86400 for last 24 hours)
+     * @return addresses Array of node addresses
+     * @return infos Array of node information structs
+     */
+    function getActiveNodesWithinTime(
+        uint8 nodeType,
+        uint256 timeWindowSeconds
+    ) external view returns (
+        address[] memory addresses,
+        NodeInfo[] memory infos
+    ) {
+        if (nodeType > 2) revert InvalidAmount();
+
+        uint256 cutoff = block.timestamp - timeWindowSeconds; // solhint-disable-line not-rely-on-time
+        uint256 count = 0;
+
+        // First pass: count active nodes within time window
+        for (uint256 i = 0; i < registeredNodes.length; ++i) {
+            NodeInfo storage info = nodeRegistry[registeredNodes[i]];
+            if (info.active && info.nodeType == nodeType && info.lastUpdate >= cutoff) {
+                ++count;
+            }
+        }
+
+        // Allocate arrays with exact size
+        addresses = new address[](count);
+        infos = new NodeInfo[](count);
+        uint256 index = 0;
+
+        // Second pass: populate arrays
+        for (uint256 i = 0; i < registeredNodes.length; ++i) {
+            address addr = registeredNodes[i];
+            NodeInfo storage info = nodeRegistry[addr];
+            if (info.active && info.nodeType == nodeType && info.lastUpdate >= cutoff) {
+                addresses[index] = addr;
+                infos[index] = info;
+                ++index;
+            }
+        }
+
+        return (addresses, infos);
     }
 
     /**
