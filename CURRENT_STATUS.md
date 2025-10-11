@@ -1,17 +1,23 @@
 # OmniCoin Module Current Status
 
-**Last Updated:** 2025-09-22 15:42 UTC
-**Current Focus:** Final Testing Complete - Ready for Testnet Deployment
+**Last Updated:** 2025-10-11 09:21 UTC
+**Current Focus:** Hardhat Deployment Procedures Documented - Contracts Ready for Validator Testing
 
 ## Executive Summary
 
-Final testing phase complete with significant code quality improvements:
+**Hardhat Deployment Fixed (2025-10-11):**
+- ✅ **Correct deployment procedure documented** - Must use `npx hardhat run --network localhost`
+- ✅ **OmniCore deployed successfully** at `0x5FC8d32690cc91D4c39d9d3abcBD16989F875707`
+- ✅ **Registry functions verified working** - Returns 0 nodes (correct for fresh deployment)
+- ✅ **Comprehensive deployment guide created** - `HARDHAT_DEPLOYMENT_GUIDE.md`
+- ✅ **Ready for validator blockchain bootstrap testing**
+
+**Testing Complete (Previous):**
 - ✅ **160 tests passing** (140 core + 8 TypeScript + 20 integration)
 - ✅ **Solhint warnings reduced from 75 to 12** (84% reduction)
 - ✅ **All contracts compile successfully** with sizes well under 24KB limit
 - ✅ **Gas optimizations applied** - Custom errors, indexed events, struct packing
 - ✅ **Complete NatSpec documentation** added for all public elements
-- ✅ **Ready for testnet deployment**
 
 Pure P2P architecture with 6 core contracts:
 - OmniMarketplace.sol REMOVED (zero on-chain listings)
@@ -68,7 +74,63 @@ Pure P2P architecture with 6 core contracts:
    - Daily volume limits and transfer fees
    - 24 tests passing
 
-## Recent Updates (2025-08-06)
+## Recent Updates
+
+### Hardhat Deployment Procedure Documented (2025-10-11 09:21 UTC)
+
+**Problem:** OmniCore contract appeared to deploy successfully but validators got "could not decode result data (value="0x")" errors when trying to call registry functions. Contract bytecode was not actually stored at deployment address.
+
+**Root Cause Identified:** Using `node scripts/deploy-local.js` instead of `npx hardhat run scripts/deploy-local.js --network localhost`.
+
+When running deployment script directly with Node.js:
+- Script connects to Hardhat RPC successfully
+- Transactions appear to succeed
+- Deployment addresses are generated
+- **BUT: Transactions don't mine properly**
+- **Bytecode never stored at addresses**
+- **State doesn't persist in Hardhat's memory**
+
+**Solution:**
+```bash
+# ❌ WRONG - May not mine transactions
+node scripts/deploy-local.js
+
+# ✅ CORRECT - Ensures proper Hardhat connection and mining
+npx hardhat run scripts/deploy-local.js --network localhost
+```
+
+**Additional Critical Findings:**
+1. **Hardhat runs in-memory** - ALL state lost when process stops
+2. **Start Hardhat first** - Keep it running throughout development session
+3. **Deploy immediately** - After starting Hardhat, deploy contracts right away
+4. **Verify deployment** - Always test with query script before starting validators
+5. **Process management** - Background jobs need proper control (`run_in_background`)
+
+**Files Created:**
+- `/home/rickc/OmniBazaar/Coin/HARDHAT_DEPLOYMENT_GUIDE.md`
+  - Correct deployment procedures step-by-step
+  - Common pitfalls and their solutions
+  - Comprehensive troubleshooting guide
+  - Quick reference command table
+  - Verification test scripts
+
+**Current Deployment:**
+- **Hardhat:** Running on localhost:8545 (chain ID 1337)
+- **OmniCore:** `0x5FC8d32690cc91D4c39d9d3abcBD16989F875707`
+- **OmniCoin:** `0x5FbDB2315678afecb367f032d93F642f64180aa3`
+- **PrivateOmniCoin:** `0x9fE46736679d2D9a65F0992F2272dE9f3c7fa6e0`
+- **MinimalEscrow:** `0xDc64a140Aa3E981100a9becA4E685f962f0cF6C9`
+- **OmniGovernance:** `0x0165878A594ca255338adfa4d48449f69242Eb8F`
+- **Status:** All contracts deployed and verified ✅
+
+**Next Steps:**
+1. Start validators with blockchain bootstrap enabled
+2. Monitor validator registration on blockchain
+3. Verify discovery and consensus work correctly
+
+---
+
+### Legacy Migration Integration (2025-08-06)
 
 ### Legacy Migration Integration
 - Added legacy user migration functions to OmniCore contract

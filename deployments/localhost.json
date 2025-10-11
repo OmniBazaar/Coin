@@ -2,12 +2,12 @@
   "network": "localhost",
   "chainId": 1337,
   "deployer": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
-  "deployedAt": "2025-10-10T21:39:47.139Z",
+  "deployedAt": "2025-10-11T14:18:19.303Z",
   "contracts": {
-    "OmniCoin": "0x4A679253410272dd5232B3Ff7cF5dbB88f295319",
-    "PrivateOmniCoin": "0x09635F643e140090A9A8Dcd712eD6285858ceBef",
-    "MinimalEscrow": "0x67d269191c92Caf3cD7723F116c85e6E9bf55933",
-    "OmniCore": "0xE6E340D132b5f46d1e472DebcD681B2aBc16e57E",
-    "OmniGovernance": "0xc3e53F4d16Ae77Db1c982e75a937B9f60FE63690"
+    "OmniCoin": "0x5FbDB2315678afecb367f032d93F642f64180aa3",
+    "PrivateOmniCoin": "0x9fE46736679d2D9a65F0992F2272dE9f3c7fa6e0",
+    "MinimalEscrow": "0xDc64a140Aa3E981100a9becA4E685f962f0cF6C9",
+    "OmniCore": "0x5FC8d32690cc91D4c39d9d3abcBD16989F875707",
+    "OmniGovernance": "0x0165878A594ca255338adfa4d48449f69242Eb8F"
   }
 }
