@@ -390,23 +390,53 @@ contract OmniCore is AccessControl, ReentrancyGuard {
      * @param reason Reason for deactivation
      */
     function adminDeactivateNode(
-        address nodeAddress, 
+        address nodeAddress,
         string calldata reason
     ) external onlyRole(ADMIN_ROLE) {
         NodeInfo storage info = nodeRegistry[nodeAddress];
-        
+
         if (!info.active) revert InvalidAddress();
-        
+
         info.active = false;
-        
+
         // Update active count
         if (info.nodeType < 3) {
             if (activeNodeCounts[info.nodeType] > 0) {
                 --activeNodeCounts[info.nodeType];
             }
         }
-        
+
         emit NodeDeactivated(nodeAddress, reason);
+    }
+
+    /**
+     * @notice Clear all stale node registrations (TEST/DEV ONLY)
+     * @dev Admin-only function to clean up old validator entries from testing
+     * @param olderThanSeconds Deactivate nodes not updated in this many seconds (e.g., 300 for 5 minutes)
+     * @return deactivatedCount Number of nodes deactivated
+     */
+    function clearStaleNodes(uint256 olderThanSeconds) external onlyRole(ADMIN_ROLE) returns (uint256 deactivatedCount) {
+        uint256 cutoff = block.timestamp - olderThanSeconds; // solhint-disable-line not-rely-on-time
+        deactivatedCount = 0;
+
+        for (uint256 i = 0; i < registeredNodes.length; ++i) {
+            address addr = registeredNodes[i];
+            NodeInfo storage info = nodeRegistry[addr];
+
+            if (info.active && info.lastUpdate < cutoff) {
+                info.active = false;
+
+                // Update active count
+                if (info.nodeType < 3 && activeNodeCounts[info.nodeType] > 0) {
+                    --activeNodeCounts[info.nodeType];
+                }
+
+                ++deactivatedCount;
+                emit NodeDeactivated(addr, "Stale - cleared by admin");
+            }
+        }
+
+        return deactivatedCount;
     }
 
     /**
