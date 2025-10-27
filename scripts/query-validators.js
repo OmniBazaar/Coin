@@ -1,8 +1,16 @@
 // Query validator registrations from OmniCore contract
 const { ethers } = require('ethers');
+const fs = require('fs');
+const path = require('path');
 
-const OMNICORE_ADDRESS = '0x5FC8d32690cc91D4c39d9d3abcBD16989F875707';
+// CRITICAL: Load contract address from deployment file (single source of truth)
+// DO NOT hardcode addresses - they change with each Hardhat restart
+const deploymentPath = path.join(__dirname, '../deployments/localhost.json');
+const deployment = JSON.parse(fs.readFileSync(deploymentPath, 'utf-8'));
+const OMNICORE_ADDRESS = deployment.contracts.OmniCore;
 const RPC_URL = 'http://localhost:8545';
+
+console.log(`Using OmniCore address: ${OMNICORE_ADDRESS}`);
 
 const ABI = [
     "function getTotalNodeCount() external view returns (uint256)",

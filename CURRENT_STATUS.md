@@ -1,9 +1,36 @@
 # OmniCoin Module Current Status
 
-**Last Updated:** 2025-10-12 13:56 UTC
-**Current Focus:** OmniCore Upgraded to UUPS Proxy Pattern - Production Ready
+**Last Updated:** 2025-10-27 15:04 UTC
+**Current Focus:** Contract Address Management - Single Source of Truth Established
+
+## 🎯 CRITICAL: Contract Address Source of Truth
+
+**ALL modules must obtain contract addresses from these synchronized config files:**
+- **Validator**: `Validator/src/config/omnicoin-integration.ts`
+- **WebApp**: `WebApp/src/config/omnicoin-integration.ts`
+- **Wallet**: `Wallet/src/config/omnicoin-integration.ts`
+
+**Synchronization Process:**
+1. Deploy contracts: `cd Coin && npx hardhat run scripts/deploy-local.js --network localhost`
+2. Sync addresses: `cd /home/rickc/OmniBazaar && ./scripts/sync-contract-addresses.sh localhost`
+3. Rebuild modules: Sync script automatically rebuilds all modules
+
+**⚠️  DO NOT:**
+- Hardcode contract addresses in any script or service
+- Read directly from `Coin/deployments/*.json` (structure may vary)
+- Use addresses from documentation (may be outdated)
+
+**Current Deployed Addresses (Auto-synced from Coin/deployments/localhost.json):**
+- Check `Validator/src/config/omnicoin-integration.ts` for current addresses
+- Last deployment: 2025-10-25 (see localhost.json)
 
 ## Executive Summary
+
+**Contract Address Management Fixed (2025-10-27):**
+- ✅ **Single source of truth established** - All modules use omnicoin-integration.ts
+- ✅ **TCPBlockchainBootstrap fixed** - No longer reads deployment files directly
+- ✅ **Automatic synchronization** - sync-contract-addresses.sh updates all modules
+- ✅ **Documentation updated** - HARDHAT_DEPLOYMENT_GUIDE.md points to correct process
 
 **OmniCore Upgraded to UUPS Proxy (2025-10-12):**
 - ✅ **Created OmniCoreUpgradeable.sol** - UUPS proxy pattern with all original functionality
@@ -14,13 +41,6 @@
 - ✅ **Initialize function replaces constructor** - Proper upgradeable initialization
 - ✅ **Admin-only upgrade authorization** - Secure upgrade mechanism via _authorizeUpgrade
 - ✅ **Backward compatible** - All existing functionality preserved
-
-**Hardhat Deployment Fixed (2025-10-11):**
-- ✅ **Correct deployment procedure documented** - Must use `npx hardhat run --network localhost`
-- ✅ **OmniCore deployed successfully** at `0x5FC8d32690cc91D4c39d9d3abcBD16989F875707`
-- ✅ **Registry functions verified working** - Returns 0 nodes (correct for fresh deployment)
-- ✅ **Comprehensive deployment guide created** - `HARDHAT_DEPLOYMENT_GUIDE.md`
-- ✅ **Ready for validator blockchain bootstrap testing**
 
 **Testing Complete (Previous):**
 - ✅ **160 tests passing** (140 core + 8 TypeScript + 20 integration)

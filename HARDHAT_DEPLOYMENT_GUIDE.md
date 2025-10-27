@@ -1,7 +1,26 @@
 # Hardhat Deployment Guide for OmniCoin Contracts
 
-**Last Updated:** 2025-10-11 09:21 UTC
-**Purpose:** Document correct procedures for deploying OmniCore contracts to Hardhat
+**Last Updated:** 2025-10-27 15:04 UTC
+**Purpose:** Document correct procedures for deploying and synchronizing OmniCore contracts
+
+---
+
+## 🎯 CRITICAL: Contract Address Management
+
+### Single Source of Truth
+
+**ALL modules MUST obtain contract addresses from synchronized config files:**
+- `Validator/src/config/omnicoin-integration.ts`
+- `WebApp/src/config/omnicoin-integration.ts`
+- `Wallet/src/config/omnicoin-integration.ts`
+
+**NEVER:**
+- Hardcode addresses in scripts or services
+- Read directly from `Coin/deployments/*.json`
+- Copy addresses from documentation
+- Use addresses from old deployment logs
+
+**Synchronization is AUTOMATIC** - Just run the sync script after deploying.
 
 ---
 
@@ -78,11 +97,29 @@ npx hardhat run scripts/deploy-local.js --network localhost
 ```
 🚀 Starting OmniCoin Local Deployment
 ...
-OmniCore deployed to: 0x5FC8d32690cc91D4c39d9d3abcBD16989F875707
+OmniCore deployed to: 0xXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
 ✅ Deployment addresses saved to: .../deployments/localhost.json
 ```
 
-### Step 3: Verify Deployment
+**Note:** Address will be different each time Hardhat restarts. Don't hardcode!
+
+### Step 3: Synchronize Contract Addresses
+
+**CRITICAL: Run this after EVERY deployment**
+
+```bash
+cd /home/rickc/OmniBazaar
+./scripts/sync-contract-addresses.sh localhost
+```
+
+This script:
+1. Reads `Coin/deployments/localhost.json`
+2. Updates `Validator/src/config/omnicoin-integration.ts`
+3. Updates `WebApp/src/config/omnicoin-integration.ts`
+4. Updates `Wallet/src/config/omnicoin-integration.ts`
+5. Rebuilds all modules automatically
+
+### Step 4: Verify Deployment
 
 **Check contract exists:**
 ```bash
@@ -110,21 +147,26 @@ curl -s -X POST http://localhost:8545 -H "Content-Type: application/json" \
 
 Should show blocks > 0 (deployments create blocks)
 
-### Step 4: Start Validators
+### Step 5: Start Validators
+
+**CRITICAL: No need to set contract addresses manually!**
+
+Validators automatically load addresses from `Validator/src/config/omnicoin-integration.ts`
 
 ```bash
 cd /home/rickc/OmniBazaar/Validator
 
-# Get OmniCore address from deployment file
-OMNICORE_ADDRESS=$(jq -r '.contracts.OmniCore' /home/rickc/OmniBazaar/Coin/deployments/localhost.json)
-
-# Start validators with blockchain bootstrap
-ENABLE_BLOCKCHAIN_BOOTSTRAP=true \
-VALIDATOR_REGISTRY_ADDRESS=$OMNICORE_ADDRESS \
-AVALANCHE_RPC_URL=http://localhost:8545 \
-VALIDATOR_WALLET_PRIVATE_KEY=0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80 \
+# Start validators (addresses loaded from config automatically)
 npm run dev:validators 3
+
+# Or with synthetic transactions for testing
+ENABLE_SYNTHETIC_TXS=true SYNTHETIC_TPS=5 npm run dev:validators 3
 ```
+
+**How it works:**
+- dev-server-blockchain.ts imports `getContractAddresses('hardhat')`
+- Addresses loaded from omnicoin-integration.ts (already synchronized in Step 3)
+- No environment variables needed!
 
 ---
 
@@ -169,15 +211,16 @@ sleep 5
 # 4. Deploy contracts
 npx hardhat run scripts/deploy-local.js --network localhost
 
-# 5. Verify deployment
+# 5. Synchronize contract addresses (CRITICAL!)
+cd /home/rickc/OmniBazaar
+./scripts/sync-contract-addresses.sh localhost
+
+# 6. Verify deployment
+cd /home/rickc/OmniBazaar/Coin
 node scripts/query-validators.js
 
-# 6. Start validators
+# 7. Start validators (addresses loaded from config automatically)
 cd /home/rickc/OmniBazaar/Validator
-OMNICORE_ADDRESS=$(jq -r '.contracts.OmniCore' /home/rickc/OmniBazaar/Coin/deployments/localhost.json)
-ENABLE_BLOCKCHAIN_BOOTSTRAP=true \
-VALIDATOR_REGISTRY_ADDRESS=$OMNICORE_ADDRESS \
-AVALANCHE_RPC_URL=http://localhost:8545 \
 npm run dev:validators 3
 ```
 
