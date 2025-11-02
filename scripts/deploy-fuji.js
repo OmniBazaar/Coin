@@ -3,17 +3,30 @@ const fs = require("fs");
 const path = require("path");
 
 /**
- * Deploys OmniCoin contracts to local hardhat network for development
+ * Deploys OmniCoin contracts to Fuji Subnet-EVM blockchain
+ * Network: omnicoinFuji
+ * Chain ID: 131313
+ * RPC: http://127.0.0.1:44969/ext/bc/wFWtK4stScGVipRgh9em1aqY7TZ94rRBdV95BbGkjQFwh6wCS/rpc
  */
 async function main() {
-    console.log("🚀 Starting OmniCoin Local Deployment\n");
+    console.log("🚀 Starting OmniCoin Fuji Subnet Deployment\n");
 
     // Get deployer account
     const [deployer] = await ethers.getSigners();
     console.log("Deployer address:", deployer.address);
 
     const balance = await ethers.provider.getBalance(deployer.address);
-    console.log("Deployer balance:", ethers.formatEther(balance), "ETH\n");
+    console.log("Deployer balance:", ethers.formatEther(balance), "tokens\n");
+
+    // Verify we're on the right network
+    const network = await ethers.provider.getNetwork();
+    console.log("Network:", network.name);
+    console.log("Chain ID:", network.chainId.toString());
+
+    if (network.chainId !== 131313n) {
+        throw new Error("Not connected to OmniCoin Fuji Subnet (expected chainId 131313)");
+    }
+    console.log("✓ Connected to OmniCoin Fuji Subnet\n");
 
     // Deploy OmniCoin
     console.log("=== Deploying OmniCoin ===");
@@ -24,7 +37,9 @@ async function main() {
     console.log("OmniCoin deployed to:", omniCoinAddress);
 
     // Initialize OmniCoin (grants roles and mints initial supply)
-    await omniCoin.initialize();
+    console.log("Initializing OmniCoin...");
+    const initTx = await omniCoin.initialize();
+    await initTx.wait();
     console.log("OmniCoin initialized");
 
     // Deploy PrivateOmniCoin (pXOM)
@@ -36,13 +51,15 @@ async function main() {
     console.log("PrivateOmniCoin deployed to:", privateOmniCoinAddress);
 
     // Initialize PrivateOmniCoin
-    await privateOmniCoin.initialize();
+    console.log("Initializing PrivateOmniCoin...");
+    const initPxomTx = await privateOmniCoin.initialize();
+    await initPxomTx.wait();
     console.log("PrivateOmniCoin initialized");
 
     // Deploy MinimalEscrow
     console.log("\n=== Deploying MinimalEscrow ===");
     const MinimalEscrow = await ethers.getContractFactory("MinimalEscrow");
-    // For local testing, we'll use the deployer as the registry
+    // For Fuji testing, we'll use the deployer as the registry
     const escrow = await MinimalEscrow.deploy(omniCoinAddress, deployer.address);
     await escrow.waitForDeployment();
     const escrowAddress = await escrow.getAddress();
@@ -77,9 +94,8 @@ async function main() {
     const implementationAddress = await upgrades.erc1967.getImplementationAddress(omniCoreAddress);
     console.log("OmniCore implementation deployed to:", implementationAddress);
 
-    // Skip OmniBridge deployment for local Hardhat (requires Avalanche Warp precompile)
-    // OmniBridge constructor calls WARP_MESSENGER.getBlockchainID() which only works on Avalanche
-    console.log("\n⏭️  Skipping OmniBridge (requires Avalanche Warp precompile)");
+    // Skip OmniBridge deployment for now (requires Avalanche Warp precompile on mainnet)
+    console.log("\n⏭️  Skipping OmniBridge (requires Avalanche Warp precompile on Fuji testnet)");
 
     // Deploy OmniGovernance (needs OmniCore address)
     console.log("\n=== Deploying OmniGovernance ===");
@@ -91,8 +107,11 @@ async function main() {
 
     // Save deployment addresses
     const deployments = {
-        network: "localhost",
-        chainId: 1337,
+        network: "omnicoinFuji",
+        chainId: 131313,
+        blockchainId: "wFWtK4stScGVipRgh9em1aqY7TZ94rRBdV95BbGkjQFwh6wCS",
+        subnetId: "2L5zKkWyff1UoYAhaZ59Pz8LJwXxKMvHW6giJDb1awYaH59CVu",
+        rpcUrl: "http://127.0.0.1:44969/ext/bc/wFWtK4stScGVipRgh9em1aqY7TZ94rRBdV95BbGkjQFwh6wCS/rpc",
         deployer: deployer.address,
         deployedAt: new Date().toISOString(),
         contracts: {
@@ -109,22 +128,40 @@ async function main() {
         fs.mkdirSync(deploymentsPath, { recursive: true });
     }
 
-    const deploymentFile = path.join(deploymentsPath, "localhost.json");
+    const deploymentFile = path.join(deploymentsPath, "fuji.json");
     fs.writeFileSync(deploymentFile, JSON.stringify(deployments, null, 2));
     console.log("\n✅ Deployment addresses saved to:", deploymentFile);
 
-    // All initialization complete (OmniCoin.initialize() already granted roles and minted supply)
-    console.log("\n=== Deployment Summary ===");
+    // Verification tests
+    console.log("\n=== Running Verification Tests ===");
+
+    // Check deployer XOM balance
     const xomBalance = await omniCoin.balanceOf(deployer.address);
     console.log("✓ Deployer XOM balance:", ethers.formatEther(xomBalance));
 
-    console.log("\n🎉 Local deployment complete!");
-    console.log("\nYou can interact with the contracts using:");
-    console.log("- OmniCoin:", omniCoinAddress);
-    console.log("- PrivateOmniCoin:", privateOmniCoinAddress);
-    console.log("- MinimalEscrow:", escrowAddress);
-    console.log("- OmniCore:", omniCoreAddress);
-    console.log("- OmniGovernance:", governanceAddress);
+    // Check total supply
+    const totalSupply = await omniCoin.totalSupply();
+    console.log("✓ Total XOM supply:", ethers.formatEther(totalSupply));
+
+    // Check OmniCore configuration
+    const coreToken = await omniCore.OMNI_COIN();
+    console.log("✓ OmniCore token address:", coreToken);
+    console.log("✓ Matches OmniCoin:", coreToken === omniCoinAddress);
+
+    console.log("\n🎉 Fuji Subnet deployment complete!");
+    console.log("\n=== Deployed Contracts ===");
+    console.log("OmniCoin:          ", omniCoinAddress);
+    console.log("PrivateOmniCoin:   ", privateOmniCoinAddress);
+    console.log("MinimalEscrow:     ", escrowAddress);
+    console.log("OmniCore:          ", omniCoreAddress);
+    console.log("OmniGovernance:    ", governanceAddress);
+
+    console.log("\n=== Next Steps ===");
+    console.log("1. Test contract interactions:");
+    console.log("   npx hardhat console --network omnicoinFuji");
+    console.log("2. Add additional validators to the subnet");
+    console.log("3. Integrate TypeScript services with deployed contracts");
+    console.log("4. Update Validator module configuration with these addresses");
 }
 
 main()

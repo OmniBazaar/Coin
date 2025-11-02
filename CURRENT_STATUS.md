@@ -1,7 +1,44 @@
 # OmniCoin Module Current Status
 
-**Last Updated:** 2025-10-27 15:04 UTC
-**Current Focus:** Contract Address Management - Single Source of Truth Established
+**Last Updated:** 2025-11-02 07:22 UTC
+**Current Focus:** Fuji Testnet Deployment Complete - OmniCore Now Upgradeable (UUPS)
+
+## 📦 FUJI TESTNET DEPLOYMENT (2025-11-02)
+
+**Deployment Date:** 2025-11-02 12:19 UTC
+**Network:** Fuji Subnet-EVM (chainId: 131313)
+**Status:** ✅ All contracts deployed and operational
+
+### Deployed Contract Addresses
+
+| Contract | Address | Notes |
+|----------|---------|-------|
+| OmniCoin | `0x9A9f2CCfdE556A7E9Ff0848998Aa4a0CFD8863AE` | ERC20 token, 1B supply |
+| OmniCore (Proxy) | `0x322813Fd9A801c5507c9de605d63CEA4f2CE6c44` | UUPS upgradeable proxy |
+| OmniCore (Impl) | `0x4ed7c70F96B99c776995fB64377f0d4aB3B0e1C1` | Implementation contract |
+| PrivateOmniCoin | `0x3Aa5ebB10DC797CAC828524e59A333d0A371443c` | Privacy token |
+| MinimalEscrow | `0x59b670e9fA9D0A427751Af201D676719a970857b` | Marketplace escrow |
+| OmniGovernance | `0xa85233C63b9Ee964Add6F2cffe00Fd84eb32338f` | DAO governance |
+
+**Network Details:**
+- RPC URL: `http://127.0.0.1:44969/ext/bc/wFWtK4stScGVipRgh9em1aqY7TZ94rRBdV95BbGkjQFwh6wCS/rpc`
+- Subnet ID: `2L5zKkWyff1UoYAhaZ59Pz8LJwXxKMvHW6giJDb1awYaH59CVu`
+- Blockchain ID: `wFWtK4stScGVipRgh9em1aqY7TZ94rRBdV95BbGkjQFwh6wCS`
+
+**Deployment Files:**
+- Configuration: `Coin/deployments/fuji.json`
+- Scripts: `Coin/scripts/deploy-fuji.js`
+- Hardhat network: `hardhat.config.js` (omnicoinFuji network)
+
+## 🎯 CRITICAL: OmniCore Now Main Contract (Upgradeable)
+
+**Contract Reorganization (2025-11-02):**
+- ✅ **OmniCore.sol** - Now the UUPS upgradeable version (was OmniCoreUpgradeable.sol)
+- ✅ **contracts/deprecated/OmniCoreOld.sol** - Non-upgradeable version (moved from OmniCore.sol)
+- ✅ **All deployment scripts updated** - Use UUPS proxy pattern for OmniCore
+- ✅ **Test suite updated** - test/OmniCore.test.js uses upgradeable contract
+
+**Always use OmniCore.sol (upgradeable) for new deployments!**
 
 ## 🎯 CRITICAL: Contract Address Source of Truth
 

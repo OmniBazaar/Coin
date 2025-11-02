@@ -44,7 +44,18 @@ module.exports = {
       url: "http://127.0.0.1:8545",
       chainId: 1337
     },
-    // Add other networks as needed
+    omnicoinFuji: {
+      url: "http://127.0.0.1:44969/ext/bc/wFWtK4stScGVipRgh9em1aqY7TZ94rRBdV95BbGkjQFwh6wCS/rpc",
+      chainId: 131313,
+      accounts: [
+        // Genesis account #1 (Hardhat test account #0) - Has 100M tokens
+        "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80",
+        // Genesis account #2 (Hardhat test account #1) - Has 100M tokens
+        "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d"
+      ],
+      gasPrice: 25000000000,
+      timeout: 60000
+    }
   },
   paths: {
     sources: "./contracts",

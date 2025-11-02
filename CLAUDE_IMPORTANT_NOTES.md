@@ -25,6 +25,7 @@ IMPORTANT: Use "solhint" instead of compile to find errors and warnings. It is f
 The issue: Hardhat interprets pipe operators and subsequent commands as positional arguments, causing HH308 errors.
 
 ### Solution 1: Simple Wrapper Script
+
 ```bash
 # Use the provided wrapper script
 ./scripts/compile-wrapper.sh | grep -i "error"
@@ -32,6 +33,7 @@ The issue: Hardhat interprets pipe operators and subsequent commands as position
 ```
 
 ### Solution 2: Enhanced Wrapper Script
+
 ```bash
 # Use the enhanced wrapper with options
 ./scripts/hh-compile.sh --errors    # Show only errors
@@ -41,6 +43,7 @@ The issue: Hardhat interprets pipe operators and subsequent commands as position
 ```
 
 ### Solution 3: Direct Bash Command
+
 ```bash
 # Run hardhat in a subshell before piping
 bash -c 'npx hardhat compile 2>&1' | grep -i "error"
@@ -48,6 +51,7 @@ bash -c 'npx hardhat compile 2>&1' | grep -i "warning"
 ```
 
 ### Solution 4: Helper Functions
+
 ```bash
 # Source the helper functions
 source ./scripts/hardhat-helpers.sh

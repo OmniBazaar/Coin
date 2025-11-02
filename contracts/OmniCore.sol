@@ -1,18 +1,26 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.19;
 
-import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
-import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import {AccessControlUpgradeable} from "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
+import {ReentrancyGuardUpgradeable} from "@openzeppelin/contracts-upgradeable/security/ReentrancyGuardUpgradeable.sol";
+import {UUPSUpgradeable} from "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 
 /**
  * @title OmniCore
  * @author OmniCoin Development Team
- * @notice Ultra-lean core contract consolidating registry, validators, and minimal staking
- * @dev Replaces OmniCoinRegistry, OmniCoinConfig, ValidatorRegistry, OmniCoinAccount, and KYCMerkleVerifier
+ * @notice Upgradeable core contract with UUPS proxy pattern
+ * @dev Ultra-lean core contract consolidating registry, validators, and minimal staking
+ * @dev max-states-count disabled: Need 21 states for comprehensive functionality including legacy migration
+ * @dev ordering disabled: Upgradeable contracts follow specific ordering pattern with _authorizeUpgrade
  */
-contract OmniCore is AccessControl, ReentrancyGuard {
+// solhint-disable max-states-count, ordering
+contract OmniCore is
+    AccessControlUpgradeable,
+    ReentrancyGuardUpgradeable,
+    UUPSUpgradeable
+{
     using SafeERC20 for IERC20;
 
     // Type declarations
@@ -39,82 +47,89 @@ contract OmniCore is AccessControl, ReentrancyGuard {
     // Constants
     /// @notice Admin role for governance operations
     bytes32 public constant ADMIN_ROLE = keccak256("ADMIN_ROLE");
-    
+
     /// @notice Role for Avalanche validators to update merkle roots
     bytes32 public constant AVALANCHE_VALIDATOR_ROLE = keccak256("AVALANCHE_VALIDATOR_ROLE");
-    
+
     /// @notice Fee percentage for ODDAO (70% = 7000 basis points)
     uint256 public constant ODDAO_FEE_BPS = 7000;
-    
+
     /// @notice Fee percentage for staking pool (20% = 2000 basis points)
     uint256 public constant STAKING_FEE_BPS = 2000;
-    
+
     /// @notice Fee percentage for validator (10% = 1000 basis points)
     uint256 public constant VALIDATOR_FEE_BPS = 1000;
-    
+
     /// @notice Total basis points for percentage calculations
     uint256 public constant BASIS_POINTS = 10000;
-    
-    // Immutable state variables
-    /// @notice OmniCoin token address
-    IERC20 public immutable OMNI_COIN;
-    
-    // State variables
+
+    // State variables (STORAGE LAYOUT - DO NOT REORDER!)
+    /// @notice OmniCoin token address (changed from immutable)
+    /// @dev Variable name kept uppercase for backward compatibility with original contract
+    // solhint-disable-next-line var-name-mixedcase
+    IERC20 public OMNI_COIN;
+
     /// @notice Service registry mapping service names to addresses
     mapping(bytes32 => address) public services;
-    
+
     /// @notice Validator registry for active validators
     mapping(address => bool) public validators;
-    
+
     /// @notice Master merkle root covering ALL off-chain data
     bytes32 public masterRoot;
-    
+
     /// @notice Last epoch when root was updated
     uint256 public lastRootUpdate;
-    
+
     /// @notice User stakes - minimal on-chain data
     mapping(address => Stake) public stakes;
-    
+
     /// @notice Total staked amount for security
     uint256 public totalStaked;
-    
+
     /// @notice DEX balances for settlement (user => token => amount)
     mapping(address => mapping(address => uint256)) public dexBalances;
-    
+
     /// @notice ODDAO address for receiving 70% of DEX fees
     address public oddaoAddress;
-    
+
     /// @notice Staking pool address for receiving 20% of DEX fees
     address public stakingPoolAddress;
-    
+
     // Node Discovery Registry State (added 2025-08-16)
     /// @notice Registry of node endpoints for discovery
     mapping(address => NodeInfo) public nodeRegistry;
-    
+
     /// @notice Count of active nodes by type
     mapping(uint8 => uint256) public activeNodeCounts;
-    
+
     /// @notice List of all registered node addresses
     address[] public registeredNodes;
-    
+
     /// @notice Mapping to track node address index in array
     mapping(address => uint256) public nodeIndex;
-    
+
     // Legacy Migration State (added 2025-08-06)
     /// @notice Reserved legacy usernames (username hash => reserved)
     mapping(bytes32 => bool) public legacyUsernames;
-    
+
     /// @notice Legacy balances to be claimed (username hash => amount in 18 decimals)
     mapping(bytes32 => uint256) public legacyBalances;
-    
+
     /// @notice Claimed legacy accounts (username hash => claim address)
     mapping(bytes32 => address) public legacyClaimed;
-    
+
+    /// @notice Legacy user account public keys (username hash => public key)
+    mapping(bytes32 => bytes) public legacyAccounts;
+
     /// @notice Total legacy tokens to distribute
     uint256 public totalLegacySupply;
-    
+
     /// @notice Total legacy tokens claimed so far
     uint256 public totalLegacyClaimed;
+
+    /// @notice Storage gap for future upgrades (reserve 50 slots)
+    uint256[50] private __gap;
 
     // Events
     /// @notice Emitted when a service is registered or updated
@@ -148,7 +163,7 @@ contract OmniCore is AccessControl, ReentrancyGuard {
         uint256 indexed amount,
         uint256 timestamp
     );
-    
+
     /// @notice Emitted when legacy users are registered
     /// @param count Number of users registered
     /// @param totalAmount Total amount reserved for distribution
@@ -202,7 +217,7 @@ contract OmniCore is AccessControl, ReentrancyGuard {
         uint256 amount,
         bytes32 orderId
     );
-    
+
     /// @notice Emitted when batch settlement occurs
     /// @param batchId Batch identifier
     /// @param count Number of settlements
@@ -241,29 +256,58 @@ contract OmniCore is AccessControl, ReentrancyGuard {
     error Unauthorized();
 
     /**
-     * @notice Initialize OmniCore with admin and token
+     * @notice Constructor that disables initializers for the implementation contract
+     * @dev Prevents the implementation contract from being initialized
+     */
+    /// @custom:oz-upgrades-unsafe-allow constructor
+    constructor() {
+        _disableInitializers();
+    }
+
+    /**
+     * @notice Initialize the upgradeable OmniCore
+     * @dev Replaces constructor, can only be called once
      * @param admin Address to grant admin role
      * @param _omniCoin Address of OmniCoin token
      * @param _oddaoAddress ODDAO fee recipient (70% of fees)
      * @param _stakingPoolAddress Staking pool fee recipient (20% of fees)
      */
-    constructor(
-        address admin, 
+    function initialize(
+        address admin,
         address _omniCoin,
         address _oddaoAddress,
         address _stakingPoolAddress
-    ) {
-        if (admin == address(0) || _omniCoin == address(0) || 
+    ) public initializer {
+        if (admin == address(0) || _omniCoin == address(0) ||
             _oddaoAddress == address(0) || _stakingPoolAddress == address(0)) {
             revert InvalidAddress();
         }
-        
+
+        // Initialize inherited contracts
+        __AccessControl_init();
+        __ReentrancyGuard_init();
+        __UUPSUpgradeable_init();
+
+        // Set up roles
         _grantRole(DEFAULT_ADMIN_ROLE, admin);
         _grantRole(ADMIN_ROLE, admin);
+
+        // Initialize state
         OMNI_COIN = IERC20(_omniCoin);
         oddaoAddress = _oddaoAddress;
         stakingPoolAddress = _stakingPoolAddress;
     }
+
+    /**
+     * @notice Authorize contract upgrades
+     * @dev Required by UUPSUpgradeable, only admin can upgrade
+     * @param newImplementation Address of new implementation
+     */
+    function _authorizeUpgrade(address newImplementation)
+        internal
+        override
+        onlyRole(ADMIN_ROLE)
+    {}
 
     /**
      * @notice Register or update a service in the registry
@@ -286,13 +330,13 @@ contract OmniCore is AccessControl, ReentrancyGuard {
     function setValidator(address validator, bool active) external onlyRole(ADMIN_ROLE) {
         if (validator == address(0)) revert InvalidAddress();
         validators[validator] = active;
-        
+
         if (active) {
             _grantRole(AVALANCHE_VALIDATOR_ROLE, validator);
         } else {
             _revokeRole(AVALANCHE_VALIDATOR_ROLE, validator);
         }
-        
+
         emit ValidatorUpdated(validator, active, block.timestamp); // solhint-disable-line not-rely-on-time
     }
 
@@ -368,18 +412,18 @@ contract OmniCore is AccessControl, ReentrancyGuard {
      */
     function deactivateNode(string calldata reason) external {
         NodeInfo storage info = nodeRegistry[msg.sender];
-        
+
         if (!info.active) revert InvalidAddress();
-        
+
         info.active = false;
-        
+
         // Update active count
         if (info.nodeType < 3) {
             if (activeNodeCounts[info.nodeType] > 0) {
                 --activeNodeCounts[info.nodeType];
             }
         }
-        
+
         emit NodeDeactivated(msg.sender, reason);
     }
 
@@ -410,36 +454,6 @@ contract OmniCore is AccessControl, ReentrancyGuard {
     }
 
     /**
-     * @notice Clear all stale node registrations (TEST/DEV ONLY)
-     * @dev Admin-only function to clean up old validator entries from testing
-     * @param olderThanSeconds Deactivate nodes not updated in this many seconds (e.g., 300 for 5 minutes)
-     * @return deactivatedCount Number of nodes deactivated
-     */
-    function clearStaleNodes(uint256 olderThanSeconds) external onlyRole(ADMIN_ROLE) returns (uint256 deactivatedCount) {
-        uint256 cutoff = block.timestamp - olderThanSeconds; // solhint-disable-line not-rely-on-time
-        deactivatedCount = 0;
-
-        for (uint256 i = 0; i < registeredNodes.length; ++i) {
-            address addr = registeredNodes[i];
-            NodeInfo storage info = nodeRegistry[addr];
-
-            if (info.active && info.lastUpdate < cutoff) {
-                info.active = false;
-
-                // Update active count
-                if (info.nodeType < 3 && activeNodeCounts[info.nodeType] > 0) {
-                    --activeNodeCounts[info.nodeType];
-                }
-
-                ++deactivatedCount;
-                emit NodeDeactivated(addr, "Stale - cleared by admin");
-            }
-        }
-
-        return deactivatedCount;
-    }
-
-    /**
      * @notice Get active nodes by type
      * @dev Returns array of active node addresses of specified type
      * @param nodeType Type of nodes to retrieve (0=gateway, 1=computation, 2=listing)
@@ -451,13 +465,13 @@ contract OmniCore is AccessControl, ReentrancyGuard {
         uint256 limit
     ) external view returns (address[] memory nodes) {
         if (nodeType > 2) revert InvalidAmount();
-        
+
         uint256 count = 0;
         uint256 maxCount = limit;
         if (maxCount > registeredNodes.length) {
             maxCount = registeredNodes.length;
         }
-        
+
         // Count active nodes of this type
         for (uint256 i = 0; i < registeredNodes.length && count < maxCount; ++i) {
             NodeInfo storage info = nodeRegistry[registeredNodes[i]];
@@ -465,11 +479,11 @@ contract OmniCore is AccessControl, ReentrancyGuard {
                 ++count;
             }
         }
-        
+
         // Allocate array
         nodes = new address[](count);
         uint256 index = 0;
-        
+
         // Fill array
         for (uint256 i = 0; i < registeredNodes.length && index < count; ++i) {
             NodeInfo storage info = nodeRegistry[registeredNodes[i]];
@@ -478,7 +492,7 @@ contract OmniCore is AccessControl, ReentrancyGuard {
                 ++index;
             }
         }
-        
+
         return nodes;
     }
 
@@ -555,6 +569,7 @@ contract OmniCore is AccessControl, ReentrancyGuard {
         // First pass: count active nodes within time window
         for (uint256 i = 0; i < registeredNodes.length; ++i) {
             NodeInfo storage info = nodeRegistry[registeredNodes[i]];
+            // solhint-disable-next-line gas-strict-inequalities
             if (info.active && info.nodeType == nodeType && info.lastUpdate >= cutoff) {
                 ++count;
             }
@@ -569,6 +584,7 @@ contract OmniCore is AccessControl, ReentrancyGuard {
         for (uint256 i = 0; i < registeredNodes.length; ++i) {
             address addr = registeredNodes[i];
             NodeInfo storage info = nodeRegistry[addr];
+            // solhint-disable-next-line gas-strict-inequalities
             if (info.active && info.nodeType == nodeType && info.lastUpdate >= cutoff) {
                 addresses[index] = addr;
                 infos[index] = info;
@@ -593,10 +609,10 @@ contract OmniCore is AccessControl, ReentrancyGuard {
     ) external nonReentrant {
         if (amount == 0) revert InvalidAmount();
         if (stakes[msg.sender].active) revert InvalidAmount();
-        
+
         // Transfer tokens from user
         OMNI_COIN.safeTransferFrom(msg.sender, address(this), amount);
-        
+
         // Store minimal stake data
         stakes[msg.sender] = Stake({
             amount: amount,
@@ -605,9 +621,9 @@ contract OmniCore is AccessControl, ReentrancyGuard {
             lockTime: block.timestamp + duration, // solhint-disable-line not-rely-on-time
             active: true
         });
-        
+
         totalStaked += amount;
-        
+
         emit TokensStaked(msg.sender, amount, tier, duration);
     }
 
@@ -617,20 +633,20 @@ contract OmniCore is AccessControl, ReentrancyGuard {
      */
     function unlock() external nonReentrant {
         Stake storage userStake = stakes[msg.sender];
-        
+
         if (!userStake.active) revert StakeNotFound();
         if (block.timestamp < userStake.lockTime) revert StakeLocked(); // solhint-disable-line not-rely-on-time
-        
+
         uint256 amount = userStake.amount;
-        
+
         // Clear stake
         userStake.active = false;
         userStake.amount = 0;
         totalStaked -= amount;
-        
+
         // Transfer tokens back
         OMNI_COIN.safeTransfer(msg.sender, amount);
-        
+
         emit TokensUnlocked(msg.sender, amount, block.timestamp); // solhint-disable-line not-rely-on-time
     }
 
@@ -647,29 +663,29 @@ contract OmniCore is AccessControl, ReentrancyGuard {
         bytes32[] calldata proof
     ) external onlyRole(AVALANCHE_VALIDATOR_ROLE) {
         Stake storage userStake = stakes[user];
-        
+
         if (!userStake.active) revert StakeNotFound();
         if (totalAmount < userStake.amount) revert InvalidAmount();
-        
+
         // Verify merkle proof (implementation depends on MasterMerkleEngine)
         if (!verifyProof(user, totalAmount, proof)) revert InvalidProof();
-        
+
         // Clear stake
         uint256 baseAmount = userStake.amount;
         userStake.active = false;
         userStake.amount = 0;
         totalStaked -= baseAmount;
-        
+
         // Transfer total amount (base + rewards)
         OMNI_COIN.safeTransfer(user, totalAmount);
-        
+
         emit TokensUnlocked(user, totalAmount, block.timestamp); // solhint-disable-line not-rely-on-time
     }
 
     // =============================================================================
     // DEX Settlement Functions (Ultra-Minimal)
     // =============================================================================
-    
+
     /**
      * @notice Settle a DEX trade
      * @dev All order matching happens off-chain in validators
@@ -690,16 +706,16 @@ contract OmniCore is AccessControl, ReentrancyGuard {
             revert InvalidAddress();
         }
         if (amount == 0) revert InvalidAmount();
-        
+
         // Simple balance transfer
         if (dexBalances[seller][token] < amount) revert InvalidAmount();
-        
+
         dexBalances[seller][token] -= amount;
         dexBalances[buyer][token] += amount;
-        
+
         emit DEXSettlement(buyer, seller, token, amount, orderId);
     }
-    
+
     /**
      * @notice Batch settle multiple DEX trades
      * @dev Efficient batch processing for gas optimization
@@ -717,21 +733,21 @@ contract OmniCore is AccessControl, ReentrancyGuard {
         bytes32 batchId
     ) external onlyRole(AVALANCHE_VALIDATOR_ROLE) {
         uint256 length = buyers.length;
-        if (length == 0 || length != sellers.length || 
+        if (length == 0 || length != sellers.length ||
             length != tokens.length || length != amounts.length) {
             revert InvalidAmount();
         }
-        
+
         for (uint256 i = 0; i < length; ++i) {
             if (dexBalances[sellers[i]][tokens[i]] > amounts[i] || dexBalances[sellers[i]][tokens[i]] == amounts[i]) {
                 dexBalances[sellers[i]][tokens[i]] -= amounts[i];
                 dexBalances[buyers[i]][tokens[i]] += amounts[i];
             }
         }
-        
+
         emit BatchSettlement(batchId, length);
     }
-    
+
     /**
      * @notice Distribute DEX fees
      * @dev Called by validators to distribute fees according to tokenomics
@@ -745,12 +761,12 @@ contract OmniCore is AccessControl, ReentrancyGuard {
         address validator
     ) external onlyRole(AVALANCHE_VALIDATOR_ROLE) {
         if (totalFee == 0) return;
-        
+
         // Calculate fee splits using basis points for precision
         uint256 oddaoFee = (totalFee * ODDAO_FEE_BPS) / BASIS_POINTS;
         uint256 stakingFee = (totalFee * STAKING_FEE_BPS) / BASIS_POINTS;
         uint256 validatorFee = totalFee - oddaoFee - stakingFee; // Remainder to avoid rounding loss
-        
+
         if (oddaoFee > 0) {
             dexBalances[oddaoAddress][token] += oddaoFee;
         }
@@ -761,7 +777,7 @@ contract OmniCore is AccessControl, ReentrancyGuard {
             dexBalances[validator][token] += validatorFee;
         }
     }
-    
+
     /**
      * @notice Deposit tokens to DEX
      * @dev Simple deposit for trading
@@ -770,11 +786,11 @@ contract OmniCore is AccessControl, ReentrancyGuard {
      */
     function depositToDEX(address token, uint256 amount) external nonReentrant {
         if (token == address(0) || amount == 0) revert InvalidAmount();
-        
+
         IERC20(token).safeTransferFrom(msg.sender, address(this), amount);
         dexBalances[msg.sender][token] += amount;
     }
-    
+
     /**
      * @notice Withdraw tokens from DEX
      * @dev Simple withdrawal
@@ -784,7 +800,7 @@ contract OmniCore is AccessControl, ReentrancyGuard {
     function withdrawFromDEX(address token, uint256 amount) external nonReentrant {
         if (amount == 0) revert InvalidAmount();
         if (dexBalances[msg.sender][token] < amount) revert InvalidAmount();
-        
+
         dexBalances[msg.sender][token] -= amount;
         IERC20(token).safeTransfer(msg.sender, amount);
     }
@@ -815,7 +831,7 @@ contract OmniCore is AccessControl, ReentrancyGuard {
     function getStake(address user) external view returns (Stake memory) {
         return stakes[user];
     }
-    
+
     /**
      * @notice Get DEX balance for a user
      * @param user User address
@@ -842,7 +858,7 @@ contract OmniCore is AccessControl, ReentrancyGuard {
         // Simplified verification - actual logic in MasterMerkleEngine
         bytes32 leaf = keccak256(abi.encodePacked(user, amount));
         bytes32 computedHash = leaf;
-        
+
         for (uint256 i = 0; i < proof.length; ++i) {
             bytes32 proofElement = proof[i];
             if (computedHash < proofElement || computedHash == proofElement) {
@@ -851,46 +867,51 @@ contract OmniCore is AccessControl, ReentrancyGuard {
                 computedHash = keccak256(abi.encodePacked(proofElement, computedHash));
             }
         }
-        
+
         return computedHash == masterRoot;
     }
 
     // =============================================================================
     // Legacy Migration Functions (Added 2025-08-06)
     // =============================================================================
-    
+
     /**
      * @notice Register legacy users and their balances
      * @dev Only callable by admin during initialization
      * @param usernames Array of legacy usernames to reserve
      * @param balances Array of balances in 18 decimal precision
+     * @param publicKeys Array of legacy user account public keys
      */
     function registerLegacyUsers(
         string[] calldata usernames,
-        uint256[] calldata balances
+        uint256[] calldata balances,
+        bytes[] calldata publicKeys
     ) external onlyRole(ADMIN_ROLE) {
-        if (usernames.length != balances.length) revert InvalidAmount();
+        if (usernames.length != balances.length || usernames.length != publicKeys.length) {
+            revert InvalidAmount();
+        }
         if (usernames.length > 100) revert InvalidAmount(); // Gas limit protection
-        
+
         uint256 totalAmount = 0;
-        
+
         for (uint256 i = 0; i < usernames.length; ++i) {
             bytes32 usernameHash = keccak256(abi.encodePacked(usernames[i]));
-            
+
             // Skip if already registered
             if (legacyUsernames[usernameHash]) continue;
-            
-            // Reserve username and store balance
+
+            // Reserve username and store balance and public key
             legacyUsernames[usernameHash] = true;
             legacyBalances[usernameHash] = balances[i];
+            legacyAccounts[usernameHash] = publicKeys[i];
             totalAmount += balances[i];
         }
-        
+
         totalLegacySupply += totalAmount;
-        
+
         emit LegacyUsersRegistered(usernames.length, totalAmount);
     }
-    
+
     /**
      * @notice Claim legacy balance after off-chain validation
      * @dev Validators verify legacy credentials off-chain before authorizing claim
@@ -906,13 +927,13 @@ contract OmniCore is AccessControl, ReentrancyGuard {
         bytes calldata signature
     ) external nonReentrant {
         if (claimAddress == address(0)) revert InvalidAddress();
-        
+
         bytes32 usernameHash = keccak256(abi.encodePacked(username));
-        
+
         // Check username is registered and not claimed
         if (!legacyUsernames[usernameHash]) revert InvalidAddress();
         if (legacyClaimed[usernameHash] != address(0)) revert InvalidAmount();
-        
+
         // Verify validator signature
         bytes32 messageHash = keccak256(abi.encodePacked(
             username,
@@ -921,23 +942,23 @@ contract OmniCore is AccessControl, ReentrancyGuard {
             address(this),
             block.chainid
         ));
-        
+
         bytes32 ethSignedMessageHash = keccak256(abi.encodePacked(
             "\x19Ethereum Signed Message:\n32",
             messageHash
         ));
-        
+
         address signer = _recoverSigner(ethSignedMessageHash, signature);
         if (!validators[signer]) revert InvalidSignature();
-        
+
         // Get balance and mark as claimed
         uint256 amount = legacyBalances[usernameHash];
         legacyClaimed[usernameHash] = claimAddress;
         totalLegacyClaimed += amount;
-        
+
         // Transfer tokens (must be pre-minted to this contract)
         OMNI_COIN.safeTransfer(claimAddress, amount);
-        
+
         emit LegacyBalanceClaimed(
             username,
             claimAddress,
@@ -945,7 +966,7 @@ contract OmniCore is AccessControl, ReentrancyGuard {
             block.timestamp // solhint-disable-line not-rely-on-time
         );
     }
-    
+
     /**
      * @notice Check if a legacy username is available
      * @param username Username to check
@@ -955,7 +976,7 @@ contract OmniCore is AccessControl, ReentrancyGuard {
         bytes32 usernameHash = keccak256(abi.encodePacked(username));
         return !legacyUsernames[usernameHash];
     }
-    
+
     /**
      * @notice Get legacy migration status for a username
      * @param username Legacy username
@@ -963,20 +984,23 @@ contract OmniCore is AccessControl, ReentrancyGuard {
      * @return balance Legacy balance to claim
      * @return claimed Whether balance has been claimed
      * @return claimAddress Address that claimed (if any)
+     * @return publicKey Legacy account public key
      */
     function getLegacyStatus(string calldata username) external view returns (
         bool reserved,
         uint256 balance,
         bool claimed,
-        address claimAddress
+        address claimAddress,
+        bytes memory publicKey
     ) {
         bytes32 usernameHash = keccak256(abi.encodePacked(username));
         reserved = legacyUsernames[usernameHash];
         balance = legacyBalances[usernameHash];
         claimAddress = legacyClaimed[usernameHash];
         claimed = (claimAddress != address(0));
+        publicKey = legacyAccounts[usernameHash];
     }
-    
+
     /**
      * @notice Internal function to recover signer from signature
      * @param messageHash Hash of the signed message
@@ -988,18 +1012,18 @@ contract OmniCore is AccessControl, ReentrancyGuard {
         bytes memory signature
     ) internal pure returns (address) {
         if (signature.length != 65) revert InvalidSignature();
-        
+
         bytes32 r;
         bytes32 s;
         uint8 v;
-        
+
         // solhint-disable-next-line no-inline-assembly
         assembly {
             r := mload(add(signature, 32))
             s := mload(add(signature, 64))
             v := byte(0, mload(add(signature, 96)))
         }
-        
+
         return ecrecover(messageHash, v, r, s);
     }
 }

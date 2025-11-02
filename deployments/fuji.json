@@ -1,0 +1,16 @@
+{
+  "network": "omnicoinFuji",
+  "chainId": 131313,
+  "blockchainId": "wFWtK4stScGVipRgh9em1aqY7TZ94rRBdV95BbGkjQFwh6wCS",
+  "subnetId": "2L5zKkWyff1UoYAhaZ59Pz8LJwXxKMvHW6giJDb1awYaH59CVu",
+  "rpcUrl": "http://127.0.0.1:44969/ext/bc/wFWtK4stScGVipRgh9em1aqY7TZ94rRBdV95BbGkjQFwh6wCS/rpc",
+  "deployer": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+  "deployedAt": "2025-11-02T12:19:02.124Z",
+  "contracts": {
+    "OmniCoin": "0x9A9f2CCfdE556A7E9Ff0848998Aa4a0CFD8863AE",
+    "PrivateOmniCoin": "0x3Aa5ebB10DC797CAC828524e59A333d0A371443c",
+    "MinimalEscrow": "0x59b670e9fA9D0A427751Af201D676719a970857b",
+    "OmniCore": "0x322813Fd9A801c5507c9de605d63CEA4f2CE6c44",
+    "OmniGovernance": "0xa85233C63b9Ee964Add6F2cffe00Fd84eb32338f"
+  }
+}
