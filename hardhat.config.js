@@ -45,7 +45,7 @@ module.exports = {
       chainId: 1337
     },
     omnicoinFuji: {
-      url: "http://127.0.0.1:44969/ext/bc/wFWtK4stScGVipRgh9em1aqY7TZ94rRBdV95BbGkjQFwh6wCS/rpc",
+      url: "http://127.0.0.1:9650/ext/bc/2aBfaY6JaFSTfbZjHMTVYkuw9FCAGbguLwqvPxRDoTZgFncBhg/rpc",
       chainId: 131313,
       accounts: [
         // Genesis account #1 (Hardhat test account #0) - Has 100M tokens

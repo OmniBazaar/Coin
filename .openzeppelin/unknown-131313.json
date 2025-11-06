@@ -5,12 +5,17 @@
       "address": "0x322813Fd9A801c5507c9de605d63CEA4f2CE6c44",
       "txHash": "0x5327a10941cf692c67a5f9a3cbbeca8b99a3c530a0a7154c2ddb1f0de90abfe9",
       "kind": "uups"
+    },
+    {
+      "address": "0x0B306BF915C4d645ff596e518fAf3F9669b97016",
+      "txHash": "0xb18315f6a4bc8a6238479c4212c298cf73e273390c0eb56ebac01561bc338d66",
+      "kind": "uups"
     }
   ],
   "impls": {
     "56f44c99f04b47b77afd85434465751ef916d35e46ba86efdbf9a47bb1e84368": {
-      "address": "0x4ed7c70F96B99c776995fB64377f0d4aB3B0e1C1",
-      "txHash": "0x877078a5e4b66a51abf7ac73a413287907e925cd8e4b509a43cb5fb5321efe59",
+      "address": "0x9A676e781A523b5d0C0e43731313A708CB607508",
+      "txHash": "0x9ad5357c525e69d8afd6a556fe281d241cf9b707bff28c9151d8068bf27bbaea",
       "layout": {
         "solcVersion": "0.8.20",
         "storage": [
@@ -99,7 +104,7 @@
             "label": "OMNI_COIN",
             "offset": 0,
             "slot": "301",
-            "type": "t_contract(IERC20)3462",
+            "type": "t_contract(IERC20)4287",
             "contract": "OmniCore",
             "src": "contracts/OmniCore.sol:70"
           },
@@ -139,7 +144,7 @@
             "label": "stakes",
             "offset": 0,
             "slot": "306",
-            "type": "t_mapping(t_address,t_struct(Stake)4946_storage)",
+            "type": "t_mapping(t_address,t_struct(Stake)14724_storage)",
             "contract": "OmniCore",
             "src": "contracts/OmniCore.sol:85"
           },
@@ -179,7 +184,7 @@
             "label": "nodeRegistry",
             "offset": 0,
             "slot": "311",
-            "type": "t_mapping(t_address,t_struct(NodeInfo)4962_storage)",
+            "type": "t_mapping(t_address,t_struct(NodeInfo)14740_storage)",
             "contract": "OmniCore",
             "src": "contracts/OmniCore.sol:101"
           },
@@ -293,7 +298,7 @@
             "label": "bytes",
             "numberOfBytes": "32"
           },
-          "t_contract(IERC20)3462": {
+          "t_contract(IERC20)4287": {
             "label": "contract IERC20",
             "numberOfBytes": "20"
           },
@@ -305,11 +310,11 @@
             "label": "mapping(address => mapping(address => uint256))",
             "numberOfBytes": "32"
           },
-          "t_mapping(t_address,t_struct(NodeInfo)4962_storage)": {
+          "t_mapping(t_address,t_struct(NodeInfo)14740_storage)": {
             "label": "mapping(address => struct OmniCore.NodeInfo)",
             "numberOfBytes": "32"
           },
-          "t_mapping(t_address,t_struct(Stake)4946_storage)": {
+          "t_mapping(t_address,t_struct(Stake)14724_storage)": {
             "label": "mapping(address => struct OmniCore.Stake)",
             "numberOfBytes": "32"
           },
@@ -345,7 +350,7 @@
             "label": "string",
             "numberOfBytes": "32"
           },
-          "t_struct(NodeInfo)4962_storage": {
+          "t_struct(NodeInfo)14740_storage": {
             "label": "struct OmniCore.NodeInfo",
             "members": [
               {
@@ -411,7 +416,7 @@
             ],
             "numberOfBytes": "64"
           },
-          "t_struct(Stake)4946_storage": {
+          "t_struct(Stake)14724_storage": {
             "label": "struct OmniCore.Stake",
             "members": [
               {
