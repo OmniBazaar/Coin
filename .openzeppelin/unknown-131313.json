@@ -10,12 +10,17 @@
       "address": "0x0B306BF915C4d645ff596e518fAf3F9669b97016",
       "txHash": "0xb18315f6a4bc8a6238479c4212c298cf73e273390c0eb56ebac01561bc338d66",
       "kind": "uups"
+    },
+    {
+      "address": "0xB7f8BC63BbcaD18155201308C8f3540b07f84F5e",
+      "txHash": "0xc7e381732699f8e9169576b238b8a152aba8bf4094c9b756a7a97b7c4a9596bd",
+      "kind": "uups"
     }
   ],
   "impls": {
     "56f44c99f04b47b77afd85434465751ef916d35e46ba86efdbf9a47bb1e84368": {
-      "address": "0x9A676e781A523b5d0C0e43731313A708CB607508",
-      "txHash": "0x9ad5357c525e69d8afd6a556fe281d241cf9b707bff28c9151d8068bf27bbaea",
+      "address": "0x610178dA211FEF7D417bC0e6FeD39F05609AD788",
+      "txHash": "0x4b2248b651bc7f5558b3bfc345f9d23818115fb88324edfd0038869248651e54",
       "layout": {
         "solcVersion": "0.8.20",
         "storage": [
@@ -144,7 +149,7 @@
             "label": "stakes",
             "offset": 0,
             "slot": "306",
-            "type": "t_mapping(t_address,t_struct(Stake)14724_storage)",
+            "type": "t_mapping(t_address,t_struct(Stake)15425_storage)",
             "contract": "OmniCore",
             "src": "contracts/OmniCore.sol:85"
           },
@@ -184,7 +189,7 @@
             "label": "nodeRegistry",
             "offset": 0,
             "slot": "311",
-            "type": "t_mapping(t_address,t_struct(NodeInfo)14740_storage)",
+            "type": "t_mapping(t_address,t_struct(NodeInfo)15441_storage)",
             "contract": "OmniCore",
             "src": "contracts/OmniCore.sol:101"
           },
@@ -310,11 +315,11 @@
             "label": "mapping(address => mapping(address => uint256))",
             "numberOfBytes": "32"
           },
-          "t_mapping(t_address,t_struct(NodeInfo)14740_storage)": {
+          "t_mapping(t_address,t_struct(NodeInfo)15441_storage)": {
             "label": "mapping(address => struct OmniCore.NodeInfo)",
             "numberOfBytes": "32"
           },
-          "t_mapping(t_address,t_struct(Stake)14724_storage)": {
+          "t_mapping(t_address,t_struct(Stake)15425_storage)": {
             "label": "mapping(address => struct OmniCore.Stake)",
             "numberOfBytes": "32"
           },
@@ -350,7 +355,7 @@
             "label": "string",
             "numberOfBytes": "32"
           },
-          "t_struct(NodeInfo)14740_storage": {
+          "t_struct(NodeInfo)15441_storage": {
             "label": "struct OmniCore.NodeInfo",
             "members": [
               {
@@ -416,7 +421,7 @@
             ],
             "numberOfBytes": "64"
           },
-          "t_struct(Stake)14724_storage": {
+          "t_struct(Stake)15425_storage": {
             "label": "struct OmniCore.Stake",
             "members": [
               {

@@ -59,8 +59,8 @@ async function loadLegacyBalances() {
  * @returns {string} Balance in Wei as string
  */
 function toWei(decimalBalance) {
-  const ethers = hre.ethers;
-  return ethers.utils.parseEther(decimalBalance.toString()).toString();
+  const { ethers } = hre;
+  return ethers.parseEther(decimalBalance.toString()).toString();
 }
 
 /**
@@ -84,7 +84,8 @@ async function main() {
 
   const [deployer] = await hre.ethers.getSigners();
   console.log("\nDeploying with account:", deployer.address);
-  console.log("Account balance:", hre.ethers.utils.formatEther(await deployer.getBalance()), "ETH");
+  const balance = await hre.ethers.provider.getBalance(deployer.address);
+  console.log("Account balance:", hre.ethers.formatEther(balance), "ETH");
 
   // Get network
   const network = hre.network.name;
@@ -97,7 +98,7 @@ async function main() {
   }
 
   const deployments = JSON.parse(fs.readFileSync(deploymentsPath, "utf8"));
-  const omniCoinAddress = deployments.OmniCoin;
+  const omniCoinAddress = deployments.contracts?.OmniCoin || deployments.OmniCoin;
 
   if (!omniCoinAddress) {
     throw new Error("OmniCoin address not found in deployments");
@@ -112,11 +113,12 @@ async function main() {
   console.log("=".repeat(80));
 
   const LegacyBalanceClaim = await hre.ethers.getContractFactory("LegacyBalanceClaim");
-  const legacyClaim = await LegacyBalanceClaim.deploy(omniCoinAddress);
-  await legacyClaim.deployed();
+  const legacyClaim = await LegacyBalanceClaim.deploy(omniCoinAddress, deployer.address);
+  await legacyClaim.waitForDeployment();
 
-  console.log("✅ LegacyBalanceClaim deployed to:", legacyClaim.address);
-  deployments.LegacyBalanceClaim = legacyClaim.address;
+  const legacyClaimAddress = await legacyClaim.getAddress();
+  console.log("✅ LegacyBalanceClaim deployed to:", legacyClaimAddress);
+  deployments.contracts.LegacyBalanceClaim = legacyClaimAddress;
 
   // Step 2: Grant MINTER_ROLE to LegacyBalanceClaim
   console.log("\n" + "=".repeat(80));
@@ -132,9 +134,9 @@ async function main() {
     console.log("MINTER_ROLE:", MINTER_ROLE);
 
     // Check if already has role
-    const hasRole = await omniCoin.hasRole(MINTER_ROLE, legacyClaim.address);
+    const hasRole = await omniCoin.hasRole(MINTER_ROLE, legacyClaimAddress);
     if (!hasRole) {
-      const tx = await omniCoin.grantRole(MINTER_ROLE, legacyClaim.address);
+      const tx = await omniCoin.grantRole(MINTER_ROLE, legacyClaimAddress);
       await tx.wait();
       console.log("✅ Granted MINTER_ROLE to LegacyBalanceClaim");
     } else {
@@ -174,40 +176,27 @@ async function main() {
 
     console.log(`\nBatch ${i + 1}/${batches.length}: ${batch.length} users`);
 
-    if (i === 0) {
-      // First batch uses initialize()
-      console.log("  Calling initialize()...");
-      const tx = await legacyClaim.initialize(usernames, balances);
-      await tx.wait();
-      console.log(`  ✅ Initialized with batch 1`);
-    } else {
-      // Subsequent batches... wait, the contract only allows initialize() once!
-      // We need to pass ALL users in one call or redesign the contract
-
-      console.log("  ⚠️  Contract only allows single initialization");
-      console.log("  ⚠️  Need to pass all users at once or modify contract");
-      break;
+    try {
+      if (i === 0) {
+        // First batch uses initialize()
+        console.log("  Calling initialize()...");
+        const tx = await legacyClaim.initialize(usernames, balances);
+        const receipt = await tx.wait();
+        console.log(`  ✅ Initialized with batch 1 (Gas used: ${receipt.gasUsed.toString()})`);
+      } else {
+        // Subsequent batches use addLegacyUsers()
+        console.log("  Calling addLegacyUsers()...");
+        const tx = await legacyClaim.addLegacyUsers(usernames, balances);
+        const receipt = await tx.wait();
+        console.log(`  ✅ Added batch ${i + 1} (Gas used: ${receipt.gasUsed.toString()})`);
+      }
+    } catch (error) {
+      console.error(`  ❌ Failed to process batch ${i + 1}:`, error.message);
+      throw error;
     }
   }
 
-  // If we can't batch, try all at once (might hit gas limits)
-  if (legacyUsers.length <= BATCH_SIZE) {
-    const usernames = legacyUsers.map((u) => u.username);
-    const balances = legacyUsers.map((u) => toWei(u.balance));
-
-    console.log("\nInitializing with all users at once...");
-    const tx = await legacyClaim.initialize(usernames, balances);
-    const receipt = await tx.wait();
-    console.log(`✅ Initialized with ${legacyUsers.length} users`);
-    console.log(`   Gas used: ${receipt.gasUsed.toString()}`);
-  } else {
-    console.log("\n⚠️  WARNING: Too many users for single transaction");
-    console.log("   Options:");
-    console.log("   1. Split CSV into multiple files and deploy multiple contracts");
-    console.log("   2. Modify contract to support batch additions");
-    console.log("   3. Increase gas limit and try all at once");
-    console.log("\n   Skipping initialization for now...");
-  }
+  console.log(`\n✅ Successfully added all ${legacyUsers.length} legacy users in ${batches.length} batches`);
 
   // Step 5: Set validator backend address
   console.log("\n" + "=".repeat(80));
@@ -230,15 +219,15 @@ async function main() {
 
   const stats = await legacyClaim.getStats();
   console.log("\nContract Stats:");
-  console.log("  Total Reserved:", hre.ethers.utils.formatEther(stats._totalReserved), "XOM");
-  console.log("  Total Claimed:", hre.ethers.utils.formatEther(stats._totalClaimed), "XOM");
+  console.log("  Total Reserved:", hre.ethers.formatEther(stats._totalReserved), "XOM");
+  console.log("  Total Claimed:", hre.ethers.formatEther(stats._totalClaimed), "XOM");
   console.log("  Unique Claimants:", stats._uniqueClaimants.toString());
   console.log("  Reserved Count:", stats._reservedCount.toString());
-  console.log("  Percent Claimed:", (stats._percentClaimed.toNumber() / 100).toFixed(2), "%");
+  console.log("  Percent Claimed:", (Number(stats._percentClaimed) / 100).toFixed(2), "%");
   console.log("  Finalized:", stats._finalized);
 
   // Save deployment info
-  deployments.LegacyBalanceClaim = legacyClaim.address;
+  deployments.contracts.LegacyBalanceClaim = legacyClaimAddress;
   deployments.deployedAt = new Date().toISOString();
   deployments.network = network;
   deployments.deployer = deployer.address;
@@ -258,7 +247,7 @@ async function main() {
   console.log("=".repeat(80));
   console.log("\nContract Addresses:");
   console.log("  OmniCoin:", omniCoinAddress);
-  console.log("  LegacyBalanceClaim:", legacyClaim.address);
+  console.log("  LegacyBalanceClaim:", legacyClaimAddress);
   console.log("\nMigration Info:");
   console.log("  Legacy Users:", legacyUsers.length);
   console.log("  Total Balance:", totalBalance.toLocaleString(), "XOM");

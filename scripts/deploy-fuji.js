@@ -6,7 +6,7 @@ const path = require("path");
  * Deploys OmniCoin contracts to Fuji Subnet-EVM blockchain
  * Network: omnicoinFuji
  * Chain ID: 131313
- * RPC: http://127.0.0.1:44969/ext/bc/wFWtK4stScGVipRgh9em1aqY7TZ94rRBdV95BbGkjQFwh6wCS/rpc
+ * RPC: http://127.0.0.1:9650/ext/bc/2FYUT2FZenR4bUZUGjVaucXmQgqmDnKmrioLNdPEn7RqPwunMw/rpc
  */
 async function main() {
     console.log("🚀 Starting OmniCoin Fuji Subnet Deployment\n");
@@ -109,9 +109,11 @@ async function main() {
     const deployments = {
         network: "omnicoinFuji",
         chainId: 131313,
-        blockchainId: "wFWtK4stScGVipRgh9em1aqY7TZ94rRBdV95BbGkjQFwh6wCS",
-        subnetId: "2L5zKkWyff1UoYAhaZ59Pz8LJwXxKMvHW6giJDb1awYaH59CVu",
-        rpcUrl: "http://127.0.0.1:44969/ext/bc/wFWtK4stScGVipRgh9em1aqY7TZ94rRBdV95BbGkjQFwh6wCS/rpc",
+        blockchainId: "2FYUT2FZenR4bUZUGjVaucXmQgqmDnKmrioLNdPEn7RqPwunMw",
+        subnetId: "2QWHbdAG4Q53NBF5baKB3mzKycByQtXvFGDjPKTFHLyVco2PR8",
+        rpcUrl: "http://127.0.0.1:9650/ext/bc/2FYUT2FZenR4bUZUGjVaucXmQgqmDnKmrioLNdPEn7RqPwunMw/rpc",
+        validatorManagerProxy: "0x00a62B0E0e3bb9D067fC0D62DEd1d07f9f028410",
+        validatorManagerImplementation: "0xa0aF1B47C6B4c56E776c8c920dB677E394060bDD",
         deployer: deployer.address,
         deployedAt: new Date().toISOString(),
         contracts: {
@@ -119,6 +121,7 @@ async function main() {
             PrivateOmniCoin: privateOmniCoinAddress,
             MinimalEscrow: escrowAddress,
             OmniCore: omniCoreAddress,
+            OmniCoreImplementation: implementationAddress,
             OmniGovernance: governanceAddress
         }
     };

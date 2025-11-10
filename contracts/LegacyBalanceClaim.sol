@@ -2,7 +2,7 @@
 pragma solidity ^0.8.20;
 
 import "@openzeppelin/contracts/access/Ownable.sol";
-import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
+import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import "./OmniCoin.sol";
 
 /**
@@ -77,11 +77,15 @@ contract LegacyBalanceClaim is Ownable, ReentrancyGuard {
     /// @notice Emitted when contract is initialized with legacy balances
     event Initialized(uint256 userCount, uint256 totalAmount);
 
+    /// @notice Emitted when additional legacy users are added
+    event LegacyUsersAdded(uint256 userCount, uint256 batchAmount, uint256 newTotalReserved);
+
     /**
      * @notice Contract constructor
      * @param _omniCoin Address of the OmniCoin token contract
+     * @param initialOwner Address of the contract owner
      */
-    constructor(address _omniCoin) {
+    constructor(address _omniCoin, address initialOwner) Ownable(initialOwner) {
         require(_omniCoin != address(0), "Invalid OmniCoin address");
         omniCoin = OmniCoin(_omniCoin);
     }
@@ -120,6 +124,42 @@ contract LegacyBalanceClaim is Ownable, ReentrancyGuard {
         totalReserved = total;
 
         emit Initialized(usernames.length, total);
+    }
+
+    /**
+     * @notice Add more legacy users after initial deployment
+     * @dev Allows batch additions for large user sets that exceed gas limits
+     * @param usernames Array of legacy usernames to add
+     * @param balances Array of balances (in Wei, 18 decimals)
+     */
+    function addLegacyUsers(
+        string[] calldata usernames,
+        uint256[] calldata balances
+    ) external onlyOwner {
+        require(!migrationFinalized, "Migration finalized");
+        require(usernames.length == balances.length, "Length mismatch");
+        require(usernames.length > 0, "Empty arrays");
+
+        uint256 total = 0;
+
+        for (uint256 i = 0; i < usernames.length; i++) {
+            require(bytes(usernames[i]).length > 0, "Empty username");
+            require(balances[i] > 0, "Zero balance");
+
+            bytes32 usernameHash = keccak256(bytes(usernames[i]));
+
+            // Prevent duplicate usernames
+            require(legacyBalances[usernameHash] == 0, "Duplicate username");
+
+            legacyBalances[usernameHash] = balances[i];
+            reserved[usernameHash] = true;
+            total += balances[i];
+            reservedCount++;
+        }
+
+        totalReserved += total;
+
+        emit LegacyUsersAdded(usernames.length, total, totalReserved);
     }
 
     /**
@@ -180,7 +220,7 @@ contract LegacyBalanceClaim is Ownable, ReentrancyGuard {
      * @param username Username to check
      * @return isReserved True if username belongs to a legacy user
      */
-    function isReserved(string calldata username) external view returns (bool isReserved) {
+    function isReserved(string calldata username) external view returns (bool) {
         bytes32 usernameHash = keccak256(bytes(username));
         return reserved[usernameHash];
     }
@@ -199,7 +239,13 @@ contract LegacyBalanceClaim is Ownable, ReentrancyGuard {
 
     /**
      * @notice Get migration statistics
-     * @return stats Struct containing migration statistics
+     * @return _totalReserved Total XOM reserved for legacy migration
+     * @return _totalClaimed Total XOM claimed by users
+     * @return _totalUnclaimed Total XOM remaining unclaimed
+     * @return _uniqueClaimants Number of unique addresses that claimed
+     * @return _reservedCount Number of reserved usernames
+     * @return _percentClaimed Percentage claimed (basis points)
+     * @return _finalized Whether migration period has ended
      */
     function getStats() external view returns (
         uint256 _totalReserved,
