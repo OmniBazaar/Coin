@@ -1,0 +1,35 @@
+{
+  "network": "coti-mainnet",
+  "chainId": "TBD",
+  "deployedAt": "Not yet deployed",
+  "rpcUrl": "https://mainnet.coti.io",
+  "deployer": "TBD",
+  "contracts": {
+    "OmniCoin": "0x0000000000000000000000000000000000000000",
+    "OmniCore": "0x0000000000000000000000000000000000000000",
+    "OmniGovernance": "0x0000000000000000000000000000000000000000",
+    "OmniBridge": "0x0000000000000000000000000000000000000000",
+    "PrivateOmniCoin": "0x0000000000000000000000000000000000000000",
+    "MinimalEscrow": "0x0000000000000000000000000000000000000000",
+    "LegacyBalanceClaim": "0x0000000000000000000000000000000000000000",
+    "DEXSettlement": "0x0000000000000000000000000000000000000000",
+    "ValidatorOracle": "0x0000000000000000000000000000000000000000"
+  },
+  "cotiInfo": {
+    "privacyLayer": "COTI V2",
+    "privacyFeatures": "Native confidential transactions",
+    "garbledCircuits": true
+  },
+  "notes": [
+    "This is a PLACEHOLDER file for future COTI mainnet integration",
+    "COTI provides native privacy layer for PrivateOmniCoin (pXOM)",
+    "Update all contract addresses when deploying to COTI mainnet",
+    "Run: ./scripts/sync-contract-addresses.sh coti-mainnet",
+    "After deployment to synchronize addresses to all modules",
+    "",
+    "COTI Privacy Features:",
+    "- Native confidential ERC20 (PrivateOmniCoin)",
+    "- Garbled circuits for transaction privacy",
+    "- On-chain privacy without external mixers"
+  ]
+}

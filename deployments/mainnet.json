@@ -1,0 +1,30 @@
+{
+  "network": "mainnet",
+  "chainId": "TBD",
+  "deployedAt": "Not yet deployed",
+  "rpcUrl": "https://mainnet-rpc.omnibazaar.com",
+  "deployer": "TBD",
+  "contracts": {
+    "OmniCoin": "0x0000000000000000000000000000000000000000",
+    "OmniCore": "0x0000000000000000000000000000000000000000",
+    "OmniGovernance": "0x0000000000000000000000000000000000000000",
+    "OmniBridge": "0x0000000000000000000000000000000000000000",
+    "PrivateOmniCoin": "0x0000000000000000000000000000000000000000",
+    "MinimalEscrow": "0x0000000000000000000000000000000000000000",
+    "LegacyBalanceClaim": "0x0000000000000000000000000000000000000000",
+    "DEXSettlement": "0x0000000000000000000000000000000000000000",
+    "ValidatorOracle": "0x0000000000000000000000000000000000000000"
+  },
+  "subnetInfo": {
+    "subnetId": "TBD",
+    "blockchainId": "TBD",
+    "vmId": "subnet-evm",
+    "vmVersion": "TBD"
+  },
+  "notes": [
+    "This is a PLACEHOLDER file for future mainnet deployment",
+    "Update all contract addresses when deploying to Avalanche mainnet Subnet-EVM",
+    "Run: ./scripts/sync-contract-addresses.sh mainnet",
+    "After deployment to synchronize addresses to all modules"
+  ]
+}
