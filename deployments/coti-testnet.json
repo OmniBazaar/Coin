@@ -1,0 +1,22 @@
+{
+  "network": "coti-testnet",
+  "chainId": 7082400,
+  "timestamp": "2025-11-13T20:41:42.129Z",
+  "deployer": "0x32Fbc7639ebF728c128DE8EABBd9368ED16Eae1A",
+  "contracts": {
+    "PrivateOmniCoin": {
+      "proxy": "0x6BF2b6df85CfeE5debF0684c4B656A3b86a31675",
+      "implementation": "0x6BF2b6df85CfeE5debF0684c4B656A3b86a31675"
+    },
+    "OmniPrivacyBridge": {
+      "proxy": "0x123522e908b34799Cf14aDdF7B2A47Df404c4d47",
+      "implementation": "0x123522e908b34799Cf14aDdF7B2A47Df404c4d47"
+    },
+    "PrivateDEX": {
+      "proxy": "0xA242e4555CECF29F888b0189f216241587b9945E",
+      "implementation": "0xA242e4555CECF29F888b0189f216241587b9945E"
+    }
+  },
+  "rpcUrl": "https://testnet.coti.io/rpc",
+  "gasUsed": {}
+}

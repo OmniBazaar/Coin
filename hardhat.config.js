@@ -68,6 +68,20 @@ module.exports = {
       ],
       gasPrice: 25000000000,
       timeout: 60000
+    },
+    cotiTestnet: {
+      url: "https://testnet.coti.io/rpc",
+      chainId: 7082400, // COTI Testnet (verified from network)
+      accounts: process.env.COTI_DEPLOYER_PRIVATE_KEY
+        ? [process.env.COTI_DEPLOYER_PRIVATE_KEY]
+        : [],
+      gas: "auto", // Auto estimate gas
+      gasPrice: 5000000000, // 5 Gwei base fee
+      timeout: 180000, // 3 minutes for MPC operations
+      confirmations: 2,
+      // Fix for COTI RPC "pending block not available" issue
+      blockGasLimit: 30000000,
+      allowUnlimitedContractSize: false
     }
   },
   paths: {

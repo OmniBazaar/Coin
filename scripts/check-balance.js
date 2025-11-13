@@ -1,51 +1,62 @@
+#!/usr/bin/env node
+/**
+ * Check COTI Testnet Balance
+ *
+ * Displays the balance of the deployment account on COTI testnet.
+ */
+
+require("dotenv").config();
 const { ethers } = require("hardhat");
 
 async function main() {
-  // Hardhat's first test account
-  const testAddress = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266";
+  const [deployer] = await ethers.getSigners();
+  const provider = ethers.provider;
+
+  console.log("\n💰 Checking COTI Testnet Balance");
+  console.log("═".repeat(70));
+
+  // Get network info
+  const network = await provider.getNetwork();
+  console.log("\n🌐 Network Information:");
+  console.log("   Name:", network.name);
+  console.log("   Chain ID:", network.chainId.toString());
+
+  // Get account info
+  console.log("\n📍 Account Information:");
+  console.log("   Address:", deployer.address);
 
   // Get balance
-  const provider = ethers.provider;
-  const balance = await provider.getBalance(testAddress);
+  const balance = await provider.getBalance(deployer.address);
+  const balanceInCOTI = ethers.formatEther(balance);
 
-  console.log(`Account: ${testAddress}`);
-  console.log(`Balance: ${ethers.formatEther(balance)} ETH`);
+  console.log("\n💵 Balance:");
+  console.log("   ", balanceInCOTI, "COTI");
+  console.log("   ", balance.toString(), "wei");
 
-  // Also check the OmniCore contract
-  const omniCoreAddress = "0x5FC8d32690cc91D4c39d9d3abcBD16989F875707";
-  const contractCode = await provider.getCode(omniCoreAddress);
-  console.log(`\nOmniCore contract deployed: ${contractCode !== '0x' ? 'YES' : 'NO'}`);
-  console.log(`OmniCore address: ${omniCoreAddress}`);
+  // Check if sufficient for deployment
+  const minRequired = ethers.parseEther("0.05");
+  const isEnough = balance >= minRequired;
 
-  // Try to estimate gas for a registerNode call
-  if (contractCode !== '0x') {
-    const omniCoreABI = [
-      "function registerNode(string calldata multiaddr, string calldata httpEndpoint, string calldata wsEndpoint, string calldata region, uint8 nodeType) external"
-    ];
+  console.log("\n📊 Deployment Readiness:");
+  console.log("   Minimum Required:", ethers.formatEther(minRequired), "COTI");
+  console.log("   Status:", isEnough ? "✅ READY" : "❌ INSUFFICIENT");
 
-    try {
-      const signer = new ethers.Wallet("0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80", provider);
-      const omniCore = new ethers.Contract(omniCoreAddress, omniCoreABI, signer);
-
-      const gasEstimate = await omniCore.registerNode.estimateGas(
-        "/ip4/localhost/tcp/14005/p2p/NodeID-test",
-        "http://localhost:4001",
-        "ws://localhost:8201",
-        "local-dev",
-        0 // gateway
-      );
-
-      console.log(`\nGas estimate for registerNode: ${gasEstimate.toString()}`);
-      console.log(`Gas cost in ETH: ${ethers.formatEther(gasEstimate * BigInt("1000000000"))}`); // 1 gwei gas price
-    } catch (error) {
-      console.log(`\nError estimating gas: ${error.message}`);
-    }
+  if (!isEnough) {
+    console.log("\n⚠️  You need to request tokens from the COTI faucet:");
+    console.log("   1. Join Discord: https://discord.coti.io");
+    console.log("   2. In faucet channel, send:");
+    console.log(`      testnet ${deployer.address}`);
+  } else {
+    console.log("\n✅ Sufficient balance for deployment!");
+    console.log("   Ready to deploy privacy contracts.");
   }
+
+  console.log("\n" + "═".repeat(70) + "\n");
 }
 
 main()
   .then(() => process.exit(0))
   .catch((error) => {
-    console.error(error);
+    console.error("❌ Error:", error.message);
     process.exit(1);
   });

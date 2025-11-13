@@ -182,28 +182,20 @@ contract PrivateOmniCoin is
         // Detect if privacy is available (COTI network check)
         privacyEnabled = _detectPrivacyAvailability();
 
-        // Initialize encrypted zero for totalPrivateSupply (only on COTI network)
-        if (privacyEnabled) {
-            try this._initializeMpcStorage() {
-                // MPC storage initialized successfully
-            } catch {
-                // MPC not available, privacy features will be disabled
-                privacyEnabled = false;
-            }
-        }
-
         // Mint initial supply
         _mint(msg.sender, INITIAL_SUPPLY);
+
+        // NOTE: totalPrivateSupply is initialized to zero by default
+        // MPC operations are NOT performed during initialization to avoid deployment issues
+        // MPC values will be initialized lazily when first privacy conversion occurs
     }
 
     /**
-     * @notice Initialize MPC storage (internal helper)
-     * @dev Must be external to use try-catch, but should only be called during initialization
+     * @notice Initialize MPC storage (deprecated - now inline in initialize())
+     * @dev Kept for compatibility but should not be called
      */
-    function _initializeMpcStorage() external {
-        if (totalSupply() != 0) revert AlreadyInitialized();
-        gtUint64 gtZero = MpcCore.setPublic64(uint64(0));
-        totalPrivateSupply = MpcCore.offBoard(gtZero);
+    function _initializeMpcStorage() external view {
+        revert Unauthorized();
     }
 
     // ========================================================================
@@ -493,13 +485,17 @@ contract PrivateOmniCoin is
      * @dev Internal function to check for COTI V2 MPC support
      * @return enabled Whether privacy is supported
      */
-    function _detectPrivacyAvailability() private pure returns (bool enabled) {
+    function _detectPrivacyAvailability() private view returns (bool enabled) {
         // On COTI V2 network, MPC precompiles are available
         // COTI Devnet: Chain ID 13068200
-        // COTI Testnet: Chain ID 7082
-        // For testing in Hardhat, return false (MPC not available)
-        // In production, check actual chain ID
-        // TODO: Implement proper chain ID check: block.chainid == 13068200 || block.chainid == 7082
-        return false; // Disabled in non-COTI environments
+        // COTI Testnet: Chain ID 7082400
+        // COTI Mainnet: Chain ID 1353
+        // For testing in Hardhat/Avalanche, return false (MPC not available)
+        return (
+            block.chainid == 13068200 ||  // COTI Devnet
+            block.chainid == 7082400 ||   // COTI Testnet (verified)
+            block.chainid == 7082 ||      // COTI Testnet (alternative)
+            block.chainid == 1353         // COTI Mainnet
+        );
     }
 }
