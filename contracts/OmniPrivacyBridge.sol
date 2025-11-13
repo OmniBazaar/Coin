@@ -3,9 +3,11 @@ pragma solidity ^0.8.19;
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
-import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
-import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
-import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import {AccessControlUpgradeable} from "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
+import {PausableUpgradeable} from "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol";
+import {ReentrancyGuardUpgradeable} from "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
+import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
+import {UUPSUpgradeable} from "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
 
 /**
  * @title IPrivateOmniCoin
@@ -50,8 +52,15 @@ interface IPrivateOmniCoin is IERC20 {
  * - Reentrancy protection
  * - Role-based access control
  * - Slippage protection for fee calculations
+ * - Upgradeable via UUPS proxy pattern
  */
-contract OmniPrivacyBridge is AccessControl, Pausable, ReentrancyGuard {
+contract OmniPrivacyBridge is
+    Initializable,
+    AccessControlUpgradeable,
+    PausableUpgradeable,
+    ReentrancyGuardUpgradeable,
+    UUPSUpgradeable
+{
     using SafeERC20 for IERC20;
 
     // ========================================================================
@@ -81,10 +90,12 @@ contract OmniPrivacyBridge is AccessControl, Pausable, ReentrancyGuard {
     // ========================================================================
 
     /// @notice Address of the public OmniCoin (XOM) token
-    IERC20 public immutable OMNI_COIN;
+    /// @dev No longer immutable for upgradeability, initialized in initialize()
+    IERC20 public omniCoin;
 
     /// @notice Address of the private PrivateOmniCoin (pXOM) token
-    IPrivateOmniCoin public immutable PRIVATE_OMNI_COIN;
+    /// @dev No longer immutable for upgradeability, initialized in initialize()
+    IPrivateOmniCoin public privateOmniCoin;
 
     /// @notice Maximum allowed conversion per transaction (adjustable by admin)
     uint256 public maxConversionLimit;
@@ -97,6 +108,15 @@ contract OmniPrivacyBridge is AccessControl, Pausable, ReentrancyGuard {
 
     /// @notice Total conversions to public (cumulative metric)
     uint256 public totalConvertedToPublic;
+
+    /**
+     * @dev Storage gap for future upgrades
+     * @notice Reserves storage slots to allow adding new variables in upgrades
+     * Current storage: 6 variables (OMNI_COIN, PRIVATE_OMNI_COIN, maxConversionLimit,
+     * totalLocked, totalConvertedToPrivate, totalConvertedToPublic)
+     * Gap size: 50 - 6 = 44 slots reserved
+     */
+    uint256[44] private __gap;
 
     // ========================================================================
     // EVENTS
@@ -159,21 +179,38 @@ contract OmniPrivacyBridge is AccessControl, Pausable, ReentrancyGuard {
     error ExceedsConversionLimit();
 
     // ========================================================================
-    // CONSTRUCTOR
+    // CONSTRUCTOR & INITIALIZATION
     // ========================================================================
 
     /**
-     * @notice Constructor for OmniPrivacyBridge
+     * @notice Constructor for OmniPrivacyBridge (upgradeable pattern)
+     * @dev Disables initializers to prevent implementation contract from being initialized
+     * @custom:oz-upgrades-unsafe-allow constructor
+     */
+    constructor() {
+        _disableInitializers();
+    }
+
+    /**
+     * @notice Initialize OmniPrivacyBridge (replaces constructor)
+     * @dev Initializes all inherited contracts and sets up token addresses and roles
      * @param _omniCoin Address of OmniCoin (XOM) token contract
      * @param _privateOmniCoin Address of PrivateOmniCoin (pXOM) token contract
      */
-    constructor(address _omniCoin, address _privateOmniCoin) {
+    function initialize(address _omniCoin, address _privateOmniCoin) external initializer {
         if (_omniCoin == address(0) || _privateOmniCoin == address(0)) {
             revert ZeroAddress();
         }
 
-        OMNI_COIN = IERC20(_omniCoin);
-        PRIVATE_OMNI_COIN = IPrivateOmniCoin(_privateOmniCoin);
+        // Initialize all inherited contracts
+        __AccessControl_init();
+        __Pausable_init();
+        __ReentrancyGuard_init();
+        __UUPSUpgradeable_init();
+
+        // Set token addresses (no longer immutable)
+        omniCoin = IERC20(_omniCoin);
+        privateOmniCoin = IPrivateOmniCoin(_privateOmniCoin);
 
         // Set initial max conversion limit (10 million tokens)
         maxConversionLimit = 10_000_000 * 1e18;
@@ -206,7 +243,7 @@ contract OmniPrivacyBridge is AccessControl, Pausable, ReentrancyGuard {
         uint256 amountAfterFee = amount - fee;
 
         // Transfer XOM from user to bridge (locks tokens)
-        OMNI_COIN.safeTransferFrom(msg.sender, address(this), amount);
+        omniCoin.safeTransferFrom(msg.sender, address(this), amount);
 
         // Update tracking
         totalLocked += amount;
@@ -214,7 +251,7 @@ contract OmniPrivacyBridge is AccessControl, Pausable, ReentrancyGuard {
 
         // Mint public pXOM to user (requires bridge to have MINTER_ROLE on PrivateOmniCoin)
         // User can then call PrivateOmniCoin.convertToPrivate() to convert to encrypted balance
-        PRIVATE_OMNI_COIN.mint(msg.sender, amountAfterFee);
+        privateOmniCoin.mint(msg.sender, amountAfterFee);
 
         emit ConvertedToPrivate(msg.sender, amount, amountAfterFee, fee);
     }
@@ -235,14 +272,14 @@ contract OmniPrivacyBridge is AccessControl, Pausable, ReentrancyGuard {
         if (amount > totalLocked) revert InsufficientLockedFunds();
 
         // Burn pXOM from user (requires bridge to have BURNER_ROLE or user approval)
-        PRIVATE_OMNI_COIN.burnFrom(msg.sender, amount);
+        privateOmniCoin.burnFrom(msg.sender, amount);
 
         // Update tracking
         totalLocked -= amount;
         totalConvertedToPublic += amount;
 
         // Transfer XOM tokens to the user
-        OMNI_COIN.safeTransfer(msg.sender, amount);
+        omniCoin.safeTransfer(msg.sender, amount);
 
         emit ConvertedToPublic(msg.sender, amount);
     }
@@ -300,6 +337,24 @@ contract OmniPrivacyBridge is AccessControl, Pausable, ReentrancyGuard {
         IERC20(token).safeTransfer(to, amount);
 
         emit EmergencyWithdrawal(token, to, amount);
+    }
+
+    // ========================================================================
+    // UUPS UPGRADE AUTHORIZATION
+    // ========================================================================
+
+    /**
+     * @notice Authorize contract upgrades (UUPS pattern)
+     * @dev Only admin can authorize upgrades to new implementation
+     * @param newImplementation Address of new implementation contract
+     */
+    function _authorizeUpgrade(address newImplementation)
+        internal
+        override
+        onlyRole(DEFAULT_ADMIN_ROLE)
+    {
+        // Authorization check handled by onlyRole modifier
+        // newImplementation parameter required by UUPS but not used in authorization logic
     }
 
     // ========================================================================

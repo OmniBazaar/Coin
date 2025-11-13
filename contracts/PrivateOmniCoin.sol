@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.19;
 
-import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
-import {ERC20Burnable} from "@openzeppelin/contracts/token/ERC20/extensions/ERC20Burnable.sol";
-import {ERC20Pausable} from "@openzeppelin/contracts/token/ERC20/extensions/ERC20Pausable.sol";
-import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
+import {ERC20Upgradeable} from "@openzeppelin/contracts-upgradeable/token/ERC20/ERC20Upgradeable.sol";
+import {ERC20BurnableUpgradeable} from "@openzeppelin/contracts-upgradeable/token/ERC20/extensions/ERC20BurnableUpgradeable.sol";
+import {ERC20PausableUpgradeable} from "@openzeppelin/contracts-upgradeable/token/ERC20/extensions/ERC20PausableUpgradeable.sol";
+import {AccessControlUpgradeable} from "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
+import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
+import {UUPSUpgradeable} from "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
 import {MpcCore, gtUint64, ctUint64, gtBool} from "../coti-contracts/contracts/utils/mpc/MpcCore.sol";
 
 /**
@@ -20,6 +22,7 @@ import {MpcCore, gtUint64, ctUint64, gtBool} from "../coti-contracts/contracts/u
  * - Privacy-preserving transfers
  * - Role-based access control
  * - Pausable for emergency stops
+ * - Upgradeable via UUPS proxy pattern
  *
  * Privacy Operations:
  * - onBoard: Convert from storage (ct) to computation (gt) type
@@ -27,7 +30,14 @@ import {MpcCore, gtUint64, ctUint64, gtBool} from "../coti-contracts/contracts/u
  * - setPublic64: Create encrypted value from plain value
  * - decrypt: Reveal encrypted value (authorized only)
  */
-contract PrivateOmniCoin is ERC20, ERC20Burnable, ERC20Pausable, AccessControl {
+contract PrivateOmniCoin is
+    Initializable,
+    ERC20Upgradeable,
+    ERC20BurnableUpgradeable,
+    ERC20PausableUpgradeable,
+    AccessControlUpgradeable,
+    UUPSUpgradeable
+{
     // Use MpcCore library for type operations
     using MpcCore for gtUint64;
     using MpcCore for ctUint64;
@@ -71,6 +81,15 @@ contract PrivateOmniCoin is ERC20, ERC20Burnable, ERC20Pausable, AccessControl {
 
     /// @notice Whether privacy features are enabled on this network
     bool private privacyEnabled;
+
+    /**
+     * @dev Storage gap for future upgrades
+     * @notice Reserves storage slots to allow adding new variables in upgrades
+     * without shifting down inherited contract storage
+     * Current storage: 4 variables (encryptedBalances, totalPrivateSupply, feeRecipient, privacyEnabled)
+     * Gap size: 50 - 4 = 46 slots reserved
+     */
+    uint256[46] private __gap;
 
     // ========================================================================
     // EVENTS
@@ -131,19 +150,25 @@ contract PrivateOmniCoin is ERC20, ERC20Burnable, ERC20Pausable, AccessControl {
     // ========================================================================
 
     /**
-     * @notice Constructor for PrivateOmniCoin
-     * @dev Sets up ERC20 with name and symbol
+     * @notice Constructor for PrivateOmniCoin (upgradeable pattern)
+     * @dev Disables initializers to prevent implementation contract from being initialized
+     * @custom:oz-upgrades-unsafe-allow constructor
      */
-    constructor() ERC20("Private OmniCoin", "pXOM") {
-        // Empty constructor - initialization done in initialize()
+    constructor() {
+        _disableInitializers();
     }
 
     /**
-     * @notice Initialize PrivateOmniCoin token
-     * @dev Mints initial supply to deployer and sets up roles
+     * @notice Initialize PrivateOmniCoin token (replaces constructor)
+     * @dev Initializes all inherited contracts and sets up roles. Can only be called once.
      */
-    function initialize() external {
-        if (totalSupply() != 0) revert AlreadyInitialized();
+    function initialize() external initializer {
+        // Initialize all inherited contracts
+        __ERC20_init("Private OmniCoin", "pXOM");
+        __ERC20Burnable_init();
+        __ERC20Pausable_init();
+        __AccessControl_init();
+        __UUPSUpgradeable_init();
 
         // Grant roles to deployer
         _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
@@ -388,6 +413,20 @@ contract PrivateOmniCoin is ERC20, ERC20Burnable, ERC20Pausable, AccessControl {
     }
 
     // ========================================================================
+    // PUBLIC FUNCTIONS (NON-VIEW)
+    // ========================================================================
+
+    /**
+     * @notice Burn tokens from an address
+     * @dev Only BURNER_ROLE can burn from others. Must be public to override parent.
+     * @param from Address to burn from
+     * @param amount Amount to burn
+     */
+    function burnFrom(address from, uint256 amount) public override onlyRole(BURNER_ROLE) {
+        _burn(from, amount);
+    }
+
+    // ========================================================================
     // PUBLIC VIEW FUNCTIONS
     // ========================================================================
 
@@ -408,14 +447,22 @@ contract PrivateOmniCoin is ERC20, ERC20Burnable, ERC20Pausable, AccessControl {
         return feeRecipient;
     }
 
+    // ========================================================================
+    // UUPS UPGRADE AUTHORIZATION
+    // ========================================================================
+
     /**
-     * @notice Burn tokens from an address
-     * @dev Only BURNER_ROLE can burn from others. Must be public to override parent.
-     * @param from Address to burn from
-     * @param amount Amount to burn
+     * @notice Authorize contract upgrades (UUPS pattern)
+     * @dev Only admin can authorize upgrades to new implementation
+     * @param newImplementation Address of new implementation contract
      */
-    function burnFrom(address from, uint256 amount) public override onlyRole(BURNER_ROLE) {
-        _burn(from, amount);
+    function _authorizeUpgrade(address newImplementation)
+        internal
+        override
+        onlyRole(DEFAULT_ADMIN_ROLE)
+    {
+        // Authorization check handled by onlyRole modifier
+        // newImplementation parameter required by UUPS but not used in authorization logic
     }
 
     // ========================================================================
@@ -433,7 +480,7 @@ contract PrivateOmniCoin is ERC20, ERC20Burnable, ERC20Pausable, AccessControl {
         address from,
         address to,
         uint256 amount
-    ) internal override(ERC20, ERC20Pausable) {
+    ) internal override(ERC20Upgradeable, ERC20PausableUpgradeable) {
         super._update(from, to, amount);
     }
 

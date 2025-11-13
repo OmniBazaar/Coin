@@ -2,7 +2,7 @@
 pragma solidity ^0.8.19;
 
 import {AccessControlUpgradeable} from "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
-import {ReentrancyGuardUpgradeable} from "@openzeppelin/contracts-upgradeable/security/ReentrancyGuardUpgradeable.sol";
+import {ReentrancyGuardUpgradeable} from "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
 import {UUPSUpgradeable} from "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
@@ -224,6 +224,32 @@ contract OmniCore is
     event BatchSettlement(
         bytes32 indexed batchId,
         uint256 indexed count
+    );
+
+    /// @notice Emitted when private DEX trade is settled
+    /// @param buyer Buyer address (public)
+    /// @param seller Seller address (public)
+    /// @param token Token address on COTI (pXOM)
+    /// @param encryptedAmount Encrypted amount (ctUint64 as bytes32)
+    /// @param cotiTxHash COTI transaction hash
+    /// @param cotiBlockNumber COTI block number
+    event PrivateDEXSettlement(
+        address indexed buyer,
+        address indexed seller,
+        address indexed token,
+        bytes32 encryptedAmount,
+        bytes32 cotiTxHash,
+        uint256 cotiBlockNumber
+    );
+
+    /// @notice Emitted when batch private settlement occurs
+    /// @param batchId Batch identifier
+    /// @param count Number of settlements
+    /// @param cotiBlockNumber COTI block number
+    event BatchPrivateSettlement(
+        bytes32 indexed batchId,
+        uint256 indexed count,
+        uint256 cotiBlockNumber
     );
 
     /// @notice Emitted when a node registers or updates its endpoints
@@ -776,6 +802,92 @@ contract OmniCore is
         if (validatorFee > 0) {
             dexBalances[validator][token] += validatorFee;
         }
+    }
+
+    // =============================================================================
+    // Private DEX Settlement Functions (COTI V2 Integration)
+    // =============================================================================
+
+    /**
+     * @notice Settle a private DEX trade from COTI chain
+     * @dev Called by validators after COTI PrivateDEX executes MPC matching
+     * @param buyer Buyer address (public)
+     * @param seller Seller address (public)
+     * @param token Token address on COTI (pXOM)
+     * @param encryptedAmount Encrypted trade amount from COTI MPC (ctUint64 as bytes32)
+     * @param cotiTxHash Transaction hash on COTI chain (proof of execution)
+     * @param cotiBlockNumber Block number on COTI chain
+     */
+    function settlePrivateDEXTrade(
+        address buyer,
+        address seller,
+        address token,
+        bytes32 encryptedAmount,
+        bytes32 cotiTxHash,
+        uint256 cotiBlockNumber
+    ) external onlyRole(AVALANCHE_VALIDATOR_ROLE) {
+        if (buyer == address(0) || seller == address(0)) revert InvalidAddress();
+        if (token == address(0)) revert InvalidAddress();
+        if (cotiTxHash == bytes32(0)) revert InvalidSignature();
+
+        // Record settlement (amounts are encrypted, only addresses and hashes are public)
+        emit PrivateDEXSettlement(
+            buyer,
+            seller,
+            token,
+            encryptedAmount,
+            cotiTxHash,
+            cotiBlockNumber
+        );
+    }
+
+    /**
+     * @notice Batch settle multiple private DEX trades from COTI
+     * @dev Gas optimization for multiple private trades in one transaction
+     * @param buyers Array of buyer addresses
+     * @param sellers Array of seller addresses
+     * @param tokens Array of token addresses
+     * @param encryptedAmounts Array of encrypted amounts
+     * @param cotiTxHashes Array of COTI transaction hashes
+     * @param cotiBlockNumber COTI block number containing all trades
+     */
+    function batchSettlePrivateDEX(
+        address[] calldata buyers,
+        address[] calldata sellers,
+        address[] calldata tokens,
+        bytes32[] calldata encryptedAmounts,
+        bytes32[] calldata cotiTxHashes,
+        uint256 cotiBlockNumber
+    ) external onlyRole(AVALANCHE_VALIDATOR_ROLE) {
+        uint256 count = buyers.length;
+        if (
+            sellers.length != count ||
+            tokens.length != count ||
+            encryptedAmounts.length != count ||
+            cotiTxHashes.length != count
+        ) revert InvalidAmount();
+
+        for (uint256 i = 0; i < count; ++i) {
+            if (buyers[i] == address(0) || sellers[i] == address(0)) revert InvalidAddress();
+            if (tokens[i] == address(0)) revert InvalidAddress();
+
+            emit PrivateDEXSettlement(
+                buyers[i],
+                sellers[i],
+                tokens[i],
+                encryptedAmounts[i],
+                cotiTxHashes[i],
+                cotiBlockNumber
+            );
+        }
+
+        bytes32 batchId = keccak256(abi.encodePacked(
+            block.number,
+            cotiBlockNumber,
+            count
+        ));
+
+        emit BatchPrivateSettlement(batchId, count, cotiBlockNumber);
     }
 
     /**
