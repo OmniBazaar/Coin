@@ -1,26 +1,19 @@
 {
   "network": "omnicoinFuji",
   "chainId": 131313,
-  "blockchainId": "2FYUT2FZenR4bUZUGjVaucXmQgqmDnKmrioLNdPEn7RqPwunMw",
-  "subnetId": "2QWHbdAG4Q53NBF5baKB3mzKycByQtXvFGDjPKTFHLyVco2PR8",
-  "rpcUrl": "http://127.0.0.1:9650/ext/bc/2FYUT2FZenR4bUZUGjVaucXmQgqmDnKmrioLNdPEn7RqPwunMw/rpc",
+  "blockchainId": "2tj4cCC8eVmBe5wHJJ59KuV31SvWRk5npFfwzx6TjSrE1UthDM",
+  "subnetId": "fMaxUZoNxyGZepPKZav46ftAmvFGjkk17VFa6bPQuNo7cAFz6",
+  "rpcUrl": "http://127.0.0.1:9650/ext/bc/2tj4cCC8eVmBe5wHJJ59KuV31SvWRk5npFfwzx6TjSrE1UthDM/rpc",
   "validatorManagerProxy": "0x00a62B0E0e3bb9D067fC0D62DEd1d07f9f028410",
   "validatorManagerImplementation": "0xa0aF1B47C6B4c56E776c8c920dB677E394060bDD",
-  "deployer": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
-  "deployedAt": "2025-11-10T22:48:03.472Z",
+  "deployer": "0xf8C9057d9649daCB06F14A7763233618Cc280663",
+  "deployedAt": "2025-11-16T14:32:51.684Z",
   "contracts": {
-    "OmniCoin": "0x5FC8d32690cc91D4c39d9d3abcBD16989F875707",
-    "PrivateOmniCoin": "0xa513E6E4b8f2a923D98304ec87F64353C4D5C853",
-    "MinimalEscrow": "0x8A791620dd6260079BF849Dc5567aDC3F2FdC318",
-    "OmniCore": "0xB7f8BC63BbcaD18155201308C8f3540b07f84F5e",
-    "OmniCoreImplementation": "0x610178dA211FEF7D417bC0e6FeD39F05609AD788",
-    "OmniGovernance": "0xA51c1fc2f0D1a1b8494Ed1FE312d7C3a78Ed91C0",
-    "LegacyBalanceClaim": "0x9A9f2CCfdE556A7E9Ff0848998Aa4a0CFD8863AE"
-  },
-  "legacyMigration": {
-    "totalUsers": 4735,
-    "totalBalance": 12679778254.03304,
-    "validatorAddress": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
-    "deployedAt": "2025-11-10T22:48:03.472Z"
+    "OmniCoin": "0x81De0CD90D3184feEf6f47c2e14F7162Aba48349",
+    "PrivateOmniCoin": "0x4E51f1A22650A4c9f0CdF3b716a698b681CB2ED6",
+    "MinimalEscrow": "0x48DE1C9A2819d53948BE1e8BA4361237F943C91a",
+    "OmniCore": "0x190B422100e4Df7f7d98b3dd3F8dc2dc4DeA6572",
+    "OmniCoreImplementation": "0x0E4E697317117B150481a827f1e5029864aAe781",
+    "OmniGovernance": "0xe6E7fA5FA18F06686df1603B63eCff8683F118B0"
   }
 }

@@ -58,13 +58,11 @@ module.exports = {
       chainId: 1337
     },
     omnicoinFuji: {
-      url: "http://127.0.0.1:9650/ext/bc/2FYUT2FZenR4bUZUGjVaucXmQgqmDnKmrioLNdPEn7RqPwunMw/rpc",
+      url: "http://127.0.0.1:9650/ext/bc/2tj4cCC8eVmBe5wHJJ59KuV31SvWRk5npFfwzx6TjSrE1UthDM/rpc",
       chainId: 131313,
       accounts: [
-        // Genesis account #1 (Hardhat test account #0) - Has 100M tokens
-        "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80",
-        // Genesis account #2 (Hardhat test account #1) - Has 100M tokens
-        "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d"
+        // omnicoin-control-1 (from genesis, has funds)
+        "0x5145d2bcf3710ae4143b95aab6a7ff5cd954f78ddb9956b28ce86e4c7855e74b"
       ],
       gasPrice: 25000000000,
       timeout: 60000

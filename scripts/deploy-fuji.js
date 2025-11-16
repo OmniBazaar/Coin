@@ -42,25 +42,15 @@ async function main() {
     await initTx.wait();
     console.log("OmniCoin initialized");
 
-    // Deploy PrivateOmniCoin (pXOM)
-    console.log("\n=== Deploying PrivateOmniCoin ===");
-    const PrivateOmniCoin = await ethers.getContractFactory("PrivateOmniCoin");
-    const privateOmniCoin = await PrivateOmniCoin.deploy();
-    await privateOmniCoin.waitForDeployment();
-    const privateOmniCoinAddress = await privateOmniCoin.getAddress();
-    console.log("PrivateOmniCoin deployed to:", privateOmniCoinAddress);
-
-    // Initialize PrivateOmniCoin
-    console.log("Initializing PrivateOmniCoin...");
-    const initPxomTx = await privateOmniCoin.initialize();
-    await initPxomTx.wait();
-    console.log("PrivateOmniCoin initialized");
+    // Skip PrivateOmniCoin (requires COTI MPC precompiles)
+    console.log("\n⏭️  Skipping PrivateOmniCoin (requires COTI's MPC precompiles)");
 
     // Deploy MinimalEscrow
     console.log("\n=== Deploying MinimalEscrow ===");
     const MinimalEscrow = await ethers.getContractFactory("MinimalEscrow");
     // For Fuji testing, we'll use the deployer as the registry
-    const escrow = await MinimalEscrow.deploy(omniCoinAddress, privateOmniCoinAddress, deployer.address);
+    // No PrivateOmniCoin, so use zero address for second parameter
+    const escrow = await MinimalEscrow.deploy(omniCoinAddress, ethers.ZeroAddress, deployer.address);
     await escrow.waitForDeployment();
     const escrowAddress = await escrow.getAddress();
     console.log("MinimalEscrow deployed to:", escrowAddress);
@@ -94,9 +84,6 @@ async function main() {
     const implementationAddress = await upgrades.erc1967.getImplementationAddress(omniCoreAddress);
     console.log("OmniCore implementation deployed to:", implementationAddress);
 
-    // Skip OmniBridge deployment for now (requires Avalanche Warp precompile on mainnet)
-    console.log("\n⏭️  Skipping OmniBridge (requires Avalanche Warp precompile on Fuji testnet)");
-
     // Deploy OmniGovernance (needs OmniCore address)
     console.log("\n=== Deploying OmniGovernance ===");
     const OmniGovernance = await ethers.getContractFactory("OmniGovernance");
@@ -105,24 +92,78 @@ async function main() {
     const governanceAddress = await governance.getAddress();
     console.log("OmniGovernance deployed to:", governanceAddress);
 
+    // Deploy LegacyBalanceClaim
+    console.log("\n=== Deploying LegacyBalanceClaim ===");
+    const LegacyBalanceClaim = await ethers.getContractFactory("LegacyBalanceClaim");
+    const legacyClaim = await LegacyBalanceClaim.deploy(omniCoinAddress);
+    await legacyClaim.waitForDeployment();
+    const legacyClaimAddress = await legacyClaim.getAddress();
+    console.log("LegacyBalanceClaim deployed to:", legacyClaimAddress);
+
+    // Grant MINTER_ROLE to LegacyBalanceClaim
+    console.log("Granting MINTER_ROLE to LegacyBalanceClaim...");
+    const MINTER_ROLE = await omniCoin.MINTER_ROLE();
+    const grantTx = await omniCoin.grantRole(MINTER_ROLE, legacyClaimAddress);
+    await grantTx.wait();
+    console.log("✓ MINTER_ROLE granted");
+
+    // Deploy QualificationOracle (upgradeable with UUPS proxy)
+    console.log("\n=== Deploying QualificationOracle ===");
+    const QualificationOracle = await ethers.getContractFactory("QualificationOracle");
+    const qualOracle = await upgrades.deployProxy(
+        QualificationOracle,
+        [deployer.address], // owner (will be verifier)
+        {
+            initializer: "initialize",
+            kind: "uups"
+        }
+    );
+    await qualOracle.waitForDeployment();
+    const qualOracleAddress = await qualOracle.getAddress();
+    console.log("QualificationOracle proxy deployed to:", qualOracleAddress);
+
+    const qualOracleImpl = await upgrades.erc1967.getImplementationAddress(qualOracleAddress);
+    console.log("QualificationOracle implementation deployed to:", qualOracleImpl);
+
+    // Deploy OmniValidatorManager (upgradeable with UUPS proxy)
+    console.log("\n=== Deploying OmniValidatorManager ===");
+    const OmniValidatorManager = await ethers.getContractFactory("OmniValidatorManager");
+    const validatorMgr = await upgrades.deployProxy(
+        OmniValidatorManager,
+        [deployer.address, qualOracleAddress], // owner, qualification oracle
+        {
+            initializer: "initialize",
+            kind: "uups"
+        }
+    );
+    await validatorMgr.waitForDeployment();
+    const validatorMgrAddress = await validatorMgr.getAddress();
+    console.log("OmniValidatorManager proxy deployed to:", validatorMgrAddress);
+
+    const validatorMgrImpl = await upgrades.erc1967.getImplementationAddress(validatorMgrAddress);
+    console.log("OmniValidatorManager implementation deployed to:", validatorMgrImpl);
+
     // Save deployment addresses
+    // Note: blockchainId and subnetId will be updated by sync script or manually
     const deployments = {
         network: "omnicoinFuji",
         chainId: 131313,
-        blockchainId: "2FYUT2FZenR4bUZUGjVaucXmQgqmDnKmrioLNdPEn7RqPwunMw",
-        subnetId: "2QWHbdAG4Q53NBF5baKB3mzKycByQtXvFGDjPKTFHLyVco2PR8",
-        rpcUrl: "http://127.0.0.1:9650/ext/bc/2FYUT2FZenR4bUZUGjVaucXmQgqmDnKmrioLNdPEn7RqPwunMw/rpc",
-        validatorManagerProxy: "0x00a62B0E0e3bb9D067fC0D62DEd1d07f9f028410",
-        validatorManagerImplementation: "0xa0aF1B47C6B4c56E776c8c920dB677E394060bDD",
+        blockchainId: "", // To be filled from actual deployment
+        subnetId: "", // To be filled from actual deployment
+        rpcUrl: "", // To be filled from actual deployment
         deployer: deployer.address,
         deployedAt: new Date().toISOString(),
         contracts: {
             OmniCoin: omniCoinAddress,
-            PrivateOmniCoin: privateOmniCoinAddress,
             MinimalEscrow: escrowAddress,
             OmniCore: omniCoreAddress,
             OmniCoreImplementation: implementationAddress,
-            OmniGovernance: governanceAddress
+            OmniGovernance: governanceAddress,
+            LegacyBalanceClaim: legacyClaimAddress,
+            QualificationOracle: qualOracleAddress,
+            QualificationOracleImplementation: qualOracleImpl,
+            OmniValidatorManager: validatorMgrAddress,
+            OmniValidatorManagerImplementation: validatorMgrImpl
         }
     };
 
@@ -153,18 +194,20 @@ async function main() {
 
     console.log("\n🎉 Fuji Subnet deployment complete!");
     console.log("\n=== Deployed Contracts ===");
-    console.log("OmniCoin:          ", omniCoinAddress);
-    console.log("PrivateOmniCoin:   ", privateOmniCoinAddress);
-    console.log("MinimalEscrow:     ", escrowAddress);
-    console.log("OmniCore:          ", omniCoreAddress);
-    console.log("OmniGovernance:    ", governanceAddress);
+    console.log("OmniCoin:                ", omniCoinAddress);
+    console.log("MinimalEscrow:           ", escrowAddress);
+    console.log("OmniCore (Proxy):        ", omniCoreAddress);
+    console.log("OmniGovernance:          ", governanceAddress);
+    console.log("LegacyBalanceClaim:      ", legacyClaimAddress);
+    console.log("QualificationOracle:     ", qualOracleAddress);
+    console.log("OmniValidatorManager:    ", validatorMgrAddress);
 
     console.log("\n=== Next Steps ===");
-    console.log("1. Test contract interactions:");
-    console.log("   npx hardhat console --network omnicoinFuji");
-    console.log("2. Add additional validators to the subnet");
-    console.log("3. Integrate TypeScript services with deployed contracts");
-    console.log("4. Update Validator module configuration with these addresses");
+    console.log("1. Update fuji.json with blockchain IDs (run manually)");
+    console.log("2. Sync addresses: ./scripts/sync-contract-addresses.sh fuji");
+    console.log("3. Add validators 2-5 sequentially using OmniValidatorManager");
+    console.log("4. Monitor resource consumption after each validator addition");
+    console.log("5. Run integration tests");
 }
 
 main()
