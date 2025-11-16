@@ -58,7 +58,7 @@ module.exports = {
       chainId: 1337
     },
     omnicoinFuji: {
-      url: "http://127.0.0.1:9650/ext/bc/2tj4cCC8eVmBe5wHJJ59KuV31SvWRk5npFfwzx6TjSrE1UthDM/rpc",
+      url: "http://127.0.0.1:9650/ext/bc/kSSQjR4DYyYNV3jrdPu39fR3niVJXCAgQw38FTurFMCdPve8u/rpc",
       chainId: 131313,
       accounts: [
         // omnicoin-control-1 (from genesis, has funds)

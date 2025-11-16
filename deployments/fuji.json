@@ -1,19 +1,22 @@
 {
   "network": "omnicoinFuji",
   "chainId": 131313,
-  "blockchainId": "2tj4cCC8eVmBe5wHJJ59KuV31SvWRk5npFfwzx6TjSrE1UthDM",
-  "subnetId": "fMaxUZoNxyGZepPKZav46ftAmvFGjkk17VFa6bPQuNo7cAFz6",
-  "rpcUrl": "http://127.0.0.1:9650/ext/bc/2tj4cCC8eVmBe5wHJJ59KuV31SvWRk5npFfwzx6TjSrE1UthDM/rpc",
-  "validatorManagerProxy": "0x00a62B0E0e3bb9D067fC0D62DEd1d07f9f028410",
-  "validatorManagerImplementation": "0xa0aF1B47C6B4c56E776c8c920dB677E394060bDD",
+  "blockchainId": "kSSQjR4DYyYNV3jrdPu39fR3niVJXCAgQw38FTurFMCdPve8u",
+  "subnetId": "2u84gxHXxMY5Ua6mc6cspCSbLkCGAxaoa4wVssU8zn6YR9RqnB",
+  "rpcUrl": "http://127.0.0.1:9650/ext/bc/kSSQjR4DYyYNV3jrdPu39fR3niVJXCAgQw38FTurFMCdPve8u/rpc",
   "deployer": "0xf8C9057d9649daCB06F14A7763233618Cc280663",
-  "deployedAt": "2025-11-16T14:32:51.684Z",
+  "deployedAt": "2025-11-16T16:02:27.290Z",
   "contracts": {
-    "OmniCoin": "0x81De0CD90D3184feEf6f47c2e14F7162Aba48349",
-    "PrivateOmniCoin": "0x4E51f1A22650A4c9f0CdF3b716a698b681CB2ED6",
-    "MinimalEscrow": "0x48DE1C9A2819d53948BE1e8BA4361237F943C91a",
-    "OmniCore": "0x190B422100e4Df7f7d98b3dd3F8dc2dc4DeA6572",
-    "OmniCoreImplementation": "0x0E4E697317117B150481a827f1e5029864aAe781",
-    "OmniGovernance": "0xe6E7fA5FA18F06686df1603B63eCff8683F118B0"
+    "OmniCoin": "0x20518Be3F8DF70a9539525F3271AFE1Ce05859fA",
+    "PrivateOmniCoin": "0x7c0282c82235a44Dc7a591604a20faE384ec6B99",
+    "MinimalEscrow": "0x8166bF3fF055Fa0A0198632e93af579ECDFeBb64",
+    "OmniCore": "0x244514054C836e1a16F40B32731b83f980bbBfA0",
+    "OmniCoreImplementation": "0x3cF349309BD1c718bf62914C38FAf86871394c73",
+    "OmniGovernance": "0xB5E1165e69D8777e7c7CC8868CF300C98f8485c2",
+    "LegacyBalanceClaim": "0xbD0dF60b8FB29F69dFfdd545Bb6103A777CaA070",
+    "QualificationOracle": "0xa66391F7d001aa3Db5680911F390b48B58063E13",
+    "QualificationOracleImplementation": "0x502F6271996f51A670deBC54fbD392e1fE86494e",
+    "OmniValidatorManager": "0x4e7e7bAdCf8546973FBF6BEEA5aA02462Adfd062",
+    "OmniValidatorManagerImplementation": "0xbB444dF862CEE6a2F19160970a3048be02f13a2E"
   }
 }

@@ -42,15 +42,21 @@ async function main() {
     await initTx.wait();
     console.log("OmniCoin initialized");
 
-    // Skip PrivateOmniCoin (requires COTI MPC precompiles)
-    console.log("\n⏭️  Skipping PrivateOmniCoin (requires COTI's MPC precompiles)");
+    // Deploy PrivateOmniCoin (without initialization, since COTI MPC is not available)
+    console.log("\n=== Deploying PrivateOmniCoin ===");
+    console.log("⚠️  Deploying without initialization (COTI MPC not available)");
+    const PrivateOmniCoin = await ethers.getContractFactory("PrivateOmniCoin");
+    const privateOmniCoin = await PrivateOmniCoin.deploy();
+    await privateOmniCoin.waitForDeployment();
+    const privateOmniCoinAddress = await privateOmniCoin.getAddress();
+    console.log("PrivateOmniCoin deployed to:", privateOmniCoinAddress);
+    console.log("⚠️  Not initialized (requires COTI's MPC precompiles)");
 
     // Deploy MinimalEscrow
     console.log("\n=== Deploying MinimalEscrow ===");
     const MinimalEscrow = await ethers.getContractFactory("MinimalEscrow");
     // For Fuji testing, we'll use the deployer as the registry
-    // No PrivateOmniCoin, so use zero address for second parameter
-    const escrow = await MinimalEscrow.deploy(omniCoinAddress, ethers.ZeroAddress, deployer.address);
+    const escrow = await MinimalEscrow.deploy(omniCoinAddress, privateOmniCoinAddress, deployer.address);
     await escrow.waitForDeployment();
     const escrowAddress = await escrow.getAddress();
     console.log("MinimalEscrow deployed to:", escrowAddress);
@@ -95,7 +101,7 @@ async function main() {
     // Deploy LegacyBalanceClaim
     console.log("\n=== Deploying LegacyBalanceClaim ===");
     const LegacyBalanceClaim = await ethers.getContractFactory("LegacyBalanceClaim");
-    const legacyClaim = await LegacyBalanceClaim.deploy(omniCoinAddress);
+    const legacyClaim = await LegacyBalanceClaim.deploy(omniCoinAddress, deployer.address);
     await legacyClaim.waitForDeployment();
     const legacyClaimAddress = await legacyClaim.getAddress();
     console.log("LegacyBalanceClaim deployed to:", legacyClaimAddress);
@@ -130,7 +136,7 @@ async function main() {
     const OmniValidatorManager = await ethers.getContractFactory("OmniValidatorManager");
     const validatorMgr = await upgrades.deployProxy(
         OmniValidatorManager,
-        [deployer.address, qualOracleAddress], // owner, qualification oracle
+        [qualOracleAddress], // qualification oracle (owner set automatically to deployer)
         {
             initializer: "initialize",
             kind: "uups"
@@ -155,6 +161,7 @@ async function main() {
         deployedAt: new Date().toISOString(),
         contracts: {
             OmniCoin: omniCoinAddress,
+            PrivateOmniCoin: privateOmniCoinAddress,
             MinimalEscrow: escrowAddress,
             OmniCore: omniCoreAddress,
             OmniCoreImplementation: implementationAddress,
@@ -195,6 +202,7 @@ async function main() {
     console.log("\n🎉 Fuji Subnet deployment complete!");
     console.log("\n=== Deployed Contracts ===");
     console.log("OmniCoin:                ", omniCoinAddress);
+    console.log("PrivateOmniCoin:         ", privateOmniCoinAddress, "(not initialized)");
     console.log("MinimalEscrow:           ", escrowAddress);
     console.log("OmniCore (Proxy):        ", omniCoreAddress);
     console.log("OmniGovernance:          ", governanceAddress);
