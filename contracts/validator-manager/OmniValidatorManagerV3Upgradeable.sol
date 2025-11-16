@@ -3,30 +3,27 @@ pragma solidity ^0.8.25;
 
 import "./interfaces/IWarpMessenger.sol";
 import "./QualificationOracle.sol";
-import "@openzeppelin/contracts/access/Ownable.sol";
-import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
 
 /**
- * @title OmniValidatorManager V3
+ * @title OmniValidatorManager V3 Upgradeable
  * @author OmniCoin Team
- * @notice Custom Validator Manager that bypasses WARP signature aggregation bug
- * @dev This implementation completely bypasses the initializeValidatorSet requirement,
- *      avoiding the Avalanche CLI bug #2705 that prevents validator addition.
+ * @notice Upgradeable implementation that bypasses WARP signature aggregation bug
+ * @dev This is designed to replace the existing implementation behind the proxy at
+ *      0x00a62B0E0e3bb9D067fC0D62DEd1d07f9f028410
  *
- * KEY INNOVATION: Direct P-Chain registration without SubnetToL1ConversionMessage
+ * KEY INNOVATION: Direct P-Chain registration without initializeValidatorSet
  *
- * Architecture:
- * - NO initializeValidatorSet required (bypasses WARP aggregation bug)
- * - Direct validator registration via RegisterL1ValidatorMessage
- * - Avalanche-compliant incremental weights (max 20% per addition)
- * - PoP-based reward distribution (via QualificationOracle)
- * - Ultra-lean storage (only essential data on-chain)
- *
- * This contract sends validator registration messages directly to the P-Chain
- * without requiring the problematic SubnetToL1ConversionMessage that fails
- * during signature aggregation.
+ * Since ConvertSubnetToL1Tx has already been completed, the P-Chain knows about
+ * this validator manager address. We can send validator registrations directly.
  */
-contract OmniValidatorManager is Ownable, ReentrancyGuard {
+contract OmniValidatorManagerV3Upgradeable is
+    OwnableUpgradeable,
+    UUPSUpgradeable,
+    ReentrancyGuardUpgradeable
+{
     // ============================================
     // CONSTANTS
     // ============================================
@@ -37,12 +34,8 @@ contract OmniValidatorManager is Ownable, ReentrancyGuard {
     /// @notice P-Chain blockchain ID (constant across Avalanche networks)
     bytes32 public constant P_CHAIN_BLOCKCHAIN_ID = bytes32(0);
 
-    /// @notice Maximum weight change allowed per addition (20% of total weight)
-    /// @dev Follows Avalanche's anti-centralization pattern
-    uint64 public constant MAX_WEIGHT_CHANGE_FACTOR = 20; // 20% max
-
-    /// @notice Initial validator weight (for first validator)
-    uint64 public constant INITIAL_VALIDATOR_WEIGHT = 100;
+    /// @notice Standard validator weight (equal for all validators)
+    uint64 public constant VALIDATOR_WEIGHT = 100;
 
     /// @notice Maximum number of validators (for gas efficiency)
     uint256 public constant MAX_VALIDATORS = 100;
@@ -55,10 +48,10 @@ contract OmniValidatorManager is Ownable, ReentrancyGuard {
     // ============================================
 
     /// @notice Qualification oracle for PoP scoring
-    QualificationOracle public immutable qualificationOracle;
+    QualificationOracle public qualificationOracle;
 
     /// @notice Tracks if manager is accepting registrations
-    bool public registrationsEnabled = true;
+    bool public registrationsEnabled;
 
     /// @notice Total number of active validators
     uint256 public activeValidatorCount;
@@ -66,8 +59,8 @@ contract OmniValidatorManager is Ownable, ReentrancyGuard {
     /// @notice Total number of pending registrations
     uint256 public pendingRegistrationCount;
 
-    /// @notice Total weight of all active validators
-    uint64 public totalWeight;
+    /// @notice Track if we've bypassed initialization (V3 feature)
+    bool public v3Initialized;
 
     // ============================================
     // STRUCTS
@@ -78,7 +71,7 @@ contract OmniValidatorManager is Ownable, ReentrancyGuard {
         bytes nodeID;           // Avalanche NodeID
         bytes blsPublicKey;     // BLS public key for consensus
         address owner;          // Address that registered the validator
-        uint64 weight;          // Consensus weight (follows Avalanche pattern)
+        uint64 weight;          // Consensus weight (always 100)
         uint256 registeredAt;   // Registration timestamp
         bool isActive;          // Whether validator is active
         bool isPending;         // Whether registration is pending
@@ -147,6 +140,7 @@ contract OmniValidatorManager is Ownable, ReentrancyGuard {
     );
 
     event RegistrationsToggled(bool enabled);
+    event V3Initialized(address qualificationOracle);
 
     event WarpMessageSent(bytes32 indexed messageID, bytes message);
     event WarpMessageReceived(bytes32 indexed messageID, bytes message);
@@ -166,19 +160,36 @@ contract OmniValidatorManager is Ownable, ReentrancyGuard {
     error MessageAlreadyProcessed();
     error WarpMessageFailed();
     error InvalidWarpResponse();
+    error NotInitialized();
 
     // ============================================
-    // CONSTRUCTOR
+    // INITIALIZER (For Upgrades)
     // ============================================
 
     /**
-     * @notice Initialize the validator manager
+     * @notice Initialize V3 with qualification oracle
+     * @dev This bypasses the need for initializeValidatorSet
      * @param _qualificationOracle Address of the qualification oracle
      */
-    constructor(address _qualificationOracle) Ownable(msg.sender) {
+    function initializeV3(address _qualificationOracle) external reinitializer(3) {
         require(_qualificationOracle != address(0), "Invalid oracle");
+
+        __Ownable_init(msg.sender);
+        __UUPSUpgradeable_init();
+        __ReentrancyGuard_init();
+
         qualificationOracle = QualificationOracle(_qualificationOracle);
+        registrationsEnabled = true;
+        v3Initialized = true;
+
+        emit V3Initialized(_qualificationOracle);
     }
+
+    // ============================================
+    // UPGRADE AUTHORIZATION
+    // ============================================
+
+    function _authorizeUpgrade(address newImplementation) internal override onlyOwner {}
 
     // ============================================
     // EXTERNAL FUNCTIONS - REGISTRATION
@@ -197,6 +208,9 @@ contract OmniValidatorManager is Ownable, ReentrancyGuard {
         bytes calldata blsPublicKey,
         bytes calldata blsProofOfPossession
     ) external nonReentrant returns (bytes32) {
+        // Check V3 is initialized
+        if (!v3Initialized) revert NotInitialized();
+
         // Check if registrations are enabled
         if (!registrationsEnabled) revert RegistrationsDisabled();
 
@@ -216,19 +230,6 @@ contract OmniValidatorManager is Ownable, ReentrancyGuard {
             revert MaxValidatorsReached();
         }
 
-        // Calculate validator weight following Avalanche pattern
-        uint64 validatorWeight;
-        if (totalWeight == 0) {
-            // First validator gets initial weight
-            validatorWeight = INITIAL_VALIDATOR_WEIGHT;
-        } else {
-            // New validators can have max 20% of current total weight
-            uint64 maxAllowedWeight = (totalWeight * MAX_WEIGHT_CHANGE_FACTOR) / 100;
-            // For now, give each new validator the max allowed weight
-            // In production, this could be based on stake or other factors
-            validatorWeight = maxAllowedWeight;
-        }
-
         // Generate unique validation ID
         bytes32 validationID = keccak256(
             abi.encodePacked(nodeID, blsPublicKey, block.timestamp, msg.sender)
@@ -239,7 +240,7 @@ contract OmniValidatorManager is Ownable, ReentrancyGuard {
             nodeID: nodeID,
             blsPublicKey: blsPublicKey,
             owner: msg.sender,
-            weight: validatorWeight,
+            weight: VALIDATOR_WEIGHT,
             registeredAt: block.timestamp,
             isActive: false,
             isPending: true
@@ -265,7 +266,7 @@ contract OmniValidatorManager is Ownable, ReentrancyGuard {
             registrationExpiry: uint64(block.timestamp + REGISTRATION_EXPIRY_DURATION),
             remainingBalanceOwner: pChainOwner,
             disableOwner: pChainOwner,
-            weight: validatorWeight
+            weight: VALIDATOR_WEIGHT
         });
 
         // Send message directly to P-Chain via WARP
@@ -276,7 +277,7 @@ contract OmniValidatorManager is Ownable, ReentrancyGuard {
             validationID,
             nodeID,
             msg.sender,
-            validatorWeight
+            VALIDATOR_WEIGHT
         );
 
         return validationID;
@@ -311,7 +312,6 @@ contract OmniValidatorManager is Ownable, ReentrancyGuard {
         validator.isPending = false;
         activeValidatorCount++;
         pendingRegistrationCount--;
-        totalWeight += validator.weight;  // Add weight to total
 
         emit ValidatorRegistrationCompleted(
             validationID,
@@ -337,7 +337,6 @@ contract OmniValidatorManager is Ownable, ReentrancyGuard {
         // Update state
         if (validator.isActive) {
             activeValidatorCount--;
-            totalWeight -= validator.weight;  // Subtract weight from total
         } else if (validator.isPending) {
             pendingRegistrationCount--;
         }
@@ -355,32 +354,6 @@ contract OmniValidatorManager is Ownable, ReentrancyGuard {
     // ============================================
 
     /**
-     * @notice Get all active validators
-     * @return validationIDs Array of validation IDs
-     * @return nodeIDs Array of node IDs
-     * @return owners Array of owner addresses
-     * @return weights Array of weights
-     */
-    function getActiveValidators() external view returns (
-        bytes32[] memory validationIDs,
-        bytes[] memory nodeIDs,
-        address[] memory owners,
-        uint64[] memory weights
-    ) {
-        uint256 count = activeValidatorCount;
-        validationIDs = new bytes32[](count);
-        nodeIDs = new bytes[](count);
-        owners = new address[](count);
-        weights = new uint64[](count);
-
-        uint256 index = 0;
-        // Note: In production, maintain an array of active validator IDs for efficiency
-        // This is simplified for clarity
-
-        return (validationIDs, nodeIDs, owners, weights);
-    }
-
-    /**
      * @notice Check if an address is a qualified validator
      * @param account The address to check
      * @return qualified Whether the address is qualified
@@ -392,7 +365,7 @@ contract OmniValidatorManager is Ownable, ReentrancyGuard {
         bool isValidator,
         bool isActive
     ) {
-        qualified = qualificationOracle.isQualified(account);
+        qualified = v3Initialized && qualificationOracle.isQualified(account);
         bytes32 validationID = addressToValidationID[account];
         isValidator = validationID != bytes32(0);
         if (isValidator) {
@@ -411,6 +384,15 @@ contract OmniValidatorManager is Ownable, ReentrancyGuard {
     function setRegistrationsEnabled(bool enabled) external onlyOwner {
         registrationsEnabled = enabled;
         emit RegistrationsToggled(enabled);
+    }
+
+    /**
+     * @notice Update qualification oracle
+     * @param _qualificationOracle New oracle address
+     */
+    function setQualificationOracle(address _qualificationOracle) external onlyOwner {
+        require(_qualificationOracle != address(0), "Invalid oracle");
+        qualificationOracle = QualificationOracle(_qualificationOracle);
     }
 
     // ============================================

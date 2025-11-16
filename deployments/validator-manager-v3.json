@@ -1,0 +1,23 @@
+{
+  "network": "fuji",
+  "chainId": 131313,
+  "deployedAt": "2025-11-16T21:30:15.628Z",
+  "contracts": {
+    "QualificationOracle": "0xbae62140111D1B620D70494A5eF11c2b5Aa1d053",
+    "OmniValidatorManager": "0xCAe5DA39fFFE30FabA531F9DeD973678eF50fE0b"
+  },
+  "configuration": {
+    "warpPrecompile": "0x0200000000000000000000000000000000000005",
+    "validatorWeight": 100,
+    "maxValidators": 100,
+    "registrationsEnabled": true,
+    "qualifiedAddresses": [
+      "0xf8C9057d9649daCB06F14A7763233618Cc280663"
+    ]
+  },
+  "notes": {
+    "version": "V3",
+    "description": "Direct P-Chain registration without initializeValidatorSet",
+    "bypassesWarpBug": true
+  }
+}

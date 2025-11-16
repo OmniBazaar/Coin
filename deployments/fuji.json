@@ -18,5 +18,8 @@
     "QualificationOracleImplementation": "0x502F6271996f51A670deBC54fbD392e1fE86494e",
     "OmniValidatorManager": "0x4e7e7bAdCf8546973FBF6BEEA5aA02462Adfd062",
     "OmniValidatorManagerImplementation": "0xbB444dF862CEE6a2F19160970a3048be02f13a2E"
-  }
+  },
+  "QualificationOracle": "0xbae62140111D1B620D70494A5eF11c2b5Aa1d053",
+  "OmniValidatorManager": "0xCAe5DA39fFFE30FabA531F9DeD973678eF50fE0b",
+  "validatorManagerVersion": "V3"
 }
