@@ -1,25 +1,25 @@
 {
   "network": "omnicoinFuji",
   "chainId": 131313,
-  "blockchainId": "kSSQjR4DYyYNV3jrdPu39fR3niVJXCAgQw38FTurFMCdPve8u",
-  "subnetId": "2u84gxHXxMY5Ua6mc6cspCSbLkCGAxaoa4wVssU8zn6YR9RqnB",
-  "rpcUrl": "http://127.0.0.1:9650/ext/bc/kSSQjR4DYyYNV3jrdPu39fR3niVJXCAgQw38FTurFMCdPve8u/rpc",
+  "blockchainId": "2TEeYGdsqvS3eLBk8vrd9bedJiPR7uyeUo1YChM75HtCf9TzFk",
+  "subnetId": "g9rP3Cirj5jJEukLDYQ72EbsRnpwEeVRL9pdLZqhJq1fivCke",
+  "rpcUrl": "http://127.0.0.1:40681/ext/bc/2TEeYGdsqvS3eLBk8vrd9bedJiPR7uyeUo1YChM75HtCf9TzFk/rpc",
   "deployer": "0xf8C9057d9649daCB06F14A7763233618Cc280663",
-  "deployedAt": "2025-11-16T16:02:27.290Z",
+  "deployedAt": "2025-11-26T00:00:00.000Z",
   "contracts": {
-    "OmniCoin": "0x20518Be3F8DF70a9539525F3271AFE1Ce05859fA",
-    "PrivateOmniCoin": "0x7c0282c82235a44Dc7a591604a20faE384ec6B99",
-    "MinimalEscrow": "0x8166bF3fF055Fa0A0198632e93af579ECDFeBb64",
-    "OmniCore": "0x244514054C836e1a16F40B32731b83f980bbBfA0",
-    "OmniCoreImplementation": "0x3cF349309BD1c718bf62914C38FAf86871394c73",
-    "OmniGovernance": "0xB5E1165e69D8777e7c7CC8868CF300C98f8485c2",
-    "LegacyBalanceClaim": "0xbD0dF60b8FB29F69dFfdd545Bb6103A777CaA070",
-    "QualificationOracle": "0xa66391F7d001aa3Db5680911F390b48B58063E13",
-    "QualificationOracleImplementation": "0x502F6271996f51A670deBC54fbD392e1fE86494e",
-    "OmniValidatorManager": "0x4e7e7bAdCf8546973FBF6BEEA5aA02462Adfd062",
-    "OmniValidatorManagerImplementation": "0xbB444dF862CEE6a2F19160970a3048be02f13a2E"
+    "OmniCoin": "0x117defc430E143529a9067A7866A9e7Eb532203C",
+    "PrivateOmniCoin": "0x09F99AE44bd024fD2c16ff6999959d053f0f32B5",
+    "MinimalEscrow": "0xa0aF1B47C6B4c56E776c8c920dB677E394060bDD",
+    "OmniCore": "0x0Ef606683222747738C04b4b00052F5357AC6c8b",
+    "OmniCoreImplementation": "",
+    "OmniGovernance": "0x56E233DDE02E016AF83e352B9Dd191bc62e108B5",
+    "LegacyBalanceClaim": "0x1201b2f0e94B8722792FC4F515E64133c122CD39",
+    "QualificationOracle": "0x85722E5bA6d0E8b97a9fB7B6796816C8B9c49356",
+    "QualificationOracleImplementation": ""
   },
-  "QualificationOracle": "0xbae62140111D1B620D70494A5eF11c2b5Aa1d053",
-  "OmniValidatorManager": "0xCAe5DA39fFFE30FabA531F9DeD973678eF50fE0b",
-  "validatorManagerVersion": "V3"
+  "validatorManager": {
+    "type": "AvalanchePoSValidatorManager",
+    "precompileAddress": "0x0FEEDC0DE0000000000000000000000000000000",
+    "note": "Using standard Avalanche PoS Validator Manager precompile instead of deprecated OmniValidatorManager"
+  }
 }
