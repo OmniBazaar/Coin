@@ -18,8 +18,10 @@ async function generateTypechain() {
     './artifacts/contracts/OmniCoin.sol/OmniCoin.json',
     './artifacts/contracts/OmniCore.sol/OmniCore.json',
     './artifacts/contracts/OmniGovernance.sol/OmniGovernance.json',
+    './artifacts/contracts/OmniRewardManager.sol/OmniRewardManager.json',
     './artifacts/contracts/PrivateOmniCoin.sol/PrivateOmniCoin.json',
-    './artifacts/contracts/interfaces/IOmniCoin.sol/IOmniCoin.json'
+    './artifacts/contracts/interfaces/IOmniCoin.sol/IOmniCoin.json',
+    './artifacts/contracts/interfaces/IOmniRewardManager.sol/IOmniRewardManager.json'
   ].join(' ');
 
   exec(`npx typechain --target ethers-v6 --out-dir typechain-types ${artifacts}`, (error, stdout, stderr) => {
