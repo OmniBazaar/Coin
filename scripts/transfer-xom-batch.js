@@ -19,8 +19,7 @@ async function main() {
 
   // Recipients: [address, amount, username]
   const TRANSFERS = [
-    ["0x46b6AF2444A12542e195ca4F5c1e2fC25897653A", "10000000", "mohsinalikhan.ca@gmail.com"],
-    ["0xb0eC55EcE7D626f89d062738fe6Ab40510bC90D3", "10000000", "TestyTestman"]
+    ["0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266", "2000000", "validator-1-staking"]
   ];
 
   console.log("\n🔧 XOM Batch Transfer Script");

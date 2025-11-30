@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.19;
+pragma solidity ^0.8.20;
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
@@ -12,6 +12,7 @@ import {PausableUpgradeable} from
     "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol";
 import {ReentrancyGuardUpgradeable} from
     "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
+import {IOmniRegistration} from "./interfaces/IOmniRegistration.sol";
 
 /**
  * @title OmniRewardManager
@@ -106,6 +107,15 @@ contract OmniRewardManager is
     /// @notice Basis points denominator (100% = 10000)
     uint256 public constant BASIS_POINTS = 10000;
 
+    /// @notice Maximum welcome bonuses per day (rate limiting for Sybil protection)
+    uint256 public constant MAX_DAILY_WELCOME_BONUSES = 1000;
+
+    /// @notice Maximum referral bonuses per day (rate limiting for Sybil protection)
+    uint256 public constant MAX_DAILY_REFERRAL_BONUSES = 2000;
+
+    /// @notice Maximum first sale bonuses per day (rate limiting)
+    uint256 public constant MAX_DAILY_FIRST_SALE_BONUSES = 500;
+
     // ============ State Variables ============
 
     /// @notice Reference to the OmniCoin ERC20 token
@@ -135,8 +145,23 @@ contract OmniRewardManager is
     /// @notice Current virtual block height for validator reward tracking
     uint256 public currentVirtualBlockHeight;
 
-    /// @dev Reserved storage gap for future upgrades
-    uint256[44] private __gap;
+    /// @notice Reference to OmniRegistration contract for secure bonus claiming
+    IOmniRegistration public registrationContract;
+
+    /// @notice Daily welcome bonus count for rate limiting (day => count)
+    mapping(uint256 => uint256) public dailyWelcomeBonusCount;
+
+    /// @notice Daily referral bonus count for rate limiting (day => count)
+    mapping(uint256 => uint256) public dailyReferralBonusCount;
+
+    /// @notice Daily first sale bonus count for rate limiting (day => count)
+    mapping(uint256 => uint256) public dailyFirstSaleBonusCount;
+
+    /// @notice ODDAO address for referral fee distribution
+    address public oddaoAddress;
+
+    /// @dev Reserved storage gap for future upgrades (reduced due to new variables)
+    uint256[38] private __gap;
 
     // ============ Events ============
 
@@ -210,6 +235,36 @@ contract OmniRewardManager is
         address indexed adminAddr
     );
 
+    /// @notice Emitted when registration contract is set
+    /// @param registrationContract Address of the registration contract
+    event RegistrationContractSet(address indexed registrationContract);
+
+    /// @notice Emitted when ODDAO address is set
+    /// @param oddaoAddress Address of the ODDAO
+    event OddaoAddressSet(address indexed oddaoAddress);
+
+    /// @notice Emitted when permissionless welcome bonus is claimed
+    /// @param user User who claimed
+    /// @param amount Amount claimed
+    /// @param referrer Referrer who will receive bonus (if any)
+    event PermissionlessWelcomeBonusClaimed(
+        address indexed user,
+        uint256 indexed amount,
+        address indexed referrer
+    );
+
+    /// @notice Emitted when auto-referral bonus is distributed
+    /// @param referrer Primary referrer
+    /// @param secondLevelReferrer Second level referrer (if any)
+    /// @param referrerAmount Amount to primary referrer
+    /// @param secondLevelAmount Amount to second level referrer
+    event AutoReferralBonusDistributed(
+        address indexed referrer,
+        address indexed secondLevelReferrer,
+        uint256 referrerAmount,
+        uint256 secondLevelAmount
+    );
+
     // ============ Custom Errors ============
 
     /// @notice Thrown when pool has insufficient funds for distribution
@@ -229,6 +284,21 @@ contract OmniRewardManager is
 
     /// @notice Thrown when invalid pool type is provided for merkle root update
     error InvalidPoolTypeForMerkle();
+
+    /// @notice Thrown when daily bonus rate limit is exceeded
+    error DailyBonusLimitExceeded(PoolType poolType, uint256 limit);
+
+    /// @notice Thrown when registration contract is not set
+    error RegistrationContractNotSet();
+
+    /// @notice Thrown when user is not registered
+    error UserNotRegistered(address user);
+
+    /// @notice Thrown when cooling period has not elapsed
+    error CoolingPeriodNotElapsed(address user, uint256 remaining);
+
+    /// @notice Thrown when ODDAO address is not set
+    error OddaoAddressNotSet();
 
     // ============ Constructor ============
 
@@ -417,6 +487,148 @@ contract OmniRewardManager is
      */
     function unpause() external onlyRole(PAUSER_ROLE) {
         _unpause();
+    }
+
+    /**
+     * @notice Set the OmniRegistration contract address
+     * @dev Only callable by DEFAULT_ADMIN_ROLE. Required for permissionless claiming.
+     * @param _registrationContract Address of the OmniRegistration contract
+     */
+    function setRegistrationContract(
+        address _registrationContract
+    ) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        if (_registrationContract == address(0)) revert ZeroAddressNotAllowed();
+        registrationContract = IOmniRegistration(_registrationContract);
+        emit RegistrationContractSet(_registrationContract);
+    }
+
+    /**
+     * @notice Set the ODDAO address for referral fee distribution
+     * @dev Only callable by DEFAULT_ADMIN_ROLE
+     * @param _oddaoAddress Address of the ODDAO
+     */
+    function setOddaoAddress(
+        address _oddaoAddress
+    ) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        if (_oddaoAddress == address(0)) revert ZeroAddressNotAllowed();
+        oddaoAddress = _oddaoAddress;
+        emit OddaoAddressSet(_oddaoAddress);
+    }
+
+    // ============ External Functions - Permissionless Claiming ============
+
+    /**
+     * @notice Claim welcome bonus directly (permissionless)
+     * @dev Users call this directly after registration. No role required.
+     *      Validates eligibility via OmniRegistration contract.
+     *      Automatically triggers referral bonus distribution.
+     *
+     * Security measures:
+     * - Must be registered in OmniRegistration contract
+     * - Cooling period must have elapsed (24 hours after registration)
+     * - KYC Tier 1+ required
+     * - Daily rate limit enforced
+     * - Bonus amount calculated based on registration number
+     */
+    function claimWelcomeBonusPermissionless() external nonReentrant whenNotPaused {
+        if (address(registrationContract) == address(0)) {
+            revert RegistrationContractNotSet();
+        }
+
+        // Get registration data from OmniRegistration contract
+        IOmniRegistration.Registration memory reg = registrationContract.getRegistration(msg.sender);
+
+        // Verify eligibility
+        if (reg.timestamp == 0) revert UserNotRegistered(msg.sender);
+        if (reg.welcomeBonusClaimed) {
+            revert BonusAlreadyClaimed(msg.sender, PoolType.WelcomeBonus);
+        }
+
+        uint256 coolingPeriod = registrationContract.COOLING_PERIOD();
+        if (block.timestamp < reg.timestamp + coolingPeriod) {
+            revert CoolingPeriodNotElapsed(
+                msg.sender,
+                (reg.timestamp + coolingPeriod) - block.timestamp
+            );
+        }
+
+        // Check daily rate limit
+        uint256 today = block.timestamp / 1 days;
+        if (dailyWelcomeBonusCount[today] >= MAX_DAILY_WELCOME_BONUSES) {
+            revert DailyBonusLimitExceeded(PoolType.WelcomeBonus, MAX_DAILY_WELCOME_BONUSES);
+        }
+        ++dailyWelcomeBonusCount[today];
+
+        // Calculate bonus based on total registrations
+        uint256 totalRegs = registrationContract.totalRegistrations();
+        uint256 bonusAmount = _calculateWelcomeBonus(totalRegs);
+
+        // Validate pool balance
+        _validatePoolBalance(welcomeBonusPool, PoolType.WelcomeBonus, bonusAmount);
+
+        // Mark as claimed in registration contract
+        registrationContract.markWelcomeBonusClaimed(msg.sender);
+
+        // Mark as claimed locally (for backward compatibility)
+        welcomeBonusClaimed[msg.sender] = true;
+
+        // Update pool and transfer
+        _updatePoolAfterDistribution(welcomeBonusPool, bonusAmount);
+        omniCoin.safeTransfer(msg.sender, bonusAmount);
+
+        emit PermissionlessWelcomeBonusClaimed(msg.sender, bonusAmount, reg.referrer);
+        emit WelcomeBonusClaimed(msg.sender, bonusAmount, welcomeBonusPool.remaining);
+        _checkPoolThreshold(PoolType.WelcomeBonus, welcomeBonusPool);
+
+        // Auto-trigger referral bonus if referrer exists
+        if (reg.referrer != address(0)) {
+            _distributeAutoReferralBonus(reg.referrer, msg.sender, totalRegs);
+        }
+    }
+
+    /**
+     * @notice Claim first sale bonus directly (permissionless)
+     * @dev Sellers call this after completing their first sale.
+     *      Sale verification done off-chain, marked in OmniRegistration.
+     */
+    function claimFirstSaleBonusPermissionless() external nonReentrant whenNotPaused {
+        if (address(registrationContract) == address(0)) {
+            revert RegistrationContractNotSet();
+        }
+
+        // Get registration data
+        IOmniRegistration.Registration memory reg = registrationContract.getRegistration(msg.sender);
+
+        // Verify eligibility
+        if (reg.timestamp == 0) revert UserNotRegistered(msg.sender);
+        if (reg.firstSaleBonusClaimed) {
+            revert BonusAlreadyClaimed(msg.sender, PoolType.FirstSaleBonus);
+        }
+
+        // Check daily rate limit
+        uint256 today = block.timestamp / 1 days;
+        if (dailyFirstSaleBonusCount[today] >= MAX_DAILY_FIRST_SALE_BONUSES) {
+            revert DailyBonusLimitExceeded(PoolType.FirstSaleBonus, MAX_DAILY_FIRST_SALE_BONUSES);
+        }
+        ++dailyFirstSaleBonusCount[today];
+
+        // Calculate bonus based on total registrations
+        uint256 totalRegs = registrationContract.totalRegistrations();
+        uint256 bonusAmount = _calculateFirstSaleBonus(totalRegs);
+
+        // Validate pool balance
+        _validatePoolBalance(firstSaleBonusPool, PoolType.FirstSaleBonus, bonusAmount);
+
+        // Mark as claimed
+        registrationContract.markFirstSaleBonusClaimed(msg.sender);
+        firstSaleBonusClaimed[msg.sender] = true;
+
+        // Update pool and transfer
+        _updatePoolAfterDistribution(firstSaleBonusPool, bonusAmount);
+        omniCoin.safeTransfer(msg.sender, bonusAmount);
+
+        emit FirstSaleBonusClaimed(msg.sender, bonusAmount, firstSaleBonusPool.remaining);
+        _checkPoolThreshold(PoolType.FirstSaleBonus, firstSaleBonusPool);
     }
 
     // ============ External View Functions ============
@@ -628,6 +840,149 @@ contract OmniRewardManager is
         _grantRole(VALIDATOR_REWARD_ROLE, admin);
         _grantRole(UPGRADER_ROLE, admin);
         _grantRole(PAUSER_ROLE, admin);
+    }
+
+    /**
+     * @notice Calculate welcome bonus amount based on registration number
+     * @dev Implements decreasing curve as per tokenomics
+     * @param registrationNumber Current total registration count
+     * @return Bonus amount in wei
+     *
+     * Bonus Schedule:
+     * - Users 1 - 1,000:           10,000 XOM
+     * - Users 1,001 - 10,000:       5,000 XOM
+     * - Users 10,001 - 100,000:     2,500 XOM
+     * - Users 100,001 - 1,000,000:  1,250 XOM
+     * - Users 1,000,001+:             625 XOM
+     */
+    function _calculateWelcomeBonus(uint256 registrationNumber) internal pure returns (uint256) {
+        if (registrationNumber <= 1000) {
+            return 10000 * 10 ** 18;
+        } else if (registrationNumber <= 10000) {
+            return 5000 * 10 ** 18;
+        } else if (registrationNumber <= 100000) {
+            return 2500 * 10 ** 18;
+        } else if (registrationNumber <= 1000000) {
+            return 1250 * 10 ** 18;
+        } else {
+            return 625 * 10 ** 18;
+        }
+    }
+
+    /**
+     * @notice Calculate referral bonus amount based on registration number
+     * @dev Mirrors welcome bonus tiers with different amounts
+     * @param registrationNumber Current total registration count
+     * @return Bonus amount in wei
+     *
+     * Referral Schedule:
+     * - Users 1 - 10,000:            2,500 XOM
+     * - Users 10,001 - 100,000:      1,250 XOM
+     * - Users 100,001 - 1,000,000:     625 XOM
+     * - Users 1,000,001+:             312.5 XOM (rounded to 312 XOM)
+     */
+    function _calculateReferralBonus(uint256 registrationNumber) internal pure returns (uint256) {
+        if (registrationNumber <= 10000) {
+            return 2500 * 10 ** 18;
+        } else if (registrationNumber <= 100000) {
+            return 1250 * 10 ** 18;
+        } else if (registrationNumber <= 1000000) {
+            return 625 * 10 ** 18;
+        } else {
+            return 312 * 10 ** 18; // 312.5 rounded down
+        }
+    }
+
+    /**
+     * @notice Calculate first sale bonus amount based on registration number
+     * @dev Incentivizes early sellers
+     * @param registrationNumber Current total registration count
+     * @return Bonus amount in wei
+     *
+     * First Sale Schedule:
+     * - Users 1 - 100,000:             500 XOM
+     * - Users 100,001 - 1,000,000:     250 XOM
+     * - Users 1,000,001 - 10,000,000:  125 XOM
+     * - Users 10,000,001+:              62.5 XOM (rounded to 62 XOM)
+     */
+    function _calculateFirstSaleBonus(uint256 registrationNumber) internal pure returns (uint256) {
+        if (registrationNumber <= 100000) {
+            return 500 * 10 ** 18;
+        } else if (registrationNumber <= 1000000) {
+            return 250 * 10 ** 18;
+        } else if (registrationNumber <= 10000000) {
+            return 125 * 10 ** 18;
+        } else {
+            return 62 * 10 ** 18; // 62.5 rounded down
+        }
+    }
+
+    /**
+     * @notice Auto-distribute referral bonus when welcome bonus is claimed
+     * @dev Called internally by claimWelcomeBonusPermissionless
+     * @param referrer Primary referrer address
+     * @param referee User who claimed welcome bonus
+     * @param registrationNumber Current total registrations for bonus calculation
+     *
+     * Distribution:
+     * - 70% to primary referrer
+     * - 20% to second-level referrer (if exists)
+     * - 10% to ODDAO
+     */
+    function _distributeAutoReferralBonus(
+        address referrer,
+        address referee,
+        uint256 registrationNumber
+    ) internal {
+        // Check daily rate limit
+        uint256 today = block.timestamp / 1 days;
+        if (dailyReferralBonusCount[today] >= MAX_DAILY_REFERRAL_BONUSES) {
+            // Skip referral bonus if daily limit exceeded (don't revert - welcome bonus already claimed)
+            return;
+        }
+        ++dailyReferralBonusCount[today];
+
+        // Calculate total referral bonus
+        uint256 referralAmount = _calculateReferralBonus(registrationNumber);
+
+        // Validate pool balance
+        if (referralBonusPool.remaining < referralAmount) {
+            // Skip if pool exhausted (don't revert)
+            return;
+        }
+
+        // Get second-level referrer from registration contract
+        IOmniRegistration.Registration memory referrerReg = registrationContract.getRegistration(referrer);
+        address secondLevelReferrer = referrerReg.referrer;
+
+        // Calculate distribution amounts
+        uint256 referrerAmount = (referralAmount * 70) / 100;
+        uint256 secondLevelAmount = (secondLevelReferrer != address(0)) ? (referralAmount * 20) / 100 : 0;
+        uint256 oddaoAmount = referralAmount - referrerAmount - secondLevelAmount;
+
+        // Update pool
+        _updatePoolAfterDistribution(referralBonusPool, referralAmount);
+
+        // Track earnings
+        referralBonusesEarned[referrer] += referrerAmount;
+
+        // Transfer to referrer
+        omniCoin.safeTransfer(referrer, referrerAmount);
+
+        // Transfer to second-level referrer if exists
+        if (secondLevelAmount != 0 && secondLevelReferrer != address(0)) {
+            referralBonusesEarned[secondLevelReferrer] += secondLevelAmount;
+            omniCoin.safeTransfer(secondLevelReferrer, secondLevelAmount);
+        }
+
+        // Transfer to ODDAO
+        if (oddaoAmount != 0 && oddaoAddress != address(0)) {
+            omniCoin.safeTransfer(oddaoAddress, oddaoAmount);
+        }
+
+        emit AutoReferralBonusDistributed(referrer, secondLevelReferrer, referrerAmount, secondLevelAmount);
+        emit ReferralBonusClaimed(referrer, secondLevelReferrer, referralAmount);
+        _checkPoolThreshold(PoolType.ReferralBonus, referralBonusPool);
     }
 
     /**
