@@ -12,12 +12,12 @@ import "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol
  * @dev Implements immutable referrer assignment, KYC multi-attestation, and rate limiting
  *
  * Security Model:
- * - Users register with deposit (refundable after KYC Tier 2+)
  * - Phone/email hashes ensure uniqueness (Sybil protection)
  * - Referrers are immutable once set (prevents gaming)
  * - Multi-validator KYC attestation (3-of-5 required)
  * - Rate limiting prevents mass registration attacks
- * - Cooling period before bonus claims (24 hours)
+ * - Device fingerprinting and IP rate limiting (off-chain)
+ * - Social media verification requirements (off-chain)
  */
 contract OmniRegistration is
     AccessControlUpgradeable,
@@ -33,12 +33,6 @@ contract OmniRegistration is
 
     /// @notice Role for KYC attestors (trusted validators)
     bytes32 public constant KYC_ATTESTOR_ROLE = keccak256("KYC_ATTESTOR_ROLE");
-
-    /// @notice Registration deposit in wei (100 XOM, refundable after KYC)
-    uint256 public constant REGISTRATION_DEPOSIT = 100 * 10 ** 18;
-
-    /// @notice Cooling period before bonus claims (24 hours)
-    uint256 public constant COOLING_PERIOD = 24 hours;
 
     /// @notice Maximum registrations per day (rate limiting)
     uint256 public constant MAX_DAILY_REGISTRATIONS = 10000;
@@ -58,7 +52,6 @@ contract OmniRegistration is
      * @param phoneHash Keccak256 hash of verified phone number
      * @param emailHash Keccak256 hash of verified email address
      * @param kycTier KYC verification level (0-4)
-     * @param depositRefunded Whether the registration deposit was refunded
      * @param welcomeBonusClaimed Whether welcome bonus has been claimed
      * @param firstSaleBonusClaimed Whether first sale bonus has been claimed
      */
@@ -69,7 +62,6 @@ contract OmniRegistration is
         bytes32 phoneHash;
         bytes32 emailHash;
         uint8 kycTier;
-        bool depositRefunded;
         bool welcomeBonusClaimed;
         bool firstSaleBonusClaimed;
     }
@@ -133,13 +125,6 @@ contract OmniRegistration is
     event KYCUpgraded(address indexed user, uint8 oldTier, uint8 newTier);
 
     /**
-     * @notice Emitted when a user's deposit is refunded
-     * @param user The user receiving refund
-     * @param amount Amount refunded (REGISTRATION_DEPOSIT)
-     */
-    event DepositRefunded(address indexed user, uint256 amount);
-
-    /**
      * @notice Emitted when welcome bonus is marked as claimed
      * @param user The user who claimed
      * @param timestamp When it was marked
@@ -178,14 +163,8 @@ contract OmniRegistration is
     /// @notice Daily registration limit exceeded
     error DailyLimitExceeded();
 
-    /// @notice Insufficient deposit sent with registration
-    error InsufficientDeposit();
-
     /// @notice User is not registered
     error NotRegistered();
-
-    /// @notice Cooling period has not elapsed
-    error CoolingPeriodActive();
 
     /// @notice Validator has already attested for this user/tier
     error AlreadyAttested();
@@ -196,20 +175,11 @@ contract OmniRegistration is
     /// @notice Invalid KYC tier specified
     error InvalidKYCTier();
 
-    /// @notice Deposit has already been refunded
-    error DepositAlreadyRefunded();
-
-    /// @notice KYC tier 2+ required for this action
-    error KYCRequired();
-
     /// @notice Bonus has already been claimed
     error BonusAlreadyClaimed();
 
     /// @notice Caller is not authorized for this action
     error Unauthorized();
-
-    /// @notice ETH transfer failed
-    error RefundFailed();
 
     // ═══════════════════════════════════════════════════════════════════════
     //                           INITIALIZATION
@@ -242,30 +212,27 @@ contract OmniRegistration is
      * @param referrer The referrer's address (immutable once set, address(0) for none)
      * @param phoneHash Keccak256 hash of verified phone number
      * @param emailHash Keccak256 hash of verified email address
-     * @dev Requires VALIDATOR_ROLE. User must send REGISTRATION_DEPOSIT.
+     * @dev Requires VALIDATOR_ROLE. No deposit required.
      *
      * Security measures:
      * - Duplicate phone/email prevention (Sybil protection)
      * - Rate limiting (MAX_DAILY_REGISTRATIONS)
-     * - Deposit requirement (refundable after KYC)
      * - Referrer validation (must be registered user)
      * - Self-dealing prevention (validator cannot be referrer)
+     * - Additional off-chain protections: device fingerprinting, IP rate limiting, social media verification
      */
     function registerUser(
         address user,
         address referrer,
         bytes32 phoneHash,
         bytes32 emailHash
-    ) external payable onlyRole(VALIDATOR_ROLE) nonReentrant {
+    ) external onlyRole(VALIDATOR_ROLE) nonReentrant {
         // Check user not already registered
         if (registrations[user].timestamp != 0) revert AlreadyRegistered();
 
         // Check phone/email uniqueness (Sybil protection)
         if (usedPhoneHashes[phoneHash]) revert PhoneAlreadyUsed();
         if (usedEmailHashes[emailHash]) revert EmailAlreadyUsed();
-
-        // Check deposit (Sybil protection - refundable after KYC)
-        if (msg.value < REGISTRATION_DEPOSIT) revert InsufficientDeposit();
 
         // Validate referrer
         if (referrer != address(0)) {
@@ -293,7 +260,6 @@ contract OmniRegistration is
             phoneHash: phoneHash,
             emailHash: emailHash,
             kycTier: 1, // Tier 1 = phone + email verified
-            depositRefunded: false,
             welcomeBonusClaimed: false,
             firstSaleBonusClaimed: false
         });
@@ -365,25 +331,6 @@ contract OmniRegistration is
         }
     }
 
-    /**
-     * @notice Refund registration deposit after KYC Tier 2+
-     * @dev Only callable by user themselves after achieving KYC Tier 2
-     */
-    function refundDeposit() external nonReentrant {
-        Registration storage reg = registrations[msg.sender];
-
-        if (reg.timestamp == 0) revert NotRegistered();
-        if (reg.kycTier < 2) revert KYCRequired();
-        if (reg.depositRefunded) revert DepositAlreadyRefunded();
-
-        reg.depositRefunded = true;
-
-        (bool success, ) = msg.sender.call{value: REGISTRATION_DEPOSIT}("");
-        if (!success) revert RefundFailed();
-
-        emit DepositRefunded(msg.sender, REGISTRATION_DEPOSIT);
-    }
-
     // ═══════════════════════════════════════════════════════════════════════
     //                        BONUS CLAIM MARKING
     // ═══════════════════════════════════════════════════════════════════════
@@ -450,16 +397,11 @@ contract OmniRegistration is
      * Requirements:
      * - User is registered
      * - Welcome bonus not already claimed
-     * - Cooling period has elapsed (24 hours)
-     * - KYC Tier 1+ achieved
+     * - KYC Tier 1+ achieved (phone + email verified)
      */
     function canClaimWelcomeBonus(address user) external view returns (bool) {
         Registration storage reg = registrations[user];
-        return
-            reg.timestamp != 0 &&
-            !reg.welcomeBonusClaimed &&
-            block.timestamp >= reg.timestamp + COOLING_PERIOD &&
-            reg.kycTier >= 1;
+        return reg.timestamp != 0 && !reg.welcomeBonusClaimed && reg.kycTier >= 1;
     }
 
     /**
@@ -526,9 +468,4 @@ contract OmniRegistration is
     function _authorizeUpgrade(
         address newImplementation
     ) internal override onlyRole(DEFAULT_ADMIN_ROLE) {}
-
-    /**
-     * @notice Receive function to accept ETH deposits
-     */
-    receive() external payable {}
 }
