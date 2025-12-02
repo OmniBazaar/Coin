@@ -70,6 +70,17 @@ module.exports = {
       url: "http://127.0.0.1:8545",
       chainId: 1337
     },
+    fuji: {
+      url: "http://127.0.0.1:40681/ext/bc/2TEeYGdsqvS3eLBk8vrd9bedJiPR7uyeUo1YChM75HtCf9TzFk/rpc",
+      chainId: 131313,
+      accounts: [
+        // omnicoin-control-1 (from genesis, has funds)
+        "0x5145d2bcf3710ae4143b95aab6a7ff5cd954f78ddb9956b28ce86e4c7855e74b"
+      ],
+      gasPrice: 25000000000,
+      timeout: 60000
+    },
+    // Alias for backwards compatibility
     omnicoinFuji: {
       url: "http://127.0.0.1:40681/ext/bc/2TEeYGdsqvS3eLBk8vrd9bedJiPR7uyeUo1YChM75HtCf9TzFk/rpc",
       chainId: 131313,
