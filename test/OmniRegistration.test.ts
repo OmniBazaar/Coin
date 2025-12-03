@@ -4,15 +4,14 @@
  *
  * Tests cover:
  * - Initialization and role setup
- * - User registration with deposit
+ * - User registration (no deposit required)
  * - Phone/email uniqueness (Sybil protection)
  * - Referrer validation
  * - Daily rate limiting
  * - KYC attestation (multi-validator)
- * - Deposit refund after KYC
- * - Cooling period enforcement
  * - Bonus claim marking
  * - Access control
+ * - Self-registration with EIP-712 attestation
  */
 
 /* eslint-disable @typescript-eslint/no-var-requires */
@@ -42,10 +41,9 @@ describe('OmniRegistration', function () {
     const KYC_ATTESTOR_ROLE = keccak256(toUtf8Bytes('KYC_ATTESTOR_ROLE'));
 
     // Constants from contract
-    const REGISTRATION_DEPOSIT = ethers.parseEther('100'); // 100 XOM
-    const COOLING_PERIOD = 24 * 60 * 60; // 24 hours in seconds
     const MAX_DAILY_REGISTRATIONS = 10000;
     const KYC_ATTESTATION_THRESHOLD = 3;
+    const ATTESTATION_VALIDITY = 60 * 60; // 1 hour in seconds
 
     /**
      * Generate phone hash for testing
@@ -87,8 +85,7 @@ describe('OmniRegistration', function () {
             referrer.address,
             ZeroAddress, // No referrer for the first user
             phoneHash('+1-555-0000'),
-            emailHash('referrer@test.com'),
-            { value: REGISTRATION_DEPOSIT }
+            emailHash('referrer@test.com')
         );
     });
 
@@ -98,10 +95,9 @@ describe('OmniRegistration', function () {
         });
 
         it('should have correct constants', async function () {
-            expect(await registration.REGISTRATION_DEPOSIT()).to.equal(REGISTRATION_DEPOSIT);
-            expect(await registration.COOLING_PERIOD()).to.equal(COOLING_PERIOD);
             expect(await registration.MAX_DAILY_REGISTRATIONS()).to.equal(MAX_DAILY_REGISTRATIONS);
             expect(await registration.KYC_ATTESTATION_THRESHOLD()).to.equal(KYC_ATTESTATION_THRESHOLD);
+            expect(await registration.ATTESTATION_VALIDITY()).to.equal(ATTESTATION_VALIDITY);
         });
 
         it('should track total registrations', async function () {
@@ -117,7 +113,6 @@ describe('OmniRegistration', function () {
                 referrer.address,
                 phoneHash('+1-555-1111'),
                 emailHash('user1@test.com'),
-                { value: REGISTRATION_DEPOSIT }
             );
 
             await expect(tx)
@@ -134,7 +129,6 @@ describe('OmniRegistration', function () {
                 ZeroAddress,
                 phoneHash('+1-555-2222'),
                 emailHash('user2@test.com'),
-                { value: REGISTRATION_DEPOSIT }
             );
 
             const reg = await registration.getRegistration(user1.address);
@@ -147,7 +141,6 @@ describe('OmniRegistration', function () {
                 ZeroAddress,
                 phoneHash('+1-555-3333'),
                 emailHash('user3@test.com'),
-                { value: REGISTRATION_DEPOSIT }
             );
 
             const reg = await registration.getRegistration(user1.address);
@@ -160,7 +153,6 @@ describe('OmniRegistration', function () {
                 ZeroAddress,
                 phoneHash('+1-555-4444'),
                 emailHash('user4@test.com'),
-                { value: REGISTRATION_DEPOSIT }
             );
 
             await expect(
@@ -169,8 +161,7 @@ describe('OmniRegistration', function () {
                     ZeroAddress,
                     phoneHash('+1-555-5555'),
                     emailHash('user5@test.com'),
-                    { value: REGISTRATION_DEPOSIT }
-                )
+                    )
             ).to.be.revertedWithCustomError(registration, 'AlreadyRegistered');
         });
 
@@ -182,7 +173,6 @@ describe('OmniRegistration', function () {
                 ZeroAddress,
                 phone,
                 emailHash('user6@test.com'),
-                { value: REGISTRATION_DEPOSIT }
             );
 
             await expect(
@@ -191,8 +181,7 @@ describe('OmniRegistration', function () {
                     ZeroAddress,
                     phone, // Same phone
                     emailHash('user7@test.com'),
-                    { value: REGISTRATION_DEPOSIT }
-                )
+                    )
             ).to.be.revertedWithCustomError(registration, 'PhoneAlreadyUsed');
         });
 
@@ -204,7 +193,6 @@ describe('OmniRegistration', function () {
                 ZeroAddress,
                 phoneHash('+1-555-7777'),
                 email,
-                { value: REGISTRATION_DEPOSIT }
             );
 
             await expect(
@@ -213,23 +201,8 @@ describe('OmniRegistration', function () {
                     ZeroAddress,
                     phoneHash('+1-555-8888'),
                     email, // Same email
-                    { value: REGISTRATION_DEPOSIT }
-                )
+                    )
             ).to.be.revertedWithCustomError(registration, 'EmailAlreadyUsed');
-        });
-
-        it('should reject insufficient deposit', async function () {
-            const insufficientDeposit = ethers.parseEther('50'); // Only 50 XOM
-
-            await expect(
-                registration.connect(validator1).registerUser(
-                    user1.address,
-                    ZeroAddress,
-                    phoneHash('+1-555-9999'),
-                    emailHash('user9@test.com'),
-                    { value: insufficientDeposit }
-                )
-            ).to.be.revertedWithCustomError(registration, 'InsufficientDeposit');
         });
 
         it('should reject self-referral', async function () {
@@ -239,8 +212,7 @@ describe('OmniRegistration', function () {
                     user1.address, // Self-referral
                     phoneHash('+1-555-1010'),
                     emailHash('user10@test.com'),
-                    { value: REGISTRATION_DEPOSIT }
-                )
+                    )
             ).to.be.revertedWithCustomError(registration, 'SelfReferralNotAllowed');
         });
 
@@ -251,8 +223,7 @@ describe('OmniRegistration', function () {
                     user2.address, // user2 is not registered
                     phoneHash('+1-555-1111'),
                     emailHash('user11@test.com'),
-                    { value: REGISTRATION_DEPOSIT }
-                )
+                    )
             ).to.be.revertedWithCustomError(registration, 'InvalidReferrer');
         });
 
@@ -264,8 +235,7 @@ describe('OmniRegistration', function () {
                     validator1.address, // validator1 trying to be referrer
                     phoneHash('+1-555-1212'),
                     emailHash('user12@test.com'),
-                    { value: REGISTRATION_DEPOSIT }
-                )
+                    )
             ).to.be.revertedWithCustomError(registration, 'ValidatorCannotBeReferrer');
         });
 
@@ -276,8 +246,7 @@ describe('OmniRegistration', function () {
                     ZeroAddress,
                     phoneHash('+1-555-1313'),
                     emailHash('user13@test.com'),
-                    { value: REGISTRATION_DEPOSIT }
-                )
+                    )
             ).to.be.reverted;
         });
     });
@@ -290,7 +259,6 @@ describe('OmniRegistration', function () {
                 ZeroAddress,
                 phoneHash('+1-555-2000'),
                 emailHash('kyc-user@test.com'),
-                { value: REGISTRATION_DEPOSIT }
             );
         });
 
@@ -358,80 +326,477 @@ describe('OmniRegistration', function () {
         });
     });
 
-    describe('Deposit Refund', function () {
-        beforeEach(async function () {
-            // Register user1
-            await registration.connect(validator1).registerUser(
-                user1.address,
-                ZeroAddress,
-                phoneHash('+1-555-3000'),
-                emailHash('refund-user@test.com'),
-                { value: REGISTRATION_DEPOSIT }
-            );
-        });
-
-        it('should refund deposit after KYC tier 2', async function () {
-            // Upgrade to tier 2
-            await registration.connect(validator2).attestKYC(user1.address, 2);
-            await registration.connect(validator3).attestKYC(user1.address, 2);
-            await registration.connect(validator4).attestKYC(user1.address, 2);
-
-            const balanceBefore = await ethers.provider.getBalance(user1.address);
-
-            await registration.connect(user1).refundDeposit();
-
-            const balanceAfter = await ethers.provider.getBalance(user1.address);
-            // Balance should increase (minus gas)
-            expect(balanceAfter).to.be.greaterThan(balanceBefore);
-        });
-
-        it('should reject refund without KYC tier 2', async function () {
-            // user1 only has tier 1
-            await expect(registration.connect(user1).refundDeposit()).to.be.revertedWithCustomError(
-                registration,
-                'KYCRequired'
-            );
-        });
-
-        it('should reject double refund', async function () {
-            // Upgrade and refund
-            await registration.connect(validator2).attestKYC(user1.address, 2);
-            await registration.connect(validator3).attestKYC(user1.address, 2);
-            await registration.connect(validator4).attestKYC(user1.address, 2);
-            await registration.connect(user1).refundDeposit();
-
-            // Try to refund again
-            await expect(registration.connect(user1).refundDeposit()).to.be.revertedWithCustomError(
-                registration,
-                'DepositAlreadyRefunded'
-            );
-        });
-    });
-
     describe('Bonus Eligibility', function () {
         beforeEach(async function () {
             await registration.connect(validator1).registerUser(
                 user1.address,
                 referrer.address,
                 phoneHash('+1-555-4000'),
-                emailHash('bonus-user@test.com'),
-                { value: REGISTRATION_DEPOSIT }
+                emailHash('bonus-user@test.com')
             );
         });
 
-        it('should not allow bonus claim during cooling period', async function () {
-            expect(await registration.canClaimWelcomeBonus(user1.address)).to.be.false;
+        it('should allow bonus claim immediately after registration', async function () {
+            // Registered user with KYC tier 1 can claim welcome bonus immediately
+            expect(await registration.canClaimWelcomeBonus(user1.address)).to.be.true;
         });
 
-        it('should allow bonus claim after cooling period', async function () {
-            // Advance time past cooling period
-            await time.increase(COOLING_PERIOD + 1);
-
-            expect(await registration.canClaimWelcomeBonus(user1.address)).to.be.true;
+        it('should not allow bonus claim for unregistered user', async function () {
+            expect(await registration.canClaimWelcomeBonus(user2.address)).to.be.false;
         });
 
         it('should return correct referrer', async function () {
             expect(await registration.getReferrer(user1.address)).to.equal(referrer.address);
+        });
+    });
+
+    describe('Self-Registration with EIP-712 Attestation', function () {
+        /**
+         * Helper to create EIP-712 attestation signature
+         */
+        async function createAttestation(
+            signer: any,
+            user: string,
+            emailHashVal: string,
+            phoneHashVal: string,
+            referrerAddr: string,
+            deadline: number
+        ): Promise<string> {
+            const registrationAddress = await registration.getAddress();
+            const chainId = await ethers.provider.getNetwork().then((n: any) => n.chainId);
+
+            // EIP-712 domain
+            const domain = {
+                name: 'OmniRegistration',
+                version: '1',
+                chainId: chainId,
+                verifyingContract: registrationAddress,
+            };
+
+            // EIP-712 types
+            const types = {
+                RegistrationAttestation: [
+                    { name: 'user', type: 'address' },
+                    { name: 'emailHash', type: 'bytes32' },
+                    { name: 'phoneHash', type: 'bytes32' },
+                    { name: 'referrer', type: 'address' },
+                    { name: 'deadline', type: 'uint256' },
+                ],
+            };
+
+            // EIP-712 value
+            const value = {
+                user: user,
+                emailHash: emailHashVal,
+                phoneHash: phoneHashVal,
+                referrer: referrerAddr,
+                deadline: deadline,
+            };
+
+            // Sign EIP-712 typed data
+            return await signer.signTypedData(domain, types, value);
+        }
+
+        it('should self-register with valid attestation', async function () {
+            const deadline = (await time.latest()) + ATTESTATION_VALIDITY;
+            const emailHashVal = emailHash('self-register@test.com');
+            const phoneHashVal = phoneHash('+1-555-5000');
+
+            const signature = await createAttestation(
+                validator1,
+                user1.address,
+                emailHashVal,
+                phoneHashVal,
+                referrer.address,
+                deadline
+            );
+
+            const tx = await registration.connect(user1).selfRegister(
+                referrer.address,
+                emailHashVal,
+                phoneHashVal,
+                deadline,
+                signature
+            );
+
+            await expect(tx)
+                .to.emit(registration, 'UserRegistered')
+                .withArgs(user1.address, referrer.address, validator1.address, await time.latest());
+
+            expect(await registration.isRegistered(user1.address)).to.be.true;
+            expect(await registration.getReferrer(user1.address)).to.equal(referrer.address);
+        });
+
+        it('should self-register without referrer', async function () {
+            const deadline = (await time.latest()) + ATTESTATION_VALIDITY;
+            const emailHashVal = emailHash('no-referrer@test.com');
+            const phoneHashVal = phoneHash('+1-555-5001');
+
+            const signature = await createAttestation(
+                validator1,
+                user1.address,
+                emailHashVal,
+                phoneHashVal,
+                ZeroAddress,
+                deadline
+            );
+
+            await registration.connect(user1).selfRegister(
+                ZeroAddress,
+                emailHashVal,
+                phoneHashVal,
+                deadline,
+                signature
+            );
+
+            expect(await registration.isRegistered(user1.address)).to.be.true;
+            expect(await registration.getReferrer(user1.address)).to.equal(ZeroAddress);
+        });
+
+        it('should reject expired attestation', async function () {
+            // Create attestation that expires in 1 second
+            const deadline = (await time.latest()) + 1;
+            const emailHashVal = emailHash('expired@test.com');
+            const phoneHashVal = phoneHash('+1-555-5002');
+
+            const signature = await createAttestation(
+                validator1,
+                user1.address,
+                emailHashVal,
+                phoneHashVal,
+                ZeroAddress,
+                deadline
+            );
+
+            // Wait for attestation to expire
+            await time.increase(2);
+
+            await expect(
+                registration.connect(user1).selfRegister(
+                    ZeroAddress,
+                    emailHashVal,
+                    phoneHashVal,
+                    deadline,
+                    signature
+                )
+            ).to.be.revertedWithCustomError(registration, 'AttestationExpired');
+        });
+
+        it('should reject replay of used attestation', async function () {
+            const deadline = (await time.latest()) + ATTESTATION_VALIDITY;
+            const emailHashVal = emailHash('replay@test.com');
+            const phoneHashVal = phoneHash('+1-555-5003');
+
+            const signature = await createAttestation(
+                validator1,
+                user1.address,
+                emailHashVal,
+                phoneHashVal,
+                ZeroAddress,
+                deadline
+            );
+
+            // First registration succeeds
+            await registration.connect(user1).selfRegister(
+                ZeroAddress,
+                emailHashVal,
+                phoneHashVal,
+                deadline,
+                signature
+            );
+
+            // Create new user for replay attempt
+            const emailHashVal2 = emailHash('replay2@test.com');
+            const phoneHashVal2 = phoneHash('+1-555-5004');
+
+            // Try to use same signature for user2 (should fail)
+            // Note: The signature is bound to user1.address, so it won't work for user2
+            await expect(
+                registration.connect(user2).selfRegister(
+                    ZeroAddress,
+                    emailHashVal2,
+                    phoneHashVal2,
+                    deadline,
+                    signature
+                )
+            ).to.be.revertedWithCustomError(registration, 'InvalidAttestation');
+        });
+
+        it('should reject invalid signature', async function () {
+            const deadline = (await time.latest()) + ATTESTATION_VALIDITY;
+            const emailHashVal = emailHash('invalid-sig@test.com');
+            const phoneHashVal = phoneHash('+1-555-5005');
+
+            // Create attestation from validator1 but for user2
+            const signature = await createAttestation(
+                validator1,
+                user2.address, // Wrong user
+                emailHashVal,
+                phoneHashVal,
+                ZeroAddress,
+                deadline
+            );
+
+            // user1 tries to use it (should fail)
+            await expect(
+                registration.connect(user1).selfRegister(
+                    ZeroAddress,
+                    emailHashVal,
+                    phoneHashVal,
+                    deadline,
+                    signature
+                )
+            ).to.be.revertedWithCustomError(registration, 'InvalidAttestation');
+        });
+
+        it('should reject signature from non-validator', async function () {
+            const deadline = (await time.latest()) + ATTESTATION_VALIDITY;
+            const emailHashVal = emailHash('non-validator@test.com');
+            const phoneHashVal = phoneHash('+1-555-5006');
+
+            // Create attestation from unauthorized signer
+            const signature = await createAttestation(
+                unauthorized,
+                user1.address,
+                emailHashVal,
+                phoneHashVal,
+                ZeroAddress,
+                deadline
+            );
+
+            await expect(
+                registration.connect(user1).selfRegister(
+                    ZeroAddress,
+                    emailHashVal,
+                    phoneHashVal,
+                    deadline,
+                    signature
+                )
+            ).to.be.revertedWithCustomError(registration, 'InvalidAttestation');
+        });
+
+        it('should reject duplicate email hash', async function () {
+            // First registration
+            const deadline1 = (await time.latest()) + ATTESTATION_VALIDITY;
+            const emailHashVal = emailHash('duplicate@test.com');
+            const phoneHashVal1 = phoneHash('+1-555-5007');
+
+            const signature1 = await createAttestation(
+                validator1,
+                user1.address,
+                emailHashVal,
+                phoneHashVal1,
+                ZeroAddress,
+                deadline1
+            );
+
+            await registration.connect(user1).selfRegister(
+                ZeroAddress,
+                emailHashVal,
+                phoneHashVal1,
+                deadline1,
+                signature1
+            );
+
+            // Second registration with same email
+            const deadline2 = (await time.latest()) + ATTESTATION_VALIDITY;
+            const phoneHashVal2 = phoneHash('+1-555-5008');
+
+            const signature2 = await createAttestation(
+                validator1,
+                user2.address,
+                emailHashVal, // Same email
+                phoneHashVal2,
+                ZeroAddress,
+                deadline2
+            );
+
+            await expect(
+                registration.connect(user2).selfRegister(
+                    ZeroAddress,
+                    emailHashVal,
+                    phoneHashVal2,
+                    deadline2,
+                    signature2
+                )
+            ).to.be.revertedWithCustomError(registration, 'EmailAlreadyUsed');
+        });
+
+        it('should reject duplicate phone hash', async function () {
+            // First registration
+            const deadline1 = (await time.latest()) + ATTESTATION_VALIDITY;
+            const emailHashVal1 = emailHash('phone-dup1@test.com');
+            const phoneHashVal = phoneHash('+1-555-5009');
+
+            const signature1 = await createAttestation(
+                validator1,
+                user1.address,
+                emailHashVal1,
+                phoneHashVal,
+                ZeroAddress,
+                deadline1
+            );
+
+            await registration.connect(user1).selfRegister(
+                ZeroAddress,
+                emailHashVal1,
+                phoneHashVal,
+                deadline1,
+                signature1
+            );
+
+            // Second registration with same phone
+            const deadline2 = (await time.latest()) + ATTESTATION_VALIDITY;
+            const emailHashVal2 = emailHash('phone-dup2@test.com');
+
+            const signature2 = await createAttestation(
+                validator1,
+                user2.address,
+                emailHashVal2,
+                phoneHashVal, // Same phone
+                ZeroAddress,
+                deadline2
+            );
+
+            await expect(
+                registration.connect(user2).selfRegister(
+                    ZeroAddress,
+                    emailHashVal2,
+                    phoneHashVal,
+                    deadline2,
+                    signature2
+                )
+            ).to.be.revertedWithCustomError(registration, 'PhoneAlreadyUsed');
+        });
+
+        it('should reject self-referral', async function () {
+            const deadline = (await time.latest()) + ATTESTATION_VALIDITY;
+            const emailHashVal = emailHash('self-ref@test.com');
+            const phoneHashVal = phoneHash('+1-555-5010');
+
+            const signature = await createAttestation(
+                validator1,
+                user1.address,
+                emailHashVal,
+                phoneHashVal,
+                user1.address, // Self-referral
+                deadline
+            );
+
+            await expect(
+                registration.connect(user1).selfRegister(
+                    user1.address,
+                    emailHashVal,
+                    phoneHashVal,
+                    deadline,
+                    signature
+                )
+            ).to.be.revertedWithCustomError(registration, 'SelfReferralNotAllowed');
+        });
+
+        it('should reject unregistered referrer', async function () {
+            const deadline = (await time.latest()) + ATTESTATION_VALIDITY;
+            const emailHashVal = emailHash('bad-ref@test.com');
+            const phoneHashVal = phoneHash('+1-555-5011');
+
+            const signature = await createAttestation(
+                validator1,
+                user1.address,
+                emailHashVal,
+                phoneHashVal,
+                user2.address, // user2 not registered
+                deadline
+            );
+
+            await expect(
+                registration.connect(user1).selfRegister(
+                    user2.address,
+                    emailHashVal,
+                    phoneHashVal,
+                    deadline,
+                    signature
+                )
+            ).to.be.revertedWithCustomError(registration, 'InvalidReferrer');
+        });
+
+        it('should reject already registered user', async function () {
+            // First registration
+            const deadline1 = (await time.latest()) + ATTESTATION_VALIDITY;
+            const emailHashVal1 = emailHash('first@test.com');
+            const phoneHashVal1 = phoneHash('+1-555-5012');
+
+            const signature1 = await createAttestation(
+                validator1,
+                user1.address,
+                emailHashVal1,
+                phoneHashVal1,
+                ZeroAddress,
+                deadline1
+            );
+
+            await registration.connect(user1).selfRegister(
+                ZeroAddress,
+                emailHashVal1,
+                phoneHashVal1,
+                deadline1,
+                signature1
+            );
+
+            // Try to register again
+            const deadline2 = (await time.latest()) + ATTESTATION_VALIDITY;
+            const emailHashVal2 = emailHash('second@test.com');
+            const phoneHashVal2 = phoneHash('+1-555-5013');
+
+            const signature2 = await createAttestation(
+                validator1,
+                user1.address,
+                emailHashVal2,
+                phoneHashVal2,
+                ZeroAddress,
+                deadline2
+            );
+
+            await expect(
+                registration.connect(user1).selfRegister(
+                    ZeroAddress,
+                    emailHashVal2,
+                    phoneHashVal2,
+                    deadline2,
+                    signature2
+                )
+            ).to.be.revertedWithCustomError(registration, 'AlreadyRegistered');
+        });
+
+        it('should set correct registration data', async function () {
+            const deadline = (await time.latest()) + ATTESTATION_VALIDITY;
+            const emailHashVal = emailHash('complete@test.com');
+            const phoneHashVal = phoneHash('+1-555-5014');
+
+            const signature = await createAttestation(
+                validator1,
+                user1.address,
+                emailHashVal,
+                phoneHashVal,
+                referrer.address,
+                deadline
+            );
+
+            await registration.connect(user1).selfRegister(
+                referrer.address,
+                emailHashVal,
+                phoneHashVal,
+                deadline,
+                signature
+            );
+
+            const reg = await registration.getRegistration(user1.address);
+            expect(reg.referrer).to.equal(referrer.address);
+            expect(reg.registeredBy).to.equal(validator1.address);
+            expect(reg.emailHash).to.equal(emailHashVal);
+            expect(reg.phoneHash).to.equal(phoneHashVal);
+            expect(reg.kycTier).to.equal(1);
+            expect(reg.welcomeBonusClaimed).to.be.false;
+            expect(reg.firstSaleBonusClaimed).to.be.false;
         });
     });
 });

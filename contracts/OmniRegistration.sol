@@ -4,6 +4,8 @@ pragma solidity ^0.8.20;
 import "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
+import "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
+import "@openzeppelin/contracts/utils/cryptography/MessageHashUtils.sol";
 
 /**
  * @title OmniRegistration
@@ -24,6 +26,9 @@ contract OmniRegistration is
     UUPSUpgradeable,
     ReentrancyGuardUpgradeable
 {
+    using ECDSA for bytes32;
+    using MessageHashUtils for bytes32;
+
     // ═══════════════════════════════════════════════════════════════════════
     //                              CONSTANTS
     // ═══════════════════════════════════════════════════════════════════════
@@ -39,6 +44,17 @@ contract OmniRegistration is
 
     /// @notice Number of validator attestations required for KYC upgrade
     uint256 public constant KYC_ATTESTATION_THRESHOLD = 3;
+
+    /// @notice EIP-712 typehash for registration attestation
+    /// @dev Hash of "RegistrationAttestation(address user,bytes32 emailHash,
+    ///      bytes32 phoneHash,address referrer,uint256 deadline)"
+    bytes32 public constant REGISTRATION_ATTESTATION_TYPEHASH = keccak256(
+        "RegistrationAttestation(address user,bytes32 emailHash,"
+        "bytes32 phoneHash,address referrer,uint256 deadline)"
+    );
+
+    /// @notice Attestation validity period (1 hour)
+    uint256 public constant ATTESTATION_VALIDITY = 1 hours;
 
     // ═══════════════════════════════════════════════════════════════════════
     //                              STORAGE
@@ -83,6 +99,14 @@ contract OmniRegistration is
 
     /// @notice KYC attestation tracking: keccak256(user, tier) => attestor addresses
     mapping(bytes32 => address[]) public kycAttestations;
+
+    /// @notice EIP-712 domain separator for attestation verification
+    /// @dev Named DOMAIN_SEPARATOR per EIP-712 convention (not mixedCase)
+    // solhint-disable-next-line var-name-mixedcase
+    bytes32 public DOMAIN_SEPARATOR;
+
+    /// @notice Used attestation hashes to prevent replay attacks
+    mapping(bytes32 => bool) public usedAttestations;
 
     // ═══════════════════════════════════════════════════════════════════════
     //                              EVENTS
@@ -181,6 +205,15 @@ contract OmniRegistration is
     /// @notice Caller is not authorized for this action
     error Unauthorized();
 
+    /// @notice Attestation has expired
+    error AttestationExpired();
+
+    /// @notice Attestation has already been used (replay attack prevention)
+    error AttestationAlreadyUsed();
+
+    /// @notice Invalid attestation signature (not from authorized validator)
+    error InvalidAttestation();
+
     // ═══════════════════════════════════════════════════════════════════════
     //                           INITIALIZATION
     // ═══════════════════════════════════════════════════════════════════════
@@ -192,7 +225,7 @@ contract OmniRegistration is
 
     /**
      * @notice Initialize the contract
-     * @dev Sets up access control and grants admin role to deployer
+     * @dev Sets up access control, grants admin role to deployer, and configures EIP-712
      */
     function initialize() public initializer {
         __AccessControl_init();
@@ -200,6 +233,37 @@ contract OmniRegistration is
         __ReentrancyGuard_init();
 
         _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
+
+        // Set EIP-712 domain separator for attestation verification
+        DOMAIN_SEPARATOR = keccak256(
+            abi.encode(
+                keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"),
+                keccak256(bytes("OmniRegistration")),
+                keccak256(bytes("1")),
+                block.chainid,
+                address(this)
+            )
+        );
+    }
+
+    /**
+     * @notice Reinitialize the contract to set DOMAIN_SEPARATOR for upgrades
+     * @dev Can only be called once per version number
+     * @param version The reinitializer version number
+     */
+    function reinitialize(uint64 version) public reinitializer(version) {
+        // Set EIP-712 domain separator if not already set
+        if (DOMAIN_SEPARATOR == bytes32(0)) {
+            DOMAIN_SEPARATOR = keccak256(
+                abi.encode(
+                    keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"),
+                    keccak256(bytes("OmniRegistration")),
+                    keccak256(bytes("1")),
+                    block.chainid,
+                    address(this)
+                )
+            );
+        }
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -273,6 +337,108 @@ contract OmniRegistration is
         ++totalRegistrations;
 
         emit UserRegistered(user, referrer, msg.sender, block.timestamp);
+    }
+
+    /**
+     * @notice Self-register with validator attestation (user-initiated)
+     * @param referrer The referrer's address (address(0) for none)
+     * @param emailHash Keccak256 hash of verified email address
+     * @param phoneHash Keccak256 hash of verified phone number
+     * @param deadline Timestamp when attestation expires
+     * @param validatorSignature EIP-712 signature from a validator
+     * @dev User calls this function directly. Validator only provides attestation signature.
+     *
+     * Security Model:
+     * - User initiates and signs the blockchain transaction
+     * - Validator attestation proves email/phone was verified off-chain
+     * - Any validator with VALIDATOR_ROLE can provide attestation (permissionless)
+     * - Attestation expires after deadline (prevents hoarding)
+     * - Each attestation can only be used once (replay protection)
+     * - Same Sybil protection as registerUser (phone/email uniqueness)
+     *
+     * Flow:
+     * 1. User completes email/phone verification with any validator
+     * 2. Validator signs EIP-712 attestation (off-chain)
+     * 3. User submits attestation to this function
+     * 4. Contract verifies attestation and creates registration
+     */
+    function selfRegister(
+        address referrer,
+        bytes32 emailHash,
+        bytes32 phoneHash,
+        uint256 deadline,
+        bytes calldata validatorSignature
+    ) external nonReentrant {
+        // Check user not already registered
+        if (registrations[msg.sender].timestamp != 0) revert AlreadyRegistered();
+
+        // Check attestation not expired
+        if (block.timestamp > deadline) revert AttestationExpired();
+
+        // Check phone/email uniqueness (Sybil protection)
+        if (usedPhoneHashes[phoneHash]) revert PhoneAlreadyUsed();
+        if (usedEmailHashes[emailHash]) revert EmailAlreadyUsed();
+
+        // Build attestation struct hash
+        bytes32 structHash = keccak256(
+            abi.encode(
+                REGISTRATION_ATTESTATION_TYPEHASH,
+                msg.sender,
+                emailHash,
+                phoneHash,
+                referrer,
+                deadline
+            )
+        );
+
+        // Prevent replay attacks
+        if (usedAttestations[structHash]) revert AttestationAlreadyUsed();
+        usedAttestations[structHash] = true;
+
+        // Verify EIP-712 signature
+        bytes32 digest = keccak256(
+            abi.encodePacked("\x19\x01", DOMAIN_SEPARATOR, structHash)
+        );
+
+        address signer = digest.recover(validatorSignature);
+
+        // Verify signer has VALIDATOR_ROLE
+        if (!hasRole(VALIDATOR_ROLE, signer)) revert InvalidAttestation();
+
+        // Validate referrer (same rules as registerUser, but no validator self-dealing check)
+        if (referrer != address(0)) {
+            if (referrer == msg.sender) revert SelfReferralNotAllowed();
+            // Referrer must be a registered user
+            if (registrations[referrer].timestamp == 0) revert InvalidReferrer();
+        }
+
+        // Check daily rate limit
+        uint256 today = block.timestamp / 1 days;
+        if (dailyRegistrationCount[today] >= MAX_DAILY_REGISTRATIONS) {
+            revert DailyLimitExceeded();
+        }
+
+        // Create registration
+        registrations[msg.sender] = Registration({
+            timestamp: block.timestamp,
+            referrer: referrer,
+            registeredBy: signer, // Track which validator attested
+            phoneHash: phoneHash,
+            emailHash: emailHash,
+            kycTier: 1, // Tier 1 = email verified
+            welcomeBonusClaimed: false,
+            firstSaleBonusClaimed: false
+        });
+
+        // Mark phone/email as used
+        usedPhoneHashes[phoneHash] = true;
+        usedEmailHashes[emailHash] = true;
+
+        // Update counters
+        ++dailyRegistrationCount[today];
+        ++totalRegistrations;
+
+        emit UserRegistered(msg.sender, referrer, signer, block.timestamp);
     }
 
     // ═══════════════════════════════════════════════════════════════════════
