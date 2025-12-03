@@ -56,6 +56,14 @@ contract OmniRegistration is
     /// @notice Attestation validity period (1 hour)
     uint256 public constant ATTESTATION_VALIDITY = 1 hours;
 
+    /// @notice Cooling period before user can claim welcome bonus (0 = instant)
+    /// @dev Set to 0 for better UX - users can claim immediately after registration
+    uint256 public constant COOLING_PERIOD = 0;
+
+    /// @notice Registration deposit amount (0 for now - gas-free registration)
+    /// @dev Can be increased if Sybil attacks become problematic
+    uint256 public constant REGISTRATION_DEPOSIT = 0;
+
     // ═══════════════════════════════════════════════════════════════════════
     //                              STORAGE
     // ═══════════════════════════════════════════════════════════════════════
