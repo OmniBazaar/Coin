@@ -138,9 +138,8 @@ async function main(): Promise<void> {
     console.log('1. Grant VALIDATOR_ROLE on OmniRegistration to gateway validators');
     console.log('2. Grant REPORTER_ROLE on OmniSybilGuard to validators');
     console.log('3. Test permissionless claiming flow:');
-    console.log('   a. Register user via validator');
-    console.log('   b. Wait 24 hours (cooling period)');
-    console.log('   c. User calls claimWelcomeBonusPermissionless()');
+    console.log('   a. Register user via validator (selfRegister)');
+    console.log('   b. User calls claimWelcomeBonusPermissionless() immediately');
     console.log('========================================\n');
 }
 

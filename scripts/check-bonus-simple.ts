@@ -59,9 +59,9 @@ async function main(): Promise<void> {
             console.log('  Welcome Bonus Claimed:', reg.welcomeBonusClaimed);
             console.log('  First Sale Bonus Claimed:', reg.firstSaleBonusClaimed);
 
-            // Simple eligibility (ignoring cooling period for now)
+            // Check eligibility (eligible immediately after registration)
             const couldClaim = !reg.welcomeBonusClaimed && reg.kycTier >= 1;
-            console.log('  Could Claim (ignoring cooling):', couldClaim ? 'YES' : 'NO');
+            console.log('  Could Claim:', couldClaim ? 'YES' : 'NO');
         }
         console.log('');
     }
@@ -81,10 +81,6 @@ async function main(): Promise<void> {
     console.log('\n========================================');
     console.log('Eligibility Check Complete');
     console.log('========================================\n');
-
-    console.log('NOTE: The claimWelcomeBonusPermissionless() function');
-    console.log('requires COOLING_PERIOD to be defined in OmniRegistration.');
-    console.log('This constant needs to be added to OmniRegistration.');
 }
 
 main().catch(console.error);

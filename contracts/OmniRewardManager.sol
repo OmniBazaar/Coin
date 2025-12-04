@@ -310,9 +310,6 @@ contract OmniRewardManager is
     /// @notice Thrown when user is not registered
     error UserNotRegistered(address user);
 
-    /// @notice Thrown when cooling period has not elapsed
-    error CoolingPeriodNotElapsed(address user, uint256 remaining);
-
     /// @notice Thrown when ODDAO address is not set
     error OddaoAddressNotSet();
 
@@ -571,7 +568,6 @@ contract OmniRewardManager is
      *
      * Security measures:
      * - Must be registered in OmniRegistration contract
-     * - Cooling period must have elapsed (24 hours after registration)
      * - KYC Tier 1+ required
      * - Daily rate limit enforced
      * - Bonus amount calculated based on registration number
@@ -588,14 +584,6 @@ contract OmniRewardManager is
         if (reg.timestamp == 0) revert UserNotRegistered(msg.sender);
         if (reg.welcomeBonusClaimed) {
             revert BonusAlreadyClaimed(msg.sender, PoolType.WelcomeBonus);
-        }
-
-        uint256 coolingPeriod = registrationContract.COOLING_PERIOD();
-        if (block.timestamp < reg.timestamp + coolingPeriod) {
-            revert CoolingPeriodNotElapsed(
-                msg.sender,
-                (reg.timestamp + coolingPeriod) - block.timestamp
-            );
         }
 
         // Check daily rate limit

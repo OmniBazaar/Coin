@@ -114,9 +114,6 @@ interface IOmniRegistration {
     /// @notice User is not registered
     error NotRegistered();
 
-    /// @notice Cooling period has not elapsed
-    error CoolingPeriodActive();
-
     /// @notice Validator has already attested
     error AlreadyAttested();
 
@@ -233,12 +230,6 @@ interface IOmniRegistration {
      * @return Deposit in wei
      */
     function REGISTRATION_DEPOSIT() external view returns (uint256);
-
-    /**
-     * @notice Get cooling period duration
-     * @return Duration in seconds
-     */
-    function COOLING_PERIOD() external view returns (uint256);
 
     /**
      * @notice Get KYC attestation threshold

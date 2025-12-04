@@ -33,10 +33,6 @@ async function main(): Promise<void> {
     console.log('Expected Registration:', REGISTRATION_ADDRESS);
     console.log('Match:', regContract.toLowerCase() === REGISTRATION_ADDRESS.toLowerCase());
 
-    const coolingPeriod = await registration.COOLING_PERIOD();
-    console.log('Cooling Period:', coolingPeriod.toString(), 'seconds');
-    console.log('               =', Number(coolingPeriod) / 3600, 'hours');
-
     // Check each user
     console.log('\n--- User Eligibility ---\n');
 
@@ -51,25 +47,20 @@ async function main(): Promise<void> {
             const regDate = new Date(Number(reg.timestamp) * 1000);
             console.log('  Registration Date:', regDate.toISOString());
 
-            // Check cooling period
             const now = Math.floor(Date.now() / 1000);
             const registrationAge = now - Number(reg.timestamp);
-            const coolingPeriodPassed = registrationAge >= Number(coolingPeriod);
-
             console.log('  Registration Age:', Math.floor(registrationAge / 3600), 'hours');
-            console.log('  Cooling Period Passed:', coolingPeriodPassed);
 
             console.log('  KYC Tier:', reg.kycTier.toString());
             console.log('  Welcome Bonus Claimed:', reg.welcomeBonusClaimed);
             console.log('  First Sale Bonus Claimed:', reg.firstSaleBonusClaimed);
 
-            // Check eligibility criteria
-            const isEligible = !reg.welcomeBonusClaimed && coolingPeriodPassed && reg.kycTier >= 1;
+            // Check eligibility criteria (no cooling period - eligible immediately)
+            const isEligible = !reg.welcomeBonusClaimed && reg.kycTier >= 1;
             console.log('  *** ELIGIBLE FOR WELCOME BONUS:', isEligible ? 'YES ✓' : 'NO ✗');
 
             if (!isEligible) {
                 if (reg.welcomeBonusClaimed) console.log('      Reason: Already claimed');
-                else if (!coolingPeriodPassed) console.log('      Reason: Cooling period not passed');
                 else if (reg.kycTier < 1) console.log('      Reason: KYC tier too low');
             }
         }
