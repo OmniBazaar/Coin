@@ -160,8 +160,14 @@ contract OmniRewardManager is
     /// @notice ODDAO address for referral fee distribution
     address public oddaoAddress;
 
+    /// @notice Count of legacy users who already claimed the welcome bonus
+    /// @dev Added to on-chain totalRegistrations when calculating bonus tier.
+    ///      Set to the number of legacy users (~3996) who got bonuses in old OmniBazaar.
+    ///      Effective position = totalRegistrations + legacyBonusClaimsCount
+    uint256 public legacyBonusClaimsCount;
+
     /// @dev Reserved storage gap for future upgrades (reduced due to new variables)
-    uint256[38] private __gap;
+    uint256[37] private __gap;
 
     // ============ Events ============
 
@@ -263,6 +269,16 @@ contract OmniRewardManager is
         address indexed secondLevelReferrer,
         uint256 referrerAmount,
         uint256 secondLevelAmount
+    );
+
+    /// @notice Emitted when legacy bonus claims count is updated
+    /// @param oldCount Previous count value
+    /// @param newCount New count value
+    /// @param effectiveRegistrations Effective registration count (on-chain + legacy)
+    event LegacyBonusClaimsCountUpdated(
+        uint256 indexed oldCount,
+        uint256 indexed newCount,
+        uint256 effectiveRegistrations
     );
 
     // ============ Custom Errors ============
@@ -515,6 +531,36 @@ contract OmniRewardManager is
         emit OddaoAddressSet(_oddaoAddress);
     }
 
+    /**
+     * @notice Set the legacy bonus claims count for bonus tier calculation
+     * @dev Only callable by DEFAULT_ADMIN_ROLE. This count is ADDED to
+     *      on-chain totalRegistrations when calculating which bonus tier a user falls into.
+     *
+     *      Use case: Legacy OmniBazaar had ~3,996 users who claimed the welcome bonus.
+     *      These users are not on-chain but should be counted for tier calculation.
+     *      New users should start at position ~3,997 (Tier 2: 5,000 XOM).
+     *
+     *      Example: If on-chain totalRegistrations = 10 and legacyClaims = 3,996
+     *               Effective position = 10 + 3,996 = 4,006 (tier 2: 5,000 XOM)
+     *
+     * @param _count The count of legacy users who already claimed bonuses
+     */
+    function setLegacyBonusClaimsCount(
+        uint256 _count
+    ) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        uint256 oldCount = legacyBonusClaimsCount;
+        legacyBonusClaimsCount = _count;
+
+        // Calculate effective registrations for the event
+        uint256 effectiveRegs = _count;
+        if (address(registrationContract) != address(0)) {
+            uint256 totalRegs = registrationContract.totalRegistrations();
+            effectiveRegs = totalRegs + _count;
+        }
+
+        emit LegacyBonusClaimsCountUpdated(oldCount, _count, effectiveRegs);
+    }
+
     // ============ External Functions - Permissionless Claiming ============
 
     /**
@@ -559,9 +605,13 @@ contract OmniRewardManager is
         }
         ++dailyWelcomeBonusCount[today];
 
-        // Calculate bonus based on total registrations
+        // Calculate bonus based on effective registrations (on-chain + legacy claims)
+        // Legacy users (~3996) already got their bonus in old OmniBazaar
+        // New users start at position ~3997+ (Tier 2: 5,000 XOM)
         uint256 totalRegs = registrationContract.totalRegistrations();
-        uint256 bonusAmount = _calculateWelcomeBonus(totalRegs);
+        uint256 effectiveRegs = totalRegs + legacyBonusClaimsCount;
+        if (effectiveRegs == 0) effectiveRegs = 1; // Minimum 1 to avoid edge cases
+        uint256 bonusAmount = _calculateWelcomeBonus(effectiveRegs);
 
         // Validate pool balance
         _validatePoolBalance(welcomeBonusPool, PoolType.WelcomeBonus, bonusAmount);
@@ -580,9 +630,9 @@ contract OmniRewardManager is
         emit WelcomeBonusClaimed(msg.sender, bonusAmount, welcomeBonusPool.remaining);
         _checkPoolThreshold(PoolType.WelcomeBonus, welcomeBonusPool);
 
-        // Auto-trigger referral bonus if referrer exists
+        // Auto-trigger referral bonus if referrer exists (use effectiveRegs for tier calc)
         if (reg.referrer != address(0)) {
-            _distributeAutoReferralBonus(reg.referrer, msg.sender, totalRegs);
+            _distributeAutoReferralBonus(reg.referrer, msg.sender, effectiveRegs);
         }
     }
 
@@ -612,9 +662,11 @@ contract OmniRewardManager is
         }
         ++dailyFirstSaleBonusCount[today];
 
-        // Calculate bonus based on total registrations
+        // Calculate bonus based on effective registrations (on-chain + legacy claims)
         uint256 totalRegs = registrationContract.totalRegistrations();
-        uint256 bonusAmount = _calculateFirstSaleBonus(totalRegs);
+        uint256 effectiveRegs = totalRegs + legacyBonusClaimsCount;
+        if (effectiveRegs == 0) effectiveRegs = 1; // Minimum 1 to avoid edge cases
+        uint256 bonusAmount = _calculateFirstSaleBonus(effectiveRegs);
 
         // Validate pool balance
         _validatePoolBalance(firstSaleBonusPool, PoolType.FirstSaleBonus, bonusAmount);
@@ -705,6 +757,71 @@ contract OmniRewardManager is
      */
     function getReferralBonusesEarned(address referrer) external view returns (uint256 earned) {
         return referralBonusesEarned[referrer];
+    }
+
+    /**
+     * @notice Get effective registration count after applying legacy claims count
+     * @dev Returns the registration count used for bonus tier calculation
+     * @return effectiveRegs Effective registration count (on-chain + legacy claims)
+     */
+    function getEffectiveRegistrations() external view returns (uint256 effectiveRegs) {
+        if (address(registrationContract) == address(0)) {
+            return legacyBonusClaimsCount > 0 ? legacyBonusClaimsCount : 1;
+        }
+        uint256 totalRegs = registrationContract.totalRegistrations();
+        uint256 result = totalRegs + legacyBonusClaimsCount;
+        return result > 0 ? result : 1;
+    }
+
+    /**
+     * @notice Get the expected welcome bonus amount for new users
+     * @dev Calculates based on effective registrations (on-chain + legacy claims)
+     * @return bonusAmount Expected bonus in wei (18 decimals)
+     */
+    function getExpectedWelcomeBonus() external view returns (uint256 bonusAmount) {
+        uint256 effectiveRegs;
+        if (address(registrationContract) == address(0)) {
+            effectiveRegs = legacyBonusClaimsCount > 0 ? legacyBonusClaimsCount : 1;
+        } else {
+            uint256 totalRegs = registrationContract.totalRegistrations();
+            effectiveRegs = totalRegs + legacyBonusClaimsCount;
+            if (effectiveRegs == 0) effectiveRegs = 1;
+        }
+        return _calculateWelcomeBonus(effectiveRegs);
+    }
+
+    /**
+     * @notice Get the expected referral bonus amount for new referrals
+     * @dev Calculates based on effective registrations (on-chain + legacy claims)
+     * @return bonusAmount Expected bonus in wei (18 decimals)
+     */
+    function getExpectedReferralBonus() external view returns (uint256 bonusAmount) {
+        uint256 effectiveRegs;
+        if (address(registrationContract) == address(0)) {
+            effectiveRegs = legacyBonusClaimsCount > 0 ? legacyBonusClaimsCount : 1;
+        } else {
+            uint256 totalRegs = registrationContract.totalRegistrations();
+            effectiveRegs = totalRegs + legacyBonusClaimsCount;
+            if (effectiveRegs == 0) effectiveRegs = 1;
+        }
+        return _calculateReferralBonus(effectiveRegs);
+    }
+
+    /**
+     * @notice Get the expected first sale bonus amount for sellers
+     * @dev Calculates based on effective registrations (on-chain + legacy claims)
+     * @return bonusAmount Expected bonus in wei (18 decimals)
+     */
+    function getExpectedFirstSaleBonus() external view returns (uint256 bonusAmount) {
+        uint256 effectiveRegs;
+        if (address(registrationContract) == address(0)) {
+            effectiveRegs = legacyBonusClaimsCount > 0 ? legacyBonusClaimsCount : 1;
+        } else {
+            uint256 totalRegs = registrationContract.totalRegistrations();
+            effectiveRegs = totalRegs + legacyBonusClaimsCount;
+            if (effectiveRegs == 0) effectiveRegs = 1;
+        }
+        return _calculateFirstSaleBonus(effectiveRegs);
     }
 
     /**
@@ -921,8 +1038,7 @@ contract OmniRewardManager is
      * @notice Auto-distribute referral bonus when welcome bonus is claimed
      * @dev Called internally by claimWelcomeBonusPermissionless
      * @param referrer Primary referrer address
-     * @param referee User who claimed welcome bonus
-     * @param registrationNumber Current total registrations for bonus calculation
+     * @param registrationNumber Current effective registrations for bonus calculation
      *
      * Distribution:
      * - 70% to primary referrer
@@ -931,7 +1047,7 @@ contract OmniRewardManager is
      */
     function _distributeAutoReferralBonus(
         address referrer,
-        address referee,
+        address, /* referee - unused but kept for event tracking */
         uint256 registrationNumber
     ) internal {
         // Check daily rate limit
