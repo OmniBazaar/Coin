@@ -166,6 +166,18 @@ contract OmniRegistration is
      */
     event FirstSaleBonusMarkedClaimed(address indexed user, uint256 timestamp);
 
+    /**
+     * @notice Emitted when a user is unregistered by admin
+     * @param user The unregistered user's address
+     * @param admin The admin who performed the unregistration
+     * @param timestamp When the unregistration occurred
+     */
+    event UserUnregistered(
+        address indexed user,
+        address indexed admin,
+        uint256 timestamp
+    );
+
     // ═══════════════════════════════════════════════════════════════════════
     //                              ERRORS
     // ═══════════════════════════════════════════════════════════════════════
@@ -624,6 +636,88 @@ contract OmniRegistration is
      */
     function getTodayRegistrationCount() external view returns (uint256) {
         return dailyRegistrationCount[block.timestamp / 1 days];
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    //                          ADMIN FUNCTIONS
+    // ═══════════════════════════════════════════════════════════════════════
+
+    /**
+     * @notice Unregister a user (admin only)
+     * @dev Clears all registration data including email/phone hash reservations.
+     *      This allows the user to re-register with the same credentials.
+     *      Use cases: account deletion (GDPR), testing, fixing registration errors.
+     * @param user The address of the user to unregister
+     */
+    function adminUnregister(address user) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        Registration storage reg = registrations[user];
+
+        // Check user is actually registered
+        if (reg.timestamp == 0) {
+            revert NotRegistered();
+        }
+
+        // Store hashes before clearing (needed to clear the usedHashes mappings)
+        bytes32 emailHash = reg.emailHash;
+        bytes32 phoneHash = reg.phoneHash;
+
+        // Clear email hash reservation (allows re-use)
+        if (emailHash != bytes32(0)) {
+            usedEmailHashes[emailHash] = false;
+        }
+
+        // Clear phone hash reservation (allows re-use)
+        if (phoneHash != bytes32(0)) {
+            usedPhoneHashes[phoneHash] = false;
+        }
+
+        // Clear the registration struct
+        delete registrations[user];
+
+        // Decrement total registrations count
+        totalRegistrations--;
+
+        emit UserUnregistered(user, msg.sender, block.timestamp);
+    }
+
+    /**
+     * @notice Batch unregister multiple users (admin only)
+     * @dev More gas-efficient for unregistering multiple users at once
+     * @param users Array of user addresses to unregister
+     */
+    function adminUnregisterBatch(
+        address[] calldata users
+    ) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        uint256 length = users.length;
+        for (uint256 i = 0; i < length; ) {
+            address user = users[i];
+            Registration storage reg = registrations[user];
+
+            // Skip users who aren't registered
+            if (reg.timestamp != 0) {
+                // Clear email hash reservation
+                if (reg.emailHash != bytes32(0)) {
+                    usedEmailHashes[reg.emailHash] = false;
+                }
+
+                // Clear phone hash reservation
+                if (reg.phoneHash != bytes32(0)) {
+                    usedPhoneHashes[reg.phoneHash] = false;
+                }
+
+                // Clear the registration struct
+                delete registrations[user];
+
+                // Decrement total registrations count
+                totalRegistrations--;
+
+                emit UserUnregistered(user, msg.sender, block.timestamp);
+            }
+
+            unchecked {
+                ++i;
+            }
+        }
     }
 
     // ═══════════════════════════════════════════════════════════════════════

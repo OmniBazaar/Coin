@@ -799,4 +799,101 @@ describe('OmniRegistration', function () {
             expect(reg.firstSaleBonusClaimed).to.be.false;
         });
     });
+
+    describe('Admin Unregistration', function () {
+        beforeEach(async function () {
+            // Register user1
+            await registration.connect(validator1).registerUser(
+                user1.address,
+                referrer.address,
+                phoneHash('+1-555-6000'),
+                emailHash('unregister-user@test.com')
+            );
+        });
+
+        it('should unregister user and clear hashes', async function () {
+            const emailHashVal = emailHash('unregister-user@test.com');
+            const phoneHashVal = phoneHash('+1-555-6000');
+
+            // Verify user is registered
+            expect(await registration.isRegistered(user1.address)).to.be.true;
+
+            // Admin unregisters user
+            const tx = await registration.connect(owner).adminUnregister(user1.address);
+
+            await expect(tx)
+                .to.emit(registration, 'UserUnregistered')
+                .withArgs(user1.address, owner.address, await time.latest());
+
+            // Verify user is no longer registered
+            expect(await registration.isRegistered(user1.address)).to.be.false;
+
+            // Verify email and phone hashes are cleared (can re-register with same)
+            await registration.connect(validator1).registerUser(
+                user2.address,
+                referrer.address,
+                phoneHashVal, // Same phone - should work now
+                emailHashVal  // Same email - should work now
+            );
+
+            expect(await registration.isRegistered(user2.address)).to.be.true;
+        });
+
+        it('should decrement total registrations', async function () {
+            const countBefore = await registration.totalRegistrations();
+
+            await registration.connect(owner).adminUnregister(user1.address);
+
+            expect(await registration.totalRegistrations()).to.equal(countBefore - 1n);
+        });
+
+        it('should reject unregistration of non-registered user', async function () {
+            await expect(
+                registration.connect(owner).adminUnregister(user2.address)
+            ).to.be.revertedWithCustomError(registration, 'NotRegistered');
+        });
+
+        it('should reject unauthorized caller', async function () {
+            await expect(
+                registration.connect(unauthorized).adminUnregister(user1.address)
+            ).to.be.reverted;
+        });
+
+        it('should batch unregister multiple users', async function () {
+            // Register user2
+            await registration.connect(validator1).registerUser(
+                user2.address,
+                ZeroAddress,
+                phoneHash('+1-555-6001'),
+                emailHash('unregister-user2@test.com')
+            );
+
+            const countBefore = await registration.totalRegistrations();
+
+            // Batch unregister both users
+            await registration.connect(owner).adminUnregisterBatch([user1.address, user2.address]);
+
+            expect(await registration.isRegistered(user1.address)).to.be.false;
+            expect(await registration.isRegistered(user2.address)).to.be.false;
+            expect(await registration.totalRegistrations()).to.equal(countBefore - 2n);
+        });
+
+        it('should skip already unregistered users in batch', async function () {
+            // Register user2
+            await registration.connect(validator1).registerUser(
+                user2.address,
+                ZeroAddress,
+                phoneHash('+1-555-6002'),
+                emailHash('unregister-user3@test.com')
+            );
+
+            // Unregister user1 first
+            await registration.connect(owner).adminUnregister(user1.address);
+
+            // Batch should still work (skips user1)
+            await registration.connect(owner).adminUnregisterBatch([user1.address, user2.address]);
+
+            expect(await registration.isRegistered(user2.address)).to.be.false;
+        });
+    });
 });

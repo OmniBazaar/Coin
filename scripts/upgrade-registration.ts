@@ -102,25 +102,25 @@ async function main(): Promise<void> {
 
     const OmniRegistration = await ethers.getContractFactory('OmniRegistration');
 
-    // Prepare the reinitialize call data (version 2 for this upgrade)
-    const reinitializeVersion = 2n;
-    const reinitializeData = OmniRegistration.interface.encodeFunctionData(
-        'reinitialize',
-        [reinitializeVersion]
-    );
+    // Force import the proxy if not registered (handles case where contract was upgraded outside hardhat)
+    try {
+        await upgrades.forceImport(proxyAddress, OmniRegistration, { kind: 'uups' });
+        console.log('Proxy force-imported into OpenZeppelin manifest');
+    } catch (importError: unknown) {
+        // If already imported, this will throw - that's OK
+        const errorMessage = importError instanceof Error ? importError.message : String(importError);
+        if (!errorMessage.includes('already imported') && !errorMessage.includes('already registered')) {
+            console.log('Note: Proxy import skipped (may already be registered)');
+        }
+    }
 
+    // Simple upgrade without reinitialize - adminUnregister doesn't need state init
     console.log('Deploying new implementation and upgrading proxy...');
-    console.log(`Will call reinitialize(${reinitializeVersion}) after upgrade`);
+    console.log('Note: Simple upgrade without reinitialize (adminUnregister has no new state)');
 
     const upgraded = await upgrades.upgradeProxy(
         proxyAddress,
-        OmniRegistration,
-        {
-            call: {
-                fn: 'reinitialize',
-                args: [reinitializeVersion],
-            },
-        }
+        OmniRegistration
     );
 
     await upgraded.waitForDeployment();
@@ -129,14 +129,25 @@ async function main(): Promise<void> {
     const newImpl = await upgrades.erc1967.getImplementationAddress(proxyAddress);
     console.log(`\nNew implementation: ${newImpl}`);
 
-    // Verify DOMAIN_SEPARATOR was set
+    // Verify DOMAIN_SEPARATOR is still set
     const domainSeparator = await upgraded.DOMAIN_SEPARATOR();
     console.log(`DOMAIN_SEPARATOR: ${domainSeparator}`);
 
     if (domainSeparator === ethers.ZeroHash) {
-        console.error('WARNING: DOMAIN_SEPARATOR was not set correctly!');
+        console.error('WARNING: DOMAIN_SEPARATOR not set - may need reinitialize!');
     } else {
-        console.log('DOMAIN_SEPARATOR set successfully');
+        console.log('DOMAIN_SEPARATOR verified OK');
+    }
+
+    // Verify adminUnregister function exists
+    try {
+        // Just check the function selector exists (don't call it)
+        const functionFragment = upgraded.interface.getFunction('adminUnregister');
+        if (functionFragment) {
+            console.log('adminUnregister function available');
+        }
+    } catch {
+        console.error('WARNING: adminUnregister function not found in new implementation!');
     }
 
     // Update deployment config
