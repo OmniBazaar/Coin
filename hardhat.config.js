@@ -91,6 +91,19 @@ module.exports = {
       gasPrice: 25000000000,
       timeout: 60000
     },
+    // Avalanche Fuji C-Chain (for Bootstrap.sol deployment)
+    // Bootstrap.sol is deployed on C-Chain so clients can discover validators
+    // without needing access to the OmniCoin L1 subnet
+    "fuji-c-chain": {
+      url: "https://api.avax-test.network/ext/bc/C/rpc",
+      chainId: 43113,
+      accounts: [
+        // omnicoin-control-1 (same deployer key as OmniCoin L1)
+        "0x5145d2bcf3710ae4143b95aab6a7ff5cd954f78ddb9956b28ce86e4c7855e74b"
+      ],
+      gasPrice: 25000000000, // 25 Gwei
+      timeout: 60000
+    },
     cotiTestnet: {
       url: "https://testnet.coti.io/rpc",
       chainId: 7082400, // COTI Testnet (verified from network)

@@ -1,0 +1,14 @@
+{
+  "network": "fuji-c-chain",
+  "chainId": 43113,
+  "deployer": "0xf8C9057d9649daCB06F14A7763233618Cc280663",
+  "deployedAt": "2025-12-06T21:02:27.254Z",
+  "contracts": {
+    "Bootstrap": "0x09F99AE44bd024fD2c16ff6999959d053f0f32B5"
+  },
+  "omniCoreReference": {
+    "address": "0x0Ef606683222747738C04b4b00052F5357AC6c8b",
+    "chainId": 131313,
+    "rpcUrl": "http://127.0.0.1:40681/ext/bc/2TEeYGdsqvS3eLBk8vrd9bedJiPR7uyeUo1YChM75HtCf9TzFk/rpc"
+  }
+}
