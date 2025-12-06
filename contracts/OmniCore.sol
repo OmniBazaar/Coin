@@ -33,7 +33,11 @@ contract OmniCore is
         bool active;
     }
 
-    /// @notice Node info for discovery
+    /**
+     * @notice Node info for discovery
+     * @dev DEPRECATED: Node discovery moved to Bootstrap.sol on C-Chain
+     * TODO: Remove before mainnet launch - kept for storage layout compatibility
+     */
     struct NodeInfo {
         string multiaddr;      // libp2p multiaddr for P2P connections (e.g., "/ip4/1.2.3.4/tcp/14002/p2p/12D3...")
         string httpEndpoint;   // HTTP API endpoint
@@ -97,16 +101,24 @@ contract OmniCore is
     address public stakingPoolAddress;
 
     // Node Discovery Registry State (added 2025-08-16)
+    // DEPRECATED: Node discovery moved to Bootstrap.sol on C-Chain
+    // TODO: Remove before mainnet - kept for storage layout compatibility
+    // Validators now register on Bootstrap.sol (C-Chain) instead of OmniCore (L1)
+
     /// @notice Registry of node endpoints for discovery
+    /// @dev DEPRECATED - use Bootstrap.sol on C-Chain instead
     mapping(address => NodeInfo) public nodeRegistry;
 
     /// @notice Count of active nodes by type
+    /// @dev DEPRECATED - use Bootstrap.sol on C-Chain instead
     mapping(uint8 => uint256) public activeNodeCounts;
 
     /// @notice List of all registered node addresses
+    /// @dev DEPRECATED - use Bootstrap.sol on C-Chain instead
     address[] public registeredNodes;
 
     /// @notice Mapping to track node address index in array
+    /// @dev DEPRECATED - use Bootstrap.sol on C-Chain instead
     mapping(address => uint256) public nodeIndex;
 
     // Legacy Migration State (added 2025-08-06)
@@ -383,11 +395,15 @@ contract OmniCore is
 
     // =============================================================================
     // Node Discovery Registry Functions (Added 2025-08-16)
+    // DEPRECATED: All functions below are deprecated in favor of Bootstrap.sol on C-Chain
+    // TODO: Remove before mainnet launch
+    // Validators should use Bootstrap.sol.registerNode() on Avalanche C-Chain instead
     // =============================================================================
 
     /**
      * @notice Register or update node endpoints for discovery
-     * @dev Nodes self-register their endpoints, no expensive heartbeats required
+     * @dev DEPRECATED - Use Bootstrap.sol.registerNode() on C-Chain instead
+     * Nodes self-register their endpoints, no expensive heartbeats required
      * @param multiaddr libp2p multiaddr for P2P connections (e.g., "/ip4/1.2.3.4/tcp/14002/p2p/12D3...")
      * @param httpEndpoint HTTP endpoint URL (e.g. "https://node1.omnibazaar.com")
      * @param wsEndpoint WebSocket endpoint URL (optional)
@@ -433,7 +449,8 @@ contract OmniCore is
 
     /**
      * @notice Deactivate a node (self-deactivation)
-     * @dev Nodes can deactivate themselves when going offline
+     * @dev DEPRECATED - Use Bootstrap.sol.deactivateNode() on C-Chain instead
+     * Nodes can deactivate themselves when going offline
      * @param reason Reason for deactivation
      */
     function deactivateNode(string calldata reason) external {
@@ -455,7 +472,8 @@ contract OmniCore is
 
     /**
      * @notice Admin force-deactivate a node
-     * @dev Only admin can force deactivate misbehaving nodes
+     * @dev DEPRECATED - Use Bootstrap.sol.adminDeactivateNode() on C-Chain instead
+     * Only admin can force deactivate misbehaving nodes
      * @param nodeAddress Address of the node to deactivate
      * @param reason Reason for deactivation
      */
@@ -481,7 +499,8 @@ contract OmniCore is
 
     /**
      * @notice Get active nodes by type
-     * @dev Returns array of active node addresses of specified type
+     * @dev DEPRECATED - Use Bootstrap.sol.getActiveNodes() on C-Chain instead
+     * Returns array of active node addresses of specified type
      * @param nodeType Type of nodes to retrieve (0=gateway, 1=computation, 2=listing)
      * @param limit Maximum number of nodes to return (gas optimization)
      * @return nodes Array of active node addresses
@@ -524,6 +543,7 @@ contract OmniCore is
 
     /**
      * @notice Get node information
+     * @dev DEPRECATED - Use Bootstrap.sol.getNodeInfo() on C-Chain instead
      * @param nodeAddress Address of the node
      * @return multiaddr libp2p multiaddr for P2P connections
      * @return httpEndpoint HTTP endpoint URL
@@ -556,6 +576,7 @@ contract OmniCore is
 
     /**
      * @notice Get count of active nodes by type
+     * @dev DEPRECATED - Use Bootstrap.sol.getActiveNodeCount() on C-Chain instead
      * @param nodeType Type of nodes (0=gateway, 1=computation, 2=listing)
      * @return count Number of active nodes
      */
@@ -566,6 +587,7 @@ contract OmniCore is
 
     /**
      * @notice Get total registered node count
+     * @dev DEPRECATED - Use Bootstrap.sol.getTotalNodeCount() on C-Chain instead
      * @return count Total number of registered nodes (active and inactive)
      */
     function getTotalNodeCount() external view returns (uint256 count) {
@@ -574,7 +596,8 @@ contract OmniCore is
 
     /**
      * @notice Get active nodes within a time window
-     * @dev Returns nodes that have been active within the specified time period
+     * @dev DEPRECATED - Use Bootstrap.sol.getActiveNodesWithinTime() on C-Chain instead
+     * Returns nodes that have been active within the specified time period
      * @param nodeType Type of nodes to retrieve (0=gateway, 1=computation, 2=listing)
      * @param timeWindowSeconds Time window in seconds (e.g., 86400 for last 24 hours)
      * @return addresses Array of node addresses

@@ -6,56 +6,70 @@ import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
 /**
  * @title Bootstrap
  * @author OmniBazaar Development Team
- * @notice Lightweight bootstrap registry on Avalanche C-Chain for initial validator discovery
- * @dev This contract provides a minimal bootstrap mechanism for new validators to discover the network.
- *      It points to the OmniCore contract on Fuji Subnet-EVM and maintains a list of bootstrap validators.
+ * @notice Single source of truth for validator/node discovery on Avalanche C-Chain
+ * @dev This contract serves as the primary node registry for OmniBazaar network discovery.
+ *      Validators and service nodes register themselves here when starting up.
+ *      WebApp and other clients query this contract to discover available validators.
  *
  *      Architecture:
- *      - Deployed on Avalanche C-Chain (mainnet/testnet)
- *      - Points to OmniCore.sol on Fuji Subnet-EVM (full registry)
- *      - Gateway validators: Tracked by avalanchego + OmniCore
- *      - Service nodes: Tracked only in OmniCore
+ *      - Deployed on Avalanche C-Chain (publicly accessible)
+ *      - Validators self-register when they start (paying gas)
+ *      - Clients query this contract to find validators
+ *      - Admin functions for emergency deactivation only
  *
- *      Bootstrap validators are manually curated by admins and only updated when the composition changes.
+ *      Node Types:
+ *      - 0 = Gateway Validator (runs avalanchego, participates in consensus)
+ *      - 1 = Computation Node (runs TypeScript services, no consensus)
+ *      - 2 = Listing Node (stores marketplace listings only)
  *
  * @custom:security-contact security@omnibazaar.com
  */
 contract Bootstrap is AccessControl {
     /**
-     * @notice Bootstrap validator information
-     * @param active Whether this bootstrap validator is currently active
-     * @param nodeAddress Validator's Ethereum address
+     * @notice Node information for registered validators/nodes
+     * @param active Whether this node is currently active
+     * @param nodeAddress Node's Ethereum address
      * @param multiaddr libp2p multiaddress for P2P connections
      * @param httpEndpoint HTTP API endpoint
      * @param wsEndpoint WebSocket endpoint
      * @param region Geographic region
+     * @param nodeType Type of node: 0=gateway, 1=computation, 2=listing
+     * @param lastUpdate Timestamp of last update (for freshness checking)
      */
-    struct BootstrapValidator {
+    struct NodeInfo {
         bool active;
         address nodeAddress;
         string multiaddr;
         string httpEndpoint;
         string wsEndpoint;
         string region;
+        uint8 nodeType;
+        uint256 lastUpdate;
     }
 
-    /// @notice Role identifier for bootstrap administrator
+    /// @notice Role identifier for bootstrap administrator (emergency actions only)
     bytes32 public constant BOOTSTRAP_ADMIN_ROLE = keccak256("BOOTSTRAP_ADMIN_ROLE");
 
-    /// @notice Address of OmniCore contract on Fuji Subnet-EVM
+    /// @notice Address of OmniCore contract on OmniCoin L1 (for reference)
     address public omniCoreAddress;
 
-    /// @notice Chain ID of the Fuji Subnet-EVM network
+    /// @notice Chain ID of the OmniCoin L1 network
     uint256 public omniCoreChainId;
 
-    /// @notice RPC URL for Fuji Subnet-EVM (off-chain reference)
+    /// @notice RPC URL for OmniCoin L1 (off-chain reference)
     string public omniCoreRpcUrl;
 
-    /// @notice List of bootstrap validator addresses
-    address[] public bootstrapValidators;
+    /// @notice List of all registered node addresses
+    address[] public registeredNodes;
 
-    /// @notice Mapping from validator address to bootstrap info
-    mapping(address => BootstrapValidator) public validatorInfo;
+    /// @notice Mapping from node address to index in registeredNodes array
+    mapping(address => uint256) public nodeIndex;
+
+    /// @notice Mapping from node address to node info
+    mapping(address => NodeInfo) public nodeRegistry;
+
+    /// @notice Count of active nodes by type (0=gateway, 1=computation, 2=listing)
+    mapping(uint8 => uint256) public activeNodeCounts;
 
     /**
      * @notice Emitted when OmniCore reference is updated
@@ -70,43 +84,39 @@ contract Bootstrap is AccessControl {
     );
 
     /**
-     * @notice Emitted when a bootstrap validator is added
-     * @param nodeAddress Validator address
-     * @param multiaddr libp2p multiaddress
+     * @notice Emitted when a node registers or updates
+     * @param nodeAddress Node's Ethereum address
+     * @param nodeType Type of node (0=gateway, 1=computation, 2=listing)
      * @param httpEndpoint HTTP API endpoint
+     * @param isNew Whether this is a new registration (true) or update (false)
      */
-    event BootstrapValidatorAdded(
+    event NodeRegistered(
         address indexed nodeAddress,
-        string multiaddr,
-        string httpEndpoint
+        uint8 indexed nodeType,
+        string httpEndpoint,
+        bool isNew
     );
 
     /**
-     * @notice Emitted when a bootstrap validator is removed
-     * @param nodeAddress Validator address
+     * @notice Emitted when a node deactivates
+     * @param nodeAddress Node's Ethereum address
+     * @param reason Reason for deactivation
      */
-    event BootstrapValidatorRemoved(address indexed nodeAddress);
-
-    /**
-     * @notice Emitted when a bootstrap validator is updated
-     * @param nodeAddress Validator address
-     * @param multiaddr New libp2p multiaddress
-     * @param httpEndpoint New HTTP API endpoint
-     */
-    event BootstrapValidatorUpdated(
+    event NodeDeactivated(
         address indexed nodeAddress,
-        string multiaddr,
-        string httpEndpoint
+        string reason
     );
 
     /**
-     * @notice Emitted when a bootstrap validator's active status changes
-     * @param nodeAddress Validator address
-     * @param active New active status
+     * @notice Emitted when admin force-deactivates a node
+     * @param nodeAddress Node's Ethereum address
+     * @param admin Admin who performed the action
+     * @param reason Reason for deactivation
      */
-    event BootstrapValidatorStatusChanged(
+    event NodeAdminDeactivated(
         address indexed nodeAddress,
-        bool indexed active
+        address indexed admin,
+        string reason
     );
 
     /**
@@ -125,25 +135,25 @@ contract Bootstrap is AccessControl {
     error InvalidChainId();
 
     /**
-     * @notice Validator already exists
+     * @notice Invalid node type (must be 0, 1, or 2)
      */
-    error ValidatorAlreadyExists();
+    error InvalidNodeType();
 
     /**
-     * @notice Validator not active
+     * @notice Node is not active
      */
-    error ValidatorNotActive();
+    error NodeNotActive();
 
     /**
-     * @notice Validator not found
+     * @notice Node not found
      */
-    error ValidatorNotFound();
+    error NodeNotFound();
 
     /**
      * @notice Initializes the Bootstrap contract
-     * @param _omniCoreAddress Address of OmniCore contract on Fuji Subnet-EVM
-     * @param _omniCoreChainId Chain ID of Fuji Subnet-EVM
-     * @param _omniCoreRpcUrl RPC URL for Fuji Subnet-EVM
+     * @param _omniCoreAddress Address of OmniCore contract on OmniCoin L1
+     * @param _omniCoreChainId Chain ID of OmniCoin L1
+     * @param _omniCoreRpcUrl RPC URL for OmniCoin L1
      * @custom:oz-upgrades-unsafe-allow constructor
      */
     constructor(
@@ -165,10 +175,153 @@ contract Bootstrap is AccessControl {
         emit OmniCoreUpdated(_omniCoreAddress, _omniCoreChainId, _omniCoreRpcUrl);
     }
 
+    // ============================================================
+    //                    SELF-REGISTRATION FUNCTIONS
+    // ============================================================
+
+    /**
+     * @notice Register or update a node (self-registration)
+     * @dev Nodes call this when starting up. Pays gas to register on C-Chain.
+     *      This is the primary way nodes join the network.
+     * @param multiaddr libp2p multiaddr for P2P connections (required for gateway nodes)
+     * @param httpEndpoint HTTP endpoint URL (required)
+     * @param wsEndpoint WebSocket endpoint URL (optional)
+     * @param region Geographic region code (e.g. "US", "EU", "ASIA")
+     * @param nodeType Type of node: 0=gateway, 1=computation, 2=listing
+     */
+    function registerNode(
+        string calldata multiaddr,
+        string calldata httpEndpoint,
+        string calldata wsEndpoint,
+        string calldata region,
+        uint8 nodeType
+    ) external {
+        if (nodeType > 2) revert InvalidNodeType();
+        if (bytes(httpEndpoint).length == 0) revert InvalidParameter();
+        // multiaddr is required for gateway validators (nodeType 0) for P2P bootstrap
+        if (nodeType == 0 && bytes(multiaddr).length == 0) revert InvalidParameter();
+
+        NodeInfo storage info = nodeRegistry[msg.sender];
+        bool isNew = bytes(info.httpEndpoint).length == 0;
+
+        // If first time registration, add to array
+        if (isNew) {
+            nodeIndex[msg.sender] = registeredNodes.length;
+            registeredNodes.push(msg.sender);
+        }
+
+        // Update active count if status changes
+        if (!info.active && nodeType < 3) {
+            ++activeNodeCounts[nodeType];
+        } else if (info.active && info.nodeType != nodeType && info.nodeType < 3) {
+            // Node type changed - update counts
+            --activeNodeCounts[info.nodeType];
+            ++activeNodeCounts[nodeType];
+        }
+
+        // Update node info
+        info.active = true;
+        info.nodeAddress = msg.sender;
+        info.multiaddr = multiaddr;
+        info.httpEndpoint = httpEndpoint;
+        info.wsEndpoint = wsEndpoint;
+        info.region = region;
+        info.nodeType = nodeType;
+        info.lastUpdate = block.timestamp; // solhint-disable-line not-rely-on-time
+
+        emit NodeRegistered(msg.sender, nodeType, httpEndpoint, isNew);
+    }
+
+    /**
+     * @notice Update node endpoints (self-update)
+     * @dev Nodes can update their endpoints without changing type
+     * @param multiaddr New libp2p multiaddr
+     * @param httpEndpoint New HTTP endpoint URL
+     * @param wsEndpoint New WebSocket endpoint URL
+     * @param region New geographic region
+     */
+    function updateNode(
+        string calldata multiaddr,
+        string calldata httpEndpoint,
+        string calldata wsEndpoint,
+        string calldata region
+    ) external {
+        NodeInfo storage info = nodeRegistry[msg.sender];
+        if (!info.active) revert NodeNotActive();
+        if (bytes(httpEndpoint).length == 0) revert InvalidParameter();
+        // multiaddr required for gateway validators
+        if (info.nodeType == 0 && bytes(multiaddr).length == 0) revert InvalidParameter();
+
+        info.multiaddr = multiaddr;
+        info.httpEndpoint = httpEndpoint;
+        info.wsEndpoint = wsEndpoint;
+        info.region = region;
+        info.lastUpdate = block.timestamp; // solhint-disable-line not-rely-on-time
+
+        emit NodeRegistered(msg.sender, info.nodeType, httpEndpoint, false);
+    }
+
+    /**
+     * @notice Deactivate a node (self-deactivation)
+     * @dev Nodes call this when going offline gracefully
+     * @param reason Reason for deactivation
+     */
+    function deactivateNode(string calldata reason) external {
+        NodeInfo storage info = nodeRegistry[msg.sender];
+        if (!info.active) revert NodeNotActive();
+
+        info.active = false;
+
+        // Update active count
+        if (info.nodeType < 3 && activeNodeCounts[info.nodeType] > 0) {
+            --activeNodeCounts[info.nodeType];
+        }
+
+        emit NodeDeactivated(msg.sender, reason);
+    }
+
+    /**
+     * @notice Send heartbeat to update last activity timestamp
+     * @dev Optional - nodes can call this periodically to show liveness
+     */
+    function heartbeat() external {
+        NodeInfo storage info = nodeRegistry[msg.sender];
+        if (!info.active) revert NodeNotActive();
+
+        info.lastUpdate = block.timestamp; // solhint-disable-line not-rely-on-time
+    }
+
+    // ============================================================
+    //                    ADMIN FUNCTIONS (EMERGENCY)
+    // ============================================================
+
+    /**
+     * @notice Admin force-deactivate a node
+     * @dev Only for emergency situations (misbehaving nodes)
+     * @param nodeAddress Address of the node to deactivate
+     * @param reason Reason for deactivation
+     */
+    function adminDeactivateNode(
+        address nodeAddress,
+        string calldata reason
+    ) external onlyRole(BOOTSTRAP_ADMIN_ROLE) {
+        NodeInfo storage info = nodeRegistry[nodeAddress];
+        if (!info.active) revert NodeNotActive();
+
+        info.active = false;
+
+        // Update active count
+        if (info.nodeType < 3 && activeNodeCounts[info.nodeType] > 0) {
+            --activeNodeCounts[info.nodeType];
+        }
+
+        emit NodeAdminDeactivated(nodeAddress, msg.sender, reason);
+    }
+
     /**
      * @notice Updates the OmniCore contract reference
      * @dev Only callable by BOOTSTRAP_ADMIN_ROLE
-     * @param _omniCoreAddress New OmniCore contract address on Fuji
+     * @param _omniCoreAddress New OmniCore contract address
      * @param _omniCoreChainId New chain ID
      * @param _omniCoreRpcUrl New RPC URL
      */
@@ -188,147 +341,87 @@ contract Bootstrap is AccessControl {
         emit OmniCoreUpdated(_omniCoreAddress, _omniCoreChainId, _omniCoreRpcUrl);
     }
 
-    /**
-     * @notice Adds a new bootstrap validator
-     * @dev Only callable by BOOTSTRAP_ADMIN_ROLE
-     * @param _nodeAddress Validator's Ethereum address
-     * @param _multiaddr libp2p multiaddress
-     * @param _httpEndpoint HTTP API endpoint
-     * @param _wsEndpoint WebSocket endpoint
-     * @param _region Geographic region
-     */
-    function addBootstrapValidator(
-        address _nodeAddress,
-        string calldata _multiaddr,
-        string calldata _httpEndpoint,
-        string calldata _wsEndpoint,
-        string calldata _region
-    ) external onlyRole(BOOTSTRAP_ADMIN_ROLE) {
-        if (_nodeAddress == address(0)) revert InvalidAddress();
-        if (bytes(_multiaddr).length == 0) revert InvalidParameter();
-        if (bytes(_httpEndpoint).length == 0) revert InvalidParameter();
-        if (bytes(_wsEndpoint).length == 0) revert InvalidParameter();
-        if (validatorInfo[_nodeAddress].active) revert ValidatorAlreadyExists();
-
-        BootstrapValidator memory validator = BootstrapValidator({
-            active: true,
-            nodeAddress: _nodeAddress,
-            multiaddr: _multiaddr,
-            httpEndpoint: _httpEndpoint,
-            wsEndpoint: _wsEndpoint,
-            region: _region
-        });
-
-        bootstrapValidators.push(_nodeAddress);
-        validatorInfo[_nodeAddress] = validator;
-
-        emit BootstrapValidatorAdded(_nodeAddress, _multiaddr, _httpEndpoint);
-    }
+    // ============================================================
+    //                    VIEW FUNCTIONS
+    // ============================================================
 
     /**
-     * @notice Removes a bootstrap validator
-     * @dev Only callable by BOOTSTRAP_ADMIN_ROLE. Does not delete from mapping to preserve history.
-     * @param _nodeAddress Validator address to remove
+     * @notice Get active nodes by type
+     * @dev Returns array of active node addresses of specified type
+     * @param nodeType Type of nodes to retrieve (0=gateway, 1=computation, 2=listing)
+     * @param limit Maximum number of nodes to return (gas optimization)
+     * @return nodes Array of active node addresses
      */
-    function removeBootstrapValidator(
-        address _nodeAddress
-    ) external onlyRole(BOOTSTRAP_ADMIN_ROLE) {
-        if (!validatorInfo[_nodeAddress].active) revert ValidatorNotActive();
+    function getActiveNodes(
+        uint8 nodeType,
+        uint256 limit
+    ) external view returns (address[] memory nodes) {
+        if (nodeType > 2) revert InvalidNodeType();
 
-        validatorInfo[_nodeAddress].active = false;
+        uint256 count = 0;
+        uint256 maxCount = limit;
+        if (maxCount == 0 || maxCount > registeredNodes.length) {
+            maxCount = registeredNodes.length;
+        }
 
-        // Remove from array (expensive but bootstrap list is small)
-        for (uint256 i = 0; i < bootstrapValidators.length; ++i) {
-            if (bootstrapValidators[i] == _nodeAddress) {
-                bootstrapValidators[i] = bootstrapValidators[bootstrapValidators.length - 1];
-                bootstrapValidators.pop();
-                break;
+        // Count active nodes of this type
+        for (uint256 i = 0; i < registeredNodes.length && count < maxCount; ++i) {
+            NodeInfo storage info = nodeRegistry[registeredNodes[i]];
+            if (info.active && info.nodeType == nodeType) {
+                ++count;
             }
         }
 
-        emit BootstrapValidatorRemoved(_nodeAddress);
+        // Allocate array
+        nodes = new address[](count);
+        uint256 index = 0;
+
+        // Fill array
+        for (uint256 i = 0; i < registeredNodes.length && index < count; ++i) {
+            NodeInfo storage info = nodeRegistry[registeredNodes[i]];
+            if (info.active && info.nodeType == nodeType) {
+                nodes[index] = registeredNodes[i];
+                ++index;
+            }
+        }
+
+        return nodes;
     }
 
     /**
-     * @notice Updates bootstrap validator information
-     * @dev Only callable by BOOTSTRAP_ADMIN_ROLE
-     * @param _nodeAddress Validator address to update
-     * @param _multiaddr New libp2p multiaddress
-     * @param _httpEndpoint New HTTP API endpoint
-     * @param _wsEndpoint New WebSocket endpoint
-     * @param _region New geographic region
+     * @notice Get all active nodes with full info
+     * @dev More expensive but provides complete node information
+     * @return addresses Array of node addresses
+     * @return infos Array of node information
      */
-    function updateBootstrapValidator(
-        address _nodeAddress,
-        string calldata _multiaddr,
-        string calldata _httpEndpoint,
-        string calldata _wsEndpoint,
-        string calldata _region
-    ) external onlyRole(BOOTSTRAP_ADMIN_ROLE) {
-        if (!validatorInfo[_nodeAddress].active) revert ValidatorNotActive();
-        if (bytes(_multiaddr).length == 0) revert InvalidParameter();
-        if (bytes(_httpEndpoint).length == 0) revert InvalidParameter();
-        if (bytes(_wsEndpoint).length == 0) revert InvalidParameter();
-
-        BootstrapValidator storage validator = validatorInfo[_nodeAddress];
-        validator.multiaddr = _multiaddr;
-        validator.httpEndpoint = _httpEndpoint;
-        validator.wsEndpoint = _wsEndpoint;
-        validator.region = _region;
-
-        emit BootstrapValidatorUpdated(_nodeAddress, _multiaddr, _httpEndpoint);
-    }
-
-    /**
-     * @notice Sets a bootstrap validator's active status
-     * @dev Only callable by BOOTSTRAP_ADMIN_ROLE
-     * @param _nodeAddress Validator address
-     * @param _active New active status
-     */
-    function setBootstrapValidatorStatus(
-        address _nodeAddress,
-        bool _active
-    ) external onlyRole(BOOTSTRAP_ADMIN_ROLE) {
-        if (validatorInfo[_nodeAddress].nodeAddress == address(0)) revert ValidatorNotFound();
-
-        validatorInfo[_nodeAddress].active = _active;
-
-        emit BootstrapValidatorStatusChanged(_nodeAddress, _active);
-    }
-
-    /**
-     * @notice Gets all active bootstrap validators
-     * @return addresses Array of validator addresses
-     * @return infos Array of validator information
-     */
-    function getActiveBootstrapValidators()
+    function getAllActiveNodes()
         external
         view
         returns (
             address[] memory addresses,
-            BootstrapValidator[] memory infos
+            NodeInfo[] memory infos
         )
     {
         uint256 count = 0;
 
-        // Count active validators
-        for (uint256 i = 0; i < bootstrapValidators.length; ++i) {
-            if (validatorInfo[bootstrapValidators[i]].active) {
+        // Count active nodes
+        for (uint256 i = 0; i < registeredNodes.length; ++i) {
+            if (nodeRegistry[registeredNodes[i]].active) {
                 ++count;
             }
         }
 
         // Allocate arrays
         addresses = new address[](count);
-        infos = new BootstrapValidator[](count);
+        infos = new NodeInfo[](count);
 
         // Populate arrays
         uint256 index = 0;
-        for (uint256 i = 0; i < bootstrapValidators.length; ++i) {
-            address addr = bootstrapValidators[i];
-            if (validatorInfo[addr].active) {
+        for (uint256 i = 0; i < registeredNodes.length; ++i) {
+            address addr = registeredNodes[i];
+            if (nodeRegistry[addr].active) {
                 addresses[index] = addr;
-                infos[index] = validatorInfo[addr];
+                infos[index] = nodeRegistry[addr];
                 ++index;
             }
         }
@@ -337,23 +430,107 @@ contract Bootstrap is AccessControl {
     }
 
     /**
-     * @notice Gets the number of active bootstrap validators
-     * @return count Number of active validators
+     * @notice Get node information
+     * @param nodeAddress Address of the node
+     * @return multiaddr libp2p multiaddr for P2P connections
+     * @return httpEndpoint HTTP endpoint URL
+     * @return wsEndpoint WebSocket endpoint URL
+     * @return region Geographic region
+     * @return nodeType Type of node
+     * @return active Whether node is active
+     * @return lastUpdate Last update timestamp
      */
-    function getBootstrapValidatorCount() external view returns (uint256 count) {
-        for (uint256 i = 0; i < bootstrapValidators.length; ++i) {
-            if (validatorInfo[bootstrapValidators[i]].active) {
+    function getNodeInfo(address nodeAddress) external view returns (
+        string memory multiaddr,
+        string memory httpEndpoint,
+        string memory wsEndpoint,
+        string memory region,
+        uint8 nodeType,
+        bool active,
+        uint256 lastUpdate
+    ) {
+        NodeInfo storage info = nodeRegistry[nodeAddress];
+        return (
+            info.multiaddr,
+            info.httpEndpoint,
+            info.wsEndpoint,
+            info.region,
+            info.nodeType,
+            info.active,
+            info.lastUpdate
+        );
+    }
+
+    /**
+     * @notice Get count of active nodes by type
+     * @param nodeType Type of nodes (0=gateway, 1=computation, 2=listing)
+     * @return count Number of active nodes
+     */
+    function getActiveNodeCount(uint8 nodeType) external view returns (uint256 count) {
+        if (nodeType > 2) revert InvalidNodeType();
+        return activeNodeCounts[nodeType];
+    }
+
+    /**
+     * @notice Get total registered node count
+     * @return count Total number of registered nodes (active and inactive)
+     */
+    function getTotalNodeCount() external view returns (uint256 count) {
+        return registeredNodes.length;
+    }
+
+    /**
+     * @notice Get active nodes within a time window
+     * @dev Returns nodes that have been updated within the specified time period
+     * @param nodeType Type of nodes to retrieve (0=gateway, 1=computation, 2=listing)
+     * @param timeWindowSeconds Time window in seconds (e.g., 3600 for last hour)
+     * @param limit Maximum number of nodes to return
+     * @return nodes Array of active node addresses within time window
+     */
+    function getActiveNodesWithinTime(
+        uint8 nodeType,
+        uint256 timeWindowSeconds,
+        uint256 limit
+    ) external view returns (address[] memory nodes) {
+        if (nodeType > 2) revert InvalidNodeType();
+
+        // solhint-disable-next-line not-rely-on-time
+        uint256 cutoffTime = block.timestamp - timeWindowSeconds;
+
+        uint256 count = 0;
+        uint256 maxCount = limit;
+        if (maxCount == 0 || maxCount > registeredNodes.length) {
+            maxCount = registeredNodes.length;
+        }
+
+        // Count matching nodes
+        for (uint256 i = 0; i < registeredNodes.length && count < maxCount; ++i) {
+            NodeInfo storage info = nodeRegistry[registeredNodes[i]];
+            if (info.active && info.nodeType == nodeType && info.lastUpdate >= cutoffTime) {
                 ++count;
             }
         }
-        return count;
+
+        // Allocate and fill array
+        nodes = new address[](count);
+        uint256 index = 0;
+
+        for (uint256 i = 0; i < registeredNodes.length && index < count; ++i) {
+            NodeInfo storage info = nodeRegistry[registeredNodes[i]];
+            if (info.active && info.nodeType == nodeType && info.lastUpdate >= cutoffTime) {
+                nodes[index] = registeredNodes[i];
+                ++index;
+            }
+        }
+
+        return nodes;
     }
 
     /**
      * @notice Gets OmniCore contract information
-     * @return _omniCoreAddress Address of OmniCore on Fuji
-     * @return _chainId Chain ID of Fuji Subnet-EVM
-     * @return _rpcUrl RPC URL for Fuji Subnet-EVM
+     * @return _omniCoreAddress Address of OmniCore on OmniCoin L1
+     * @return _chainId Chain ID of OmniCoin L1
+     * @return _rpcUrl RPC URL for OmniCoin L1
      */
     function getOmniCoreInfo()
         external
@@ -365,5 +542,16 @@ contract Bootstrap is AccessControl {
         )
     {
         return (omniCoreAddress, omniCoreChainId, omniCoreRpcUrl);
+    }
+
+    /**
+     * @notice Check if a node is registered and active
+     * @param nodeAddress Address to check
+     * @return isActive Whether the node is active
+     * @return nodeType Type of node (0, 1, or 2)
+     */
+    function isNodeActive(address nodeAddress) external view returns (bool isActive, uint8 nodeType) {
+        NodeInfo storage info = nodeRegistry[nodeAddress];
+        return (info.active, info.nodeType);
     }
 }
