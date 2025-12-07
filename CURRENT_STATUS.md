@@ -1,7 +1,38 @@
 # OmniCoin Module Current Status
 
-**Last Updated:** 2025-11-02 07:22 UTC
-**Current Focus:** Fuji Testnet Deployment Complete - OmniCore Now Upgradeable (UUPS)
+**Last Updated:** 2025-12-07 17:54 UTC
+**Current Focus:** Trustless Welcome Bonus (Phase 4) complete - 77 tests passing
+
+## 🎉 TRUSTLESS WELCOME BONUS - PHASE 4 COMPLETE (2025-12-07)
+
+### OmniRewardManager.sol Updates
+
+**Status:** ✅ Complete - `claimWelcomeBonusTrustless()` implemented
+
+**Changes Made:**
+- Added `claimWelcomeBonusTrustless()` function to OmniRewardManager.sol
+- Fixed critical struct mismatch in IOmniRegistration.sol (removed `depositRefunded` field)
+- All 77 OmniRewardManager tests passing
+
+**How Trustless Claiming Works:**
+1. User completes phone + social verification off-chain
+2. User submits EIP-712 signed proofs to OmniRegistration contract
+3. Contract verifies proofs and marks `hasKycTier1(user) = true`
+4. User calls `claimWelcomeBonusTrustless()` on OmniRewardManager
+5. Contract checks `hasKycTier1()` and transfers bonus
+
+**Critical Bug Fixed:**
+- `IOmniRegistration.Registration` struct had `depositRefunded` field
+- `OmniRegistration.Registration` struct did NOT have this field
+- Mismatch caused ABI decoding failure on cross-contract calls
+- Fixed by removing `depositRefunded` from interface
+
+**Files Modified:**
+- `contracts/OmniRewardManager.sol` - Added trustless claiming
+- `contracts/interfaces/IOmniRegistration.sol` - Fixed struct mismatch
+- `test/OmniRewardManager.test.ts` - Added 11 trustless tests
+
+---
 
 ## 📦 FUJI TESTNET DEPLOYMENT (2025-11-02)
 

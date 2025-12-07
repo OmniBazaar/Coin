@@ -117,6 +117,9 @@ interface IOmniRewardManager {
     /// @notice Thrown when zero amount is provided
     error ZeroAmountNotAllowed();
 
+    /// @notice Thrown when user has not completed KYC Tier 1
+    error KycTier1Required(address user);
+
     // ============ Bonus Distribution Functions ============
 
     /**
@@ -152,6 +155,29 @@ interface IOmniRewardManager {
         uint256 amount,
         bytes32[] calldata merkleProof
     ) external;
+
+    /**
+     * @notice Claim welcome bonus permissionlessly (requires registration)
+     * @dev Users call this directly after registration
+     */
+    function claimWelcomeBonusPermissionless() external;
+
+    /**
+     * @notice Claim welcome bonus using trustless on-chain verification
+     * @dev Users call this after completing KYC Tier 1 via on-chain verification.
+     *      Requires user to have:
+     *      1. Registered in OmniRegistration contract
+     *      2. Submitted phone verification proof on-chain
+     *      3. Submitted social verification proof on-chain
+     *      4. Achieved KYC Tier 1 status (hasKycTier1 returns true)
+     */
+    function claimWelcomeBonusTrustless() external;
+
+    /**
+     * @notice Claim first sale bonus permissionlessly
+     * @dev Sellers call this after completing their first sale
+     */
+    function claimFirstSaleBonusPermissionless() external;
 
     // ============ Validator Reward Functions ============
 

@@ -1,7 +1,21 @@
 # OmniCoin Development TODO
 
-**Last Updated:** 2025-01-09
-**Status:** CONTRACTS COMPLETE - Deployment Ready
+**Last Updated:** 2025-12-07 17:54 UTC
+**Status:** Trustless Welcome Bonus complete - 77 OmniRewardManager tests passing
+
+## 🎉 RECENT COMPLETIONS (2025-12-07)
+
+### Trustless Welcome Bonus - Phase 4 ✅
+- ✅ `claimWelcomeBonusTrustless()` added to OmniRewardManager.sol
+- ✅ IOmniRegistration struct mismatch fixed
+- ✅ 77 tests passing in OmniRewardManager.test.ts
+
+**Remaining for Full Trustless Flow:**
+- Deploy updated OmniRewardManager to Fuji (requires `UPGRADER_ROLE`)
+- Set `trustedVerificationKey` on OmniRegistration contract
+- Configure `VERIFICATION_PRIVATE_KEY` in Validator environment
+
+---
 
 ## ✅ COMPLETED FEATURES
 

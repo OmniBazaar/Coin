@@ -20,7 +20,6 @@ interface IOmniRegistration {
      * @param phoneHash Hash of verified phone number
      * @param emailHash Hash of verified email address
      * @param kycTier KYC verification level (0-4)
-     * @param depositRefunded Whether registration deposit was refunded
      * @param welcomeBonusClaimed Whether welcome bonus was claimed
      * @param firstSaleBonusClaimed Whether first sale bonus was claimed
      */
@@ -31,7 +30,6 @@ interface IOmniRegistration {
         bytes32 phoneHash;
         bytes32 emailHash;
         uint8 kycTier;
-        bool depositRefunded;
         bool welcomeBonusClaimed;
         bool firstSaleBonusClaimed;
     }
@@ -236,4 +234,125 @@ interface IOmniRegistration {
      * @return Number required
      */
     function KYC_ATTESTATION_THRESHOLD() external view returns (uint256);
+
+    // ═══════════════════════════════════════════════════════════════════════
+    //                    TRUSTLESS VERIFICATION FUNCTIONS
+    // ═══════════════════════════════════════════════════════════════════════
+
+    /**
+     * @notice Check if user has completed KYC Tier 1
+     * @param user Address to check
+     * @return True if KYC Tier 1 is complete (registered + phone + social verified)
+     */
+    function hasKycTier1(address user) external view returns (bool);
+
+    /**
+     * @notice Get user's social verification hash
+     * @param user Address to check
+     * @return Social hash (bytes32(0) if not verified)
+     */
+    function userSocialHashes(address user) external view returns (bytes32);
+
+    /**
+     * @notice Get when user completed KYC Tier 1
+     * @param user Address to check
+     * @return Timestamp when KYC Tier 1 was completed (0 if not completed)
+     */
+    function kycTier1CompletedAt(address user) external view returns (uint256);
+
+    /**
+     * @notice Submit phone verification proof
+     * @param phoneHash Keccak256 of normalized phone number
+     * @param timestamp When verification was performed
+     * @param nonce Unique nonce for replay protection
+     * @param deadline Proof expiration time
+     * @param signature EIP-712 signature from trustedVerificationKey
+     */
+    function submitPhoneVerification(
+        bytes32 phoneHash,
+        uint256 timestamp,
+        bytes32 nonce,
+        uint256 deadline,
+        bytes calldata signature
+    ) external;
+
+    /**
+     * @notice Submit social media verification proof
+     * @param socialHash Keccak256 of "platform:handle"
+     * @param platform Platform name ("twitter" or "telegram")
+     * @param timestamp When verification was performed
+     * @param nonce Unique nonce for replay protection
+     * @param deadline Proof expiration time
+     * @param signature EIP-712 signature from trustedVerificationKey
+     */
+    function submitSocialVerification(
+        bytes32 socialHash,
+        string calldata platform,
+        uint256 timestamp,
+        bytes32 nonce,
+        uint256 deadline,
+        bytes calldata signature
+    ) external;
+
+    /**
+     * @notice Get trusted verification key address
+     * @return Address of the trusted verification key
+     */
+    function trustedVerificationKey() external view returns (address);
+
+    // ═══════════════════════════════════════════════════════════════════════
+    //                    TRUSTLESS VERIFICATION EVENTS
+    // ═══════════════════════════════════════════════════════════════════════
+
+    /**
+     * @notice Emitted when phone is verified via trustless verification
+     * @param user The user who verified their phone
+     * @param phoneHash Keccak256 hash of normalized phone number
+     * @param timestamp When verification was performed
+     */
+    event PhoneVerified(
+        address indexed user,
+        bytes32 indexed phoneHash,
+        uint256 timestamp
+    );
+
+    /**
+     * @notice Emitted when social media is verified via trustless verification
+     * @param user The user who verified their social account
+     * @param socialHash Keccak256 hash of "platform:handle"
+     * @param platform Platform name
+     * @param timestamp When verification was performed
+     */
+    event SocialVerified(
+        address indexed user,
+        bytes32 indexed socialHash,
+        string platform,
+        uint256 timestamp
+    );
+
+    /**
+     * @notice Emitted when KYC Tier 1 is completed
+     * @param user The user who completed KYC Tier 1
+     * @param timestamp Block timestamp when completed
+     */
+    event KycTier1Completed(address indexed user, uint256 timestamp);
+
+    // ═══════════════════════════════════════════════════════════════════════
+    //                    TRUSTLESS VERIFICATION ERRORS
+    // ═══════════════════════════════════════════════════════════════════════
+
+    /// @notice Verification proof has expired
+    error ProofExpired();
+
+    /// @notice Social hash has already been used
+    error SocialAlreadyUsed();
+
+    /// @notice Invalid verification proof signature
+    error InvalidVerificationProof();
+
+    /// @notice Nonce has already been used
+    error NonceAlreadyUsed();
+
+    /// @notice Trusted verification key not set
+    error TrustedVerificationKeyNotSet();
 }

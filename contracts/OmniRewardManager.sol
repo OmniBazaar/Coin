@@ -281,6 +281,16 @@ contract OmniRewardManager is
         uint256 effectiveRegistrations
     );
 
+    /// @notice Emitted when trustless welcome bonus is claimed (requires KYC Tier 1)
+    /// @param user User who claimed via trustless verification
+    /// @param amount Amount claimed
+    /// @param referrer Referrer who will receive bonus (if any)
+    event TrustlessWelcomeBonusClaimed(
+        address indexed user,
+        uint256 indexed amount,
+        address indexed referrer
+    );
+
     // ============ Custom Errors ============
 
     /// @notice Thrown when pool has insufficient funds for distribution
@@ -312,6 +322,9 @@ contract OmniRewardManager is
 
     /// @notice Thrown when ODDAO address is not set
     error OddaoAddressNotSet();
+
+    /// @notice Thrown when user has not completed KYC Tier 1 (phone + social verified on-chain)
+    error KycTier1Required(address user);
 
     // ============ Constructor ============
 
@@ -619,6 +632,84 @@ contract OmniRewardManager is
         _checkPoolThreshold(PoolType.WelcomeBonus, welcomeBonusPool);
 
         // Auto-trigger referral bonus if referrer exists (use effectiveRegs for tier calc)
+        if (reg.referrer != address(0)) {
+            _distributeAutoReferralBonus(reg.referrer, msg.sender, effectiveRegs);
+        }
+    }
+
+    /**
+     * @notice Claim welcome bonus using trustless on-chain verification
+     * @dev Users call this after completing KYC Tier 1 via on-chain verification.
+     *      Requires user to have:
+     *      1. Registered in OmniRegistration contract
+     *      2. Submitted phone verification proof on-chain
+     *      3. Submitted social verification proof on-chain
+     *      4. Achieved KYC Tier 1 status (hasKycTier1 returns true)
+     *
+     *      This is the TRUSTLESS version - no validator role required.
+     *      User must first submit verification proofs to OmniRegistration contract:
+     *      - registration.submitPhoneVerification(phoneHash, timestamp, nonce, deadline, signature)
+     *      - registration.submitSocialVerification(socialHash, platform, timestamp, nonce, deadline, signature)
+     *
+     * Security measures:
+     * - Requires hasKycTier1() to return true (on-chain verification)
+     * - No trusted roles involved in the verification
+     * - Daily rate limit enforced
+     * - Bonus amount calculated based on registration number
+     */
+    function claimWelcomeBonusTrustless() external nonReentrant whenNotPaused {
+        if (address(registrationContract) == address(0)) {
+            revert RegistrationContractNotSet();
+        }
+
+        // Get registration data from OmniRegistration contract
+        IOmniRegistration.Registration memory reg = registrationContract.getRegistration(msg.sender);
+
+        // Verify user is registered
+        if (reg.timestamp == 0) revert UserNotRegistered(msg.sender);
+
+        // Verify welcome bonus not already claimed
+        if (reg.welcomeBonusClaimed) {
+            revert BonusAlreadyClaimed(msg.sender, PoolType.WelcomeBonus);
+        }
+
+        // CRITICAL: Verify KYC Tier 1 completion via on-chain verification
+        // This checks that user has submitted phone AND social verification proofs on-chain
+        if (!registrationContract.hasKycTier1(msg.sender)) {
+            revert KycTier1Required(msg.sender);
+        }
+
+        // Check daily rate limit
+        uint256 today = block.timestamp / 1 days;
+        if (dailyWelcomeBonusCount[today] >= MAX_DAILY_WELCOME_BONUSES) {
+            revert DailyBonusLimitExceeded(PoolType.WelcomeBonus, MAX_DAILY_WELCOME_BONUSES);
+        }
+        ++dailyWelcomeBonusCount[today];
+
+        // Calculate bonus based on effective registrations (on-chain + legacy claims)
+        uint256 totalRegs = registrationContract.totalRegistrations();
+        uint256 effectiveRegs = totalRegs + legacyBonusClaimsCount;
+        if (effectiveRegs == 0) effectiveRegs = 1; // Minimum 1 to avoid edge cases
+        uint256 bonusAmount = _calculateWelcomeBonus(effectiveRegs);
+
+        // Validate pool balance
+        _validatePoolBalance(welcomeBonusPool, PoolType.WelcomeBonus, bonusAmount);
+
+        // Mark as claimed in registration contract
+        registrationContract.markWelcomeBonusClaimed(msg.sender);
+
+        // Mark as claimed locally (for backward compatibility)
+        welcomeBonusClaimed[msg.sender] = true;
+
+        // Update pool and transfer
+        _updatePoolAfterDistribution(welcomeBonusPool, bonusAmount);
+        omniCoin.safeTransfer(msg.sender, bonusAmount);
+
+        emit TrustlessWelcomeBonusClaimed(msg.sender, bonusAmount, reg.referrer);
+        emit WelcomeBonusClaimed(msg.sender, bonusAmount, welcomeBonusPool.remaining);
+        _checkPoolThreshold(PoolType.WelcomeBonus, welcomeBonusPool);
+
+        // Auto-trigger referral bonus if referrer exists
         if (reg.referrer != address(0)) {
             _distributeAutoReferralBonus(reg.referrer, msg.sender, effectiveRegs);
         }

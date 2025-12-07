@@ -1295,4 +1295,357 @@ describe('OmniRewardManager', function () {
             expect(totalDistributed).to.equal(expectedTotal);
         });
     });
+
+    // ========================================
+    // Trustless Welcome Bonus Tests
+    // ========================================
+
+    describe('Trustless Welcome Bonus (claimWelcomeBonusTrustless)', function () {
+        let omniRegistration: any;
+        let verificationSigner: any;
+
+        // EIP-712 domain and types for verification proofs
+        const PHONE_VERIFICATION_TYPES = {
+            PhoneVerification: [
+                { name: 'user', type: 'address' },
+                { name: 'phoneHash', type: 'bytes32' },
+                { name: 'timestamp', type: 'uint256' },
+                { name: 'nonce', type: 'bytes32' },
+                { name: 'deadline', type: 'uint256' },
+            ],
+        };
+
+        const SOCIAL_VERIFICATION_TYPES = {
+            SocialVerification: [
+                { name: 'user', type: 'address' },
+                { name: 'socialHash', type: 'bytes32' },
+                { name: 'platform', type: 'string' },
+                { name: 'timestamp', type: 'uint256' },
+                { name: 'nonce', type: 'bytes32' },
+                { name: 'deadline', type: 'uint256' },
+            ],
+        };
+
+        /**
+         * Generate phone verification signature
+         */
+        async function signPhoneVerification(
+            signer: any,
+            user: string,
+            phoneHash: string,
+            timestamp: number,
+            nonce: string,
+            deadline: number,
+            contractAddr: string,
+            chainId: bigint
+        ): Promise<string> {
+            const domain = {
+                name: 'OmniRegistration',
+                version: '1',
+                chainId: chainId,
+                verifyingContract: contractAddr,
+            };
+
+            const value = {
+                user,
+                phoneHash,
+                timestamp,
+                nonce,
+                deadline,
+            };
+
+            return signer.signTypedData(domain, PHONE_VERIFICATION_TYPES, value);
+        }
+
+        /**
+         * Generate social verification signature
+         */
+        async function signSocialVerification(
+            signer: any,
+            user: string,
+            socialHash: string,
+            platform: string,
+            timestamp: number,
+            nonce: string,
+            deadline: number,
+            contractAddr: string,
+            chainId: bigint
+        ): Promise<string> {
+            const domain = {
+                name: 'OmniRegistration',
+                version: '1',
+                chainId: chainId,
+                verifyingContract: contractAddr,
+            };
+
+            const value = {
+                user,
+                socialHash,
+                platform,
+                timestamp,
+                nonce,
+                deadline,
+            };
+
+            return signer.signTypedData(domain, SOCIAL_VERIFICATION_TYPES, value);
+        }
+
+        beforeEach(async function () {
+            // Create a verification signer (trusted verification key)
+            verificationSigner = ethers.Wallet.createRandom().connect(ethers.provider);
+            // Fund the signer for gas
+            await owner.sendTransaction({
+                to: verificationSigner.address,
+                value: ethers.parseEther('1'),
+            });
+
+            // Deploy OmniRegistration contract (no parameters needed for initialize)
+            const OmniRegistrationFactory = await ethers.getContractFactory('OmniRegistration');
+            const registrationProxy = await upgrades.deployProxy(
+                OmniRegistrationFactory,
+                [],
+                { initializer: 'initialize', kind: 'uups' }
+            );
+            await registrationProxy.waitForDeployment();
+            omniRegistration = OmniRegistrationFactory.attach(await registrationProxy.getAddress());
+
+            // Grant VALIDATOR_ROLE to admin for registration
+            const VALIDATOR_ROLE = keccak256(ethers.toUtf8Bytes('VALIDATOR_ROLE'));
+            await omniRegistration.connect(owner).grantRole(VALIDATOR_ROLE, admin.address);
+
+            // Set trusted verification key
+            await omniRegistration.connect(owner).setTrustedVerificationKey(verificationSigner.address);
+
+            // Set registration contract in reward manager
+            await rewardManager.connect(admin).setRegistrationContract(await omniRegistration.getAddress());
+
+            // Grant BONUS_MARKER_ROLE to reward manager so it can mark bonuses as claimed
+            const BONUS_MARKER_ROLE = keccak256(ethers.toUtf8Bytes('BONUS_MARKER_ROLE'));
+            await omniRegistration.connect(owner).grantRole(BONUS_MARKER_ROLE, await rewardManager.getAddress());
+        });
+
+        /**
+         * Helper to register a user and complete KYC Tier 1
+         * When registered with phoneHash, phone is already verified.
+         * We only need to submit social verification for KYC Tier 1.
+         */
+        async function registerUserWithKycTier1(userAddr: string, referrerAddr: string = ZeroAddress) {
+            // Generate unique phone hash for this user
+            const phoneNumber = '+1555' + Math.floor(Math.random() * 10000000).toString().padStart(7, '0');
+            const phoneHash = keccak256(ethers.toUtf8Bytes(phoneNumber));
+
+            // Generate unique email hash
+            const email = `user${Math.random().toString(36).substring(7)}@test.com`;
+            const emailHash = keccak256(ethers.toUtf8Bytes(email));
+
+            // Register user with phone hash - this marks phone as verified
+            await omniRegistration.connect(admin).registerUser(
+                userAddr,
+                referrerAddr,
+                phoneHash,
+                emailHash
+            );
+
+            // Get chain ID and registration address for social verification
+            const network = await ethers.provider.getNetwork();
+            const chainId = network.chainId;
+            const regAddr = await omniRegistration.getAddress();
+
+            // Generate and submit social verification proof (required for KYC Tier 1)
+            const platform = 'twitter';
+            const handle = 'testuser' + Math.floor(Math.random() * 100000);
+            const socialHash = keccak256(ethers.toUtf8Bytes(`${platform}:${handle}`));
+            const socialTimestamp = Math.floor(Date.now() / 1000);
+            const socialNonce = '0x' + Buffer.from(ethers.randomBytes(32)).toString('hex');
+            const socialDeadline = socialTimestamp + 3600;
+
+            const socialSignature = await signSocialVerification(
+                verificationSigner,
+                userAddr,
+                socialHash,
+                platform,
+                socialTimestamp,
+                socialNonce,
+                socialDeadline,
+                regAddr,
+                chainId
+            );
+
+            // Submit social verification (as the user)
+            const userSigner = await ethers.getSigner(userAddr);
+            await omniRegistration.connect(userSigner).submitSocialVerification(
+                socialHash,
+                platform,
+                socialTimestamp,
+                socialNonce,
+                socialDeadline,
+                socialSignature
+            );
+
+            return { phoneHash, emailHash, socialHash };
+        }
+
+        it('should have correct registration contract set', async function () {
+            // Verify registration contract is set
+            const regContractAddr = await rewardManager.registrationContract();
+            expect(regContractAddr).to.equal(await omniRegistration.getAddress());
+        });
+
+        it('should be able to call getRegistration via interface', async function () {
+            // Register user first
+            const phoneHash = keccak256(ethers.toUtf8Bytes('+15551234567'));
+            const emailHash = keccak256(ethers.toUtf8Bytes('test@test.com'));
+            await omniRegistration.connect(admin).registerUser(
+                user1.address,
+                ZeroAddress,
+                phoneHash,
+                emailHash
+            );
+
+            // Try to get registration - this tests the interface call
+            const reg = await omniRegistration.getRegistration(user1.address);
+            expect(reg.timestamp).to.be.greaterThan(0);
+        });
+
+        it('should be able to call hasKycTier1 via interface', async function () {
+            // Try hasKycTier1 for non-registered user
+            const hasKyc = await omniRegistration.hasKycTier1(user1.address);
+            expect(hasKyc).to.be.false;
+        });
+
+        it('should allow claiming after KYC Tier 1 completion', async function () {
+            // Register user with KYC Tier 1 using helper function
+            await registerUserWithKycTier1(user1.address);
+
+            // Verify KYC Tier 1 is complete
+            expect(await omniRegistration.hasKycTier1(user1.address)).to.be.true;
+
+            // Claim trustless welcome bonus
+            const balanceBefore = await omniCoin.balanceOf(user1.address);
+            await rewardManager.connect(user1).claimWelcomeBonusTrustless();
+            const balanceAfter = await omniCoin.balanceOf(user1.address);
+
+            // Verify user received tokens (10000 XOM for first 1000 users)
+            expect(balanceAfter).to.be.greaterThan(balanceBefore);
+            const received = balanceAfter - balanceBefore;
+            expect(received).to.equal(ethers.parseEther('10000'));
+        });
+
+        it('should emit TrustlessWelcomeBonusClaimed event', async function () {
+            await registerUserWithKycTier1(user1.address);
+
+            await expect(rewardManager.connect(user1).claimWelcomeBonusTrustless())
+                .to.emit(rewardManager, 'TrustlessWelcomeBonusClaimed');
+        });
+
+        it('should reject when user has not completed KYC Tier 1', async function () {
+            // Register user with phone but without social verification
+            const phoneHash = keccak256(ethers.toUtf8Bytes('+15551234567'));
+            const emailHash = keccak256(ethers.toUtf8Bytes('test@test.com'));
+
+            await omniRegistration.connect(admin).registerUser(
+                user1.address,
+                ZeroAddress,
+                phoneHash,
+                emailHash
+            );
+
+            // Verify user is registered but NOT KYC Tier 1 (missing social)
+            expect(await omniRegistration.isRegistered(user1.address)).to.be.true;
+            expect(await omniRegistration.hasKycTier1(user1.address)).to.be.false;
+
+            // Try to claim without KYC Tier 1
+            await expect(rewardManager.connect(user1).claimWelcomeBonusTrustless())
+                .to.be.revertedWithCustomError(rewardManager, 'KycTier1Required')
+                .withArgs(user1.address);
+        });
+
+        it('should reject when user is not registered', async function () {
+            // Try to claim without registration
+            await expect(rewardManager.connect(user1).claimWelcomeBonusTrustless())
+                .to.be.revertedWithCustomError(rewardManager, 'UserNotRegistered')
+                .withArgs(user1.address);
+        });
+
+        it('should reject when registration contract is not set', async function () {
+            // Deploy new reward manager without registration contract
+            const OmniRewardManagerFactory = await ethers.getContractFactory('OmniRewardManager');
+            const newProxy = await upgrades.deployProxy(
+                OmniRewardManagerFactory,
+                [
+                    await omniCoin.getAddress(),
+                    WELCOME_BONUS_POOL,
+                    REFERRAL_BONUS_POOL,
+                    FIRST_SALE_BONUS_POOL,
+                    VALIDATOR_REWARDS_POOL,
+                    admin.address,
+                ],
+                { initializer: 'initialize', kind: 'uups' }
+            );
+            await newProxy.waitForDeployment();
+            const newRewardManager = OmniRewardManagerFactory.attach(await newProxy.getAddress());
+
+            // Don't set registration contract
+            await expect(newRewardManager.connect(user1).claimWelcomeBonusTrustless())
+                .to.be.revertedWithCustomError(newRewardManager, 'RegistrationContractNotSet');
+        });
+
+        it('should reject double claims', async function () {
+            await registerUserWithKycTier1(user1.address);
+
+            // First claim should succeed
+            await rewardManager.connect(user1).claimWelcomeBonusTrustless();
+
+            // Second claim should fail
+            await expect(rewardManager.connect(user1).claimWelcomeBonusTrustless())
+                .to.be.revertedWithCustomError(rewardManager, 'BonusAlreadyClaimed')
+                .withArgs(user1.address, PoolType.WelcomeBonus);
+        });
+
+        it('should block claims when paused', async function () {
+            await registerUserWithKycTier1(user1.address);
+            await rewardManager.connect(admin).pause();
+
+            await expect(rewardManager.connect(user1).claimWelcomeBonusTrustless())
+                .to.be.revertedWithCustomError(rewardManager, 'EnforcedPause');
+        });
+
+        it('should auto-trigger referral bonus if referrer exists', async function () {
+            // First register referrer with KYC Tier 1
+            await registerUserWithKycTier1(referrer.address);
+
+            // Then register user1 with referrer
+            await registerUserWithKycTier1(user1.address, referrer.address);
+
+            // Set ODDAO address for referral distribution
+            await rewardManager.connect(admin).setOddaoAddress(oddao.address);
+
+            const referrerBalanceBefore = await omniCoin.balanceOf(referrer.address);
+
+            // Claim welcome bonus (should auto-trigger referral bonus)
+            await rewardManager.connect(user1).claimWelcomeBonusTrustless();
+
+            const referrerBalanceAfter = await omniCoin.balanceOf(referrer.address);
+
+            // Referrer should have received referral bonus (70% of referral amount)
+            expect(referrerBalanceAfter).to.be.greaterThan(referrerBalanceBefore);
+        });
+
+        it('should correctly calculate bonus based on effective registrations', async function () {
+            // Set legacy bonus claims count to simulate existing users
+            await rewardManager.connect(admin).setLegacyBonusClaimsCount(3996);
+
+            await registerUserWithKycTier1(user1.address);
+
+            const balanceBefore = await omniCoin.balanceOf(user1.address);
+            await rewardManager.connect(user1).claimWelcomeBonusTrustless();
+            const balanceAfter = await omniCoin.balanceOf(user1.address);
+
+            const bonusReceived = balanceAfter - balanceBefore;
+
+            // With ~3997 effective registrations, should be in tier 2 (5000 XOM)
+            // But the exact tier depends on totalRegistrations() + legacyCount
+            expect(bonusReceived).to.equal(ethers.parseEther('5000'));
+        });
+    });
 });

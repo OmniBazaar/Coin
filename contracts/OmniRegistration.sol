@@ -60,6 +60,18 @@ contract OmniRegistration is
     /// @dev Can be increased if Sybil attacks become problematic
     uint256 public constant REGISTRATION_DEPOSIT = 0;
 
+    /// @notice EIP-712 typehash for phone verification proof
+    /// @dev Used by submitPhoneVerification() for trustless phone verification
+    bytes32 public constant PHONE_VERIFICATION_TYPEHASH = keccak256(
+        "PhoneVerification(address user,bytes32 phoneHash,uint256 timestamp,bytes32 nonce,uint256 deadline)"
+    );
+
+    /// @notice EIP-712 typehash for social media verification proof
+    /// @dev Used by submitSocialVerification() for trustless social verification
+    bytes32 public constant SOCIAL_VERIFICATION_TYPEHASH = keccak256(
+        "SocialVerification(address user,bytes32 socialHash,string platform,uint256 timestamp,bytes32 nonce,uint256 deadline)"
+    );
+
     // ═══════════════════════════════════════════════════════════════════════
     //                              STORAGE
     // ═══════════════════════════════════════════════════════════════════════
@@ -111,6 +123,30 @@ contract OmniRegistration is
 
     /// @notice Used attestation hashes to prevent replay attacks
     mapping(bytes32 => bool) public usedAttestations;
+
+    // ═══════════════════════════════════════════════════════════════════════
+    //                    TRUSTLESS VERIFICATION STORAGE
+    // ═══════════════════════════════════════════════════════════════════════
+
+    /// @notice Trusted verification key address (signs phone/social proofs)
+    /// @dev This is OmniBazaar's verification service key, NOT a validator key
+    ///      Set via setTrustedVerificationKey() admin function
+    address public trustedVerificationKey;
+
+    /// @notice Mapping of user address to their social verification hash
+    /// @dev socialHash = keccak256("platform:handle"), e.g., keccak256("twitter:omnibazaar")
+    mapping(address => bytes32) public userSocialHashes;
+
+    /// @notice Mapping of user address to KYC Tier 1 completion timestamp
+    /// @dev KYC Tier 1 = registered + phone verified + social verified
+    ///      Value is 0 if KYC Tier 1 not complete
+    mapping(address => uint256) public kycTier1CompletedAt;
+
+    /// @notice Mapping to track used social hashes (prevents duplicate social accounts)
+    mapping(bytes32 => bool) public usedSocialHashes;
+
+    /// @notice Mapping to track used nonces (prevents proof replay attacks)
+    mapping(bytes32 => bool) public usedNonces;
 
     // ═══════════════════════════════════════════════════════════════════════
     //                              EVENTS
@@ -178,6 +214,45 @@ contract OmniRegistration is
         uint256 timestamp
     );
 
+    /**
+     * @notice Emitted when phone is verified via trustless verification
+     * @param user The user who verified their phone
+     * @param phoneHash Keccak256 hash of normalized phone number
+     * @param timestamp When verification was performed
+     */
+    event PhoneVerified(
+        address indexed user,
+        bytes32 indexed phoneHash,
+        uint256 timestamp
+    );
+
+    /**
+     * @notice Emitted when social media is verified via trustless verification
+     * @param user The user who verified their social account
+     * @param socialHash Keccak256 hash of "platform:handle"
+     * @param platform Platform name ("twitter" or "telegram")
+     * @param timestamp When verification was performed
+     */
+    event SocialVerified(
+        address indexed user,
+        bytes32 indexed socialHash,
+        string platform,
+        uint256 timestamp
+    );
+
+    /**
+     * @notice Emitted when KYC Tier 1 is completed
+     * @param user The user who completed KYC Tier 1
+     * @param timestamp Block timestamp when completed
+     */
+    event KycTier1Completed(address indexed user, uint256 timestamp);
+
+    /**
+     * @notice Emitted when trusted verification key is updated
+     * @param newKey The new verification key address
+     */
+    event TrustedVerificationKeyUpdated(address indexed newKey);
+
     // ═══════════════════════════════════════════════════════════════════════
     //                              ERRORS
     // ═══════════════════════════════════════════════════════════════════════
@@ -229,6 +304,21 @@ contract OmniRegistration is
 
     /// @notice Invalid attestation signature (not from authorized validator)
     error InvalidAttestation();
+
+    /// @notice Verification proof has expired (deadline passed)
+    error ProofExpired();
+
+    /// @notice Social hash has already been used by another user
+    error SocialAlreadyUsed();
+
+    /// @notice Verification proof signature is invalid (not from trusted key)
+    error InvalidVerificationProof();
+
+    /// @notice Nonce has already been used (replay attack prevention)
+    error NonceAlreadyUsed();
+
+    /// @notice Trusted verification key not set
+    error TrustedVerificationKeyNotSet();
 
     // ═══════════════════════════════════════════════════════════════════════
     //                           INITIALIZATION
@@ -514,6 +604,199 @@ contract OmniRegistration is
     }
 
     // ═══════════════════════════════════════════════════════════════════════
+    //                    TRUSTLESS VERIFICATION
+    // ═══════════════════════════════════════════════════════════════════════
+
+    /**
+     * @notice Submit phone verification proof (signed by trustedVerificationKey)
+     * @param phoneHash Keccak256 of normalized phone number
+     * @param timestamp When verification was performed by the verification service
+     * @param nonce Unique nonce for replay protection
+     * @param deadline Proof expiration time (block.timestamp)
+     * @param signature EIP-712 signature from trustedVerificationKey
+     * @dev User calls this after completing phone verification off-chain.
+     *      The verification service signs the proof, user submits it on-chain.
+     *
+     * Security Properties:
+     * - Only trustedVerificationKey can sign valid proofs
+     * - Each nonce can only be used once (replay protection)
+     * - Phone hash can only be used by one user (Sybil protection)
+     * - Proof expires after deadline (prevents hoarding)
+     * - Updates KYC Tier 1 status if requirements met
+     */
+    function submitPhoneVerification(
+        bytes32 phoneHash,
+        uint256 timestamp,
+        bytes32 nonce,
+        uint256 deadline,
+        bytes calldata signature
+    ) external nonReentrant {
+        // 1. Check trusted verification key is set
+        if (trustedVerificationKey == address(0)) {
+            revert TrustedVerificationKeyNotSet();
+        }
+
+        // 2. Check deadline not expired
+        // solhint-disable-next-line not-rely-on-time
+        if (block.timestamp > deadline) revert ProofExpired();
+
+        // 3. Check nonce not already used (replay protection)
+        if (usedNonces[nonce]) revert NonceAlreadyUsed();
+
+        // 4. Check phone hash not already used by another user
+        if (usedPhoneHashes[phoneHash]) revert PhoneAlreadyUsed();
+
+        // 5. Verify EIP-712 signature from trustedVerificationKey
+        bytes32 structHash = keccak256(
+            abi.encode(
+                PHONE_VERIFICATION_TYPEHASH,
+                msg.sender, // User must submit their own proof
+                phoneHash,
+                timestamp,
+                nonce,
+                deadline
+            )
+        );
+
+        bytes32 digest = keccak256(
+            abi.encodePacked("\x19\x01", DOMAIN_SEPARATOR, structHash)
+        );
+
+        address signer = digest.recover(signature);
+        if (signer != trustedVerificationKey) revert InvalidVerificationProof();
+
+        // 6. Store verification
+        // Update registration phoneHash if user is registered and phoneHash was empty
+        Registration storage reg = registrations[msg.sender];
+        if (reg.timestamp != 0 && reg.phoneHash == bytes32(0)) {
+            reg.phoneHash = phoneHash;
+        }
+
+        usedPhoneHashes[phoneHash] = true;
+        usedNonces[nonce] = true;
+
+        // 7. Check if KYC Tier 1 complete and update status
+        _checkAndUpdateKycTier1(msg.sender);
+
+        // solhint-disable-next-line not-rely-on-time
+        emit PhoneVerified(msg.sender, phoneHash, timestamp);
+    }
+
+    /**
+     * @notice Submit social media verification proof (signed by trustedVerificationKey)
+     * @param socialHash Keccak256 of "platform:handle" (e.g., keccak256("twitter:omnibazaar"))
+     * @param platform Platform name ("twitter" or "telegram")
+     * @param timestamp When verification was performed by the verification service
+     * @param nonce Unique nonce for replay protection
+     * @param deadline Proof expiration time (block.timestamp)
+     * @param signature EIP-712 signature from trustedVerificationKey
+     * @dev User calls this after completing social verification off-chain.
+     *      The verification service signs the proof, user submits it on-chain.
+     *
+     * Security Properties:
+     * - Only trustedVerificationKey can sign valid proofs
+     * - Each nonce can only be used once (replay protection)
+     * - Social hash can only be used by one user (Sybil protection)
+     * - Proof expires after deadline (prevents hoarding)
+     * - Updates KYC Tier 1 status if requirements met
+     */
+    function submitSocialVerification(
+        bytes32 socialHash,
+        string calldata platform,
+        uint256 timestamp,
+        bytes32 nonce,
+        uint256 deadline,
+        bytes calldata signature
+    ) external nonReentrant {
+        // 1. Check trusted verification key is set
+        if (trustedVerificationKey == address(0)) {
+            revert TrustedVerificationKeyNotSet();
+        }
+
+        // 2. Check deadline not expired
+        // solhint-disable-next-line not-rely-on-time
+        if (block.timestamp > deadline) revert ProofExpired();
+
+        // 3. Check nonce not already used (replay protection)
+        if (usedNonces[nonce]) revert NonceAlreadyUsed();
+
+        // 4. Check social hash not already used by another user
+        if (usedSocialHashes[socialHash]) revert SocialAlreadyUsed();
+
+        // 5. Verify EIP-712 signature from trustedVerificationKey
+        bytes32 structHash = keccak256(
+            abi.encode(
+                SOCIAL_VERIFICATION_TYPEHASH,
+                msg.sender, // User must submit their own proof
+                socialHash,
+                keccak256(bytes(platform)), // Hash the platform string
+                timestamp,
+                nonce,
+                deadline
+            )
+        );
+
+        bytes32 digest = keccak256(
+            abi.encodePacked("\x19\x01", DOMAIN_SEPARATOR, structHash)
+        );
+
+        address signer = digest.recover(signature);
+        if (signer != trustedVerificationKey) revert InvalidVerificationProof();
+
+        // 6. Store verification
+        userSocialHashes[msg.sender] = socialHash;
+        usedSocialHashes[socialHash] = true;
+        usedNonces[nonce] = true;
+
+        // 7. Check if KYC Tier 1 complete and update status
+        _checkAndUpdateKycTier1(msg.sender);
+
+        // solhint-disable-next-line not-rely-on-time
+        emit SocialVerified(msg.sender, socialHash, platform, timestamp);
+    }
+
+    /**
+     * @notice Check if user has completed KYC Tier 1
+     * @param user Address to check
+     * @return True if KYC Tier 1 is complete (registered + phone + social verified)
+     * @dev KYC Tier 1 requires:
+     *      1. User is registered (registrations[user].timestamp != 0)
+     *      2. Phone is verified (usedPhoneHashes[reg.phoneHash] == true OR phone via submitPhoneVerification)
+     *      3. Social is verified (userSocialHashes[user] != bytes32(0))
+     */
+    function hasKycTier1(address user) external view returns (bool) {
+        return kycTier1CompletedAt[user] != 0;
+    }
+
+    /**
+     * @notice Internal function to check and update KYC Tier 1 status
+     * @param user Address to check and potentially update
+     * @dev Called after phone or social verification to check if requirements are met
+     */
+    function _checkAndUpdateKycTier1(address user) internal {
+        // Already completed - no need to check again
+        if (kycTier1CompletedAt[user] != 0) return;
+
+        Registration storage reg = registrations[user];
+
+        // Must be registered
+        if (reg.timestamp == 0) return;
+
+        // Must have phone verified (either at registration or via submitPhoneVerification)
+        if (reg.phoneHash == bytes32(0)) return;
+        if (!usedPhoneHashes[reg.phoneHash]) return;
+
+        // Must have social verified
+        if (userSocialHashes[user] == bytes32(0)) return;
+
+        // All requirements met - update KYC Tier 1 status
+        // solhint-disable-next-line not-rely-on-time
+        kycTier1CompletedAt[user] = block.timestamp;
+        // solhint-disable-next-line not-rely-on-time
+        emit KycTier1Completed(user, block.timestamp);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
     //                        BONUS CLAIM MARKING
     // ═══════════════════════════════════════════════════════════════════════
 
@@ -641,6 +924,21 @@ contract OmniRegistration is
     // ═══════════════════════════════════════════════════════════════════════
     //                          ADMIN FUNCTIONS
     // ═══════════════════════════════════════════════════════════════════════
+
+    /**
+     * @notice Set the trusted verification key address
+     * @param newKey Address of the new verification key (or address(0) to disable)
+     * @dev Only callable by DEFAULT_ADMIN_ROLE.
+     *      The verification key signs phone/social verification proofs.
+     *      This is OmniBazaar's verification service key, NOT a validator key.
+     *      SECURITY: Changing this key invalidates all pending proofs.
+     */
+    function setTrustedVerificationKey(
+        address newKey
+    ) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        trustedVerificationKey = newKey;
+        emit TrustedVerificationKeyUpdated(newKey);
+    }
 
     /**
      * @notice Unregister a user (admin only)
