@@ -120,6 +120,32 @@ interface IOmniRewardManager {
     /// @notice Thrown when user has not completed KYC Tier 1
     error KycTier1Required(address user);
 
+    /// @notice Thrown when claim deadline has expired
+    error ClaimDeadlineExpired();
+
+    /// @notice Thrown when claim nonce doesn't match expected
+    /// @param user User address
+    /// @param provided Provided nonce
+    /// @param expected Expected nonce
+    error InvalidClaimNonce(address user, uint256 provided, uint256 expected);
+
+    /// @notice Thrown when recovered signer doesn't match user
+    /// @param expectedUser Expected user address
+    /// @param recoveredSigner Recovered signer from signature
+    error InvalidUserSignature(address expectedUser, address recoveredSigner);
+
+    /// @notice Emitted when welcome bonus is claimed via trustless relay
+    /// @param user User who received the bonus
+    /// @param amount Amount of XOM transferred
+    /// @param relayer Address that submitted the transaction (paid gas)
+    /// @param referrer Referrer who will receive referral bonus (if any)
+    event WelcomeBonusClaimedRelayed(
+        address indexed user,
+        uint256 indexed amount,
+        address relayer,
+        address referrer
+    );
+
     // ============ Bonus Distribution Functions ============
 
     /**
@@ -172,6 +198,35 @@ interface IOmniRewardManager {
      *      4. Achieved KYC Tier 1 status (hasKycTier1 returns true)
      */
     function claimWelcomeBonusTrustless() external;
+
+    /**
+     * @notice Claim welcome bonus with user signature (trustless relay)
+     * @dev ANYONE can relay this - NO SPECIAL ROLES REQUIRED.
+     *      Security comes from verifying the USER'S signature, not caller's role.
+     *      This is the GASLESS version - relayer pays gas, user receives bonus.
+     *
+     *      The user signs an EIP-712 ClaimWelcomeBonus message with their wallet.
+     *      Any relayer can submit the signed message and pay gas.
+     *      The contract verifies the USER signed it, then transfers bonus to USER.
+     *
+     * @param user The address of the user claiming (must match signer)
+     * @param nonce User's current claim nonce (for replay protection)
+     * @param deadline Claim request expiration timestamp
+     * @param signature User's EIP-712 signature
+     */
+    function claimWelcomeBonusRelayed(
+        address user,
+        uint256 nonce,
+        uint256 deadline,
+        bytes calldata signature
+    ) external;
+
+    /**
+     * @notice Get user's current claim nonce
+     * @param user Address to check
+     * @return Current nonce for the user
+     */
+    function getClaimNonce(address user) external view returns (uint256);
 
     /**
      * @notice Claim first sale bonus permissionlessly

@@ -33,7 +33,10 @@ async function main(): Promise<void> {
     const selectors = [
         { name: 'registrationContract()', selector: ethers.id('registrationContract()').slice(2, 10) },
         { name: 'setRegistrationContract(address)', selector: ethers.id('setRegistrationContract(address)').slice(2, 10) },
-        { name: 'claimWelcomeBonusPermissionless()', selector: ethers.id('claimWelcomeBonusPermissionless()').slice(2, 10) }
+        { name: 'claimWelcomeBonusPermissionless()', selector: ethers.id('claimWelcomeBonusPermissionless()').slice(2, 10) },
+        { name: 'claimWelcomeBonusRelayed(address,uint256,uint256,bytes)', selector: ethers.id('claimWelcomeBonusRelayed(address,uint256,uint256,bytes)').slice(2, 10) },
+        { name: 'getClaimNonce(address)', selector: ethers.id('getClaimNonce(address)').slice(2, 10) },
+        { name: 'reinitializeV2()', selector: ethers.id('reinitializeV2()').slice(2, 10) }
     ];
 
     for (const { name, selector } of selectors) {
@@ -77,6 +80,37 @@ async function main(): Promise<void> {
         console.log('oddaoAddress():', oddao, '✓');
     } catch (e) {
         console.log('oddaoAddress(): ERROR -', (e as Error).message.slice(0, 100));
+    }
+
+    // Call reinitializeV2 to initialize EIP-712 domain
+    console.log('\n--- Calling reinitializeV2 for EIP-712 initialization ---');
+    try {
+        const reinitTx = await rewardManager.reinitializeV2();
+        await reinitTx.wait();
+        console.log('reinitializeV2() completed successfully ✓');
+    } catch (e) {
+        const error = e as Error;
+        // If already initialized, that's ok
+        if (error.message.includes('InvalidInitialization')) {
+            console.log('reinitializeV2() already called (skipped)');
+        } else {
+            console.error('reinitializeV2() failed:', error.message.slice(0, 200));
+        }
+    }
+
+    // Verify new V2 functions
+    try {
+        const nonce = await rewardManager.getClaimNonce(await signer.getAddress());
+        console.log('getClaimNonce():', nonce.toString(), '✓');
+    } catch (e) {
+        console.log('getClaimNonce(): ERROR -', (e as Error).message.slice(0, 100));
+    }
+
+    try {
+        const typehash = await rewardManager.CLAIM_WELCOME_BONUS_TYPEHASH();
+        console.log('CLAIM_WELCOME_BONUS_TYPEHASH():', typehash, '✓');
+    } catch (e) {
+        console.log('CLAIM_WELCOME_BONUS_TYPEHASH(): ERROR -', (e as Error).message.slice(0, 100));
     }
 
     console.log('\n========================================');

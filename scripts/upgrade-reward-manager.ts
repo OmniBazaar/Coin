@@ -118,6 +118,22 @@ async function main(): Promise<void> {
     const newImpl = await upgrades.erc1967.getImplementationAddress(proxyAddress);
     console.log(`\nNew implementation: ${newImpl}`);
 
+    // Call reinitializeV2 to initialize EIP-712 domain
+    console.log('\n--- Calling reinitializeV2 for EIP-712 initialization ---');
+    try {
+        const tx = await upgraded.reinitializeV2();
+        await tx.wait();
+        console.log('reinitializeV2() completed successfully ✓');
+    } catch (e) {
+        const error = e as Error;
+        // If already initialized, that's ok
+        if (error.message.includes('InvalidInitialization')) {
+            console.log('reinitializeV2() already called (skipped)');
+        } else {
+            console.error('reinitializeV2() failed:', error.message);
+        }
+    }
+
     // Test that new functions are available
     console.log('\n--- Verifying Upgrade ---');
 
@@ -143,6 +159,22 @@ async function main(): Promise<void> {
         console.log(`oddaoAddress(): ${oddao} ✓`);
     } catch (e) {
         console.log(`oddaoAddress(): ERROR - ${(e as Error).message}`);
+    }
+
+    // Check getClaimNonce (new V2 function for trustless relay)
+    try {
+        const nonce = await upgraded.getClaimNonce(upgraderAddress);
+        console.log(`getClaimNonce(): ${nonce} ✓`);
+    } catch (e) {
+        console.log(`getClaimNonce(): ERROR - ${(e as Error).message}`);
+    }
+
+    // Check CLAIM_WELCOME_BONUS_TYPEHASH (EIP-712 typehash)
+    try {
+        const typehash = await upgraded.CLAIM_WELCOME_BONUS_TYPEHASH();
+        console.log(`CLAIM_WELCOME_BONUS_TYPEHASH(): ${typehash} ✓`);
+    } catch (e) {
+        console.log(`CLAIM_WELCOME_BONUS_TYPEHASH(): ERROR - ${(e as Error).message}`);
     }
 
     // Update deployment config

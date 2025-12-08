@@ -4,6 +4,7 @@ pragma solidity ^0.8.20;
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {MerkleProof} from "@openzeppelin/contracts/utils/cryptography/MerkleProof.sol";
+import {ECDSA} from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 import {AccessControlUpgradeable} from
     "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
 import {UUPSUpgradeable} from
@@ -12,6 +13,8 @@ import {PausableUpgradeable} from
     "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol";
 import {ReentrancyGuardUpgradeable} from
     "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
+import {EIP712Upgradeable} from
+    "@openzeppelin/contracts-upgradeable/utils/cryptography/EIP712Upgradeable.sol";
 import {IOmniRegistration} from "./interfaces/IOmniRegistration.sol";
 
 /**
@@ -38,7 +41,8 @@ contract OmniRewardManager is
     AccessControlUpgradeable,
     UUPSUpgradeable,
     PausableUpgradeable,
-    ReentrancyGuardUpgradeable
+    ReentrancyGuardUpgradeable,
+    EIP712Upgradeable
 {
     using SafeERC20 for IERC20;
 
@@ -116,6 +120,12 @@ contract OmniRewardManager is
     /// @notice Maximum first sale bonuses per day (rate limiting)
     uint256 public constant MAX_DAILY_FIRST_SALE_BONUSES = 500;
 
+    /// @notice EIP-712 typehash for trustless welcome bonus claim
+    /// @dev ClaimWelcomeBonus(address user,uint256 nonce,uint256 deadline)
+    bytes32 public constant CLAIM_WELCOME_BONUS_TYPEHASH = keccak256(
+        "ClaimWelcomeBonus(address user,uint256 nonce,uint256 deadline)"
+    );
+
     // ============ State Variables ============
 
     /// @notice Reference to the OmniCoin ERC20 token
@@ -157,17 +167,25 @@ contract OmniRewardManager is
     /// @notice Daily first sale bonus count for rate limiting (day => count)
     mapping(uint256 => uint256) public dailyFirstSaleBonusCount;
 
+    /// @notice Claim nonces for replay protection (user => nonce)
+    mapping(address => uint256) public claimNonces;
+
     /// @notice ODDAO address for referral fee distribution
     address public oddaoAddress;
 
     /// @notice Count of legacy users who already claimed the welcome bonus
-    /// @dev Added to on-chain totalRegistrations when calculating bonus tier.
+    /// @dev Added to on-chain welcomeBonusClaimCount when calculating bonus tier.
     ///      Set to the number of legacy users (~3996) who got bonuses in old OmniBazaar.
-    ///      Effective position = totalRegistrations + legacyBonusClaimsCount
+    ///      Effective claim count = welcomeBonusClaimCount + legacyBonusClaimsCount
     uint256 public legacyBonusClaimsCount;
 
+    /// @notice Count of welcome bonuses claimed on-chain (excluding legacy)
+    /// @dev Incremented each time a welcome bonus is claimed. Used for tier calculation.
+    ///      This is separate from registration count since not all users claim bonuses.
+    uint256 public welcomeBonusClaimCount;
+
     /// @dev Reserved storage gap for future upgrades (reduced due to new variables)
-    uint256[37] private __gap;
+    uint256[36] private __gap;
 
     // ============ Events ============
 
@@ -291,6 +309,18 @@ contract OmniRewardManager is
         address indexed referrer
     );
 
+    /// @notice Emitted when welcome bonus is claimed via trustless relay
+    /// @param user User who received the bonus
+    /// @param amount Amount of XOM transferred
+    /// @param relayer Address that submitted the transaction (paid gas)
+    /// @param referrer Referrer who will receive referral bonus (if any)
+    event WelcomeBonusClaimedRelayed(
+        address indexed user,
+        uint256 indexed amount,
+        address relayer,
+        address referrer
+    );
+
     // ============ Custom Errors ============
 
     /// @notice Thrown when pool has insufficient funds for distribution
@@ -325,6 +355,20 @@ contract OmniRewardManager is
 
     /// @notice Thrown when user has not completed KYC Tier 1 (phone + social verified on-chain)
     error KycTier1Required(address user);
+
+    /// @notice Thrown when claim deadline has expired
+    error ClaimDeadlineExpired();
+
+    /// @notice Thrown when claim nonce doesn't match expected
+    /// @param user User address
+    /// @param provided Provided nonce
+    /// @param expected Expected nonce
+    error InvalidClaimNonce(address user, uint256 provided, uint256 expected);
+
+    /// @notice Thrown when recovered signer doesn't match user
+    /// @param expectedUser Expected user address
+    /// @param recoveredSigner Recovered signer from signature
+    error InvalidUserSignature(address expectedUser, address recoveredSigner);
 
     // ============ Constructor ============
 
@@ -364,6 +408,7 @@ contract OmniRewardManager is
         __UUPSUpgradeable_init();
         __Pausable_init();
         __ReentrancyGuard_init();
+        __EIP712_init("OmniRewardManager", "1");
 
         omniCoin = IERC20(_omniCoin);
 
@@ -377,6 +422,15 @@ contract OmniRewardManager is
         uint256 totalPool = _welcomeBonusPool + _referralBonusPool +
             _firstSaleBonusPool + _validatorRewardsPool;
         emit ContractInitialized(_omniCoin, totalPool, _admin);
+    }
+
+    /**
+     * @notice Reinitialize the contract for V2 (adds EIP-712 support)
+     * @dev Call this after upgrading from V1 to enable trustless relay claims.
+     *      This function can only be called once (reinitializer(2)).
+     */
+    function reinitializeV2() external reinitializer(2) {
+        __EIP712_init("OmniRewardManager", "1");
     }
 
     // ============ External Functions - Bonus Distribution ============
@@ -606,13 +660,13 @@ contract OmniRewardManager is
         }
         ++dailyWelcomeBonusCount[today];
 
-        // Calculate bonus based on effective registrations (on-chain + legacy claims)
+        // Calculate bonus based on effective CLAIM count (on-chain claims + legacy claims)
         // Legacy users (~3996) already got their bonus in old OmniBazaar
         // New users start at position ~3997+ (Tier 2: 5,000 XOM)
-        uint256 totalRegs = registrationContract.totalRegistrations();
-        uint256 effectiveRegs = totalRegs + legacyBonusClaimsCount;
-        if (effectiveRegs == 0) effectiveRegs = 1; // Minimum 1 to avoid edge cases
-        uint256 bonusAmount = _calculateWelcomeBonus(effectiveRegs);
+        // NOTE: We use claim count, NOT registration count (not all users claim bonuses)
+        uint256 effectiveClaims = welcomeBonusClaimCount + legacyBonusClaimsCount;
+        if (effectiveClaims == 0) effectiveClaims = 1; // Minimum 1 to avoid edge cases
+        uint256 bonusAmount = _calculateWelcomeBonus(effectiveClaims);
 
         // Validate pool balance
         _validatePoolBalance(welcomeBonusPool, PoolType.WelcomeBonus, bonusAmount);
@@ -623,6 +677,9 @@ contract OmniRewardManager is
         // Mark as claimed locally (for backward compatibility)
         welcomeBonusClaimed[msg.sender] = true;
 
+        // Increment claim count BEFORE transfer (for accurate tier calculation)
+        ++welcomeBonusClaimCount;
+
         // Update pool and transfer
         _updatePoolAfterDistribution(welcomeBonusPool, bonusAmount);
         omniCoin.safeTransfer(msg.sender, bonusAmount);
@@ -631,9 +688,9 @@ contract OmniRewardManager is
         emit WelcomeBonusClaimed(msg.sender, bonusAmount, welcomeBonusPool.remaining);
         _checkPoolThreshold(PoolType.WelcomeBonus, welcomeBonusPool);
 
-        // Auto-trigger referral bonus if referrer exists (use effectiveRegs for tier calc)
+        // Auto-trigger referral bonus if referrer exists (use effectiveClaims for tier calc)
         if (reg.referrer != address(0)) {
-            _distributeAutoReferralBonus(reg.referrer, msg.sender, effectiveRegs);
+            _distributeAutoReferralBonus(reg.referrer, msg.sender, effectiveClaims);
         }
     }
 
@@ -686,11 +743,11 @@ contract OmniRewardManager is
         }
         ++dailyWelcomeBonusCount[today];
 
-        // Calculate bonus based on effective registrations (on-chain + legacy claims)
-        uint256 totalRegs = registrationContract.totalRegistrations();
-        uint256 effectiveRegs = totalRegs + legacyBonusClaimsCount;
-        if (effectiveRegs == 0) effectiveRegs = 1; // Minimum 1 to avoid edge cases
-        uint256 bonusAmount = _calculateWelcomeBonus(effectiveRegs);
+        // Calculate bonus based on effective CLAIM count (on-chain claims + legacy claims)
+        // NOTE: We use claim count, NOT registration count (not all users claim bonuses)
+        uint256 effectiveClaims = welcomeBonusClaimCount + legacyBonusClaimsCount;
+        if (effectiveClaims == 0) effectiveClaims = 1; // Minimum 1 to avoid edge cases
+        uint256 bonusAmount = _calculateWelcomeBonus(effectiveClaims);
 
         // Validate pool balance
         _validatePoolBalance(welcomeBonusPool, PoolType.WelcomeBonus, bonusAmount);
@@ -701,6 +758,9 @@ contract OmniRewardManager is
         // Mark as claimed locally (for backward compatibility)
         welcomeBonusClaimed[msg.sender] = true;
 
+        // Increment claim count BEFORE transfer (for accurate tier calculation)
+        ++welcomeBonusClaimCount;
+
         // Update pool and transfer
         _updatePoolAfterDistribution(welcomeBonusPool, bonusAmount);
         omniCoin.safeTransfer(msg.sender, bonusAmount);
@@ -709,10 +769,136 @@ contract OmniRewardManager is
         emit WelcomeBonusClaimed(msg.sender, bonusAmount, welcomeBonusPool.remaining);
         _checkPoolThreshold(PoolType.WelcomeBonus, welcomeBonusPool);
 
-        // Auto-trigger referral bonus if referrer exists
+        // Auto-trigger referral bonus if referrer exists (use effectiveClaims for tier calc)
         if (reg.referrer != address(0)) {
-            _distributeAutoReferralBonus(reg.referrer, msg.sender, effectiveRegs);
+            _distributeAutoReferralBonus(reg.referrer, msg.sender, effectiveClaims);
         }
+    }
+
+    /**
+     * @notice Claim welcome bonus with user signature (trustless relayable)
+     * @dev ANYONE can relay this - NO SPECIAL ROLES REQUIRED.
+     *      Security comes from verifying the USER'S signature, not caller's role.
+     *      This is the GASLESS version - relayer pays gas, user receives bonus.
+     *
+     *      The user signs an EIP-712 ClaimWelcomeBonus message with their wallet.
+     *      Any relayer can submit the signed message and pay gas.
+     *      The contract verifies the USER signed it, then transfers bonus to USER.
+     *
+     * @param user The address of the user claiming (must match signer)
+     * @param nonce User's current claim nonce (for replay protection)
+     * @param deadline Claim request expiration timestamp
+     * @param signature User's EIP-712 signature
+     *
+     * Security measures:
+     * - USER must sign the claim request (cannot claim without wallet control)
+     * - User must be registered in OmniRegistration contract
+     * - User must have KYC Tier 1 status (phone + social verified on-chain)
+     * - User must not have already claimed
+     * - Nonce prevents replay attacks
+     * - Deadline prevents stale claims
+     * - Daily rate limit enforced
+     * - NO ROLE CHECK - Relayer has NO attestation power
+     */
+    function claimWelcomeBonusRelayed(
+        address user,
+        uint256 nonce,
+        uint256 deadline,
+        bytes calldata signature
+    ) external nonReentrant whenNotPaused {
+        if (address(registrationContract) == address(0)) {
+            revert RegistrationContractNotSet();
+        }
+        if (user == address(0)) {
+            revert ZeroAddressNotAllowed();
+        }
+
+        // 1. Check deadline
+        if (block.timestamp > deadline) {
+            revert ClaimDeadlineExpired();
+        }
+
+        // 2. Verify nonce (replay protection)
+        if (nonce != claimNonces[user]) {
+            revert InvalidClaimNonce(user, nonce, claimNonces[user]);
+        }
+
+        // 3. Verify USER's signature (EIP-712)
+        bytes32 structHash = keccak256(
+            abi.encode(CLAIM_WELCOME_BONUS_TYPEHASH, user, nonce, deadline)
+        );
+        bytes32 digest = _hashTypedDataV4(structHash);
+        address recoveredSigner = ECDSA.recover(digest, signature);
+        if (recoveredSigner != user) {
+            revert InvalidUserSignature(user, recoveredSigner);
+        }
+
+        // 4. Increment nonce BEFORE state changes (replay protection)
+        ++claimNonces[user];
+
+        // 5. Get registration data from OmniRegistration contract
+        IOmniRegistration.Registration memory reg = registrationContract.getRegistration(user);
+
+        // 6. Verify user is registered
+        if (reg.timestamp == 0) revert UserNotRegistered(user);
+
+        // 7. Verify welcome bonus not already claimed
+        if (reg.welcomeBonusClaimed) {
+            revert BonusAlreadyClaimed(user, PoolType.WelcomeBonus);
+        }
+
+        // 8. Verify KYC Tier 1 completion via on-chain verification
+        if (!registrationContract.hasKycTier1(user)) {
+            revert KycTier1Required(user);
+        }
+
+        // 9. Check daily rate limit
+        uint256 today = block.timestamp / 1 days;
+        if (dailyWelcomeBonusCount[today] >= MAX_DAILY_WELCOME_BONUSES) {
+            revert DailyBonusLimitExceeded(PoolType.WelcomeBonus, MAX_DAILY_WELCOME_BONUSES);
+        }
+        ++dailyWelcomeBonusCount[today];
+
+        // 10. Calculate bonus based on effective CLAIM count (on-chain claims + legacy claims)
+        // NOTE: We use claim count, NOT registration count (not all users claim bonuses)
+        uint256 effectiveClaims = welcomeBonusClaimCount + legacyBonusClaimsCount;
+        if (effectiveClaims == 0) effectiveClaims = 1;
+        uint256 bonusAmount = _calculateWelcomeBonus(effectiveClaims);
+
+        // 11. Validate pool balance
+        _validatePoolBalance(welcomeBonusPool, PoolType.WelcomeBonus, bonusAmount);
+
+        // 12. Mark as claimed in registration contract
+        registrationContract.markWelcomeBonusClaimed(user);
+
+        // 13. Mark as claimed locally (for backward compatibility)
+        welcomeBonusClaimed[user] = true;
+
+        // 14. Increment claim count BEFORE transfer (for accurate tier calculation)
+        ++welcomeBonusClaimCount;
+
+        // 15. Update pool and transfer TO USER (not msg.sender!)
+        _updatePoolAfterDistribution(welcomeBonusPool, bonusAmount);
+        omniCoin.safeTransfer(user, bonusAmount);
+
+        // 16. Emit events (include relayer for tracking)
+        emit WelcomeBonusClaimedRelayed(user, bonusAmount, msg.sender, reg.referrer);
+        emit WelcomeBonusClaimed(user, bonusAmount, welcomeBonusPool.remaining);
+        _checkPoolThreshold(PoolType.WelcomeBonus, welcomeBonusPool);
+
+        // 17. Auto-trigger referral bonus if referrer exists (use effectiveClaims for tier calc)
+        if (reg.referrer != address(0)) {
+            _distributeAutoReferralBonus(reg.referrer, user, effectiveClaims);
+        }
+    }
+
+    /**
+     * @notice Get user's current claim nonce
+     * @param user Address to check
+     * @return Current nonce for the user
+     */
+    function getClaimNonce(address user) external view returns (uint256) {
+        return claimNonces[user];
     }
 
     /**
@@ -839,68 +1025,50 @@ contract OmniRewardManager is
     }
 
     /**
-     * @notice Get effective registration count after applying legacy claims count
-     * @dev Returns the registration count used for bonus tier calculation
-     * @return effectiveRegs Effective registration count (on-chain + legacy claims)
+     * @notice Get effective claim count after applying legacy claims count
+     * @dev Returns the claim count used for bonus tier calculation.
+     *      NOTE: This is based on CLAIMS, not registrations (not all users claim bonuses).
+     * @return effectiveClaims Effective claim count (on-chain claims + legacy claims)
      */
-    function getEffectiveRegistrations() external view returns (uint256 effectiveRegs) {
-        if (address(registrationContract) == address(0)) {
-            return legacyBonusClaimsCount > 0 ? legacyBonusClaimsCount : 1;
-        }
-        uint256 totalRegs = registrationContract.totalRegistrations();
-        uint256 result = totalRegs + legacyBonusClaimsCount;
+    function getEffectiveRegistrations() external view returns (uint256 effectiveClaims) {
+        uint256 result = welcomeBonusClaimCount + legacyBonusClaimsCount;
         return result > 0 ? result : 1;
     }
 
     /**
      * @notice Get the expected welcome bonus amount for new users
-     * @dev Calculates based on effective registrations (on-chain + legacy claims)
+     * @dev Calculates based on effective CLAIM count (on-chain claims + legacy claims).
+     *      NOTE: Tier is based on number of bonuses paid, not user registrations.
      * @return bonusAmount Expected bonus in wei (18 decimals)
      */
     function getExpectedWelcomeBonus() external view returns (uint256 bonusAmount) {
-        uint256 effectiveRegs;
-        if (address(registrationContract) == address(0)) {
-            effectiveRegs = legacyBonusClaimsCount > 0 ? legacyBonusClaimsCount : 1;
-        } else {
-            uint256 totalRegs = registrationContract.totalRegistrations();
-            effectiveRegs = totalRegs + legacyBonusClaimsCount;
-            if (effectiveRegs == 0) effectiveRegs = 1;
-        }
-        return _calculateWelcomeBonus(effectiveRegs);
+        uint256 effectiveClaims = welcomeBonusClaimCount + legacyBonusClaimsCount;
+        if (effectiveClaims == 0) effectiveClaims = 1;
+        return _calculateWelcomeBonus(effectiveClaims);
     }
 
     /**
      * @notice Get the expected referral bonus amount for new referrals
-     * @dev Calculates based on effective registrations (on-chain + legacy claims)
+     * @dev Calculates based on effective CLAIM count (on-chain claims + legacy claims).
+     *      NOTE: Tier is based on number of bonuses paid, not user registrations.
      * @return bonusAmount Expected bonus in wei (18 decimals)
      */
     function getExpectedReferralBonus() external view returns (uint256 bonusAmount) {
-        uint256 effectiveRegs;
-        if (address(registrationContract) == address(0)) {
-            effectiveRegs = legacyBonusClaimsCount > 0 ? legacyBonusClaimsCount : 1;
-        } else {
-            uint256 totalRegs = registrationContract.totalRegistrations();
-            effectiveRegs = totalRegs + legacyBonusClaimsCount;
-            if (effectiveRegs == 0) effectiveRegs = 1;
-        }
-        return _calculateReferralBonus(effectiveRegs);
+        uint256 effectiveClaims = welcomeBonusClaimCount + legacyBonusClaimsCount;
+        if (effectiveClaims == 0) effectiveClaims = 1;
+        return _calculateReferralBonus(effectiveClaims);
     }
 
     /**
      * @notice Get the expected first sale bonus amount for sellers
-     * @dev Calculates based on effective registrations (on-chain + legacy claims)
+     * @dev Calculates based on effective CLAIM count (on-chain claims + legacy claims).
+     *      NOTE: Tier is based on number of bonuses paid, not user registrations.
      * @return bonusAmount Expected bonus in wei (18 decimals)
      */
     function getExpectedFirstSaleBonus() external view returns (uint256 bonusAmount) {
-        uint256 effectiveRegs;
-        if (address(registrationContract) == address(0)) {
-            effectiveRegs = legacyBonusClaimsCount > 0 ? legacyBonusClaimsCount : 1;
-        } else {
-            uint256 totalRegs = registrationContract.totalRegistrations();
-            effectiveRegs = totalRegs + legacyBonusClaimsCount;
-            if (effectiveRegs == 0) effectiveRegs = 1;
-        }
-        return _calculateFirstSaleBonus(effectiveRegs);
+        uint256 effectiveClaims = welcomeBonusClaimCount + legacyBonusClaimsCount;
+        if (effectiveClaims == 0) effectiveClaims = 1;
+        return _calculateFirstSaleBonus(effectiveClaims);
     }
 
     /**
