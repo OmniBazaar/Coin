@@ -768,6 +768,166 @@ contract OmniRegistration is
         return kycTier1CompletedAt[user] != 0;
     }
 
+    // ═══════════════════════════════════════════════════════════════════════
+    //                    RELAY FUNCTIONS (GAS-FREE FOR USERS)
+    // ═══════════════════════════════════════════════════════════════════════
+
+    /**
+     * @notice Submit phone verification on behalf of a user (relay pattern)
+     * @param user Address of the user being verified
+     * @param phoneHash Keccak256 of normalized phone number
+     * @param timestamp When verification was performed by the verification service
+     * @param nonce Unique nonce for replay protection
+     * @param deadline Proof expiration time (block.timestamp)
+     * @param signature EIP-712 signature from trustedVerificationKey
+     * @dev ANYONE can call this function to relay a verification proof.
+     *      This enables gas-free verification for users who don't have XOM.
+     *
+     * Security Properties:
+     * - Only trustedVerificationKey can sign valid proofs
+     * - The proof MUST include the user address (cannot be used for different user)
+     * - Each nonce can only be used once (replay protection)
+     * - Phone hash can only be used by one user (Sybil protection)
+     * - Proof expires after deadline (prevents hoarding)
+     * - Caller has NO attestation power - security comes from signature verification
+     */
+    function submitPhoneVerificationFor(
+        address user,
+        bytes32 phoneHash,
+        uint256 timestamp,
+        bytes32 nonce,
+        uint256 deadline,
+        bytes calldata signature
+    ) external nonReentrant {
+        // 1. Check trusted verification key is set
+        if (trustedVerificationKey == address(0)) {
+            revert TrustedVerificationKeyNotSet();
+        }
+
+        // 2. Check deadline not expired
+        // solhint-disable-next-line not-rely-on-time
+        if (block.timestamp > deadline) revert ProofExpired();
+
+        // 3. Check nonce not already used (replay protection)
+        if (usedNonces[nonce]) revert NonceAlreadyUsed();
+
+        // 4. Check phone hash not already used by another user
+        if (usedPhoneHashes[phoneHash]) revert PhoneAlreadyUsed();
+
+        // 5. Verify EIP-712 signature from trustedVerificationKey
+        //    CRITICAL: The user address is part of the signed data!
+        bytes32 structHash = keccak256(
+            abi.encode(
+                PHONE_VERIFICATION_TYPEHASH,
+                user, // User address from parameter, verified in signature
+                phoneHash,
+                timestamp,
+                nonce,
+                deadline
+            )
+        );
+
+        bytes32 digest = keccak256(
+            abi.encodePacked("\x19\x01", DOMAIN_SEPARATOR, structHash)
+        );
+
+        address signer = digest.recover(signature);
+        if (signer != trustedVerificationKey) revert InvalidVerificationProof();
+
+        // 6. Store verification
+        // Update registration phoneHash if user is registered and phoneHash was empty
+        Registration storage reg = registrations[user];
+        if (reg.timestamp != 0 && reg.phoneHash == bytes32(0)) {
+            reg.phoneHash = phoneHash;
+        }
+
+        usedPhoneHashes[phoneHash] = true;
+        usedNonces[nonce] = true;
+
+        // 7. Check if KYC Tier 1 complete and update status
+        _checkAndUpdateKycTier1(user);
+
+        // solhint-disable-next-line not-rely-on-time
+        emit PhoneVerified(user, phoneHash, timestamp);
+    }
+
+    /**
+     * @notice Submit social verification on behalf of a user (relay pattern)
+     * @param user Address of the user being verified
+     * @param socialHash Keccak256 of "platform:handle" (e.g., keccak256("twitter:omnibazaar"))
+     * @param platform Platform name ("twitter" or "telegram")
+     * @param timestamp When verification was performed by the verification service
+     * @param nonce Unique nonce for replay protection
+     * @param deadline Proof expiration time (block.timestamp)
+     * @param signature EIP-712 signature from trustedVerificationKey
+     * @dev ANYONE can call this function to relay a verification proof.
+     *      This enables gas-free verification for users who don't have XOM.
+     *
+     * Security Properties:
+     * - Only trustedVerificationKey can sign valid proofs
+     * - The proof MUST include the user address (cannot be used for different user)
+     * - Each nonce can only be used once (replay protection)
+     * - Social hash can only be used by one user (Sybil protection)
+     * - Proof expires after deadline (prevents hoarding)
+     * - Caller has NO attestation power - security comes from signature verification
+     */
+    function submitSocialVerificationFor(
+        address user,
+        bytes32 socialHash,
+        string calldata platform,
+        uint256 timestamp,
+        bytes32 nonce,
+        uint256 deadline,
+        bytes calldata signature
+    ) external nonReentrant {
+        // 1. Check trusted verification key is set
+        if (trustedVerificationKey == address(0)) {
+            revert TrustedVerificationKeyNotSet();
+        }
+
+        // 2. Check deadline not expired
+        // solhint-disable-next-line not-rely-on-time
+        if (block.timestamp > deadline) revert ProofExpired();
+
+        // 3. Check nonce not already used (replay protection)
+        if (usedNonces[nonce]) revert NonceAlreadyUsed();
+
+        // 4. Check social hash not already used by another user
+        if (usedSocialHashes[socialHash]) revert SocialAlreadyUsed();
+
+        // 5. Verify EIP-712 signature from trustedVerificationKey
+        //    CRITICAL: The user address is part of the signed data!
+        bytes32 structHash = keccak256(
+            abi.encode(
+                SOCIAL_VERIFICATION_TYPEHASH,
+                user, // User address from parameter, verified in signature
+                socialHash,
+                keccak256(bytes(platform)), // Hash the platform string
+                timestamp,
+                nonce,
+                deadline
+            )
+        );
+
+        bytes32 digest = keccak256(
+            abi.encodePacked("\x19\x01", DOMAIN_SEPARATOR, structHash)
+        );
+
+        address signer = digest.recover(signature);
+        if (signer != trustedVerificationKey) revert InvalidVerificationProof();
+
+        // 6. Store verification
+        userSocialHashes[user] = socialHash;
+        usedSocialHashes[socialHash] = true;
+        usedNonces[nonce] = true;
+
+        // 7. Check if KYC Tier 1 complete and update status
+        _checkAndUpdateKycTier1(user);
+
+        // solhint-disable-next-line not-rely-on-time
+        emit SocialVerified(user, socialHash, platform, timestamp);
+    }
+
     /**
      * @notice Internal function to check and update KYC Tier 1 status
      * @param user Address to check and potentially update
