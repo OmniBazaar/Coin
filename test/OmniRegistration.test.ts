@@ -43,7 +43,6 @@ describe('OmniRegistration', function () {
     // Constants from contract
     const MAX_DAILY_REGISTRATIONS = 10000;
     const KYC_ATTESTATION_THRESHOLD = 3;
-    const ATTESTATION_VALIDITY = 60 * 60; // 1 hour in seconds
 
     /**
      * Generate phone hash for testing
@@ -97,7 +96,6 @@ describe('OmniRegistration', function () {
         it('should have correct constants', async function () {
             expect(await registration.MAX_DAILY_REGISTRATIONS()).to.equal(MAX_DAILY_REGISTRATIONS);
             expect(await registration.KYC_ATTESTATION_THRESHOLD()).to.equal(KYC_ATTESTATION_THRESHOLD);
-            expect(await registration.ATTESTATION_VALIDITY()).to.equal(ATTESTATION_VALIDITY);
         });
 
         it('should track total registrations', async function () {
@@ -350,456 +348,6 @@ describe('OmniRegistration', function () {
         });
     });
 
-    describe('Self-Registration with EIP-712 Attestation', function () {
-        /**
-         * Helper to create EIP-712 attestation signature
-         */
-        async function createAttestation(
-            signer: any,
-            user: string,
-            emailHashVal: string,
-            phoneHashVal: string,
-            referrerAddr: string,
-            deadline: number
-        ): Promise<string> {
-            const registrationAddress = await registration.getAddress();
-            const chainId = await ethers.provider.getNetwork().then((n: any) => n.chainId);
-
-            // EIP-712 domain
-            const domain = {
-                name: 'OmniRegistration',
-                version: '1',
-                chainId: chainId,
-                verifyingContract: registrationAddress,
-            };
-
-            // EIP-712 types
-            const types = {
-                RegistrationAttestation: [
-                    { name: 'user', type: 'address' },
-                    { name: 'emailHash', type: 'bytes32' },
-                    { name: 'phoneHash', type: 'bytes32' },
-                    { name: 'referrer', type: 'address' },
-                    { name: 'deadline', type: 'uint256' },
-                ],
-            };
-
-            // EIP-712 value
-            const value = {
-                user: user,
-                emailHash: emailHashVal,
-                phoneHash: phoneHashVal,
-                referrer: referrerAddr,
-                deadline: deadline,
-            };
-
-            // Sign EIP-712 typed data
-            return await signer.signTypedData(domain, types, value);
-        }
-
-        it('should self-register with valid attestation', async function () {
-            const deadline = (await time.latest()) + ATTESTATION_VALIDITY;
-            const emailHashVal = emailHash('self-register@test.com');
-            const phoneHashVal = phoneHash('+1-555-5000');
-
-            const signature = await createAttestation(
-                validator1,
-                user1.address,
-                emailHashVal,
-                phoneHashVal,
-                referrer.address,
-                deadline
-            );
-
-            const tx = await registration.connect(user1).selfRegister(
-                referrer.address,
-                emailHashVal,
-                phoneHashVal,
-                deadline,
-                signature
-            );
-
-            await expect(tx)
-                .to.emit(registration, 'UserRegistered')
-                .withArgs(user1.address, referrer.address, validator1.address, await time.latest());
-
-            expect(await registration.isRegistered(user1.address)).to.be.true;
-            expect(await registration.getReferrer(user1.address)).to.equal(referrer.address);
-        });
-
-        it('should self-register without referrer', async function () {
-            const deadline = (await time.latest()) + ATTESTATION_VALIDITY;
-            const emailHashVal = emailHash('no-referrer@test.com');
-            const phoneHashVal = phoneHash('+1-555-5001');
-
-            const signature = await createAttestation(
-                validator1,
-                user1.address,
-                emailHashVal,
-                phoneHashVal,
-                ZeroAddress,
-                deadline
-            );
-
-            await registration.connect(user1).selfRegister(
-                ZeroAddress,
-                emailHashVal,
-                phoneHashVal,
-                deadline,
-                signature
-            );
-
-            expect(await registration.isRegistered(user1.address)).to.be.true;
-            expect(await registration.getReferrer(user1.address)).to.equal(ZeroAddress);
-        });
-
-        it('should reject expired attestation', async function () {
-            // Create attestation that expires in 1 second
-            const deadline = (await time.latest()) + 1;
-            const emailHashVal = emailHash('expired@test.com');
-            const phoneHashVal = phoneHash('+1-555-5002');
-
-            const signature = await createAttestation(
-                validator1,
-                user1.address,
-                emailHashVal,
-                phoneHashVal,
-                ZeroAddress,
-                deadline
-            );
-
-            // Wait for attestation to expire
-            await time.increase(2);
-
-            await expect(
-                registration.connect(user1).selfRegister(
-                    ZeroAddress,
-                    emailHashVal,
-                    phoneHashVal,
-                    deadline,
-                    signature
-                )
-            ).to.be.revertedWithCustomError(registration, 'AttestationExpired');
-        });
-
-        it('should reject replay of used attestation', async function () {
-            const deadline = (await time.latest()) + ATTESTATION_VALIDITY;
-            const emailHashVal = emailHash('replay@test.com');
-            const phoneHashVal = phoneHash('+1-555-5003');
-
-            const signature = await createAttestation(
-                validator1,
-                user1.address,
-                emailHashVal,
-                phoneHashVal,
-                ZeroAddress,
-                deadline
-            );
-
-            // First registration succeeds
-            await registration.connect(user1).selfRegister(
-                ZeroAddress,
-                emailHashVal,
-                phoneHashVal,
-                deadline,
-                signature
-            );
-
-            // Create new user for replay attempt
-            const emailHashVal2 = emailHash('replay2@test.com');
-            const phoneHashVal2 = phoneHash('+1-555-5004');
-
-            // Try to use same signature for user2 (should fail)
-            // Note: The signature is bound to user1.address, so it won't work for user2
-            await expect(
-                registration.connect(user2).selfRegister(
-                    ZeroAddress,
-                    emailHashVal2,
-                    phoneHashVal2,
-                    deadline,
-                    signature
-                )
-            ).to.be.revertedWithCustomError(registration, 'InvalidAttestation');
-        });
-
-        it('should reject invalid signature', async function () {
-            const deadline = (await time.latest()) + ATTESTATION_VALIDITY;
-            const emailHashVal = emailHash('invalid-sig@test.com');
-            const phoneHashVal = phoneHash('+1-555-5005');
-
-            // Create attestation from validator1 but for user2
-            const signature = await createAttestation(
-                validator1,
-                user2.address, // Wrong user
-                emailHashVal,
-                phoneHashVal,
-                ZeroAddress,
-                deadline
-            );
-
-            // user1 tries to use it (should fail)
-            await expect(
-                registration.connect(user1).selfRegister(
-                    ZeroAddress,
-                    emailHashVal,
-                    phoneHashVal,
-                    deadline,
-                    signature
-                )
-            ).to.be.revertedWithCustomError(registration, 'InvalidAttestation');
-        });
-
-        it('should reject signature from non-validator', async function () {
-            const deadline = (await time.latest()) + ATTESTATION_VALIDITY;
-            const emailHashVal = emailHash('non-validator@test.com');
-            const phoneHashVal = phoneHash('+1-555-5006');
-
-            // Create attestation from unauthorized signer
-            const signature = await createAttestation(
-                unauthorized,
-                user1.address,
-                emailHashVal,
-                phoneHashVal,
-                ZeroAddress,
-                deadline
-            );
-
-            await expect(
-                registration.connect(user1).selfRegister(
-                    ZeroAddress,
-                    emailHashVal,
-                    phoneHashVal,
-                    deadline,
-                    signature
-                )
-            ).to.be.revertedWithCustomError(registration, 'InvalidAttestation');
-        });
-
-        it('should reject duplicate email hash', async function () {
-            // First registration
-            const deadline1 = (await time.latest()) + ATTESTATION_VALIDITY;
-            const emailHashVal = emailHash('duplicate@test.com');
-            const phoneHashVal1 = phoneHash('+1-555-5007');
-
-            const signature1 = await createAttestation(
-                validator1,
-                user1.address,
-                emailHashVal,
-                phoneHashVal1,
-                ZeroAddress,
-                deadline1
-            );
-
-            await registration.connect(user1).selfRegister(
-                ZeroAddress,
-                emailHashVal,
-                phoneHashVal1,
-                deadline1,
-                signature1
-            );
-
-            // Second registration with same email
-            const deadline2 = (await time.latest()) + ATTESTATION_VALIDITY;
-            const phoneHashVal2 = phoneHash('+1-555-5008');
-
-            const signature2 = await createAttestation(
-                validator1,
-                user2.address,
-                emailHashVal, // Same email
-                phoneHashVal2,
-                ZeroAddress,
-                deadline2
-            );
-
-            await expect(
-                registration.connect(user2).selfRegister(
-                    ZeroAddress,
-                    emailHashVal,
-                    phoneHashVal2,
-                    deadline2,
-                    signature2
-                )
-            ).to.be.revertedWithCustomError(registration, 'EmailAlreadyUsed');
-        });
-
-        it('should reject duplicate phone hash', async function () {
-            // First registration
-            const deadline1 = (await time.latest()) + ATTESTATION_VALIDITY;
-            const emailHashVal1 = emailHash('phone-dup1@test.com');
-            const phoneHashVal = phoneHash('+1-555-5009');
-
-            const signature1 = await createAttestation(
-                validator1,
-                user1.address,
-                emailHashVal1,
-                phoneHashVal,
-                ZeroAddress,
-                deadline1
-            );
-
-            await registration.connect(user1).selfRegister(
-                ZeroAddress,
-                emailHashVal1,
-                phoneHashVal,
-                deadline1,
-                signature1
-            );
-
-            // Second registration with same phone
-            const deadline2 = (await time.latest()) + ATTESTATION_VALIDITY;
-            const emailHashVal2 = emailHash('phone-dup2@test.com');
-
-            const signature2 = await createAttestation(
-                validator1,
-                user2.address,
-                emailHashVal2,
-                phoneHashVal, // Same phone
-                ZeroAddress,
-                deadline2
-            );
-
-            await expect(
-                registration.connect(user2).selfRegister(
-                    ZeroAddress,
-                    emailHashVal2,
-                    phoneHashVal,
-                    deadline2,
-                    signature2
-                )
-            ).to.be.revertedWithCustomError(registration, 'PhoneAlreadyUsed');
-        });
-
-        it('should reject self-referral', async function () {
-            const deadline = (await time.latest()) + ATTESTATION_VALIDITY;
-            const emailHashVal = emailHash('self-ref@test.com');
-            const phoneHashVal = phoneHash('+1-555-5010');
-
-            const signature = await createAttestation(
-                validator1,
-                user1.address,
-                emailHashVal,
-                phoneHashVal,
-                user1.address, // Self-referral
-                deadline
-            );
-
-            await expect(
-                registration.connect(user1).selfRegister(
-                    user1.address,
-                    emailHashVal,
-                    phoneHashVal,
-                    deadline,
-                    signature
-                )
-            ).to.be.revertedWithCustomError(registration, 'SelfReferralNotAllowed');
-        });
-
-        it('should reject unregistered referrer', async function () {
-            const deadline = (await time.latest()) + ATTESTATION_VALIDITY;
-            const emailHashVal = emailHash('bad-ref@test.com');
-            const phoneHashVal = phoneHash('+1-555-5011');
-
-            const signature = await createAttestation(
-                validator1,
-                user1.address,
-                emailHashVal,
-                phoneHashVal,
-                user2.address, // user2 not registered
-                deadline
-            );
-
-            await expect(
-                registration.connect(user1).selfRegister(
-                    user2.address,
-                    emailHashVal,
-                    phoneHashVal,
-                    deadline,
-                    signature
-                )
-            ).to.be.revertedWithCustomError(registration, 'InvalidReferrer');
-        });
-
-        it('should reject already registered user', async function () {
-            // First registration
-            const deadline1 = (await time.latest()) + ATTESTATION_VALIDITY;
-            const emailHashVal1 = emailHash('first@test.com');
-            const phoneHashVal1 = phoneHash('+1-555-5012');
-
-            const signature1 = await createAttestation(
-                validator1,
-                user1.address,
-                emailHashVal1,
-                phoneHashVal1,
-                ZeroAddress,
-                deadline1
-            );
-
-            await registration.connect(user1).selfRegister(
-                ZeroAddress,
-                emailHashVal1,
-                phoneHashVal1,
-                deadline1,
-                signature1
-            );
-
-            // Try to register again
-            const deadline2 = (await time.latest()) + ATTESTATION_VALIDITY;
-            const emailHashVal2 = emailHash('second@test.com');
-            const phoneHashVal2 = phoneHash('+1-555-5013');
-
-            const signature2 = await createAttestation(
-                validator1,
-                user1.address,
-                emailHashVal2,
-                phoneHashVal2,
-                ZeroAddress,
-                deadline2
-            );
-
-            await expect(
-                registration.connect(user1).selfRegister(
-                    ZeroAddress,
-                    emailHashVal2,
-                    phoneHashVal2,
-                    deadline2,
-                    signature2
-                )
-            ).to.be.revertedWithCustomError(registration, 'AlreadyRegistered');
-        });
-
-        it('should set correct registration data', async function () {
-            const deadline = (await time.latest()) + ATTESTATION_VALIDITY;
-            const emailHashVal = emailHash('complete@test.com');
-            const phoneHashVal = phoneHash('+1-555-5014');
-
-            const signature = await createAttestation(
-                validator1,
-                user1.address,
-                emailHashVal,
-                phoneHashVal,
-                referrer.address,
-                deadline
-            );
-
-            await registration.connect(user1).selfRegister(
-                referrer.address,
-                emailHashVal,
-                phoneHashVal,
-                deadline,
-                signature
-            );
-
-            const reg = await registration.getRegistration(user1.address);
-            expect(reg.referrer).to.equal(referrer.address);
-            expect(reg.registeredBy).to.equal(validator1.address);
-            expect(reg.emailHash).to.equal(emailHashVal);
-            expect(reg.phoneHash).to.equal(phoneHashVal);
-            expect(reg.kycTier).to.equal(1);
-            expect(reg.welcomeBonusClaimed).to.be.false;
-            expect(reg.firstSaleBonusClaimed).to.be.false;
-        });
-    });
-
     describe('Trustless Verification', function () {
         // Additional signers for verification
         let verificationKey: any;
@@ -903,6 +451,84 @@ describe('OmniRegistration', function () {
          */
         function socialHash(platform: string, handle: string): string {
             return keccak256(toUtf8Bytes(`${platform}:${handle}`));
+        }
+
+        /**
+         * Create EIP-712 email verification signature
+         */
+        async function createEmailVerificationSignature(
+            signer: any,
+            user: string,
+            emailHashVal: string,
+            timestamp: number,
+            nonce: string,
+            deadline: number
+        ): Promise<string> {
+            const registrationAddress = await registration.getAddress();
+            const chainId = await ethers.provider.getNetwork().then((n: any) => n.chainId);
+
+            const domain = {
+                name: 'OmniRegistration',
+                version: '1',
+                chainId: chainId,
+                verifyingContract: registrationAddress,
+            };
+
+            const types = {
+                EmailVerification: [
+                    { name: 'user', type: 'address' },
+                    { name: 'emailHash', type: 'bytes32' },
+                    { name: 'timestamp', type: 'uint256' },
+                    { name: 'nonce', type: 'bytes32' },
+                    { name: 'deadline', type: 'uint256' },
+                ],
+            };
+
+            const value = {
+                user: user,
+                emailHash: emailHashVal,
+                timestamp: timestamp,
+                nonce: nonce,
+                deadline: deadline,
+            };
+
+            return await signer.signTypedData(domain, types, value);
+        }
+
+        /**
+         * Create EIP-712 trustless registration signature (user signature)
+         */
+        async function createRegistrationSignature(
+            signer: any,
+            user: string,
+            referrerAddr: string,
+            deadline: number
+        ): Promise<string> {
+            const registrationAddress = await registration.getAddress();
+            const chainId = await ethers.provider.getNetwork().then((n: any) => n.chainId);
+
+            const domain = {
+                name: 'OmniRegistration',
+                version: '1',
+                chainId: chainId,
+                verifyingContract: registrationAddress,
+            };
+
+            const types = {
+                TrustlessRegistration: [
+                    { name: 'user', type: 'address' },
+                    { name: 'referrer', type: 'address' },
+                    { name: 'deadline', type: 'uint256' },
+                ],
+            };
+
+            const value = {
+                user: user,
+                referrer: referrerAddr,
+                deadline: deadline,
+            };
+
+            return await signer.signTypedData(domain, types, value);
         }
 
         beforeEach(async function () {
@@ -1597,6 +1223,313 @@ describe('OmniRegistration', function () {
             it('should return false for unregistered user', async function () {
                 // user2 not registered
                 expect(await registration.hasKycTier1(user2.address)).to.be.false;
+            });
+        });
+
+        describe('selfRegisterTrustless', function () {
+            it('should register with valid email proof and user signature', async function () {
+                const emailHashVal = emailHash('trustless-new@test.com');
+                const emailTimestamp = await time.latest();
+                const emailNonce = generateNonce();
+                const emailDeadline = emailTimestamp + 3600;
+                const registrationDeadline = emailTimestamp + 3600;
+
+                // Create email verification signature from trustedVerificationKey
+                const emailSignature = await createEmailVerificationSignature(
+                    verificationKey,
+                    user2.address,
+                    emailHashVal,
+                    emailTimestamp,
+                    emailNonce,
+                    emailDeadline
+                );
+
+                // Create user registration signature
+                const userSignature = await createRegistrationSignature(
+                    user2,
+                    user2.address,
+                    referrer.address,
+                    registrationDeadline
+                );
+
+                const tx = await registration.connect(user2).selfRegisterTrustless(
+                    emailHashVal,
+                    emailTimestamp,
+                    emailNonce,
+                    emailDeadline,
+                    emailSignature,
+                    referrer.address,
+                    registrationDeadline,
+                    userSignature
+                );
+
+                await expect(tx)
+                    .to.emit(registration, 'UserRegisteredTrustless')
+                    .withArgs(user2.address, referrer.address, await time.latest());
+
+                expect(await registration.isRegistered(user2.address)).to.be.true;
+                expect(await registration.getReferrer(user2.address)).to.equal(referrer.address);
+            });
+
+            it('should register without referrer', async function () {
+                const emailHashVal = emailHash('no-ref-trustless@test.com');
+                const emailTimestamp = await time.latest();
+                const emailNonce = generateNonce();
+                const emailDeadline = emailTimestamp + 3600;
+                const registrationDeadline = emailTimestamp + 3600;
+
+                const emailSignature = await createEmailVerificationSignature(
+                    verificationKey,
+                    user2.address,
+                    emailHashVal,
+                    emailTimestamp,
+                    emailNonce,
+                    emailDeadline
+                );
+
+                const userSignature = await createRegistrationSignature(
+                    user2,
+                    user2.address,
+                    ZeroAddress,
+                    registrationDeadline
+                );
+
+                await registration.connect(user2).selfRegisterTrustless(
+                    emailHashVal,
+                    emailTimestamp,
+                    emailNonce,
+                    emailDeadline,
+                    emailSignature,
+                    ZeroAddress,
+                    registrationDeadline,
+                    userSignature
+                );
+
+                expect(await registration.isRegistered(user2.address)).to.be.true;
+                expect(await registration.getReferrer(user2.address)).to.equal(ZeroAddress);
+            });
+
+            it('should reject expired email proof', async function () {
+                const emailHashVal = emailHash('expired-email@test.com');
+                const emailTimestamp = await time.latest();
+                const emailNonce = generateNonce();
+                const emailDeadline = emailTimestamp + 1; // Expires in 1 second
+                const registrationDeadline = emailTimestamp + 3600;
+
+                const emailSignature = await createEmailVerificationSignature(
+                    verificationKey,
+                    user2.address,
+                    emailHashVal,
+                    emailTimestamp,
+                    emailNonce,
+                    emailDeadline
+                );
+
+                const userSignature = await createRegistrationSignature(
+                    user2,
+                    user2.address,
+                    ZeroAddress,
+                    registrationDeadline
+                );
+
+                await time.increase(2);
+
+                await expect(
+                    registration.connect(user2).selfRegisterTrustless(
+                        emailHashVal,
+                        emailTimestamp,
+                        emailNonce,
+                        emailDeadline,
+                        emailSignature,
+                        ZeroAddress,
+                        registrationDeadline,
+                        userSignature
+                    )
+                ).to.be.revertedWithCustomError(registration, 'ProofExpired');
+            });
+
+            it('should reject invalid email signature', async function () {
+                const emailHashVal = emailHash('invalid-sig@test.com');
+                const emailTimestamp = await time.latest();
+                const emailNonce = generateNonce();
+                const emailDeadline = emailTimestamp + 3600;
+                const registrationDeadline = emailTimestamp + 3600;
+
+                // Sign with wrong key (unauthorized instead of verificationKey)
+                const emailSignature = await createEmailVerificationSignature(
+                    unauthorized,
+                    user2.address,
+                    emailHashVal,
+                    emailTimestamp,
+                    emailNonce,
+                    emailDeadline
+                );
+
+                const userSignature = await createRegistrationSignature(
+                    user2,
+                    user2.address,
+                    ZeroAddress,
+                    registrationDeadline
+                );
+
+                await expect(
+                    registration.connect(user2).selfRegisterTrustless(
+                        emailHashVal,
+                        emailTimestamp,
+                        emailNonce,
+                        emailDeadline,
+                        emailSignature,
+                        ZeroAddress,
+                        registrationDeadline,
+                        userSignature
+                    )
+                ).to.be.revertedWithCustomError(registration, 'InvalidVerificationProof');
+            });
+
+            it('should reject invalid user signature', async function () {
+                const emailHashVal = emailHash('bad-user-sig@test.com');
+                const emailTimestamp = await time.latest();
+                const emailNonce = generateNonce();
+                const emailDeadline = emailTimestamp + 3600;
+                const registrationDeadline = emailTimestamp + 3600;
+
+                const emailSignature = await createEmailVerificationSignature(
+                    verificationKey,
+                    user2.address,
+                    emailHashVal,
+                    emailTimestamp,
+                    emailNonce,
+                    emailDeadline
+                );
+
+                // Sign with wrong user (unauthorized instead of user2)
+                const userSignature = await createRegistrationSignature(
+                    unauthorized,
+                    user2.address,
+                    ZeroAddress,
+                    registrationDeadline
+                );
+
+                await expect(
+                    registration.connect(user2).selfRegisterTrustless(
+                        emailHashVal,
+                        emailTimestamp,
+                        emailNonce,
+                        emailDeadline,
+                        emailSignature,
+                        ZeroAddress,
+                        registrationDeadline,
+                        userSignature
+                    )
+                ).to.be.revertedWithCustomError(registration, 'InvalidUserSignature');
+            });
+
+            it('should reject duplicate email hash', async function () {
+                const emailHashVal = emailHash('duplicate-email@test.com');
+                const emailTimestamp = await time.latest();
+                const emailNonce1 = generateNonce();
+                const emailDeadline = emailTimestamp + 3600;
+                const registrationDeadline = emailTimestamp + 3600;
+
+                // First registration
+                const emailSig1 = await createEmailVerificationSignature(
+                    verificationKey,
+                    user2.address,
+                    emailHashVal,
+                    emailTimestamp,
+                    emailNonce1,
+                    emailDeadline
+                );
+
+                const userSig1 = await createRegistrationSignature(
+                    user2,
+                    user2.address,
+                    ZeroAddress,
+                    registrationDeadline
+                );
+
+                await registration.connect(user2).selfRegisterTrustless(
+                    emailHashVal,
+                    emailTimestamp,
+                    emailNonce1,
+                    emailDeadline,
+                    emailSig1,
+                    ZeroAddress,
+                    registrationDeadline,
+                    userSig1
+                );
+
+                // Second registration attempt with same email
+                const signers = await ethers.getSigners();
+                const user3 = signers[10];
+                const emailNonce2 = generateNonce();
+
+                const emailSig2 = await createEmailVerificationSignature(
+                    verificationKey,
+                    user3.address,
+                    emailHashVal, // Same email
+                    emailTimestamp,
+                    emailNonce2,
+                    emailDeadline
+                );
+
+                const userSig2 = await createRegistrationSignature(
+                    user3,
+                    user3.address,
+                    ZeroAddress,
+                    registrationDeadline
+                );
+
+                await expect(
+                    registration.connect(user3).selfRegisterTrustless(
+                        emailHashVal,
+                        emailTimestamp,
+                        emailNonce2,
+                        emailDeadline,
+                        emailSig2,
+                        ZeroAddress,
+                        registrationDeadline,
+                        userSig2
+                    )
+                ).to.be.revertedWithCustomError(registration, 'EmailAlreadyUsed');
+            });
+
+            it('should reject already registered user', async function () {
+                const emailHashVal = emailHash('already-reg@test.com');
+                const emailTimestamp = await time.latest();
+                const emailNonce = generateNonce();
+                const emailDeadline = emailTimestamp + 3600;
+                const registrationDeadline = emailTimestamp + 3600;
+
+                // user1 is already registered in beforeEach
+                const emailSignature = await createEmailVerificationSignature(
+                    verificationKey,
+                    user1.address,
+                    emailHashVal,
+                    emailTimestamp,
+                    emailNonce,
+                    emailDeadline
+                );
+
+                const userSignature = await createRegistrationSignature(
+                    user1,
+                    user1.address,
+                    ZeroAddress,
+                    registrationDeadline
+                );
+
+                await expect(
+                    registration.connect(user1).selfRegisterTrustless(
+                        emailHashVal,
+                        emailTimestamp,
+                        emailNonce,
+                        emailDeadline,
+                        emailSignature,
+                        ZeroAddress,
+                        registrationDeadline,
+                        userSignature
+                    )
+                ).to.be.revertedWithCustomError(registration, 'AlreadyRegistered');
             });
         });
     });

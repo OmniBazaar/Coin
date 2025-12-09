@@ -1,45 +1,78 @@
-const { ethers } = require("hardhat");
+const { ethers } = require('hardhat');
 
 async function main() {
-    const REGISTRATION_PROXY = "0x0E4E697317117B150481a827f1e5029864aAe781";
-    const [deployer] = await ethers.getSigners();
-
-    console.log("Deployer:", deployer.address);
-
-    const reg = await ethers.getContractAt("OmniRegistration", REGISTRATION_PROXY);
-
-    // Check if function exists
-    console.log("\nChecking functions...");
-
-    // Check DEFAULT_ADMIN_ROLE
-    const DEFAULT_ADMIN_ROLE = ethers.ZeroHash; // bytes32(0)
-    const hasAdminRole = await reg.hasRole(DEFAULT_ADMIN_ROLE, deployer.address);
-    console.log("Deployer has DEFAULT_ADMIN_ROLE:", hasAdminRole);
-
-    // Try to read trustedVerificationKey
+    const proxyAddress = '0x0E4E697317117B150481a827f1e5029864aAe781';
+    
+    const OmniRegistration = await ethers.getContractFactory('OmniRegistration');
+    const registration = OmniRegistration.attach(proxyAddress);
+    
+    console.log('Checking OmniRegistration at:', proxyAddress);
+    console.log('');
+    
+    // Check if selfRegister exists (in LOCAL compiled interface)
     try {
-        const key = await reg.trustedVerificationKey();
-        console.log("trustedVerificationKey:", key);
+        const fragment = registration.interface.getFunction('selfRegister');
+        console.log('❌ selfRegister STILL EXISTS in LOCAL interface');
     } catch (e) {
-        console.log("trustedVerificationKey() error:", e.message);
+        console.log('✅ selfRegister REMOVED from LOCAL interface');
     }
-
-    // Try to read hasKycTier1
+    
+    // Check if selfRegisterTrustless exists
     try {
-        const hasKyc = await reg.hasKycTier1(deployer.address);
-        console.log("hasKycTier1(deployer):", hasKyc);
+        const fragment = registration.interface.getFunction('selfRegisterTrustless');
+        console.log('✅ selfRegisterTrustless EXISTS in LOCAL interface');
     } catch (e) {
-        console.log("hasKycTier1() error:", e.message);
+        console.log('❌ selfRegisterTrustless NOT FOUND in LOCAL interface');
     }
-
-    // Check implementation slot
-    const implSlot = "0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc";
-    const implRaw = await ethers.provider.getStorage(REGISTRATION_PROXY, implSlot);
-    console.log("\nImplementation address:", "0x" + implRaw.slice(26));
-
-    // Check who was initial admin
-    const roleAdmin = await reg.getRoleAdmin(DEFAULT_ADMIN_ROLE);
-    console.log("Role admin for DEFAULT_ADMIN_ROLE:", roleAdmin);
+    
+    // Try calling selfRegister on-chain to see if it reverts
+    console.log('\n--- On-Chain Verification ---');
+    try {
+        // This will fail if selfRegister doesn't exist on-chain
+        const code = await ethers.provider.getCode(proxyAddress);
+        console.log('Contract bytecode length:', code.length);
+        
+        // Try to encode a call to selfRegister
+        const iface = new ethers.Interface([
+            'function selfRegister(address referrer, bytes32 emailHash, bytes32 phoneHash, uint256 deadline, bytes calldata validatorSignature)'
+        ]);
+        const calldata = iface.encodeFunctionData('selfRegister', [
+            ethers.ZeroAddress,
+            ethers.ZeroHash,
+            ethers.ZeroHash,
+            0,
+            '0x'
+        ]);
+        
+        // Try static call - if function doesn't exist, it will revert with different error
+        const result = await ethers.provider.call({
+            to: proxyAddress,
+            data: calldata
+        });
+        console.log('❌ selfRegister EXISTS on-chain (call returned)');
+    } catch (e) {
+        if (e.message.includes('function selector was not recognized')) {
+            console.log('✅ selfRegister REMOVED on-chain (function not recognized)');
+        } else {
+            console.log('selfRegister call error:', e.message.slice(0, 150));
+        }
+    }
+    
+    // Check EMAIL_VERIFICATION_TYPEHASH
+    try {
+        const typehash = await registration.EMAIL_VERIFICATION_TYPEHASH();
+        console.log('✅ EMAIL_VERIFICATION_TYPEHASH:', typehash.slice(0, 20) + '...');
+    } catch (e) {
+        console.log('❌ EMAIL_VERIFICATION_TYPEHASH error:', e.message.slice(0, 100));
+    }
+    
+    // Check trustedVerificationKey
+    try {
+        const key = await registration.trustedVerificationKey();
+        console.log('trustedVerificationKey:', key === ethers.ZeroAddress ? '(NOT SET)' : key);
+    } catch (e) {
+        console.log('trustedVerificationKey error:', e.message.slice(0, 100));
+    }
 }
 
-main().then(() => process.exit(0)).catch(e => { console.error(e); process.exit(1); });
+main().catch(console.error);

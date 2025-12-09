@@ -45,16 +45,6 @@ contract OmniRegistration is
     /// @notice Number of validator attestations required for KYC upgrade
     uint256 public constant KYC_ATTESTATION_THRESHOLD = 3;
 
-    /// @notice EIP-712 typehash for registration attestation
-    /// @dev Hash of "RegistrationAttestation(address user,bytes32 emailHash,
-    ///      bytes32 phoneHash,address referrer,uint256 deadline)"
-    bytes32 public constant REGISTRATION_ATTESTATION_TYPEHASH = keccak256(
-        "RegistrationAttestation(address user,bytes32 emailHash,"
-        "bytes32 phoneHash,address referrer,uint256 deadline)"
-    );
-
-    /// @notice Attestation validity period (1 hour)
-    uint256 public constant ATTESTATION_VALIDITY = 1 hours;
 
     /// @notice Registration deposit amount (0 for now - gas-free registration)
     /// @dev Can be increased if Sybil attacks become problematic
@@ -70,6 +60,18 @@ contract OmniRegistration is
     /// @dev Used by submitSocialVerification() for trustless social verification
     bytes32 public constant SOCIAL_VERIFICATION_TYPEHASH = keccak256(
         "SocialVerification(address user,bytes32 socialHash,string platform,uint256 timestamp,bytes32 nonce,uint256 deadline)"
+    );
+
+    /// @notice EIP-712 typehash for email verification proof
+    /// @dev Used by submitEmailVerification() for trustless email verification
+    bytes32 public constant EMAIL_VERIFICATION_TYPEHASH = keccak256(
+        "EmailVerification(address user,bytes32 emailHash,uint256 timestamp,bytes32 nonce,uint256 deadline)"
+    );
+
+    /// @notice EIP-712 typehash for trustless registration request
+    /// @dev Used by selfRegisterTrustless() for fully trustless user registration
+    bytes32 public constant TRUSTLESS_REGISTRATION_TYPEHASH = keccak256(
+        "TrustlessRegistration(address user,address referrer,uint256 deadline)"
     );
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -121,9 +123,6 @@ contract OmniRegistration is
     // solhint-disable-next-line var-name-mixedcase
     bytes32 public DOMAIN_SEPARATOR;
 
-    /// @notice Used attestation hashes to prevent replay attacks
-    mapping(bytes32 => bool) public usedAttestations;
-
     // ═══════════════════════════════════════════════════════════════════════
     //                    TRUSTLESS VERIFICATION STORAGE
     // ═══════════════════════════════════════════════════════════════════════
@@ -136,6 +135,10 @@ contract OmniRegistration is
     /// @notice Mapping of user address to their social verification hash
     /// @dev socialHash = keccak256("platform:handle"), e.g., keccak256("twitter:omnibazaar")
     mapping(address => bytes32) public userSocialHashes;
+
+    /// @notice Mapping of user address to their email verification hash
+    /// @dev emailHash = keccak256(normalizedEmail)
+    mapping(address => bytes32) public userEmailHashes;
 
     /// @notice Mapping of user address to KYC Tier 1 completion timestamp
     /// @dev KYC Tier 1 = registered + phone verified + social verified
@@ -253,6 +256,30 @@ contract OmniRegistration is
      */
     event TrustedVerificationKeyUpdated(address indexed newKey);
 
+    /**
+     * @notice Emitted when email is verified via trustless verification
+     * @param user The user who verified their email
+     * @param emailHash Keccak256 hash of normalized email address
+     * @param timestamp When verification was performed
+     */
+    event EmailVerified(
+        address indexed user,
+        bytes32 indexed emailHash,
+        uint256 timestamp
+    );
+
+    /**
+     * @notice Emitted when user registers via trustless path
+     * @param user The registered user's address
+     * @param referrer The referrer's address (address(0) if none)
+     * @param timestamp Block timestamp of registration
+     */
+    event UserRegisteredTrustless(
+        address indexed user,
+        address indexed referrer,
+        uint256 timestamp
+    );
+
     // ═══════════════════════════════════════════════════════════════════════
     //                              ERRORS
     // ═══════════════════════════════════════════════════════════════════════
@@ -296,14 +323,8 @@ contract OmniRegistration is
     /// @notice Caller is not authorized for this action
     error Unauthorized();
 
-    /// @notice Attestation has expired
+    /// @notice Attestation or registration request has expired
     error AttestationExpired();
-
-    /// @notice Attestation has already been used (replay attack prevention)
-    error AttestationAlreadyUsed();
-
-    /// @notice Invalid attestation signature (not from authorized validator)
-    error InvalidAttestation();
 
     /// @notice Verification proof has expired (deadline passed)
     error ProofExpired();
@@ -319,6 +340,12 @@ contract OmniRegistration is
 
     /// @notice Trusted verification key not set
     error TrustedVerificationKeyNotSet();
+
+    /// @notice Email verification required for trustless registration
+    error EmailNotVerified();
+
+    /// @notice Invalid user signature on registration request
+    error InvalidUserSignature();
 
     // ═══════════════════════════════════════════════════════════════════════
     //                           INITIALIZATION
@@ -446,105 +473,182 @@ contract OmniRegistration is
     }
 
     /**
-     * @notice Self-register with validator attestation (user-initiated)
-     * @param referrer The referrer's address (address(0) for none)
-     * @param emailHash Keccak256 hash of verified email address
-     * @param phoneHash Keccak256 hash of verified phone number
-     * @param deadline Timestamp when attestation expires
-     * @param validatorSignature EIP-712 signature from a validator
-     * @dev User calls this function directly. Validator only provides attestation signature.
+     * @notice Self-register using trustless email verification proof
+     * @param emailHash Keccak256 of normalized email address
+     * @param emailTimestamp When email verification was performed
+     * @param emailNonce Unique nonce for email proof replay protection
+     * @param emailDeadline Email proof expiration time
+     * @param emailSignature EIP-712 signature from trustedVerificationKey
+     * @param referrer Referrer address (address(0) for none)
+     * @param registrationDeadline Registration request expiration time
+     * @param userSignature User's EIP-712 signature on the registration request
+     * @dev NO VALIDATOR_ROLE REQUIRED. This is fully trustless registration.
+     *      User controls registration - validator cannot create registrations.
      *
-     * Security Model:
-     * - User initiates and signs the blockchain transaction
-     * - Validator attestation proves email/phone was verified off-chain
-     * - Any validator with VALIDATOR_ROLE can provide attestation (permissionless)
-     * - Attestation expires after deadline (prevents hoarding)
-     * - Each attestation can only be used once (replay protection)
-     * - Same Sybil protection as registerUser (phone/email uniqueness)
+     * Security Properties:
+     * - Email proof MUST be signed by trustedVerificationKey
+     * - User MUST sign the registration request (proves wallet control)
+     * - Each email nonce can only be used once (replay protection)
+     * - Email hash can only be used by one user (Sybil protection)
+     * - Both proofs expire after their deadlines
+     * - Caller has NO attestation power - anyone can relay
      *
      * Flow:
-     * 1. User completes email/phone verification with any validator
-     * 2. Validator signs EIP-712 attestation (off-chain)
-     * 3. User submits attestation to this function
-     * 4. Contract verifies attestation and creates registration
+     * 1. User completes email verification off-chain
+     * 2. Verification service signs email proof with trustedVerificationKey
+     * 3. User signs registration request with their wallet
+     * 4. User (or relayer) submits both signatures to this function
+     * 5. Contract verifies both signatures and creates registration
      */
-    function selfRegister(
-        address referrer,
+    function selfRegisterTrustless(
         bytes32 emailHash,
-        bytes32 phoneHash,
-        uint256 deadline,
-        bytes calldata validatorSignature
+        uint256 emailTimestamp,
+        bytes32 emailNonce,
+        uint256 emailDeadline,
+        bytes calldata emailSignature,
+        address referrer,
+        uint256 registrationDeadline,
+        bytes calldata userSignature
     ) external nonReentrant {
-        // Check user not already registered
-        if (registrations[msg.sender].timestamp != 0) revert AlreadyRegistered();
+        _selfRegisterTrustlessInternal(
+            msg.sender,
+            emailHash,
+            emailTimestamp,
+            emailNonce,
+            emailDeadline,
+            emailSignature,
+            referrer,
+            registrationDeadline,
+            userSignature
+        );
+    }
 
-        // Check attestation not expired
-        if (block.timestamp > deadline) revert AttestationExpired();
+    /**
+     * @notice Self-register on behalf of a user (relay pattern for gas-free registration)
+     * @param user Address of the user being registered
+     * @param emailHash Keccak256 of normalized email address
+     * @param emailTimestamp When email verification was performed
+     * @param emailNonce Unique nonce for email proof replay protection
+     * @param emailDeadline Email proof expiration time
+     * @param emailSignature EIP-712 signature from trustedVerificationKey
+     * @param referrer Referrer address (address(0) for none)
+     * @param registrationDeadline Registration request expiration time
+     * @param userSignature User's EIP-712 signature on the registration request
+     * @dev ANYONE can call this function to relay a registration.
+     *      This enables gas-free registration for users who don't have XOM/AVAX.
+     *      The user address is verified via userSignature - cannot register someone else.
+     *
+     * Security Properties:
+     * - Same as selfRegisterTrustless()
+     * - User address is part of the signed data (cannot be forged)
+     * - Caller has NO attestation power - security comes from signatures
+     */
+    function selfRegisterTrustlessFor(
+        address user,
+        bytes32 emailHash,
+        uint256 emailTimestamp,
+        bytes32 emailNonce,
+        uint256 emailDeadline,
+        bytes calldata emailSignature,
+        address referrer,
+        uint256 registrationDeadline,
+        bytes calldata userSignature
+    ) external nonReentrant {
+        _selfRegisterTrustlessInternal(
+            user,
+            emailHash,
+            emailTimestamp,
+            emailNonce,
+            emailDeadline,
+            emailSignature,
+            referrer,
+            registrationDeadline,
+            userSignature
+        );
+    }
 
-        // Check phone/email uniqueness (Sybil protection)
-        if (usedPhoneHashes[phoneHash]) revert PhoneAlreadyUsed();
+    /**
+     * @notice Internal implementation for trustless registration
+     * @param user Address of the user being registered
+     * @param emailHash Keccak256 of normalized email address
+     * @param emailTimestamp When email verification was performed
+     * @param emailNonce Unique nonce for email proof replay protection
+     * @param emailDeadline Email proof expiration time
+     * @param emailSignature EIP-712 signature from trustedVerificationKey
+     * @param referrer Referrer address (address(0) for none)
+     * @param registrationDeadline Registration request expiration time
+     * @param userSignature User's EIP-712 signature on the registration request
+     */
+    function _selfRegisterTrustlessInternal(
+        address user,
+        bytes32 emailHash,
+        uint256 emailTimestamp,
+        bytes32 emailNonce,
+        uint256 emailDeadline,
+        bytes calldata emailSignature,
+        address referrer,
+        uint256 registrationDeadline,
+        bytes calldata userSignature
+    ) internal {
+        // Validate preconditions
+        if (trustedVerificationKey == address(0)) revert TrustedVerificationKeyNotSet();
+        if (registrations[user].timestamp != 0) revert AlreadyRegistered();
+        if (block.timestamp > emailDeadline) revert ProofExpired(); // solhint-disable-line not-rely-on-time
+        if (block.timestamp > registrationDeadline) revert AttestationExpired(); // solhint-disable-line not-rely-on-time
+        if (usedNonces[emailNonce]) revert NonceAlreadyUsed();
         if (usedEmailHashes[emailHash]) revert EmailAlreadyUsed();
 
-        // Build attestation struct hash
-        bytes32 structHash = keccak256(
-            abi.encode(
-                REGISTRATION_ATTESTATION_TYPEHASH,
-                msg.sender,
-                emailHash,
-                phoneHash,
-                referrer,
-                deadline
-            )
+        // Verify email proof signature from trustedVerificationKey
+        bytes32 emailStructHash = keccak256(abi.encode(
+            EMAIL_VERIFICATION_TYPEHASH, user, emailHash, emailTimestamp, emailNonce, emailDeadline
+        ));
+        bytes32 emailDigest = keccak256(
+            abi.encodePacked("\x19\x01", DOMAIN_SEPARATOR, emailStructHash)
         );
+        if (emailDigest.recover(emailSignature) != trustedVerificationKey) {
+            revert InvalidVerificationProof();
+        }
 
-        // Prevent replay attacks
-        if (usedAttestations[structHash]) revert AttestationAlreadyUsed();
-        usedAttestations[structHash] = true;
-
-        // Verify EIP-712 signature
-        bytes32 digest = keccak256(
-            abi.encodePacked("\x19\x01", DOMAIN_SEPARATOR, structHash)
+        // Verify user signature on registration request
+        bytes32 registrationStructHash = keccak256(abi.encode(
+            TRUSTLESS_REGISTRATION_TYPEHASH, user, referrer, registrationDeadline
+        ));
+        bytes32 registrationDigest = keccak256(
+            abi.encodePacked("\x19\x01", DOMAIN_SEPARATOR, registrationStructHash)
         );
+        if (registrationDigest.recover(userSignature) != user) revert InvalidUserSignature();
 
-        address signer = digest.recover(validatorSignature);
-
-        // Verify signer has VALIDATOR_ROLE
-        if (!hasRole(VALIDATOR_ROLE, signer)) revert InvalidAttestation();
-
-        // Validate referrer (same rules as registerUser, but no validator self-dealing check)
+        // Validate referrer
         if (referrer != address(0)) {
-            if (referrer == msg.sender) revert SelfReferralNotAllowed();
-            // Referrer must be a registered user
+            if (referrer == user) revert SelfReferralNotAllowed();
             if (registrations[referrer].timestamp == 0) revert InvalidReferrer();
         }
 
         // Check daily rate limit
-        uint256 today = block.timestamp / 1 days;
-        if (dailyRegistrationCount[today] >= MAX_DAILY_REGISTRATIONS) {
-            revert DailyLimitExceeded();
-        }
+        uint256 today = block.timestamp / 1 days; // solhint-disable-line not-rely-on-time
+        if (dailyRegistrationCount[today] >= MAX_DAILY_REGISTRATIONS) revert DailyLimitExceeded();
 
-        // Create registration
-        registrations[msg.sender] = Registration({
+        // Create registration (phone verified separately after registration)
+        registrations[user] = Registration({ // solhint-disable-line not-rely-on-time
             timestamp: block.timestamp,
             referrer: referrer,
-            registeredBy: signer, // Track which validator attested
-            phoneHash: phoneHash,
+            registeredBy: msg.sender,
+            phoneHash: bytes32(0),
             emailHash: emailHash,
-            kycTier: 1, // Tier 1 = email verified
+            kycTier: 1,
             welcomeBonusClaimed: false,
             firstSaleBonusClaimed: false
         });
 
-        // Mark phone/email as used
-        usedPhoneHashes[phoneHash] = true;
+        // Mark email and nonce as used
         usedEmailHashes[emailHash] = true;
+        userEmailHashes[user] = emailHash;
+        usedNonces[emailNonce] = true;
 
-        // Update counters
+        // Update counters and emit event
         ++dailyRegistrationCount[today];
         ++totalRegistrations;
-
-        emit UserRegistered(msg.sender, referrer, signer, block.timestamp);
+        emit UserRegisteredTrustless(user, referrer, block.timestamp); // solhint-disable-line not-rely-on-time
     }
 
     // ═══════════════════════════════════════════════════════════════════════

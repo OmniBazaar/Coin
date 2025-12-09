@@ -2,8 +2,8 @@
  * @file upgrade-registration.ts
  * @description Upgrade script for OmniRegistration contract (UUPS proxy pattern)
  *
- * This script upgrades an existing OmniRegistration proxy to a new implementation
- * and calls reinitialize() to set up the DOMAIN_SEPARATOR for EIP-712 attestations.
+ * This script upgrades an existing OmniRegistration proxy to a new implementation.
+ * Uses prepareUpgrade with redeployImplementation: 'always' to ensure fresh deployment.
  *
  * Usage:
  *   npx hardhat run scripts/upgrade-registration.ts --network fuji
@@ -14,7 +14,8 @@
  *
  * Post-Upgrade:
  *   - Verify DOMAIN_SEPARATOR is set
- *   - Test selfRegister function with EIP-712 attestation
+ *   - Verify EMAIL_VERIFICATION_TYPEHASH is accessible
+ *   - Test selfRegisterTrustless() with email proof + user signature
  */
 
 import { ethers, upgrades } from 'hardhat';
@@ -102,32 +103,37 @@ async function main(): Promise<void> {
 
     const OmniRegistration = await ethers.getContractFactory('OmniRegistration');
 
-    // Force import the proxy if not registered (handles case where contract was upgraded outside hardhat)
+    // First, register the proxy in OpenZeppelin manifest if not already registered
+    // This is needed before we can call upgradeProxy
     try {
         await upgrades.forceImport(proxyAddress, OmniRegistration, { kind: 'uups' });
-        console.log('Proxy force-imported into OpenZeppelin manifest');
+        console.log('Proxy registered in OpenZeppelin manifest');
     } catch (importError: unknown) {
-        // If already imported, this will throw - that's OK
         const errorMessage = importError instanceof Error ? importError.message : String(importError);
-        if (!errorMessage.includes('already imported') && !errorMessage.includes('already registered')) {
-            console.log('Note: Proxy import skipped (may already be registered)');
+        if (errorMessage.includes('already imported') || errorMessage.includes('already registered')) {
+            console.log('Proxy already registered in manifest');
+        } else {
+            throw importError;
         }
     }
 
-    // Simple upgrade without reinitialize - adminUnregister doesn't need state init
+    // Now upgrade with redeployImplementation: 'always' to force new deployment
     console.log('Deploying new implementation and upgrading proxy...');
-    console.log('Note: Simple upgrade without reinitialize (adminUnregister has no new state)');
-
-    const upgraded = await upgrades.upgradeProxy(
-        proxyAddress,
-        OmniRegistration
-    );
-
+    const upgraded = await upgrades.upgradeProxy(proxyAddress, OmniRegistration, {
+        kind: 'uups',
+        redeployImplementation: 'always', // Force deploy even if bytecode seems unchanged
+    });
     await upgraded.waitForDeployment();
 
-    // Get new implementation address
+    // Verify the upgrade
     const newImpl = await upgrades.erc1967.getImplementationAddress(proxyAddress);
     console.log(`\nNew implementation: ${newImpl}`);
+
+    if (newImpl === currentImpl) {
+        console.log('WARNING: Implementation address unchanged - upgrade may not have occurred');
+    } else {
+        console.log('Implementation successfully upgraded');
+    }
 
     // Verify DOMAIN_SEPARATOR is still set
     const domainSeparator = await upgraded.DOMAIN_SEPARATOR();
@@ -139,15 +145,22 @@ async function main(): Promise<void> {
         console.log('DOMAIN_SEPARATOR verified OK');
     }
 
-    // Verify adminUnregister function exists
+    // Verify selfRegisterTrustless function exists (new trustless registration)
     try {
-        // Just check the function selector exists (don't call it)
-        const functionFragment = upgraded.interface.getFunction('adminUnregister');
+        const functionFragment = upgraded.interface.getFunction('selfRegisterTrustless');
         if (functionFragment) {
-            console.log('adminUnregister function available');
+            console.log('selfRegisterTrustless function available');
         }
     } catch {
-        console.error('WARNING: adminUnregister function not found in new implementation!');
+        console.error('WARNING: selfRegisterTrustless function not found!');
+    }
+
+    // Verify EMAIL_VERIFICATION_TYPEHASH is accessible
+    try {
+        const typehash = await upgraded.EMAIL_VERIFICATION_TYPEHASH();
+        console.log(`EMAIL_VERIFICATION_TYPEHASH: ${typehash.slice(0, 20)}...`);
+    } catch {
+        console.error('WARNING: EMAIL_VERIFICATION_TYPEHASH not accessible!');
     }
 
     // Update deployment config
@@ -165,10 +178,11 @@ async function main(): Promise<void> {
 
     // Print verification steps
     console.log('\n--- Verification Steps ---');
-    console.log('1. Verify the upgrade was successful:');
+    console.log('1. Verify implementation on explorer:');
     console.log(`   npx hardhat verify --network ${networkName} ${newImpl}`);
-    console.log('\n2. Test selfRegister with EIP-712 attestation');
+    console.log('\n2. Test selfRegisterTrustless() with email proof + user signature');
     console.log('\n3. Ensure existing registrations are preserved');
+    console.log('\n4. Verify selfRegister() is no longer callable (removed)');
     console.log('========================================\n');
 }
 
