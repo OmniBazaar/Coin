@@ -126,6 +126,18 @@ contract OmniRewardManager is
         "ClaimWelcomeBonus(address user,uint256 nonce,uint256 deadline)"
     );
 
+    /// @notice EIP-712 typehash for trustless referral bonus claim
+    /// @dev ClaimReferralBonus(address user,uint256 nonce,uint256 deadline)
+    bytes32 public constant CLAIM_REFERRAL_BONUS_TYPEHASH = keccak256(
+        "ClaimReferralBonus(address user,uint256 nonce,uint256 deadline)"
+    );
+
+    /// @notice EIP-712 typehash for trustless first sale bonus claim
+    /// @dev ClaimFirstSaleBonus(address user,uint256 nonce,uint256 deadline)
+    bytes32 public constant CLAIM_FIRST_SALE_BONUS_TYPEHASH = keccak256(
+        "ClaimFirstSaleBonus(address user,uint256 nonce,uint256 deadline)"
+    );
+
     // ============ State Variables ============
 
     /// @notice Reference to the OmniCoin ERC20 token
@@ -184,8 +196,13 @@ contract OmniRewardManager is
     ///      This is separate from registration count since not all users claim bonuses.
     uint256 public welcomeBonusClaimCount;
 
+    /// @notice Pending referral bonuses ready to claim (user => amount in wei)
+    /// @dev Accumulated when referees claim welcome bonus. User must manually claim.
+    ///      This prevents validators from controlling bonus distribution.
+    mapping(address => uint256) public pendingReferralBonuses;
+
     /// @dev Reserved storage gap for future upgrades (reduced due to new variables)
-    uint256[36] private __gap;
+    uint256[35] private __gap;
 
     // ============ Events ============
 
@@ -321,6 +338,58 @@ contract OmniRewardManager is
         address referrer
     );
 
+    /// @notice Emitted when referral bonus is accumulated (not transferred yet)
+    /// @param referrer Primary referrer who will receive 70%
+    /// @param secondLevelReferrer Secondary referrer who will receive 20%
+    /// @param referrerAmount Amount accumulated for primary referrer
+    /// @param secondLevelAmount Amount accumulated for second-level referrer
+    /// @param referee User whose welcome bonus triggered this accumulation
+    event ReferralBonusAccumulated(
+        address indexed referrer,
+        address indexed secondLevelReferrer,
+        uint256 referrerAmount,
+        uint256 secondLevelAmount,
+        address referee
+    );
+
+    /// @notice Emitted when referrer claims their accumulated bonus
+    /// @param referrer Address who claimed the bonus
+    /// @param amount Amount transferred to referrer
+    event ReferralBonusClaimedPermissionless(
+        address indexed referrer,
+        uint256 indexed amount
+    );
+
+    /// @notice Emitted when referral bonus is claimed via relay (gasless)
+    /// @param referrer Address who received the bonus
+    /// @param amount Amount transferred
+    /// @param relayer Address that paid gas and submitted transaction
+    event ReferralBonusClaimedRelayed(
+        address indexed referrer,
+        uint256 indexed amount,
+        address relayer
+    );
+
+    /// @notice Emitted when admin migrates pending referral bonus from database
+    /// @param referrer Address whose pending bonus was set
+    /// @param oldAmount Previous pending amount
+    /// @param newAmount New pending amount
+    event ReferralBonusMigrated(
+        address indexed referrer,
+        uint256 oldAmount,
+        uint256 newAmount
+    );
+
+    /// @notice Emitted when first sale bonus is claimed via relay (gasless)
+    /// @param seller Address who received the bonus
+    /// @param amount Amount transferred
+    /// @param relayer Address that paid gas and submitted transaction
+    event FirstSaleBonusClaimedRelayed(
+        address indexed seller,
+        uint256 indexed amount,
+        address relayer
+    );
+
     // ============ Custom Errors ============
 
     /// @notice Thrown when pool has insufficient funds for distribution
@@ -369,6 +438,10 @@ contract OmniRewardManager is
     /// @param expectedUser Expected user address
     /// @param recoveredSigner Recovered signer from signature
     error InvalidUserSignature(address expectedUser, address recoveredSigner);
+
+    /// @notice Thrown when user tries to claim but has no pending referral bonus
+    /// @param user User address
+    error NoPendingReferralBonus(address user);
 
     // ============ Constructor ============
 
@@ -623,6 +696,31 @@ contract OmniRewardManager is
         }
 
         emit LegacyBonusClaimsCountUpdated(oldCount, _count, effectiveRegs);
+    }
+
+    /**
+     * @notice Migrate pending referral bonuses from off-chain database (ADMIN ONLY)
+     * @dev Used for one-time migration of bonuses tracked in old database system.
+     *      Sets pendingReferralBonuses for users who have accumulated bonuses off-chain.
+     *      These users can then claim via claimReferralBonusPermissionless().
+     *
+     * SECURITY: This is an ADMIN-ONLY function for migration purposes. Once all legacy
+     *           bonuses are migrated, this function should not be needed.
+     *
+     * @param referrer Address of the referrer
+     * @param amount Amount to add to their pending bonus (in wei)
+     */
+    function setPendingReferralBonus(
+        address referrer,
+        uint256 amount
+    ) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        if (referrer == address(0)) revert ZeroAddressNotAllowed();
+        if (amount == 0) revert ZeroAmountNotAllowed();
+
+        uint256 oldPending = pendingReferralBonuses[referrer];
+        pendingReferralBonuses[referrer] = amount;
+
+        emit ReferralBonusMigrated(referrer, oldPending, amount);
     }
 
     // ============ External Functions - Permissionless Claiming ============
@@ -902,6 +1000,117 @@ contract OmniRewardManager is
     }
 
     /**
+     * @notice Claim accumulated referral bonuses (permissionless)
+     * @dev Referrers call this to claim their accumulated bonuses from successful referrals.
+     *      No role required - anyone can claim their own pending bonuses.
+     *      Bonuses accumulate when referees claim welcome bonuses.
+     *
+     * Security measures:
+     * - Can only claim own pending bonuses (msg.sender)
+     * - No validator involvement in distribution decision
+     * - Amount verified on-chain in pendingReferralBonuses mapping
+     * - Daily rate limit enforced
+     */
+    function claimReferralBonusPermissionless() external nonReentrant whenNotPaused {
+        uint256 pending = pendingReferralBonuses[msg.sender];
+
+        // Check has pending bonus
+        if (pending == 0) {
+            revert NoPendingReferralBonus(msg.sender);
+        }
+
+        // Check daily rate limit
+        uint256 today = block.timestamp / 1 days;
+        if (dailyReferralBonusCount[today] >= MAX_DAILY_REFERRAL_BONUSES) {
+            revert DailyBonusLimitExceeded(PoolType.ReferralBonus, MAX_DAILY_REFERRAL_BONUSES);
+        }
+        ++dailyReferralBonusCount[today];
+
+        // Clear pending bonus
+        pendingReferralBonuses[msg.sender] = 0;
+
+        // Transfer bonus
+        omniCoin.safeTransfer(msg.sender, pending);
+
+        emit ReferralBonusClaimedPermissionless(msg.sender, pending);
+        emit ReferralBonusClaimed(msg.sender, address(0), pending);
+        _checkPoolThreshold(PoolType.ReferralBonus, referralBonusPool);
+    }
+
+    /**
+     * @notice Claim referral bonus with user signature (trustless relayable)
+     * @dev ANYONE can relay this - NO SPECIAL ROLES REQUIRED.
+     *      User signs claim request, relayer pays gas.
+     *      This is the GASLESS version of claimReferralBonusPermissionless.
+     *
+     * @param user Address of referrer claiming (must match signer)
+     * @param nonce User's current claim nonce
+     * @param deadline Claim request expiration
+     * @param signature User's EIP-712 signature
+     *
+     * Security measures:
+     * - USER must sign the claim request
+     * - Nonce-based replay protection
+     * - Time-bounded via deadline
+     * - Relayer has NO control over eligibility or amount
+     */
+    function claimReferralBonusRelayed(
+        address user,
+        uint256 nonce,
+        uint256 deadline,
+        bytes calldata signature
+    ) external nonReentrant whenNotPaused {
+        // 1. Check deadline
+        if (block.timestamp > deadline) revert ClaimDeadlineExpired();
+
+        // 2. Verify nonce
+        if (nonce != claimNonces[user]) {
+            revert InvalidClaimNonce(user, nonce, claimNonces[user]);
+        }
+
+        // 3. Verify user signature (EIP-712)
+        bytes32 structHash = keccak256(abi.encode(
+            CLAIM_REFERRAL_BONUS_TYPEHASH,
+            user,
+            nonce,
+            deadline
+        ));
+
+        bytes32 digest = _hashTypedDataV4(structHash);
+        address recoveredSigner = ECDSA.recover(digest, signature);
+        if (recoveredSigner != user) {
+            revert InvalidUserSignature(user, recoveredSigner);
+        }
+
+        // 4. Check has pending bonus
+        uint256 pending = pendingReferralBonuses[user];
+        if (pending == 0) {
+            revert NoPendingReferralBonus(user);
+        }
+
+        // 5. Check daily rate limit
+        uint256 today = block.timestamp / 1 days;
+        if (dailyReferralBonusCount[today] >= MAX_DAILY_REFERRAL_BONUSES) {
+            revert DailyBonusLimitExceeded(PoolType.ReferralBonus, MAX_DAILY_REFERRAL_BONUSES);
+        }
+        ++dailyReferralBonusCount[today];
+
+        // 6. Increment nonce (replay protection)
+        ++claimNonces[user];
+
+        // 7. Clear pending bonus
+        pendingReferralBonuses[user] = 0;
+
+        // 8. Transfer bonus to USER
+        omniCoin.safeTransfer(user, pending);
+
+        // 9. Emit events
+        emit ReferralBonusClaimedRelayed(user, pending, msg.sender);
+        emit ReferralBonusClaimed(user, address(0), pending);
+        _checkPoolThreshold(PoolType.ReferralBonus, referralBonusPool);
+    }
+
+    /**
      * @notice Claim first sale bonus directly (permissionless)
      * @dev Sellers call this after completing their first sale.
      *      Sale verification done off-chain, marked in OmniRegistration.
@@ -945,6 +1154,99 @@ contract OmniRewardManager is
         omniCoin.safeTransfer(msg.sender, bonusAmount);
 
         emit FirstSaleBonusClaimed(msg.sender, bonusAmount, firstSaleBonusPool.remaining);
+        _checkPoolThreshold(PoolType.FirstSaleBonus, firstSaleBonusPool);
+    }
+
+    /**
+     * @notice Claim first sale bonus with user signature (trustless relayable)
+     * @dev ANYONE can relay this - NO SPECIAL ROLES REQUIRED.
+     *      User signs claim request, relayer pays gas.
+     *      This is the GASLESS version of claimFirstSaleBonusPermissionless.
+     *
+     * @param user Address of seller claiming (must match signer)
+     * @param nonce User's current claim nonce
+     * @param deadline Claim request expiration
+     * @param signature User's EIP-712 signature
+     *
+     * Security measures:
+     * - USER must sign the claim request
+     * - Eligibility verified on-chain via OmniRegistration
+     * - Nonce-based replay protection
+     * - Time-bounded via deadline
+     * - Relayer has NO control over eligibility or amount
+     */
+    function claimFirstSaleBonusRelayed(
+        address user,
+        uint256 nonce,
+        uint256 deadline,
+        bytes calldata signature
+    ) external nonReentrant whenNotPaused {
+        // 1. Check registration contract is set
+        if (address(registrationContract) == address(0)) {
+            revert RegistrationContractNotSet();
+        }
+
+        // 2. Check deadline
+        if (block.timestamp > deadline) revert ClaimDeadlineExpired();
+
+        // 3. Verify nonce
+        if (nonce != claimNonces[user]) {
+            revert InvalidClaimNonce(user, nonce, claimNonces[user]);
+        }
+
+        // 4. Verify user signature (EIP-712)
+        bytes32 structHash = keccak256(abi.encode(
+            CLAIM_FIRST_SALE_BONUS_TYPEHASH,
+            user,
+            nonce,
+            deadline
+        ));
+
+        bytes32 digest = _hashTypedDataV4(structHash);
+        address recoveredSigner = ECDSA.recover(digest, signature);
+        if (recoveredSigner != user) {
+            revert InvalidUserSignature(user, recoveredSigner);
+        }
+
+        // 5. Get registration data
+        IOmniRegistration.Registration memory reg = registrationContract.getRegistration(user);
+
+        // 6. Verify eligibility
+        if (reg.timestamp == 0) revert UserNotRegistered(user);
+        if (reg.firstSaleBonusClaimed) {
+            revert BonusAlreadyClaimed(user, PoolType.FirstSaleBonus);
+        }
+
+        // 7. Check daily rate limit
+        uint256 today = block.timestamp / 1 days;
+        if (dailyFirstSaleBonusCount[today] >= MAX_DAILY_FIRST_SALE_BONUSES) {
+            revert DailyBonusLimitExceeded(PoolType.FirstSaleBonus, MAX_DAILY_FIRST_SALE_BONUSES);
+        }
+        ++dailyFirstSaleBonusCount[today];
+
+        // 8. Increment nonce (replay protection)
+        ++claimNonces[user];
+
+        // 9. Calculate bonus based on effective registrations
+        uint256 totalRegs = registrationContract.totalRegistrations();
+        uint256 effectiveRegs = totalRegs + legacyBonusClaimsCount;
+        if (effectiveRegs == 0) effectiveRegs = 1;
+        uint256 bonusAmount = _calculateFirstSaleBonus(effectiveRegs);
+
+        // 10. Validate pool balance
+        _validatePoolBalance(firstSaleBonusPool, PoolType.FirstSaleBonus, bonusAmount);
+
+        // 11. Mark as claimed
+        registrationContract.markFirstSaleBonusClaimed(user);
+        firstSaleBonusClaimed[user] = true;
+
+        // 12. Update pool and transfer to USER (not msg.sender!)
+        _updatePoolAfterDistribution(firstSaleBonusPool, bonusAmount);
+        omniCoin.safeTransfer(user, bonusAmount);
+
+        // 13. Emit events
+        emit FirstSaleBonusClaimedRelayed(user, bonusAmount, msg.sender);
+        emit FirstSaleBonusClaimed(user, bonusAmount, firstSaleBonusPool.remaining);
         _checkPoolThreshold(PoolType.FirstSaleBonus, firstSaleBonusPool);
     }
 
@@ -1022,6 +1324,17 @@ contract OmniRewardManager is
      */
     function getReferralBonusesEarned(address referrer) external view returns (uint256 earned) {
         return referralBonusesEarned[referrer];
+    }
+
+    /**
+     * @notice Get pending referral bonus ready to claim
+     * @dev Returns amount accumulated but not yet claimed by the referrer.
+     *      User must call claimReferralBonusPermissionless() to receive these bonuses.
+     * @param referrer Address to check
+     * @return pending Pending referral bonus amount in wei
+     */
+    function getPendingReferralBonus(address referrer) external view returns (uint256 pending) {
+        return pendingReferralBonuses[referrer];
     }
 
     /**
@@ -1282,19 +1595,24 @@ contract OmniRewardManager is
     }
 
     /**
-     * @notice Auto-distribute referral bonus when welcome bonus is claimed
-     * @dev Called internally by claimWelcomeBonusPermissionless
+     * @notice Accumulate referral bonus when welcome bonus is claimed (TRUSTLESS)
+     * @dev Called internally by welcome bonus claim functions.
+     *      DOES NOT transfer - accumulates to pendingReferralBonuses mapping.
+     *      Referrer must manually claim via claimReferralBonusPermissionless().
+     *      This removes validator control over bonus distribution.
+     *
      * @param referrer Primary referrer address
+     * @param referee User who claimed welcome bonus (triggers this accumulation)
      * @param registrationNumber Current effective registrations for bonus calculation
      *
-     * Distribution:
-     * - 70% to primary referrer
-     * - 20% to second-level referrer (if exists)
-     * - 10% to ODDAO
+     * Accumulation:
+     * - 70% accumulated for primary referrer
+     * - 20% accumulated for second-level referrer (if exists)
+     * - 10% transferred immediately to ODDAO (no accumulation needed)
      */
     function _distributeAutoReferralBonus(
         address referrer,
-        address, /* referee - unused but kept for event tracking */
+        address referee,
         uint256 registrationNumber
     ) internal {
         // Check daily rate limit
@@ -1323,28 +1641,28 @@ contract OmniRewardManager is
         uint256 secondLevelAmount = (secondLevelReferrer != address(0)) ? (referralAmount * 20) / 100 : 0;
         uint256 oddaoAmount = referralAmount - referrerAmount - secondLevelAmount;
 
-        // Update pool
+        // Update pool accounting
         _updatePoolAfterDistribution(referralBonusPool, referralAmount);
 
-        // Track earnings
-        referralBonusesEarned[referrer] += referrerAmount;
-
-        // Transfer to referrer
-        omniCoin.safeTransfer(referrer, referrerAmount);
-
-        // Transfer to second-level referrer if exists
+        // ACCUMULATE bonuses (DO NOT transfer yet!)
+        pendingReferralBonuses[referrer] += referrerAmount;
         if (secondLevelAmount != 0 && secondLevelReferrer != address(0)) {
-            referralBonusesEarned[secondLevelReferrer] += secondLevelAmount;
-            omniCoin.safeTransfer(secondLevelReferrer, secondLevelAmount);
+            pendingReferralBonuses[secondLevelReferrer] += secondLevelAmount;
         }
 
-        // Transfer to ODDAO
+        // Track earnings for stats (backward compatibility)
+        referralBonusesEarned[referrer] += referrerAmount;
+        if (secondLevelAmount != 0 && secondLevelReferrer != address(0)) {
+            referralBonusesEarned[secondLevelReferrer] += secondLevelAmount;
+        }
+
+        // Transfer ONLY to ODDAO (no user action needed for protocol)
         if (oddaoAmount != 0 && oddaoAddress != address(0)) {
             omniCoin.safeTransfer(oddaoAddress, oddaoAmount);
         }
 
-        emit AutoReferralBonusDistributed(referrer, secondLevelReferrer, referrerAmount, secondLevelAmount);
-        emit ReferralBonusClaimed(referrer, secondLevelReferrer, referralAmount);
+        // Emit accumulation event (NOT a claim event!)
+        emit ReferralBonusAccumulated(referrer, secondLevelReferrer, referrerAmount, secondLevelAmount, referee);
         _checkPoolThreshold(PoolType.ReferralBonus, referralBonusPool);
     }
 

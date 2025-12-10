@@ -113,6 +113,21 @@ async function main(): Promise<void> {
         console.log('CLAIM_WELCOME_BONUS_TYPEHASH(): ERROR -', (e as Error).message.slice(0, 100));
     }
 
+    // Verify new V3 functions (referral bonus claiming)
+    try {
+        const typehash = await rewardManager.CLAIM_REFERRAL_BONUS_TYPEHASH();
+        console.log('CLAIM_REFERRAL_BONUS_TYPEHASH():', typehash, '✓');
+    } catch (e) {
+        console.log('CLAIM_REFERRAL_BONUS_TYPEHASH(): ERROR -', (e as Error).message.slice(0, 100));
+    }
+
+    try {
+        const pending = await rewardManager.getPendingReferralBonus(await signer.getAddress());
+        console.log('getPendingReferralBonus():', ethers.formatEther(pending), 'XOM ✓');
+    } catch (e) {
+        console.log('getPendingReferralBonus(): ERROR -', (e as Error).message.slice(0, 100));
+    }
+
     console.log('\n========================================');
     console.log('Upgrade Complete');
     console.log('New implementation:', newImplAddress);

@@ -103,6 +103,15 @@ async function main(): Promise<void> {
 
     console.log('Deploying new implementation and upgrading proxy...');
 
+    // Force import the existing proxy if not already registered
+    try {
+        await upgrades.forceImport(proxyAddress, OmniRewardManager);
+        console.log('Proxy imported successfully');
+    } catch (e) {
+        // Already imported or not needed
+        console.log('Proxy already tracked or import not needed');
+    }
+
     // Use unsafeSkipStorageCheck since we're adding new variables at the end
     const upgraded = await upgrades.upgradeProxy(
         proxyAddress,
@@ -175,6 +184,22 @@ async function main(): Promise<void> {
         console.log(`CLAIM_WELCOME_BONUS_TYPEHASH(): ${typehash} ✓`);
     } catch (e) {
         console.log(`CLAIM_WELCOME_BONUS_TYPEHASH(): ERROR - ${(e as Error).message}`);
+    }
+
+    // Check CLAIM_REFERRAL_BONUS_TYPEHASH (new EIP-712 typehash)
+    try {
+        const typehash = await upgraded.CLAIM_REFERRAL_BONUS_TYPEHASH();
+        console.log(`CLAIM_REFERRAL_BONUS_TYPEHASH(): ${typehash} ✓`);
+    } catch (e) {
+        console.log(`CLAIM_REFERRAL_BONUS_TYPEHASH(): ERROR - ${(e as Error).message}`);
+    }
+
+    // Check getPendingReferralBonus (new view function)
+    try {
+        const pending = await upgraded.getPendingReferralBonus(upgraderAddress);
+        console.log(`getPendingReferralBonus(): ${ethers.formatEther(pending)} XOM ✓`);
+    } catch (e) {
+        console.log(`getPendingReferralBonus(): ERROR - ${(e as Error).message}`);
     }
 
     // Update deployment config
