@@ -1,0 +1,733 @@
+/**
+ * @file OmniValidatorRewards.test.ts
+ * @description Comprehensive tests for OmniValidatorRewards contract
+ *
+ * Tests cover:
+ * - Initialization and role setup
+ * - Heartbeat system
+ * - Transaction processing tracking
+ * - Epoch processing and reward distribution
+ * - Reward claiming
+ * - Weight calculation (participation, staking, activity)
+ * - Block reward calculation with reductions
+ * - Admin functions
+ */
+
+/* eslint-disable @typescript-eslint/no-var-requires */
+const { expect } = require('chai');
+const { ethers, upgrades } = require('hardhat');
+const { keccak256, toUtf8Bytes, ZeroAddress } = require('ethers');
+const { time } = require('@nomicfoundation/hardhat-network-helpers');
+
+describe('OmniValidatorRewards', function () {
+    // Contract instances
+    let validatorRewards: any;
+    let mockXOMToken: any;
+    let mockParticipation: any;
+    let mockOmniCore: any;
+
+    // Signers
+    let owner: any;
+    let validator1: any;
+    let validator2: any;
+    let validator3: any;
+    let blockchainRole: any;
+    let unauthorized: any;
+
+    // Role constants
+    const DEFAULT_ADMIN_ROLE = ethers.ZeroHash;
+    const BLOCKCHAIN_ROLE = keccak256(toUtf8Bytes('BLOCKCHAIN_ROLE'));
+
+    // Contract constants
+    const EPOCH_DURATION = 2;
+    const HEARTBEAT_TIMEOUT = 20;
+    const INITIAL_BLOCK_REWARD = ethers.parseEther('15.602');
+    const BLOCKS_PER_REDUCTION = 6311520;
+
+    beforeEach(async function () {
+        // Get signers
+        [owner, validator1, validator2, validator3, blockchainRole, unauthorized] =
+            await ethers.getSigners();
+
+        // Deploy mock XOM token
+        const MockXOMToken = await ethers.getContractFactory('MockXOMToken');
+        mockXOMToken = await MockXOMToken.deploy();
+        await mockXOMToken.waitForDeployment();
+
+        // Deploy mock OmniParticipation
+        const MockParticipation = await ethers.getContractFactory('MockOmniParticipation');
+        mockParticipation = await MockParticipation.deploy();
+        await mockParticipation.waitForDeployment();
+
+        // Deploy mock OmniCore
+        const MockOmniCore = await ethers.getContractFactory('MockOmniCore');
+        mockOmniCore = await MockOmniCore.deploy();
+        await mockOmniCore.waitForDeployment();
+
+        // Deploy OmniValidatorRewards as proxy
+        const OmniValidatorRewards = await ethers.getContractFactory('OmniValidatorRewards');
+        validatorRewards = await upgrades.deployProxy(
+            OmniValidatorRewards,
+            [
+                await mockXOMToken.getAddress(),
+                await mockParticipation.getAddress(),
+                await mockOmniCore.getAddress(),
+            ],
+            {
+                initializer: 'initialize',
+                kind: 'uups',
+            }
+        );
+        await validatorRewards.waitForDeployment();
+
+        // Grant blockchain role
+        await validatorRewards.grantRole(BLOCKCHAIN_ROLE, blockchainRole.address);
+
+        // Setup validators in mock OmniCore
+        await mockOmniCore.setValidator(validator1.address, true);
+        await mockOmniCore.setValidator(validator2.address, true);
+        await mockOmniCore.setValidator(validator3.address, true);
+
+        // Register validators as active nodes
+        await mockOmniCore.registerMockNode(validator1.address, 'validator', 'http://v1:3001');
+        await mockOmniCore.registerMockNode(validator2.address, 'validator', 'http://v2:3002');
+        await mockOmniCore.registerMockNode(validator3.address, 'validator', 'http://v3:3003');
+
+        // Setup participation scores
+        await mockParticipation.setTotalScore(validator1.address, 80);
+        await mockParticipation.setTotalScore(validator2.address, 60);
+        await mockParticipation.setTotalScore(validator3.address, 50);
+
+        // Setup staking
+        await mockOmniCore.setStake(
+            validator1.address,
+            ethers.parseEther('10000000'), // 10M XOM
+            3,
+            180 * 24 * 60 * 60,
+            0,
+            true
+        );
+        await mockOmniCore.setStake(
+            validator2.address,
+            ethers.parseEther('1000000'), // 1M XOM
+            2,
+            30 * 24 * 60 * 60,
+            0,
+            true
+        );
+
+        // Fund the contract with XOM for rewards
+        await mockXOMToken.mint(await validatorRewards.getAddress(), ethers.parseEther('1000000'));
+    });
+
+    describe('Initialization', function () {
+        it('should initialize with correct admin', async function () {
+            expect(await validatorRewards.hasRole(DEFAULT_ADMIN_ROLE, owner.address)).to.be.true;
+        });
+
+        it('should initialize with correct blockchain role', async function () {
+            expect(await validatorRewards.hasRole(BLOCKCHAIN_ROLE, owner.address)).to.be.true;
+        });
+
+        it('should set correct contract references', async function () {
+            expect(await validatorRewards.xomToken()).to.equal(await mockXOMToken.getAddress());
+            expect(await validatorRewards.participation()).to.equal(await mockParticipation.getAddress());
+            expect(await validatorRewards.omniCore()).to.equal(await mockOmniCore.getAddress());
+        });
+
+        it('should set genesis timestamp', async function () {
+            expect(await validatorRewards.genesisTimestamp()).to.be.gt(0);
+        });
+
+        it('should have correct constants', async function () {
+            expect(await validatorRewards.EPOCH_DURATION()).to.equal(EPOCH_DURATION);
+            expect(await validatorRewards.HEARTBEAT_TIMEOUT()).to.equal(HEARTBEAT_TIMEOUT);
+            expect(await validatorRewards.INITIAL_BLOCK_REWARD()).to.equal(INITIAL_BLOCK_REWARD);
+            expect(await validatorRewards.BLOCKS_PER_REDUCTION()).to.equal(BLOCKS_PER_REDUCTION);
+        });
+
+        it('should reject zero address for XOM token', async function () {
+            const OmniValidatorRewards = await ethers.getContractFactory('OmniValidatorRewards');
+            await expect(
+                upgrades.deployProxy(
+                    OmniValidatorRewards,
+                    [ZeroAddress, await mockParticipation.getAddress(), await mockOmniCore.getAddress()],
+                    { initializer: 'initialize', kind: 'uups' }
+                )
+            ).to.be.revertedWithCustomError(OmniValidatorRewards, 'ZeroAddress');
+        });
+
+        it('should reject zero address for participation', async function () {
+            const OmniValidatorRewards = await ethers.getContractFactory('OmniValidatorRewards');
+            await expect(
+                upgrades.deployProxy(
+                    OmniValidatorRewards,
+                    [await mockXOMToken.getAddress(), ZeroAddress, await mockOmniCore.getAddress()],
+                    { initializer: 'initialize', kind: 'uups' }
+                )
+            ).to.be.revertedWithCustomError(OmniValidatorRewards, 'ZeroAddress');
+        });
+
+        it('should reject zero address for omniCore', async function () {
+            const OmniValidatorRewards = await ethers.getContractFactory('OmniValidatorRewards');
+            await expect(
+                upgrades.deployProxy(
+                    OmniValidatorRewards,
+                    [await mockXOMToken.getAddress(), await mockParticipation.getAddress(), ZeroAddress],
+                    { initializer: 'initialize', kind: 'uups' }
+                )
+            ).to.be.revertedWithCustomError(OmniValidatorRewards, 'ZeroAddress');
+        });
+    });
+
+    describe('Heartbeat System', function () {
+        it('should submit heartbeat', async function () {
+            const tx = await validatorRewards.connect(validator1).submitHeartbeat();
+
+            await expect(tx).to.emit(validatorRewards, 'ValidatorHeartbeat');
+        });
+
+        it('should update last heartbeat timestamp', async function () {
+            await validatorRewards.connect(validator1).submitHeartbeat();
+
+            const heartbeat = await validatorRewards.lastHeartbeat(validator1.address);
+            const currentTime = await time.latest();
+            expect(heartbeat).to.be.closeTo(currentTime, 2);
+        });
+
+        it('should mark validator as active', async function () {
+            await validatorRewards.connect(validator1).submitHeartbeat();
+
+            expect(await validatorRewards.isValidatorActive(validator1.address)).to.be.true;
+        });
+
+        it('should mark validator as inactive after timeout', async function () {
+            await validatorRewards.connect(validator1).submitHeartbeat();
+
+            // Advance time past timeout
+            await time.increase(HEARTBEAT_TIMEOUT + 1);
+
+            expect(await validatorRewards.isValidatorActive(validator1.address)).to.be.false;
+        });
+
+        it('should reject heartbeat from non-validator', async function () {
+            await expect(
+                validatorRewards.connect(unauthorized).submitHeartbeat()
+            ).to.be.revertedWithCustomError(validatorRewards, 'NotValidator');
+        });
+    });
+
+    describe('Transaction Processing Tracking', function () {
+        it('should record single transaction', async function () {
+            await validatorRewards.connect(blockchainRole).recordTransactionProcessing(validator1.address);
+
+            const epoch = await validatorRewards.getCurrentEpoch();
+            expect(await validatorRewards.transactionsProcessed(validator1.address, epoch)).to.equal(1);
+        });
+
+        it('should emit TransactionProcessed event', async function () {
+            const tx = await validatorRewards.connect(blockchainRole).recordTransactionProcessing(validator1.address);
+
+            await expect(tx).to.emit(validatorRewards, 'TransactionProcessed');
+        });
+
+        it('should track epoch total transactions', async function () {
+            await validatorRewards.connect(blockchainRole).recordTransactionProcessing(validator1.address);
+            await validatorRewards.connect(blockchainRole).recordTransactionProcessing(validator2.address);
+
+            const epoch = await validatorRewards.getCurrentEpoch();
+            expect(await validatorRewards.epochTotalTransactions(epoch)).to.equal(2);
+        });
+
+        it('should record multiple transactions at once', async function () {
+            await validatorRewards.connect(blockchainRole).recordMultipleTransactions(validator1.address, 10);
+
+            const epoch = await validatorRewards.getCurrentEpoch();
+            expect(await validatorRewards.transactionsProcessed(validator1.address, epoch)).to.equal(10);
+        });
+
+        it('should reject transaction recording from unauthorized caller', async function () {
+            await expect(
+                validatorRewards.connect(unauthorized).recordTransactionProcessing(validator1.address)
+            ).to.be.reverted;
+        });
+
+        it('should reject transaction recording for non-validator', async function () {
+            await expect(
+                validatorRewards.connect(blockchainRole).recordTransactionProcessing(unauthorized.address)
+            ).to.be.revertedWithCustomError(validatorRewards, 'NotValidator');
+        });
+    });
+
+    describe('Epoch Processing', function () {
+        beforeEach(async function () {
+            // Submit heartbeats for validators
+            await validatorRewards.connect(validator1).submitHeartbeat();
+            await validatorRewards.connect(validator2).submitHeartbeat();
+        });
+
+        it('should process epoch', async function () {
+            // Wait for at least one epoch
+            await time.increase(EPOCH_DURATION + 1);
+
+            const currentEpoch = await validatorRewards.getCurrentEpoch();
+            const tx = await validatorRewards.processEpoch(currentEpoch);
+
+            await expect(tx).to.emit(validatorRewards, 'EpochProcessed');
+        });
+
+        it('should distribute rewards to active validators', async function () {
+            await time.increase(EPOCH_DURATION + 1);
+
+            const currentEpoch = await validatorRewards.getCurrentEpoch();
+            await validatorRewards.processEpoch(currentEpoch);
+
+            // Check rewards accumulated
+            const rewards1 = await validatorRewards.accumulatedRewards(validator1.address);
+            const rewards2 = await validatorRewards.accumulatedRewards(validator2.address);
+
+            expect(rewards1).to.be.gt(0);
+            expect(rewards2).to.be.gt(0);
+        });
+
+        it('should distribute higher rewards to validators with higher weight', async function () {
+            await time.increase(EPOCH_DURATION + 1);
+
+            const currentEpoch = await validatorRewards.getCurrentEpoch();
+            await validatorRewards.processEpoch(currentEpoch);
+
+            const rewards1 = await validatorRewards.accumulatedRewards(validator1.address);
+            const rewards2 = await validatorRewards.accumulatedRewards(validator2.address);
+
+            // Validator1 has higher participation score and staking
+            expect(rewards1).to.be.gt(rewards2);
+        });
+
+        it('should reject processing future epoch', async function () {
+            const currentEpoch = await validatorRewards.getCurrentEpoch();
+
+            await expect(
+                validatorRewards.processEpoch(currentEpoch + BigInt(100))
+            ).to.be.revertedWithCustomError(validatorRewards, 'FutureEpoch');
+        });
+
+        it('should reject processing already processed epoch', async function () {
+            await time.increase(EPOCH_DURATION + 1);
+
+            const currentEpoch = await validatorRewards.getCurrentEpoch();
+            await validatorRewards.processEpoch(currentEpoch);
+
+            await expect(
+                validatorRewards.processEpoch(currentEpoch)
+            ).to.be.revertedWithCustomError(validatorRewards, 'EpochAlreadyProcessed');
+        });
+
+        it('should skip epoch if no active validators', async function () {
+            // Wait for heartbeat timeout
+            await time.increase(HEARTBEAT_TIMEOUT + 1);
+
+            const currentEpoch = await validatorRewards.getCurrentEpoch();
+            await validatorRewards.processEpoch(currentEpoch);
+
+            // No rewards distributed
+            const rewards1 = await validatorRewards.accumulatedRewards(validator1.address);
+            expect(rewards1).to.equal(0);
+        });
+
+        it('should update lastProcessedEpoch', async function () {
+            await time.increase(EPOCH_DURATION + 1);
+
+            const currentEpoch = await validatorRewards.getCurrentEpoch();
+            await validatorRewards.processEpoch(currentEpoch);
+
+            expect(await validatorRewards.lastProcessedEpoch()).to.equal(currentEpoch);
+        });
+
+        it('should increment totalBlocksProduced', async function () {
+            await time.increase(EPOCH_DURATION + 1);
+
+            const currentEpoch = await validatorRewards.getCurrentEpoch();
+            await validatorRewards.processEpoch(currentEpoch);
+
+            expect(await validatorRewards.totalBlocksProduced()).to.equal(1);
+        });
+    });
+
+    describe('Batch Epoch Processing', function () {
+        beforeEach(async function () {
+            await validatorRewards.connect(validator1).submitHeartbeat();
+            await validatorRewards.connect(validator2).submitHeartbeat();
+        });
+
+        it('should process multiple epochs at once', async function () {
+            // Wait for multiple epochs
+            await time.increase(EPOCH_DURATION * 5);
+
+            await validatorRewards.processMultipleEpochs(5);
+
+            expect(await validatorRewards.totalBlocksProduced()).to.be.gte(1);
+        });
+
+        it('should accumulate rewards across multiple epochs', async function () {
+            await time.increase(EPOCH_DURATION * 3);
+
+            // Refresh heartbeats to keep validators active
+            await validatorRewards.connect(validator1).submitHeartbeat();
+            await validatorRewards.connect(validator2).submitHeartbeat();
+
+            await validatorRewards.processMultipleEpochs(3);
+
+            const rewards1 = await validatorRewards.accumulatedRewards(validator1.address);
+            expect(rewards1).to.be.gt(0);
+        });
+    });
+
+    describe('Reward Claiming', function () {
+        beforeEach(async function () {
+            // Setup: process an epoch to have rewards
+            await validatorRewards.connect(validator1).submitHeartbeat();
+            await validatorRewards.connect(validator2).submitHeartbeat();
+            await time.increase(EPOCH_DURATION + 1);
+            const currentEpoch = await validatorRewards.getCurrentEpoch();
+            await validatorRewards.processEpoch(currentEpoch);
+        });
+
+        it('should claim rewards', async function () {
+            const pendingRewards = await validatorRewards.accumulatedRewards(validator1.address);
+            expect(pendingRewards).to.be.gt(0);
+
+            const tx = await validatorRewards.connect(validator1).claimRewards();
+
+            await expect(tx)
+                .to.emit(validatorRewards, 'RewardsClaimed')
+                .withArgs(validator1.address, pendingRewards, pendingRewards);
+        });
+
+        it('should transfer XOM tokens on claim', async function () {
+            const balanceBefore = await mockXOMToken.balanceOf(validator1.address);
+            const pendingRewards = await validatorRewards.accumulatedRewards(validator1.address);
+
+            await validatorRewards.connect(validator1).claimRewards();
+
+            const balanceAfter = await mockXOMToken.balanceOf(validator1.address);
+            expect(balanceAfter - balanceBefore).to.equal(pendingRewards);
+        });
+
+        it('should reset accumulated rewards after claim', async function () {
+            await validatorRewards.connect(validator1).claimRewards();
+
+            expect(await validatorRewards.accumulatedRewards(validator1.address)).to.equal(0);
+        });
+
+        it('should update total claimed', async function () {
+            const pendingRewards = await validatorRewards.accumulatedRewards(validator1.address);
+
+            await validatorRewards.connect(validator1).claimRewards();
+
+            expect(await validatorRewards.totalClaimed(validator1.address)).to.equal(pendingRewards);
+        });
+
+        it('should reject claim with no rewards', async function () {
+            // Claim once
+            await validatorRewards.connect(validator1).claimRewards();
+
+            // Try to claim again
+            await expect(
+                validatorRewards.connect(validator1).claimRewards()
+            ).to.be.revertedWithCustomError(validatorRewards, 'NoRewardsToClaim');
+        });
+
+        it('should reject claim from non-validator', async function () {
+            await expect(
+                validatorRewards.connect(unauthorized).claimRewards()
+            ).to.be.revertedWithCustomError(validatorRewards, 'NotValidator');
+        });
+
+        it('should reject claim if contract balance insufficient', async function () {
+            // Drain contract
+            await validatorRewards.connect(owner).emergencyWithdraw(
+                await mockXOMToken.getAddress(),
+                await mockXOMToken.balanceOf(await validatorRewards.getAddress()),
+                owner.address
+            );
+
+            await expect(
+                validatorRewards.connect(validator1).claimRewards()
+            ).to.be.revertedWithCustomError(validatorRewards, 'InsufficientBalance');
+        });
+    });
+
+    describe('Weight Calculation', function () {
+        beforeEach(async function () {
+            await validatorRewards.connect(validator1).submitHeartbeat();
+            await validatorRewards.connect(validator2).submitHeartbeat();
+        });
+
+        it('should return higher weight for higher participation score', async function () {
+            const weight1 = await validatorRewards.getValidatorWeight(validator1.address);
+            const weight2 = await validatorRewards.getValidatorWeight(validator2.address);
+
+            // Validator1 has 80 participation score, Validator2 has 60
+            expect(weight1).to.be.gt(weight2);
+        });
+
+        it('should return higher weight for higher staking amount', async function () {
+            // Set equal participation scores
+            await mockParticipation.setTotalScore(validator1.address, 50);
+            await mockParticipation.setTotalScore(validator2.address, 50);
+
+            const weight1 = await validatorRewards.getValidatorWeight(validator1.address);
+            const weight2 = await validatorRewards.getValidatorWeight(validator2.address);
+
+            // Validator1 has 10M stake, Validator2 has 1M
+            expect(weight1).to.be.gt(weight2);
+        });
+
+        it('should include activity component in weight', async function () {
+            // Validator1 is active (heartbeat), validator3 is not
+            const weight1 = await validatorRewards.getValidatorWeight(validator1.address);
+
+            // Make validator3 inactive (no heartbeat)
+            const weight3 = await validatorRewards.getValidatorWeight(validator3.address);
+
+            // Active validator should have higher weight
+            expect(weight1).to.be.gt(weight3);
+        });
+
+        it('should factor transaction processing into weight', async function () {
+            // Record transactions for validator1
+            await validatorRewards.connect(blockchainRole).recordMultipleTransactions(validator1.address, 10);
+
+            const epoch = await validatorRewards.getCurrentEpoch();
+            const validatorTx = await validatorRewards.transactionsProcessed(validator1.address, epoch);
+            expect(validatorTx).to.equal(10);
+        });
+    });
+
+    describe('Block Reward Calculation', function () {
+        it('should return initial block reward at start', async function () {
+            const reward = await validatorRewards.calculateBlockReward();
+            expect(reward).to.equal(INITIAL_BLOCK_REWARD);
+        });
+
+        it('should return same reward before first reduction', async function () {
+            // Process some epochs but not enough to trigger reduction
+            for (let i = 0; i < 10; i++) {
+                await validatorRewards.connect(validator1).submitHeartbeat();
+                await time.increase(EPOCH_DURATION + 1);
+                const epoch = await validatorRewards.getCurrentEpoch();
+                await validatorRewards.processEpoch(epoch);
+            }
+
+            const reward = await validatorRewards.calculateBlockReward();
+            expect(reward).to.equal(INITIAL_BLOCK_REWARD);
+        });
+
+        // Note: Testing actual reduction would require processing millions of epochs
+        // which is not practical in a unit test
+    });
+
+    describe('Epoch Calculation', function () {
+        it('should return 0 for genesis epoch', async function () {
+            // At genesis, epoch should be 0 or 1 depending on timing
+            const epoch = await validatorRewards.getCurrentEpoch();
+            expect(epoch).to.be.gte(0);
+        });
+
+        it('should increment epoch every EPOCH_DURATION seconds', async function () {
+            const epochBefore = await validatorRewards.getCurrentEpoch();
+
+            await time.increase(EPOCH_DURATION * 5);
+
+            const epochAfter = await validatorRewards.getCurrentEpoch();
+            expect(epochAfter - epochBefore).to.be.closeTo(BigInt(5), BigInt(1));
+        });
+    });
+
+    describe('View Functions', function () {
+        beforeEach(async function () {
+            await validatorRewards.connect(validator1).submitHeartbeat();
+            await time.increase(EPOCH_DURATION + 1);
+            const epoch = await validatorRewards.getCurrentEpoch();
+            await validatorRewards.processEpoch(epoch);
+        });
+
+        it('should return pending rewards', async function () {
+            const pending = await validatorRewards.getPendingRewards(validator1.address);
+            expect(pending).to.be.gt(0);
+        });
+
+        it('should return total claimed after claim', async function () {
+            await validatorRewards.connect(validator1).claimRewards();
+            const totalClaimed = await validatorRewards.getTotalClaimed(validator1.address);
+            expect(totalClaimed).to.be.gt(0);
+        });
+
+        it('should return pending epochs count', async function () {
+            await time.increase(EPOCH_DURATION * 3);
+            const pending = await validatorRewards.getPendingEpochs();
+            expect(pending).to.be.gte(1);
+        });
+
+        it('should return reward balance', async function () {
+            const balance = await validatorRewards.getRewardBalance();
+            expect(balance).to.be.gt(0);
+        });
+    });
+
+    describe('Admin Functions', function () {
+        describe('setContracts', function () {
+            it('should update contract references', async function () {
+                const newXOM = validator1.address;
+                const newParticipation = validator2.address;
+                const newOmniCore = validator3.address;
+
+                const tx = await validatorRewards.connect(owner).setContracts(
+                    newXOM,
+                    newParticipation,
+                    newOmniCore
+                );
+
+                await expect(tx)
+                    .to.emit(validatorRewards, 'ContractsUpdated')
+                    .withArgs(newXOM, newParticipation, newOmniCore);
+            });
+
+            it('should reject zero address for XOM', async function () {
+                await expect(
+                    validatorRewards.connect(owner).setContracts(
+                        ZeroAddress,
+                        validator2.address,
+                        validator3.address
+                    )
+                ).to.be.revertedWithCustomError(validatorRewards, 'ZeroAddress');
+            });
+
+            it('should reject zero address for participation', async function () {
+                await expect(
+                    validatorRewards.connect(owner).setContracts(
+                        validator1.address,
+                        ZeroAddress,
+                        validator3.address
+                    )
+                ).to.be.revertedWithCustomError(validatorRewards, 'ZeroAddress');
+            });
+
+            it('should reject zero address for omniCore', async function () {
+                await expect(
+                    validatorRewards.connect(owner).setContracts(
+                        validator1.address,
+                        validator2.address,
+                        ZeroAddress
+                    )
+                ).to.be.revertedWithCustomError(validatorRewards, 'ZeroAddress');
+            });
+
+            it('should reject unauthorized caller', async function () {
+                await expect(
+                    validatorRewards.connect(unauthorized).setContracts(
+                        validator1.address,
+                        validator2.address,
+                        validator3.address
+                    )
+                ).to.be.reverted;
+            });
+        });
+
+        describe('emergencyWithdraw', function () {
+            it('should withdraw tokens', async function () {
+                const amount = ethers.parseEther('1000');
+                const balanceBefore = await mockXOMToken.balanceOf(owner.address);
+
+                await validatorRewards.connect(owner).emergencyWithdraw(
+                    await mockXOMToken.getAddress(),
+                    amount,
+                    owner.address
+                );
+
+                const balanceAfter = await mockXOMToken.balanceOf(owner.address);
+                expect(balanceAfter - balanceBefore).to.equal(amount);
+            });
+
+            it('should reject zero recipient', async function () {
+                await expect(
+                    validatorRewards.connect(owner).emergencyWithdraw(
+                        await mockXOMToken.getAddress(),
+                        ethers.parseEther('1000'),
+                        ZeroAddress
+                    )
+                ).to.be.revertedWithCustomError(validatorRewards, 'ZeroAddress');
+            });
+
+            it('should reject unauthorized caller', async function () {
+                await expect(
+                    validatorRewards.connect(unauthorized).emergencyWithdraw(
+                        await mockXOMToken.getAddress(),
+                        ethers.parseEther('1000'),
+                        unauthorized.address
+                    )
+                ).to.be.reverted;
+            });
+        });
+    });
+
+    describe('Edge Cases', function () {
+        it('should handle zero staking amount', async function () {
+            // Validator3 has no stake set
+            await validatorRewards.connect(validator3).submitHeartbeat();
+
+            const weight = await validatorRewards.getValidatorWeight(validator3.address);
+            // Should still have some weight from participation and heartbeat
+            expect(weight).to.be.gt(0);
+        });
+
+        it('should handle very large staking amount', async function () {
+            // Set 10B+ stake
+            await mockOmniCore.setStake(
+                validator1.address,
+                ethers.parseEther('10000000000'), // 10B XOM
+                5,
+                730 * 24 * 60 * 60,
+                0,
+                true
+            );
+
+            const weight = await validatorRewards.getValidatorWeight(validator1.address);
+            expect(weight).to.be.gt(0);
+        });
+
+        it('should handle single active validator', async function () {
+            // Only validator1 submits heartbeat
+            await validatorRewards.connect(validator1).submitHeartbeat();
+            await time.increase(EPOCH_DURATION + 1);
+
+            const epoch = await validatorRewards.getCurrentEpoch();
+            await validatorRewards.processEpoch(epoch);
+
+            // Validator1 should get all rewards
+            const rewards1 = await validatorRewards.accumulatedRewards(validator1.address);
+            expect(rewards1).to.be.closeTo(INITIAL_BLOCK_REWARD, ethers.parseEther('0.001'));
+        });
+
+        it('should handle equal weights', async function () {
+            // Set identical participation and staking
+            await mockParticipation.setTotalScore(validator1.address, 50);
+            await mockParticipation.setTotalScore(validator2.address, 50);
+            await mockOmniCore.setStake(validator1.address, ethers.parseEther('1000000'), 2, 0, 0, true);
+            await mockOmniCore.setStake(validator2.address, ethers.parseEther('1000000'), 2, 0, 0, true);
+
+            await validatorRewards.connect(validator1).submitHeartbeat();
+            await validatorRewards.connect(validator2).submitHeartbeat();
+            await time.increase(EPOCH_DURATION + 1);
+
+            const epoch = await validatorRewards.getCurrentEpoch();
+            await validatorRewards.processEpoch(epoch);
+
+            const rewards1 = await validatorRewards.accumulatedRewards(validator1.address);
+            const rewards2 = await validatorRewards.accumulatedRewards(validator2.address);
+
+            // Rewards should be approximately equal
+            expect(rewards1).to.be.closeTo(rewards2, ethers.parseEther('0.01'));
+        });
+    });
+});

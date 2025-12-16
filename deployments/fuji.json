@@ -22,7 +22,11 @@
     "OmniRegistration": "0x0E4E697317117B150481a827f1e5029864aAe781",
     "OmniRegistrationImplementation": "0xC4f78C9E6A3D37e7bc4eD6d47549B89dd6577855",
     "OmniSybilGuard": "0xe6E7fA5FA18F06686df1603B63eCff8683F118B0",
-    "OmniSybilGuardImplementation": "0x190B422100e4Df7f7d98b3dd3F8dc2dc4DeA6572"
+    "OmniSybilGuardImplementation": "0x190B422100e4Df7f7d98b3dd3F8dc2dc4DeA6572",
+    "OmniParticipation": "0x0000000000000000000000000000000000000000",
+    "OmniParticipationImplementation": "",
+    "OmniValidatorRewards": "0x0000000000000000000000000000000000000000",
+    "OmniValidatorRewardsImplementation": ""
   },
   "validatorManager": {
     "type": "AvalanchePoSValidatorManager",

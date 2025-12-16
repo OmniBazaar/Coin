@@ -152,6 +152,58 @@ contract OmniRegistration is
     mapping(bytes32 => bool) public usedNonces;
 
     // ═══════════════════════════════════════════════════════════════════════
+    //                    KYC TIER 2/3/4 STORAGE (Added v2)
+    // ═══════════════════════════════════════════════════════════════════════
+
+    /// @notice EIP-712 typehash for ID verification proof (KYC Tier 2)
+    bytes32 public constant ID_VERIFICATION_TYPEHASH = keccak256(
+        "IDVerification(address user,bytes32 idHash,string country,uint256 timestamp,bytes32 nonce,uint256 deadline)"
+    );
+
+    /// @notice EIP-712 typehash for video verification proof (KYC Tier 3)
+    bytes32 public constant VIDEO_VERIFICATION_TYPEHASH = keccak256(
+        "VideoVerification(address user,bytes32 sessionHash,uint256 timestamp,bytes32 nonce,uint256 deadline)"
+    );
+
+    /// @notice EIP-712 typehash for third-party KYC attestation (KYC Tier 4)
+    bytes32 public constant THIRD_PARTY_KYC_TYPEHASH = keccak256(
+        "ThirdPartyKYC(address user,address provider,uint256 timestamp,bytes32 nonce,uint256 deadline)"
+    );
+
+    /// @notice User ID hash (keccak256 of normalized ID data) for KYC Tier 2
+    mapping(address => bytes32) public userIDHashes;
+
+    /// @notice Used ID hashes (prevent reuse across users)
+    mapping(bytes32 => bool) public usedIDHashes;
+
+    /// @notice User country codes (ISO 3166-1 alpha-2)
+    mapping(address => string) public userCountries;
+
+    /// @notice KYC Tier 2 completion timestamp
+    mapping(address => uint256) public kycTier2CompletedAt;
+
+    /// @notice Video verification session hashes for KYC Tier 3
+    mapping(address => bytes32) public videoSessionHashes;
+
+    /// @notice KYC Tier 3 completion timestamp
+    mapping(address => uint256) public kycTier3CompletedAt;
+
+    /// @notice Trusted third-party KYC provider addresses
+    mapping(address => bool) public trustedKYCProviders;
+
+    /// @notice Provider names for transparency
+    mapping(address => string) public kycProviderNames;
+
+    /// @notice KYC Tier 4 completion timestamp
+    mapping(address => uint256) public kycTier4CompletedAt;
+
+    /// @notice Which provider verified each user for Tier 4
+    mapping(address => address) public userKYCProvider;
+
+    /// @notice Referral count per user (how many users they referred)
+    mapping(address => uint256) public referralCounts;
+
+    // ═══════════════════════════════════════════════════════════════════════
     //                              EVENTS
     // ═══════════════════════════════════════════════════════════════════════
 
@@ -281,6 +333,75 @@ contract OmniRegistration is
     );
 
     // ═══════════════════════════════════════════════════════════════════════
+    //                    KYC TIER 2/3/4 EVENTS (Added v2)
+    // ═══════════════════════════════════════════════════════════════════════
+
+    /**
+     * @notice Emitted when ID is verified (KYC Tier 2)
+     * @param user The user who verified their ID
+     * @param idHash Keccak256 hash of normalized ID data
+     * @param country ISO 3166-1 alpha-2 country code
+     * @param timestamp When verification was performed
+     */
+    event IDVerified(
+        address indexed user,
+        bytes32 indexed idHash,
+        string country,
+        uint256 timestamp
+    );
+
+    /**
+     * @notice Emitted when KYC Tier 2 is completed
+     * @param user The user who completed KYC Tier 2
+     * @param timestamp Block timestamp when completed
+     */
+    event KycTier2Completed(address indexed user, uint256 timestamp);
+
+    /**
+     * @notice Emitted when video verification is completed (KYC Tier 3)
+     * @param user The user who completed video verification
+     * @param sessionHash Keccak256 hash of video session ID
+     * @param timestamp When verification was performed
+     */
+    event VideoVerified(
+        address indexed user,
+        bytes32 indexed sessionHash,
+        uint256 timestamp
+    );
+
+    /**
+     * @notice Emitted when KYC Tier 3 is completed
+     * @param user The user who completed KYC Tier 3
+     * @param timestamp Block timestamp when completed
+     */
+    event KycTier3Completed(address indexed user, uint256 timestamp);
+
+    /**
+     * @notice Emitted when a KYC provider is added
+     * @param provider Provider contract address
+     * @param name Provider name
+     */
+    event KYCProviderAdded(address indexed provider, string name);
+
+    /**
+     * @notice Emitted when a KYC provider is removed
+     * @param provider Provider address that was removed
+     */
+    event KYCProviderRemoved(address indexed provider);
+
+    /**
+     * @notice Emitted when KYC Tier 4 is completed (third-party KYC)
+     * @param user The user who completed KYC Tier 4
+     * @param provider The KYC provider who verified the user
+     * @param timestamp Block timestamp when completed
+     */
+    event KycTier4Completed(
+        address indexed user,
+        address indexed provider,
+        uint256 timestamp
+    );
+
+    // ═══════════════════════════════════════════════════════════════════════
     //                              ERRORS
     // ═══════════════════════════════════════════════════════════════════════
 
@@ -346,6 +467,21 @@ contract OmniRegistration is
 
     /// @notice Invalid user signature on registration request
     error InvalidUserSignature();
+
+    /// @notice ID hash has already been used by another user
+    error IDAlreadyUsed();
+
+    /// @notice KYC provider is not in the trusted list
+    error UntrustedKYCProvider();
+
+    /// @notice KYC provider signature is invalid
+    error InvalidKYCProviderSignature();
+
+    /// @notice User must complete previous KYC tier first
+    error PreviousTierRequired();
+
+    /// @notice Invalid provider address (zero address)
+    error InvalidProvider();
 
     // ═══════════════════════════════════════════════════════════════════════
     //                           INITIALIZATION
@@ -468,6 +604,11 @@ contract OmniRegistration is
         // Update counters
         ++dailyRegistrationCount[today];
         ++totalRegistrations;
+
+        // Increment referrer's referral count if referrer exists
+        if (referrer != address(0)) {
+            ++referralCounts[referrer];
+        }
 
         emit UserRegistered(user, referrer, msg.sender, block.timestamp);
     }
@@ -645,10 +786,17 @@ contract OmniRegistration is
         userEmailHashes[user] = emailHash;
         usedNonces[emailNonce] = true;
 
-        // Update counters and emit event
+        // Update counters
         ++dailyRegistrationCount[today];
         ++totalRegistrations;
-        emit UserRegisteredTrustless(user, referrer, block.timestamp); // solhint-disable-line not-rely-on-time
+
+        // Increment referrer's referral count if referrer exists
+        if (referrer != address(0)) {
+            ++referralCounts[referrer];
+        }
+
+        // solhint-disable-next-line not-rely-on-time
+        emit UserRegisteredTrustless(user, referrer, block.timestamp);
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -1058,6 +1206,461 @@ contract OmniRegistration is
         kycTier1CompletedAt[user] = block.timestamp;
         // solhint-disable-next-line not-rely-on-time
         emit KycTier1Completed(user, block.timestamp);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    //                    KYC TIER 2/3/4 VERIFICATION (Added v2)
+    // ═══════════════════════════════════════════════════════════════════════
+
+    /**
+     * @notice Submit ID verification proof (KYC Tier 2)
+     * @param idHash Keccak256 of (ID_TYPE:ID_NUMBER:DOB:COUNTRY)
+     * @param country ISO 3166-1 alpha-2 country code (e.g., "US", "GB")
+     * @param timestamp When verification was performed
+     * @param nonce Unique nonce for replay protection
+     * @param deadline Proof expiration time
+     * @param signature EIP-712 signature from trustedVerificationKey
+     * @dev Requires KYC Tier 1 to be complete first.
+     *      ID hash format: keccak256("PASSPORT:AB123456:1990-01-01:US")
+     */
+    function submitIDVerification(
+        bytes32 idHash,
+        string calldata country,
+        uint256 timestamp,
+        bytes32 nonce,
+        uint256 deadline,
+        bytes calldata signature
+    ) external nonReentrant {
+        // 1. Check trusted verification key is set
+        if (trustedVerificationKey == address(0)) revert TrustedVerificationKeyNotSet();
+
+        // 2. Check deadline not expired
+        // solhint-disable-next-line not-rely-on-time
+        if (block.timestamp > deadline) revert ProofExpired();
+
+        // 3. Check nonce not already used
+        if (usedNonces[nonce]) revert NonceAlreadyUsed();
+
+        // 4. Check ID hash not already used
+        if (usedIDHashes[idHash]) revert IDAlreadyUsed();
+
+        // 5. Check user has KYC Tier 1
+        if (kycTier1CompletedAt[msg.sender] == 0) revert PreviousTierRequired();
+
+        // 6. Verify EIP-712 signature from trustedVerificationKey
+        bytes32 structHash = keccak256(
+            abi.encode(
+                ID_VERIFICATION_TYPEHASH,
+                msg.sender,
+                idHash,
+                keccak256(bytes(country)),
+                timestamp,
+                nonce,
+                deadline
+            )
+        );
+
+        bytes32 digest = keccak256(
+            abi.encodePacked("\x19\x01", DOMAIN_SEPARATOR, structHash)
+        );
+
+        address signer = digest.recover(signature);
+        if (signer != trustedVerificationKey) revert InvalidVerificationProof();
+
+        // 7. Store verification
+        userIDHashes[msg.sender] = idHash;
+        usedIDHashes[idHash] = true;
+        userCountries[msg.sender] = country;
+        usedNonces[nonce] = true;
+
+        // 8. Mark KYC Tier 2 complete
+        // solhint-disable-next-line not-rely-on-time
+        kycTier2CompletedAt[msg.sender] = block.timestamp;
+
+        // solhint-disable-next-line not-rely-on-time
+        emit IDVerified(msg.sender, idHash, country, timestamp);
+        // solhint-disable-next-line not-rely-on-time
+        emit KycTier2Completed(msg.sender, block.timestamp);
+    }
+
+    /**
+     * @notice Submit ID verification for another user (relay pattern)
+     * @param user Address of the user being verified
+     * @param idHash Keccak256 of (ID_TYPE:ID_NUMBER:DOB:COUNTRY)
+     * @param country ISO 3166-1 alpha-2 country code
+     * @param timestamp When verification was performed
+     * @param nonce Unique nonce for replay protection
+     * @param deadline Proof expiration time
+     * @param signature EIP-712 signature from trustedVerificationKey
+     * @dev ANYONE can relay. User address is verified in signature.
+     */
+    function submitIDVerificationFor(
+        address user,
+        bytes32 idHash,
+        string calldata country,
+        uint256 timestamp,
+        bytes32 nonce,
+        uint256 deadline,
+        bytes calldata signature
+    ) external nonReentrant {
+        // 1. Check trusted verification key is set
+        if (trustedVerificationKey == address(0)) revert TrustedVerificationKeyNotSet();
+
+        // 2. Check deadline not expired
+        // solhint-disable-next-line not-rely-on-time
+        if (block.timestamp > deadline) revert ProofExpired();
+
+        // 3. Check nonce not already used
+        if (usedNonces[nonce]) revert NonceAlreadyUsed();
+
+        // 4. Check ID hash not already used
+        if (usedIDHashes[idHash]) revert IDAlreadyUsed();
+
+        // 5. Check user has KYC Tier 1
+        if (kycTier1CompletedAt[user] == 0) revert PreviousTierRequired();
+
+        // 6. Verify EIP-712 signature (user address is part of signed data)
+        bytes32 structHash = keccak256(
+            abi.encode(
+                ID_VERIFICATION_TYPEHASH,
+                user,
+                idHash,
+                keccak256(bytes(country)),
+                timestamp,
+                nonce,
+                deadline
+            )
+        );
+
+        bytes32 digest = keccak256(
+            abi.encodePacked("\x19\x01", DOMAIN_SEPARATOR, structHash)
+        );
+
+        address signer = digest.recover(signature);
+        if (signer != trustedVerificationKey) revert InvalidVerificationProof();
+
+        // 7. Store verification
+        userIDHashes[user] = idHash;
+        usedIDHashes[idHash] = true;
+        userCountries[user] = country;
+        usedNonces[nonce] = true;
+
+        // 8. Mark KYC Tier 2 complete
+        // solhint-disable-next-line not-rely-on-time
+        kycTier2CompletedAt[user] = block.timestamp;
+
+        // solhint-disable-next-line not-rely-on-time
+        emit IDVerified(user, idHash, country, timestamp);
+        // solhint-disable-next-line not-rely-on-time
+        emit KycTier2Completed(user, block.timestamp);
+    }
+
+    /**
+     * @notice Submit video verification proof (KYC Tier 3)
+     * @param sessionHash Keccak256 of video session ID
+     * @param timestamp When verification was performed
+     * @param nonce Unique nonce for replay protection
+     * @param deadline Proof expiration time
+     * @param signature EIP-712 signature from trustedVerificationKey
+     * @dev Requires KYC Tier 2 to be complete first.
+     *      Video session proves liveness and ID match.
+     */
+    function submitVideoVerification(
+        bytes32 sessionHash,
+        uint256 timestamp,
+        bytes32 nonce,
+        uint256 deadline,
+        bytes calldata signature
+    ) external nonReentrant {
+        // 1. Check trusted verification key is set
+        if (trustedVerificationKey == address(0)) revert TrustedVerificationKeyNotSet();
+
+        // 2. Check deadline not expired
+        // solhint-disable-next-line not-rely-on-time
+        if (block.timestamp > deadline) revert ProofExpired();
+
+        // 3. Check nonce not already used
+        if (usedNonces[nonce]) revert NonceAlreadyUsed();
+
+        // 4. Check user has KYC Tier 2
+        if (kycTier2CompletedAt[msg.sender] == 0) revert PreviousTierRequired();
+
+        // 5. Verify EIP-712 signature from trustedVerificationKey
+        bytes32 structHash = keccak256(
+            abi.encode(
+                VIDEO_VERIFICATION_TYPEHASH,
+                msg.sender,
+                sessionHash,
+                timestamp,
+                nonce,
+                deadline
+            )
+        );
+
+        bytes32 digest = keccak256(
+            abi.encodePacked("\x19\x01", DOMAIN_SEPARATOR, structHash)
+        );
+
+        address signer = digest.recover(signature);
+        if (signer != trustedVerificationKey) revert InvalidVerificationProof();
+
+        // 6. Store verification
+        videoSessionHashes[msg.sender] = sessionHash;
+        usedNonces[nonce] = true;
+
+        // 7. Mark KYC Tier 3 complete
+        // solhint-disable-next-line not-rely-on-time
+        kycTier3CompletedAt[msg.sender] = block.timestamp;
+
+        // solhint-disable-next-line not-rely-on-time
+        emit VideoVerified(msg.sender, sessionHash, timestamp);
+        // solhint-disable-next-line not-rely-on-time
+        emit KycTier3Completed(msg.sender, block.timestamp);
+    }
+
+    /**
+     * @notice Submit video verification for another user (relay pattern)
+     * @param user Address of the user being verified
+     * @param sessionHash Keccak256 of video session ID
+     * @param timestamp When verification was performed
+     * @param nonce Unique nonce for replay protection
+     * @param deadline Proof expiration time
+     * @param signature EIP-712 signature from trustedVerificationKey
+     * @dev ANYONE can relay. User address is verified in signature.
+     */
+    function submitVideoVerificationFor(
+        address user,
+        bytes32 sessionHash,
+        uint256 timestamp,
+        bytes32 nonce,
+        uint256 deadline,
+        bytes calldata signature
+    ) external nonReentrant {
+        // 1. Check trusted verification key is set
+        if (trustedVerificationKey == address(0)) revert TrustedVerificationKeyNotSet();
+
+        // 2. Check deadline not expired
+        // solhint-disable-next-line not-rely-on-time
+        if (block.timestamp > deadline) revert ProofExpired();
+
+        // 3. Check nonce not already used
+        if (usedNonces[nonce]) revert NonceAlreadyUsed();
+
+        // 4. Check user has KYC Tier 2
+        if (kycTier2CompletedAt[user] == 0) revert PreviousTierRequired();
+
+        // 5. Verify EIP-712 signature (user address is part of signed data)
+        bytes32 structHash = keccak256(
+            abi.encode(
+                VIDEO_VERIFICATION_TYPEHASH,
+                user,
+                sessionHash,
+                timestamp,
+                nonce,
+                deadline
+            )
+        );
+
+        bytes32 digest = keccak256(
+            abi.encodePacked("\x19\x01", DOMAIN_SEPARATOR, structHash)
+        );
+
+        address signer = digest.recover(signature);
+        if (signer != trustedVerificationKey) revert InvalidVerificationProof();
+
+        // 6. Store verification
+        videoSessionHashes[user] = sessionHash;
+        usedNonces[nonce] = true;
+
+        // 7. Mark KYC Tier 3 complete
+        // solhint-disable-next-line not-rely-on-time
+        kycTier3CompletedAt[user] = block.timestamp;
+
+        // solhint-disable-next-line not-rely-on-time
+        emit VideoVerified(user, sessionHash, timestamp);
+        // solhint-disable-next-line not-rely-on-time
+        emit KycTier3Completed(user, block.timestamp);
+    }
+
+    /**
+     * @notice Submit third-party KYC completion proof (KYC Tier 4)
+     * @param kycProvider Address of trusted KYC provider
+     * @param timestamp When KYC was completed
+     * @param nonce Replay protection
+     * @param deadline Proof expiration
+     * @param signature EIP-712 signature from KYC provider
+     * @dev KYC provider must be in trustedKYCProviders.
+     *      Provider attests user passed their verification.
+     */
+    function submitThirdPartyKYC(
+        address kycProvider,
+        uint256 timestamp,
+        bytes32 nonce,
+        uint256 deadline,
+        bytes calldata signature
+    ) external nonReentrant {
+        // 1. Check provider is trusted
+        if (!trustedKYCProviders[kycProvider]) revert UntrustedKYCProvider();
+
+        // 2. Check deadline not expired
+        // solhint-disable-next-line not-rely-on-time
+        if (block.timestamp > deadline) revert ProofExpired();
+
+        // 3. Check nonce not already used
+        if (usedNonces[nonce]) revert NonceAlreadyUsed();
+
+        // 4. Check user has KYC Tier 3
+        if (kycTier3CompletedAt[msg.sender] == 0) revert PreviousTierRequired();
+
+        // 5. Verify signature from KYC provider
+        bytes32 structHash = keccak256(
+            abi.encode(
+                THIRD_PARTY_KYC_TYPEHASH,
+                msg.sender,
+                kycProvider,
+                timestamp,
+                nonce,
+                deadline
+            )
+        );
+
+        bytes32 digest = keccak256(
+            abi.encodePacked("\x19\x01", DOMAIN_SEPARATOR, structHash)
+        );
+
+        address signer = digest.recover(signature);
+        if (signer != kycProvider) revert InvalidKYCProviderSignature();
+
+        // 6. Mark complete
+        usedNonces[nonce] = true;
+        // solhint-disable-next-line not-rely-on-time
+        kycTier4CompletedAt[msg.sender] = block.timestamp;
+        userKYCProvider[msg.sender] = kycProvider;
+
+        // solhint-disable-next-line not-rely-on-time
+        emit KycTier4Completed(msg.sender, kycProvider, block.timestamp);
+    }
+
+    /**
+     * @notice Submit third-party KYC for another user (relay pattern)
+     * @param user Address of the user being verified
+     * @param kycProvider Address of trusted KYC provider
+     * @param timestamp When KYC was completed
+     * @param nonce Replay protection
+     * @param deadline Proof expiration
+     * @param signature EIP-712 signature from KYC provider
+     * @dev ANYONE can relay. User address is verified in signature.
+     */
+    function submitThirdPartyKYCFor(
+        address user,
+        address kycProvider,
+        uint256 timestamp,
+        bytes32 nonce,
+        uint256 deadline,
+        bytes calldata signature
+    ) external nonReentrant {
+        // 1. Check provider is trusted
+        if (!trustedKYCProviders[kycProvider]) revert UntrustedKYCProvider();
+
+        // 2. Check deadline not expired
+        // solhint-disable-next-line not-rely-on-time
+        if (block.timestamp > deadline) revert ProofExpired();
+
+        // 3. Check nonce not already used
+        if (usedNonces[nonce]) revert NonceAlreadyUsed();
+
+        // 4. Check user has KYC Tier 3
+        if (kycTier3CompletedAt[user] == 0) revert PreviousTierRequired();
+
+        // 5. Verify signature from KYC provider (user is part of signed data)
+        bytes32 structHash = keccak256(
+            abi.encode(
+                THIRD_PARTY_KYC_TYPEHASH,
+                user,
+                kycProvider,
+                timestamp,
+                nonce,
+                deadline
+            )
+        );
+
+        bytes32 digest = keccak256(
+            abi.encodePacked("\x19\x01", DOMAIN_SEPARATOR, structHash)
+        );
+
+        address signer = digest.recover(signature);
+        if (signer != kycProvider) revert InvalidKYCProviderSignature();
+
+        // 6. Mark complete
+        usedNonces[nonce] = true;
+        // solhint-disable-next-line not-rely-on-time
+        kycTier4CompletedAt[user] = block.timestamp;
+        userKYCProvider[user] = kycProvider;
+
+        // solhint-disable-next-line not-rely-on-time
+        emit KycTier4Completed(user, kycProvider, block.timestamp);
+    }
+
+    /**
+     * @notice Check if user has completed KYC Tier 2
+     * @param user Address to check
+     * @return True if Tier 2 complete (ID verification)
+     */
+    function hasKycTier2(address user) external view returns (bool) {
+        return kycTier2CompletedAt[user] != 0;
+    }
+
+    /**
+     * @notice Check if user has completed KYC Tier 3
+     * @param user Address to check
+     * @return True if Tier 3 complete (video verification)
+     */
+    function hasKycTier3(address user) external view returns (bool) {
+        return kycTier3CompletedAt[user] != 0;
+    }
+
+    /**
+     * @notice Check if user has completed KYC Tier 4
+     * @param user Address to check
+     * @return True if Tier 4 complete (third-party KYC)
+     */
+    function hasKycTier4(address user) external view returns (bool) {
+        return kycTier4CompletedAt[user] != 0;
+    }
+
+    /**
+     * @notice Get the number of users referred by a user
+     * @param user Address to check
+     * @return Number of referrals
+     */
+    function getReferralCount(address user) external view returns (uint256) {
+        return referralCounts[user];
+    }
+
+    /**
+     * @notice Add trusted KYC provider (admin only)
+     * @param provider Provider contract address
+     * @param name Provider name for transparency
+     */
+    function addKYCProvider(
+        address provider,
+        string calldata name
+    ) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        if (provider == address(0)) revert InvalidProvider();
+        trustedKYCProviders[provider] = true;
+        kycProviderNames[provider] = name;
+        emit KYCProviderAdded(provider, name);
+    }
+
+    /**
+     * @notice Remove KYC provider (admin only)
+     * @param provider Provider address to remove
+     */
+    function removeKYCProvider(
+        address provider
+    ) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        trustedKYCProviders[provider] = false;
+        emit KYCProviderRemoved(provider);
     }
 
     // ═══════════════════════════════════════════════════════════════════════

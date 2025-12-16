@@ -1630,4 +1630,1188 @@ describe('OmniRegistration', function () {
             expect(await registration.isRegistered(user2.address)).to.be.false;
         });
     });
+
+    // ═══════════════════════════════════════════════════════════════════════
+    //                   KYC TIER 2/3/4 TESTS
+    // ═══════════════════════════════════════════════════════════════════════
+
+    describe('KYC Tier 2 - ID Verification', function () {
+        let trustedKey: any;
+        let tier2Phone: string;
+        let tier2Email: string;
+
+        /**
+         * Generate ID verification signature
+         */
+        async function signIDVerification(
+            signer: any,
+            user: string,
+            idHash: string,
+            country: string,
+            timestamp: number,
+            nonce: string,
+            deadline: number
+        ): Promise<string> {
+            const domain = {
+                name: 'OmniRegistration',
+                version: '1',
+                chainId: (await ethers.provider.getNetwork()).chainId,
+                verifyingContract: await registration.getAddress(),
+            };
+
+            const types = {
+                IDVerification: [
+                    { name: 'user', type: 'address' },
+                    { name: 'idHash', type: 'bytes32' },
+                    { name: 'country', type: 'string' },
+                    { name: 'timestamp', type: 'uint256' },
+                    { name: 'nonce', type: 'bytes32' },
+                    { name: 'deadline', type: 'uint256' },
+                ],
+            };
+
+            const value = {
+                user,
+                idHash,
+                country,
+                timestamp,
+                nonce,
+                deadline,
+            };
+
+            return await signer.signTypedData(domain, types, value);
+        }
+
+        beforeEach(async function () {
+            // Use validator3 as trusted verification key
+            trustedKey = validator3;
+            await registration.connect(owner).setTrustedVerificationKey(trustedKey.address);
+
+            // Generate truly unique identifiers
+            const uniqueId = Date.now().toString() + Math.random().toString().slice(2, 8);
+            tier2Phone = `+1-TIER2-${uniqueId}`;
+            tier2Email = `kyc-tier2-${uniqueId}@test.com`;
+
+            // Register user1
+            await registration.connect(validator1).registerUser(
+                user1.address,
+                referrer.address,
+                phoneHash(tier2Phone),
+                emailHash(tier2Email)
+            );
+
+            const currentTime = await time.latest();
+            const deadline = currentTime + 3600;
+
+            // Complete KYC Tier 1: Phone verification
+            const verificationPhone = `+1-TIER2-VERIFY-${uniqueId}`;
+            const phoneNonce = keccak256(toUtf8Bytes(`phone-nonce-tier2-${uniqueId}`));
+            const phoneSig = await signPhoneVerification(
+                trustedKey,
+                user1.address,
+                phoneHash(verificationPhone),
+                currentTime,
+                phoneNonce,
+                deadline
+            );
+            await registration.connect(user1).submitPhoneVerification(
+                phoneHash(verificationPhone),
+                currentTime,
+                phoneNonce,
+                deadline,
+                phoneSig
+            );
+
+            // Complete KYC Tier 1: Social verification (REQUIRED for Tier 1 completion)
+            const socialHash = keccak256(toUtf8Bytes(`twitter:tier2user-${uniqueId}`));
+            const socialNonce = keccak256(toUtf8Bytes(`social-nonce-tier2-${uniqueId}`));
+            const domain = {
+                name: 'OmniRegistration',
+                version: '1',
+                chainId: (await ethers.provider.getNetwork()).chainId,
+                verifyingContract: await registration.getAddress(),
+            };
+            const socialTypes = {
+                SocialVerification: [
+                    { name: 'user', type: 'address' },
+                    { name: 'socialHash', type: 'bytes32' },
+                    { name: 'platform', type: 'string' },
+                    { name: 'timestamp', type: 'uint256' },
+                    { name: 'nonce', type: 'bytes32' },
+                    { name: 'deadline', type: 'uint256' },
+                ],
+            };
+            const socialSig = await trustedKey.signTypedData(domain, socialTypes, {
+                user: user1.address,
+                socialHash,
+                platform: 'twitter',
+                timestamp: currentTime,
+                nonce: socialNonce,
+                deadline,
+            });
+            await registration.connect(user1).submitSocialVerification(
+                socialHash,
+                'twitter',
+                currentTime,
+                socialNonce,
+                deadline,
+                socialSig
+            );
+        });
+
+        /**
+         * Generate phone verification signature for KYC Tier 1
+         */
+        async function signPhoneVerification(
+            signer: any,
+            user: string,
+            phoneHashVal: string,
+            timestamp: number,
+            nonce: string,
+            deadline: number
+        ): Promise<string> {
+            const domain = {
+                name: 'OmniRegistration',
+                version: '1',
+                chainId: (await ethers.provider.getNetwork()).chainId,
+                verifyingContract: await registration.getAddress(),
+            };
+
+            const types = {
+                PhoneVerification: [
+                    { name: 'user', type: 'address' },
+                    { name: 'phoneHash', type: 'bytes32' },
+                    { name: 'timestamp', type: 'uint256' },
+                    { name: 'nonce', type: 'bytes32' },
+                    { name: 'deadline', type: 'uint256' },
+                ],
+            };
+
+            const value = {
+                user,
+                phoneHash: phoneHashVal,
+                timestamp,
+                nonce,
+                deadline,
+            };
+
+            return await signer.signTypedData(domain, types, value);
+        }
+
+        it('should complete ID verification (KYC Tier 2)', async function () {
+            const idHash = keccak256(toUtf8Bytes('PASSPORT:AB123456:1990-01-01:US'));
+            const country = 'US';
+            const currentTime = await time.latest();
+            const nonce = keccak256(toUtf8Bytes('id-nonce-1'));
+            const deadline = currentTime + 3600;
+
+            const signature = await signIDVerification(
+                trustedKey,
+                user1.address,
+                idHash,
+                country,
+                currentTime,
+                nonce,
+                deadline
+            );
+
+            const tx = await registration.connect(user1).submitIDVerification(
+                idHash,
+                country,
+                currentTime,
+                nonce,
+                deadline,
+                signature
+            );
+
+            await expect(tx).to.emit(registration, 'IDVerified');
+            await expect(tx).to.emit(registration, 'KycTier2Completed');
+
+            expect(await registration.hasKycTier2(user1.address)).to.be.true;
+        });
+
+        it('should reject ID verification without KYC Tier 1', async function () {
+            const idHash = keccak256(toUtf8Bytes('PASSPORT:AB123457:1990-01-01:US'));
+            const country = 'US';
+            const currentTime = await time.latest();
+            const nonce = keccak256(toUtf8Bytes('id-nonce-2'));
+            const deadline = currentTime + 3600;
+
+            const signature = await signIDVerification(
+                trustedKey,
+                user2.address,
+                idHash,
+                country,
+                currentTime,
+                nonce,
+                deadline
+            );
+
+            await expect(
+                registration.connect(user2).submitIDVerification(
+                    idHash,
+                    country,
+                    currentTime,
+                    nonce,
+                    deadline,
+                    signature
+                )
+            ).to.be.revertedWithCustomError(registration, 'PreviousTierRequired');
+        });
+
+        it('should reject ID verification with expired deadline', async function () {
+            const idHash = keccak256(toUtf8Bytes('PASSPORT:AB123458:1990-01-01:US'));
+            const country = 'US';
+            const currentTime = await time.latest();
+            const nonce = keccak256(toUtf8Bytes('id-nonce-3'));
+            const deadline = currentTime - 1; // Expired
+
+            const signature = await signIDVerification(
+                trustedKey,
+                user1.address,
+                idHash,
+                country,
+                currentTime,
+                nonce,
+                deadline
+            );
+
+            await expect(
+                registration.connect(user1).submitIDVerification(
+                    idHash,
+                    country,
+                    currentTime,
+                    nonce,
+                    deadline,
+                    signature
+                )
+            ).to.be.revertedWithCustomError(registration, 'ProofExpired');
+        });
+
+        it('should reject duplicate ID hash', async function () {
+            const idHash = keccak256(toUtf8Bytes('PASSPORT:DUPLICATE:1990-01-01:US'));
+            const country = 'US';
+            const currentTime = await time.latest();
+            const nonce1 = keccak256(toUtf8Bytes('id-nonce-4'));
+            const deadline = currentTime + 3600;
+
+            // First verification
+            const sig1 = await signIDVerification(
+                trustedKey,
+                user1.address,
+                idHash,
+                country,
+                currentTime,
+                nonce1,
+                deadline
+            );
+
+            await registration.connect(user1).submitIDVerification(
+                idHash,
+                country,
+                currentTime,
+                nonce1,
+                deadline,
+                sig1
+            );
+
+            // Register and setup user2 for KYC tier 1 (unique identifiers)
+            const dupIdUnique = Date.now().toString() + Math.random().toString().slice(2, 8);
+            const dupRegPhone = `+1-DUP-REG-${dupIdUnique}`;
+            const dupVerifyPhone = `+1-DUP-VERIFY-${dupIdUnique}`;
+
+            await registration.connect(validator1).registerUser(
+                user2.address,
+                ZeroAddress,
+                phoneHash(dupRegPhone),
+                emailHash(`kyc-dupid-user2-${dupIdUnique}@test.com`)
+            );
+
+            const nonce2 = keccak256(toUtf8Bytes(`phone-nonce-dupid-${dupIdUnique}`));
+            const phoneSig = await signPhoneVerification(
+                trustedKey,
+                user2.address,
+                phoneHash(dupVerifyPhone),
+                currentTime,
+                nonce2,
+                deadline
+            );
+
+            await registration.connect(user2).submitPhoneVerification(
+                phoneHash(dupVerifyPhone),
+                currentTime,
+                nonce2,
+                deadline,
+                phoneSig
+            );
+
+            // Complete social verification (required for Tier 1 completion)
+            const socialDomain = {
+                name: 'OmniRegistration',
+                version: '1',
+                chainId: (await ethers.provider.getNetwork()).chainId,
+                verifyingContract: await registration.getAddress(),
+            };
+            const socialTypes = {
+                SocialVerification: [
+                    { name: 'user', type: 'address' },
+                    { name: 'socialHash', type: 'bytes32' },
+                    { name: 'platform', type: 'string' },
+                    { name: 'timestamp', type: 'uint256' },
+                    { name: 'nonce', type: 'bytes32' },
+                    { name: 'deadline', type: 'uint256' },
+                ],
+            };
+            const socialHash = keccak256(toUtf8Bytes(`twitter:dupid-user-${dupIdUnique}`));
+            const socialNonce = keccak256(toUtf8Bytes(`social-dupid-${dupIdUnique}`));
+            const socialSig = await trustedKey.signTypedData(socialDomain, socialTypes, {
+                user: user2.address,
+                socialHash: socialHash,
+                platform: 'twitter',
+                timestamp: currentTime,
+                nonce: socialNonce,
+                deadline: deadline,
+            });
+            await registration.connect(user2).submitSocialVerification(
+                socialHash,
+                'twitter',
+                currentTime,
+                socialNonce,
+                deadline,
+                socialSig
+            );
+
+            // Try to use same ID hash
+            const nonce3 = keccak256(toUtf8Bytes('id-nonce-5'));
+            const sig2 = await signIDVerification(
+                trustedKey,
+                user2.address,
+                idHash, // Same ID
+                country,
+                currentTime,
+                nonce3,
+                deadline
+            );
+
+            await expect(
+                registration.connect(user2).submitIDVerification(
+                    idHash,
+                    country,
+                    currentTime,
+                    nonce3,
+                    deadline,
+                    sig2
+                )
+            ).to.be.revertedWithCustomError(registration, 'IDAlreadyUsed');
+        });
+
+        it('should verify hasKycTier2 returns false before verification', async function () {
+            expect(await registration.hasKycTier2(user1.address)).to.be.false;
+        });
+    });
+
+    describe('KYC Tier 3 - Video Verification', function () {
+        let trustedKey: any;
+
+        /**
+         * Generate video verification signature
+         */
+        async function signVideoVerification(
+            signer: any,
+            user: string,
+            sessionHash: string,
+            timestamp: number,
+            nonce: string,
+            deadline: number
+        ): Promise<string> {
+            const domain = {
+                name: 'OmniRegistration',
+                version: '1',
+                chainId: (await ethers.provider.getNetwork()).chainId,
+                verifyingContract: await registration.getAddress(),
+            };
+
+            const types = {
+                VideoVerification: [
+                    { name: 'user', type: 'address' },
+                    { name: 'sessionHash', type: 'bytes32' },
+                    { name: 'timestamp', type: 'uint256' },
+                    { name: 'nonce', type: 'bytes32' },
+                    { name: 'deadline', type: 'uint256' },
+                ],
+            };
+
+            const value = {
+                user,
+                sessionHash,
+                timestamp,
+                nonce,
+                deadline,
+            };
+
+            return await signer.signTypedData(domain, types, value);
+        }
+
+        /**
+         * Generate phone verification signature
+         */
+        async function signPhoneVerification(
+            signer: any,
+            user: string,
+            phoneHashVal: string,
+            timestamp: number,
+            nonce: string,
+            deadline: number
+        ): Promise<string> {
+            const domain = {
+                name: 'OmniRegistration',
+                version: '1',
+                chainId: (await ethers.provider.getNetwork()).chainId,
+                verifyingContract: await registration.getAddress(),
+            };
+
+            const types = {
+                PhoneVerification: [
+                    { name: 'user', type: 'address' },
+                    { name: 'phoneHash', type: 'bytes32' },
+                    { name: 'timestamp', type: 'uint256' },
+                    { name: 'nonce', type: 'bytes32' },
+                    { name: 'deadline', type: 'uint256' },
+                ],
+            };
+
+            const value = {
+                user,
+                phoneHash: phoneHashVal,
+                timestamp,
+                nonce,
+                deadline,
+            };
+
+            return await signer.signTypedData(domain, types, value);
+        }
+
+        /**
+         * Generate ID verification signature
+         */
+        async function signIDVerification(
+            signer: any,
+            user: string,
+            idHash: string,
+            country: string,
+            timestamp: number,
+            nonce: string,
+            deadline: number
+        ): Promise<string> {
+            const domain = {
+                name: 'OmniRegistration',
+                version: '1',
+                chainId: (await ethers.provider.getNetwork()).chainId,
+                verifyingContract: await registration.getAddress(),
+            };
+
+            const types = {
+                IDVerification: [
+                    { name: 'user', type: 'address' },
+                    { name: 'idHash', type: 'bytes32' },
+                    { name: 'country', type: 'string' },
+                    { name: 'timestamp', type: 'uint256' },
+                    { name: 'nonce', type: 'bytes32' },
+                    { name: 'deadline', type: 'uint256' },
+                ],
+            };
+
+            const value = {
+                user,
+                idHash,
+                country,
+                timestamp,
+                nonce,
+                deadline,
+            };
+
+            return await signer.signTypedData(domain, types, value);
+        }
+
+        beforeEach(async function () {
+            trustedKey = validator3;
+            await registration.connect(owner).setTrustedVerificationKey(trustedKey.address);
+
+            // Generate truly unique identifiers
+            const uniqueId = Date.now().toString() + Math.random().toString().slice(2, 8);
+            const regPhone = `+1-TIER3-REG-${uniqueId}`;
+            const regEmail = `kyc-tier3-${uniqueId}@test.com`;
+            const verifyPhone = `+1-TIER3-VERIFY-${uniqueId}`;
+
+            // Register user1
+            await registration.connect(validator1).registerUser(
+                user1.address,
+                referrer.address,
+                phoneHash(regPhone),
+                emailHash(regEmail)
+            );
+
+            const currentTime = await time.latest();
+            const deadline = currentTime + 3600;
+
+            const domain = {
+                name: 'OmniRegistration',
+                version: '1',
+                chainId: (await ethers.provider.getNetwork()).chainId,
+                verifyingContract: await registration.getAddress(),
+            };
+
+            // Complete Tier 1 - Phone verification
+            const phoneNonce = keccak256(toUtf8Bytes(`tier3-phone-nonce-${uniqueId}`));
+            const phoneSig = await signPhoneVerification(
+                trustedKey,
+                user1.address,
+                phoneHash(verifyPhone),
+                currentTime,
+                phoneNonce,
+                deadline
+            );
+            await registration.connect(user1).submitPhoneVerification(
+                phoneHash(verifyPhone),
+                currentTime,
+                phoneNonce,
+                deadline,
+                phoneSig
+            );
+
+            // Complete Tier 1 - Social verification (REQUIRED)
+            const socialHash = keccak256(toUtf8Bytes(`twitter:tier3user-${uniqueId}`));
+            const socialNonce = keccak256(toUtf8Bytes(`tier3-social-nonce-${uniqueId}`));
+            const socialTypes = {
+                SocialVerification: [
+                    { name: 'user', type: 'address' },
+                    { name: 'socialHash', type: 'bytes32' },
+                    { name: 'platform', type: 'string' },
+                    { name: 'timestamp', type: 'uint256' },
+                    { name: 'nonce', type: 'bytes32' },
+                    { name: 'deadline', type: 'uint256' },
+                ],
+            };
+            const socialSig = await trustedKey.signTypedData(domain, socialTypes, {
+                user: user1.address,
+                socialHash,
+                platform: 'twitter',
+                timestamp: currentTime,
+                nonce: socialNonce,
+                deadline,
+            });
+            await registration.connect(user1).submitSocialVerification(
+                socialHash,
+                'twitter',
+                currentTime,
+                socialNonce,
+                deadline,
+                socialSig
+            );
+
+            // Complete Tier 2 - ID verification
+            const idHash = keccak256(toUtf8Bytes(`PASSPORT:TIER3-${uniqueId}:1990-01-01:US`));
+            const idNonce = keccak256(toUtf8Bytes(`tier3-id-nonce-${uniqueId}`));
+            const idSig = await signIDVerification(
+                trustedKey,
+                user1.address,
+                idHash,
+                'US',
+                currentTime,
+                idNonce,
+                deadline
+            );
+            await registration.connect(user1).submitIDVerification(
+                idHash,
+                'US',
+                currentTime,
+                idNonce,
+                deadline,
+                idSig
+            );
+        });
+
+        it('should complete video verification (KYC Tier 3)', async function () {
+            const sessionHash = keccak256(toUtf8Bytes('VIDEO_SESSION_12345'));
+            const currentTime = await time.latest();
+            const nonce = keccak256(toUtf8Bytes('video-nonce-1'));
+            const deadline = currentTime + 3600;
+
+            const signature = await signVideoVerification(
+                trustedKey,
+                user1.address,
+                sessionHash,
+                currentTime,
+                nonce,
+                deadline
+            );
+
+            const tx = await registration.connect(user1).submitVideoVerification(
+                sessionHash,
+                currentTime,
+                nonce,
+                deadline,
+                signature
+            );
+
+            await expect(tx).to.emit(registration, 'VideoVerified');
+            await expect(tx).to.emit(registration, 'KycTier3Completed');
+
+            expect(await registration.hasKycTier3(user1.address)).to.be.true;
+        });
+
+        it('should reject video verification without KYC Tier 2', async function () {
+            // Register user2 with only Tier 1 (unique identifiers)
+            const noTier2Unique = Date.now().toString() + Math.random().toString().slice(2, 8);
+            const noTier2RegPhone = `+1-NOTIER2-REG-${noTier2Unique}`;
+            const noTier2VerifyPhone = `+1-NOTIER2-VERIFY-${noTier2Unique}`;
+
+            await registration.connect(validator1).registerUser(
+                user2.address,
+                ZeroAddress,
+                phoneHash(noTier2RegPhone),
+                emailHash(`kyc-notier2-user2-${noTier2Unique}@test.com`)
+            );
+
+            const currentTime = await time.latest();
+            const deadline = currentTime + 3600;
+            const phoneNonce = keccak256(toUtf8Bytes(`tier3-phone-nonce-${noTier2Unique}`));
+            const phoneSig = await signPhoneVerification(
+                trustedKey,
+                user2.address,
+                phoneHash(noTier2VerifyPhone),
+                currentTime,
+                phoneNonce,
+                deadline
+            );
+            await registration.connect(user2).submitPhoneVerification(
+                phoneHash(noTier2VerifyPhone),
+                currentTime,
+                phoneNonce,
+                deadline,
+                phoneSig
+            );
+
+            // Complete social verification (required for Tier 1)
+            const socialDomain = {
+                name: 'OmniRegistration',
+                version: '1',
+                chainId: (await ethers.provider.getNetwork()).chainId,
+                verifyingContract: await registration.getAddress(),
+            };
+            const socialTypes = {
+                SocialVerification: [
+                    { name: 'user', type: 'address' },
+                    { name: 'socialHash', type: 'bytes32' },
+                    { name: 'platform', type: 'string' },
+                    { name: 'timestamp', type: 'uint256' },
+                    { name: 'nonce', type: 'bytes32' },
+                    { name: 'deadline', type: 'uint256' },
+                ],
+            };
+            const socialHash = keccak256(toUtf8Bytes(`twitter:notier2-user-${noTier2Unique}`));
+            const socialNonce = keccak256(toUtf8Bytes(`social-notier2-${noTier2Unique}`));
+            const socialSig = await trustedKey.signTypedData(socialDomain, socialTypes, {
+                user: user2.address,
+                socialHash: socialHash,
+                platform: 'twitter',
+                timestamp: currentTime,
+                nonce: socialNonce,
+                deadline: deadline,
+            });
+            await registration.connect(user2).submitSocialVerification(
+                socialHash,
+                'twitter',
+                currentTime,
+                socialNonce,
+                deadline,
+                socialSig
+            );
+
+            // Try video verification without Tier 2
+            const sessionHash = keccak256(toUtf8Bytes('VIDEO_SESSION_USER2'));
+            const nonce = keccak256(toUtf8Bytes('video-nonce-2'));
+            const signature = await signVideoVerification(
+                trustedKey,
+                user2.address,
+                sessionHash,
+                currentTime,
+                nonce,
+                deadline
+            );
+
+            await expect(
+                registration.connect(user2).submitVideoVerification(
+                    sessionHash,
+                    currentTime,
+                    nonce,
+                    deadline,
+                    signature
+                )
+            ).to.be.revertedWithCustomError(registration, 'PreviousTierRequired');
+        });
+
+        it('should verify hasKycTier3 returns false before verification', async function () {
+            expect(await registration.hasKycTier3(user1.address)).to.be.false;
+        });
+    });
+
+    describe('KYC Tier 4 - Third-Party KYC', function () {
+        let trustedKey: any;
+        let kycProvider: any;
+
+        /**
+         * Generate third-party KYC signature
+         */
+        async function signThirdPartyKYC(
+            signer: any,
+            user: string,
+            provider: string,
+            timestamp: number,
+            nonce: string,
+            deadline: number
+        ): Promise<string> {
+            const domain = {
+                name: 'OmniRegistration',
+                version: '1',
+                chainId: (await ethers.provider.getNetwork()).chainId,
+                verifyingContract: await registration.getAddress(),
+            };
+
+            const types = {
+                ThirdPartyKYC: [
+                    { name: 'user', type: 'address' },
+                    { name: 'provider', type: 'address' },
+                    { name: 'timestamp', type: 'uint256' },
+                    { name: 'nonce', type: 'bytes32' },
+                    { name: 'deadline', type: 'uint256' },
+                ],
+            };
+
+            const value = {
+                user,
+                provider,
+                timestamp,
+                nonce,
+                deadline,
+            };
+
+            return await signer.signTypedData(domain, types, value);
+        }
+
+        /**
+         * Setup user with Tier 1, 2, and 3 using unique identifiers
+         */
+        async function setupUserWithTier3(user: any): Promise<void> {
+            // Generate truly unique identifiers
+            const uniqueId = Date.now().toString() + Math.random().toString().slice(2, 8);
+            const regPhone = `+1-TIER4-REG-${uniqueId}`;
+            const regEmail = `kyc-tier4-${uniqueId}@test.com`;
+            const verifyPhone = `+1-TIER4-VERIFY-${uniqueId}`;
+
+            const currentTime = await time.latest();
+            const deadline = currentTime + 3600;
+
+            // Register
+            await registration.connect(validator1).registerUser(
+                user.address,
+                ZeroAddress,
+                phoneHash(regPhone),
+                emailHash(regEmail)
+            );
+
+            const domain = {
+                name: 'OmniRegistration',
+                version: '1',
+                chainId: (await ethers.provider.getNetwork()).chainId,
+                verifyingContract: await registration.getAddress(),
+            };
+
+            // Phone verification (Tier 1)
+            const phoneNonce = keccak256(toUtf8Bytes(`tier4-phone-${uniqueId}`));
+            const phoneTypes = {
+                PhoneVerification: [
+                    { name: 'user', type: 'address' },
+                    { name: 'phoneHash', type: 'bytes32' },
+                    { name: 'timestamp', type: 'uint256' },
+                    { name: 'nonce', type: 'bytes32' },
+                    { name: 'deadline', type: 'uint256' },
+                ],
+            };
+            const phoneSig = await trustedKey.signTypedData(domain, phoneTypes, {
+                user: user.address,
+                phoneHash: phoneHash(verifyPhone),
+                timestamp: currentTime,
+                nonce: phoneNonce,
+                deadline,
+            });
+            await registration.connect(user).submitPhoneVerification(
+                phoneHash(verifyPhone),
+                currentTime,
+                phoneNonce,
+                deadline,
+                phoneSig
+            );
+
+            // Social verification (Tier 1 completion - REQUIRED)
+            const socialHash = keccak256(toUtf8Bytes(`twitter:tier4user-${uniqueId}`));
+            const socialNonce = keccak256(toUtf8Bytes(`tier4-social-${uniqueId}`));
+            const socialTypes = {
+                SocialVerification: [
+                    { name: 'user', type: 'address' },
+                    { name: 'socialHash', type: 'bytes32' },
+                    { name: 'platform', type: 'string' },
+                    { name: 'timestamp', type: 'uint256' },
+                    { name: 'nonce', type: 'bytes32' },
+                    { name: 'deadline', type: 'uint256' },
+                ],
+            };
+            const socialSig = await trustedKey.signTypedData(domain, socialTypes, {
+                user: user.address,
+                socialHash,
+                platform: 'twitter',
+                timestamp: currentTime,
+                nonce: socialNonce,
+                deadline,
+            });
+            await registration.connect(user).submitSocialVerification(
+                socialHash,
+                'twitter',
+                currentTime,
+                socialNonce,
+                deadline,
+                socialSig
+            );
+
+            // ID verification (Tier 2)
+            const idHash = keccak256(toUtf8Bytes(`PASSPORT:TIER4-${uniqueId}:1990-01-01:US`));
+            const idNonce = keccak256(toUtf8Bytes(`tier4-id-${uniqueId}`));
+            const idTypes = {
+                IDVerification: [
+                    { name: 'user', type: 'address' },
+                    { name: 'idHash', type: 'bytes32' },
+                    { name: 'country', type: 'string' },
+                    { name: 'timestamp', type: 'uint256' },
+                    { name: 'nonce', type: 'bytes32' },
+                    { name: 'deadline', type: 'uint256' },
+                ],
+            };
+            const idSig = await trustedKey.signTypedData(domain, idTypes, {
+                user: user.address,
+                idHash,
+                country: 'US',
+                timestamp: currentTime,
+                nonce: idNonce,
+                deadline,
+            });
+            await registration.connect(user).submitIDVerification(
+                idHash,
+                'US',
+                currentTime,
+                idNonce,
+                deadline,
+                idSig
+            );
+
+            // Video verification (Tier 3)
+            const sessionHash = keccak256(toUtf8Bytes(`VIDEO_${uniqueId}`));
+            const videoNonce = keccak256(toUtf8Bytes(`tier4-video-${uniqueId}`));
+            const videoTypes = {
+                VideoVerification: [
+                    { name: 'user', type: 'address' },
+                    { name: 'sessionHash', type: 'bytes32' },
+                    { name: 'timestamp', type: 'uint256' },
+                    { name: 'nonce', type: 'bytes32' },
+                    { name: 'deadline', type: 'uint256' },
+                ],
+            };
+            const videoSig = await trustedKey.signTypedData(domain, videoTypes, {
+                user: user.address,
+                sessionHash,
+                timestamp: currentTime,
+                nonce: videoNonce,
+                deadline,
+            });
+            await registration.connect(user).submitVideoVerification(
+                sessionHash,
+                currentTime,
+                videoNonce,
+                deadline,
+                videoSig
+            );
+        }
+
+        beforeEach(async function () {
+            trustedKey = validator3;
+            kycProvider = validator4;
+
+            await registration.connect(owner).setTrustedVerificationKey(trustedKey.address);
+            await registration.connect(owner).addKYCProvider(kycProvider.address, 'TestKYCProvider');
+
+            // Setup user1 with Tier 3 using unique identifiers
+            await setupUserWithTier3(user1);
+        });
+
+        it('should complete third-party KYC (KYC Tier 4)', async function () {
+            const currentTime = await time.latest();
+            const nonce = keccak256(toUtf8Bytes('kyc-tier4-nonce-1'));
+            const deadline = currentTime + 3600;
+
+            const signature = await signThirdPartyKYC(
+                kycProvider,
+                user1.address,
+                kycProvider.address,
+                currentTime,
+                nonce,
+                deadline
+            );
+
+            const tx = await registration.connect(user1).submitThirdPartyKYC(
+                kycProvider.address,
+                currentTime,
+                nonce,
+                deadline,
+                signature
+            );
+
+            await expect(tx).to.emit(registration, 'KycTier4Completed');
+
+            expect(await registration.hasKycTier4(user1.address)).to.be.true;
+        });
+
+        it('should reject third-party KYC from untrusted provider', async function () {
+            const currentTime = await time.latest();
+            const nonce = keccak256(toUtf8Bytes('kyc-tier4-nonce-2'));
+            const deadline = currentTime + 3600;
+
+            // Sign with unauthorized signer
+            const signature = await signThirdPartyKYC(
+                unauthorized,
+                user1.address,
+                unauthorized.address,
+                currentTime,
+                nonce,
+                deadline
+            );
+
+            await expect(
+                registration.connect(user1).submitThirdPartyKYC(
+                    unauthorized.address,
+                    currentTime,
+                    nonce,
+                    deadline,
+                    signature
+                )
+            ).to.be.revertedWithCustomError(registration, 'UntrustedKYCProvider');
+        });
+
+        it('should reject third-party KYC without Tier 3', async function () {
+            // Register user2 with only Tier 1
+            await registration.connect(validator1).registerUser(
+                user2.address,
+                ZeroAddress,
+                phoneHash('+1-555-7002'),
+                emailHash('kyc-tier4-user2@test.com')
+            );
+
+            const currentTime = await time.latest();
+            const nonce = keccak256(toUtf8Bytes('kyc-tier4-nonce-3'));
+            const deadline = currentTime + 3600;
+
+            const signature = await signThirdPartyKYC(
+                kycProvider,
+                user2.address,
+                kycProvider.address,
+                currentTime,
+                nonce,
+                deadline
+            );
+
+            await expect(
+                registration.connect(user2).submitThirdPartyKYC(
+                    kycProvider.address,
+                    currentTime,
+                    nonce,
+                    deadline,
+                    signature
+                )
+            ).to.be.revertedWithCustomError(registration, 'PreviousTierRequired');
+        });
+
+        it('should verify hasKycTier4 returns false before verification', async function () {
+            expect(await registration.hasKycTier4(user1.address)).to.be.false;
+        });
+
+        describe('KYC Provider Management', function () {
+            it('should add KYC provider', async function () {
+                const newProvider = user2.address;
+
+                const tx = await registration.connect(owner).addKYCProvider(newProvider, 'NewProvider');
+
+                await expect(tx).to.emit(registration, 'KYCProviderAdded');
+                expect(await registration.trustedKYCProviders(newProvider)).to.be.true;
+            });
+
+            it('should remove KYC provider', async function () {
+                const tx = await registration.connect(owner).removeKYCProvider(kycProvider.address);
+
+                await expect(tx).to.emit(registration, 'KYCProviderRemoved');
+                expect(await registration.trustedKYCProviders(kycProvider.address)).to.be.false;
+            });
+
+            it('should reject adding zero address as provider', async function () {
+                await expect(
+                    registration.connect(owner).addKYCProvider(ZeroAddress, 'Invalid')
+                ).to.be.revertedWithCustomError(registration, 'InvalidProvider');
+            });
+
+            it('should reject unauthorized provider management', async function () {
+                await expect(
+                    registration.connect(unauthorized).addKYCProvider(user2.address, 'Hack')
+                ).to.be.reverted;
+
+                await expect(
+                    registration.connect(unauthorized).removeKYCProvider(kycProvider.address)
+                ).to.be.reverted;
+            });
+        });
+    });
+
+    describe('Relay Pattern Tests', function () {
+        let trustedKey: any;
+        let kycProvider: any;
+        let relayRegPhone: string;
+        let relayVerifyPhone: string;
+        let relayEmail: string;
+
+        beforeEach(async function () {
+            trustedKey = validator3;
+            kycProvider = validator4;
+            await registration.connect(owner).setTrustedVerificationKey(trustedKey.address);
+            await registration.connect(owner).addKYCProvider(kycProvider.address, 'RelayTestProvider');
+
+            // Generate truly unique identifiers
+            const uniqueId = Date.now().toString() + Math.random().toString().slice(2, 8);
+            relayRegPhone = `+1-RELAY-REG-${uniqueId}`;
+            relayVerifyPhone = `+1-RELAY-VERIFY-${uniqueId}`;
+            relayEmail = `relay-test-${uniqueId}@test.com`;
+
+            // Register user1
+            await registration.connect(validator1).registerUser(
+                user1.address,
+                referrer.address,
+                phoneHash(relayRegPhone),
+                emailHash(relayEmail)
+            );
+        });
+
+        it('should allow relay of ID verification via submitIDVerificationFor', async function () {
+            // First complete Tier 1 for user1
+            const currentTime = await time.latest();
+            const deadline = currentTime + 3600;
+
+            const domain = {
+                name: 'OmniRegistration',
+                version: '1',
+                chainId: (await ethers.provider.getNetwork()).chainId,
+                verifyingContract: await registration.getAddress(),
+            };
+
+            // Phone verification - use different phone from registration
+            const uniqueId = Date.now().toString() + Math.random().toString().slice(2, 8);
+            const phoneNonce = keccak256(toUtf8Bytes(`relay-phone-nonce-${uniqueId}`));
+            const phoneTypes = {
+                PhoneVerification: [
+                    { name: 'user', type: 'address' },
+                    { name: 'phoneHash', type: 'bytes32' },
+                    { name: 'timestamp', type: 'uint256' },
+                    { name: 'nonce', type: 'bytes32' },
+                    { name: 'deadline', type: 'uint256' },
+                ],
+            };
+
+            const phoneSig = await trustedKey.signTypedData(domain, phoneTypes, {
+                user: user1.address,
+                phoneHash: phoneHash(relayVerifyPhone),
+                timestamp: currentTime,
+                nonce: phoneNonce,
+                deadline,
+            });
+
+            await registration.connect(user1).submitPhoneVerification(
+                phoneHash(relayVerifyPhone),
+                currentTime,
+                phoneNonce,
+                deadline,
+                phoneSig
+            );
+
+            // Social verification (required for Tier 1 completion)
+            const socialHash = keccak256(toUtf8Bytes(`twitter:relayuser-${uniqueId}`));
+            const socialNonce = keccak256(toUtf8Bytes(`relay-social-nonce-${uniqueId}`));
+            const socialTypes = {
+                SocialVerification: [
+                    { name: 'user', type: 'address' },
+                    { name: 'socialHash', type: 'bytes32' },
+                    { name: 'platform', type: 'string' },
+                    { name: 'timestamp', type: 'uint256' },
+                    { name: 'nonce', type: 'bytes32' },
+                    { name: 'deadline', type: 'uint256' },
+                ],
+            };
+            const socialSig = await trustedKey.signTypedData(domain, socialTypes, {
+                user: user1.address,
+                socialHash,
+                platform: 'twitter',
+                timestamp: currentTime,
+                nonce: socialNonce,
+                deadline,
+            });
+            await registration.connect(user1).submitSocialVerification(
+                socialHash,
+                'twitter',
+                currentTime,
+                socialNonce,
+                deadline,
+                socialSig
+            );
+
+            // Now relay ID verification (anyone can submit)
+            const idHash = keccak256(toUtf8Bytes('PASSPORT:RELAY123:1990-01-01:US'));
+            const idNonce = keccak256(toUtf8Bytes('relay-id-nonce'));
+            const idTypes = {
+                IDVerification: [
+                    { name: 'user', type: 'address' },
+                    { name: 'idHash', type: 'bytes32' },
+                    { name: 'country', type: 'string' },
+                    { name: 'timestamp', type: 'uint256' },
+                    { name: 'nonce', type: 'bytes32' },
+                    { name: 'deadline', type: 'uint256' },
+                ],
+            };
+
+            const idSig = await trustedKey.signTypedData(domain, idTypes, {
+                user: user1.address,
+                idHash,
+                country: 'US',
+                timestamp: currentTime,
+                nonce: idNonce,
+                deadline,
+            });
+
+            // Submit via RELAY (unauthorized submitter)
+            const tx = await registration.connect(unauthorized).submitIDVerificationFor(
+                user1.address,
+                idHash,
+                'US',
+                currentTime,
+                idNonce,
+                deadline,
+                idSig
+            );
+
+            await expect(tx).to.emit(registration, 'KycTier2Completed');
+            expect(await registration.hasKycTier2(user1.address)).to.be.true;
+        });
+    });
 });
