@@ -1824,10 +1824,13 @@ describe('OmniRegistration', function () {
                 signature
             );
 
+            // ID verification should succeed but NOT complete Tier 2 yet
             await expect(tx).to.emit(registration, 'IDVerified');
-            await expect(tx).to.emit(registration, 'KycTier2Completed');
+            // KycTier2Completed should NOT be emitted (need address + selfie too)
 
-            expect(await registration.hasKycTier2(user1.address)).to.be.true;
+            // Tier 2 should NOT be complete after just ID
+            expect(await registration.hasKycTier2(user1.address)).to.be.false;
+            expect(await registration.kycTier2CompletedAt(user1.address)).to.equal(0);
         });
 
         it('should reject ID verification without KYC Tier 1', async function () {
@@ -2229,6 +2232,69 @@ describe('OmniRegistration', function () {
                 deadline,
                 idSig
             );
+
+            // NEW v2: Complete Tier 2 - Address verification (required)
+            const addressHash = keccak256(toUtf8Bytes(`123 Main:NYC:10001:US:utility-${uniqueId}`));
+            const addressNonce = keccak256(toUtf8Bytes(`tier3-addr-${uniqueId}`));
+            const addressTypes = {
+                AddressVerification: [
+                    { name: 'user', type: 'address' },
+                    { name: 'addressHash', type: 'bytes32' },
+                    { name: 'country', type: 'string' },
+                    { name: 'documentType', type: 'bytes32' },
+                    { name: 'timestamp', type: 'uint256' },
+                    { name: 'nonce', type: 'bytes32' },
+                    { name: 'deadline', type: 'uint256' },
+                ],
+            };
+            const addressSig = await trustedKey.signTypedData(domain, addressTypes, {
+                user: user1.address,
+                addressHash,
+                country: 'US',
+                documentType: keccak256(toUtf8Bytes('utility')),
+                timestamp: currentTime,
+                nonce: addressNonce,
+                deadline,
+            });
+            await registration.connect(user1).submitAddressVerification(
+                addressHash,
+                'US',
+                keccak256(toUtf8Bytes('utility')),
+                currentTime,
+                addressNonce,
+                deadline,
+                addressSig
+            );
+
+            // NEW v2: Complete Tier 2 - Selfie verification (required)
+            const selfieHash = keccak256(toUtf8Bytes(`selfie-${uniqueId}`));
+            const selfieNonce = keccak256(toUtf8Bytes(`tier3-selfie-${uniqueId}`));
+            const selfieTypes = {
+                SelfieVerification: [
+                    { name: 'user', type: 'address' },
+                    { name: 'selfieHash', type: 'bytes32' },
+                    { name: 'similarity', type: 'uint256' },
+                    { name: 'timestamp', type: 'uint256' },
+                    { name: 'nonce', type: 'bytes32' },
+                    { name: 'deadline', type: 'uint256' },
+                ],
+            };
+            const selfieSig = await trustedKey.signTypedData(domain, selfieTypes, {
+                user: user1.address,
+                selfieHash,
+                similarity: 92,
+                timestamp: currentTime,
+                nonce: selfieNonce,
+                deadline,
+            });
+            await registration.connect(user1).submitSelfieVerification(
+                selfieHash,
+                92,
+                currentTime,
+                selfieNonce,
+                deadline,
+                selfieSig
+            );
         });
 
         it('should complete video verification (KYC Tier 3)', async function () {
@@ -2511,6 +2577,69 @@ describe('OmniRegistration', function () {
                 idNonce,
                 deadline,
                 idSig
+            );
+
+            // NEW v2: Address verification (Tier 2 requirement)
+            const addressHash = keccak256(toUtf8Bytes(`123 Main:NYC:10001:US:utility-${uniqueId}`));
+            const addressNonce = keccak256(toUtf8Bytes(`tier4-addr-${uniqueId}`));
+            const addressTypes = {
+                AddressVerification: [
+                    { name: 'user', type: 'address' },
+                    { name: 'addressHash', type: 'bytes32' },
+                    { name: 'country', type: 'string' },
+                    { name: 'documentType', type: 'bytes32' },
+                    { name: 'timestamp', type: 'uint256' },
+                    { name: 'nonce', type: 'bytes32' },
+                    { name: 'deadline', type: 'uint256' },
+                ],
+            };
+            const addressSig = await trustedKey.signTypedData(domain, addressTypes, {
+                user: user.address,
+                addressHash,
+                country: 'US',
+                documentType: keccak256(toUtf8Bytes('utility')),
+                timestamp: currentTime,
+                nonce: addressNonce,
+                deadline,
+            });
+            await registration.connect(user).submitAddressVerification(
+                addressHash,
+                'US',
+                keccak256(toUtf8Bytes('utility')),
+                currentTime,
+                addressNonce,
+                deadline,
+                addressSig
+            );
+
+            // NEW v2: Selfie verification (Tier 2 requirement)
+            const selfieHash = keccak256(toUtf8Bytes(`selfie-${uniqueId}`));
+            const selfieNonce = keccak256(toUtf8Bytes(`tier4-selfie-${uniqueId}`));
+            const selfieTypes = {
+                SelfieVerification: [
+                    { name: 'user', type: 'address' },
+                    { name: 'selfieHash', type: 'bytes32' },
+                    { name: 'similarity', type: 'uint256' },
+                    { name: 'timestamp', type: 'uint256' },
+                    { name: 'nonce', type: 'bytes32' },
+                    { name: 'deadline', type: 'uint256' },
+                ],
+            };
+            const selfieSig = await trustedKey.signTypedData(domain, selfieTypes, {
+                user: user.address,
+                selfieHash,
+                similarity: 92,
+                timestamp: currentTime,
+                nonce: selfieNonce,
+                deadline,
+            });
+            await registration.connect(user).submitSelfieVerification(
+                selfieHash,
+                92,
+                currentTime,
+                selfieNonce,
+                deadline,
+                selfieSig
             );
 
             // Video verification (Tier 3)
@@ -2810,8 +2939,12 @@ describe('OmniRegistration', function () {
                 idSig
             );
 
-            await expect(tx).to.emit(registration, 'KycTier2Completed');
-            expect(await registration.hasKycTier2(user1.address)).to.be.true;
+            // Relay should succeed and emit IDVerified
+            await expect(tx).to.emit(registration, 'IDVerified');
+
+            // But Tier 2 should NOT be complete yet (need address + selfie too)
+            expect(await registration.hasKycTier2(user1.address)).to.be.false;
+            expect(await registration.kycTier2CompletedAt(user1.address)).to.equal(0);
         });
     });
 });

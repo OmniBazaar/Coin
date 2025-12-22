@@ -160,7 +160,21 @@ contract OmniRegistration is
         "IDVerification(address user,bytes32 idHash,string country,uint256 timestamp,bytes32 nonce,uint256 deadline)"
     );
 
-    /// @notice EIP-712 typehash for video verification proof (KYC Tier 3)
+    /// @notice EIP-712 typehash for address verification proof (KYC Tier 2)
+    /// @dev Verifies proof of residence via utility bill, bank statement, or tax document
+    bytes32 public constant ADDRESS_VERIFICATION_TYPEHASH = keccak256(
+        "AddressVerification(address user,bytes32 addressHash,string country,bytes32 documentType,uint256 timestamp,bytes32 nonce,uint256 deadline)"
+    );
+
+    /// @notice EIP-712 typehash for selfie verification proof (KYC Tier 2)
+    /// @dev Verifies face match between ID photo and selfie (not liveness detection)
+    bytes32 public constant SELFIE_VERIFICATION_TYPEHASH = keccak256(
+        "SelfieVerification(address user,bytes32 selfieHash,uint256 similarity,uint256 timestamp,bytes32 nonce,uint256 deadline)"
+    );
+
+    /// @notice EIP-712 typehash for video verification proof (KYC Tier 3 - DEPRECATED)
+    /// @dev DEPRECATED: Tier 3 now uses accredited investor verification, not video
+    ///      Keeping for backwards compatibility during upgrade
     bytes32 public constant VIDEO_VERIFICATION_TYPEHASH = keccak256(
         "VideoVerification(address user,bytes32 sessionHash,uint256 timestamp,bytes32 nonce,uint256 deadline)"
     );
@@ -178,6 +192,18 @@ contract OmniRegistration is
 
     /// @notice User country codes (ISO 3166-1 alpha-2)
     mapping(address => string) public userCountries;
+
+    /// @notice User address hash (proof of residence) for KYC Tier 2
+    /// @dev Format: keccak256("ADDRESS_LINE:CITY:POSTAL:COUNTRY:DOC_TYPE")
+    ///      Privacy-preserving proof of address verification
+    mapping(address => bytes32) public userAddressHashes;
+
+    /// @notice Used address hashes (prevent reuse across users)
+    mapping(bytes32 => bool) public usedAddressHashes;
+
+    /// @notice Selfie verification status (face match to ID photo)
+    /// @dev Simple boolean - proves same person as ID, not anti-spoofing
+    mapping(address => bool) public selfieVerified;
 
     /// @notice KYC Tier 2 completion timestamp
     mapping(address => uint256) public kycTier2CompletedAt;
@@ -401,6 +427,54 @@ contract OmniRegistration is
         uint256 timestamp
     );
 
+    /// @notice Emitted when transaction is recorded for volume tracking
+    /// @param user User address
+    /// @param amount Transaction amount in USD (18 decimals)
+    /// @param dailyVolume Updated daily volume
+    /// @param monthlyVolume Updated monthly volume
+    /// @param annualVolume Updated annual volume
+    event TransactionRecorded(
+        address indexed user,
+        uint256 amount,
+        uint256 dailyVolume,
+        uint256 monthlyVolume,
+        uint256 annualVolume
+    );
+
+    /// @notice Emitted when admin updates tier limits
+    /// @param tier Tier number (0-4)
+    /// @param newLimits New limit configuration
+    event TierLimitsUpdated(
+        uint8 indexed tier,
+        TierLimits newLimits
+    );
+
+    /// @notice Emitted when address verification is submitted
+    /// @param user User address
+    /// @param addressHash Hash of verified address
+    /// @param country Country code
+    /// @param documentType Type of address document
+    /// @param timestamp Verification timestamp
+    event AddressVerified(
+        address indexed user,
+        bytes32 indexed addressHash,
+        string country,
+        bytes32 documentType,
+        uint256 timestamp
+    );
+
+    /// @notice Emitted when selfie verification is submitted
+    /// @param user User address
+    /// @param selfieHash Hash of selfie image
+    /// @param similarity Face match similarity score (0-100)
+    /// @param timestamp Verification timestamp
+    event SelfieVerified(
+        address indexed user,
+        bytes32 indexed selfieHash,
+        uint256 similarity,
+        uint256 timestamp
+    );
+
     // ═══════════════════════════════════════════════════════════════════════
     //                              ERRORS
     // ═══════════════════════════════════════════════════════════════════════
@@ -483,6 +557,30 @@ contract OmniRegistration is
     /// @notice Invalid provider address (zero address)
     error InvalidProvider();
 
+    /// @notice Selfie similarity score below minimum threshold (85%)
+    error InsufficientSimilarity();
+
+    /// @notice KYC Tier 1 required before this action
+    error KYCTier1Required();
+
+    /// @notice Caller not authorized to record transactions
+    error UnauthorizedTransactionRecorder();
+
+    /// @notice Invalid tier number (must be 0-4)
+    error InvalidTier();
+
+    /// @notice Tier 2 KYC required before proceeding
+    error KYCTier2Required();
+
+    /// @notice Address hash has already been used
+    error AddressAlreadyUsed();
+
+    /// @notice ID verification required before this action
+    error IDVerificationRequired();
+
+    /// @notice Invalid verifier signature
+    error InvalidVerifierSignature();
+
     // ═══════════════════════════════════════════════════════════════════════
     //                           INITIALIZATION
     // ═══════════════════════════════════════════════════════════════════════
@@ -513,6 +611,9 @@ contract OmniRegistration is
                 address(this)
             )
         );
+
+        // Initialize transaction limits for all tiers
+        _initializeTierLimits();
     }
 
     /**
@@ -532,6 +633,11 @@ contract OmniRegistration is
                     address(this)
                 )
             );
+        }
+
+        // Initialize transaction limits (new in v2)
+        if (tierLimits[0].dailyLimit == 0) {
+            _initializeTierLimits();
         }
     }
 
@@ -1273,14 +1379,11 @@ contract OmniRegistration is
         userCountries[msg.sender] = country;
         usedNonces[nonce] = true;
 
-        // 8. Mark KYC Tier 2 complete
-        // solhint-disable-next-line not-rely-on-time
-        kycTier2CompletedAt[msg.sender] = block.timestamp;
+        // 8. Check if KYC Tier 2 complete (ID + Address + Selfie all required)
+        _checkAndUpdateKycTier2(msg.sender);
 
         // solhint-disable-next-line not-rely-on-time
         emit IDVerified(msg.sender, idHash, country, timestamp);
-        // solhint-disable-next-line not-rely-on-time
-        emit KycTier2Completed(msg.sender, block.timestamp);
     }
 
     /**
@@ -1345,14 +1448,150 @@ contract OmniRegistration is
         userCountries[user] = country;
         usedNonces[nonce] = true;
 
-        // 8. Mark KYC Tier 2 complete
-        // solhint-disable-next-line not-rely-on-time
-        kycTier2CompletedAt[user] = block.timestamp;
+        // 8. Check if KYC Tier 2 complete (ID + Address + Selfie all required)
+        _checkAndUpdateKycTier2(user);
 
         // solhint-disable-next-line not-rely-on-time
         emit IDVerified(user, idHash, country, timestamp);
+    }
+
+    /**
+     * @notice Submit address verification proof (KYC Tier 2 - Required)
+     * @param addressHash Keccak256 of (ADDRESS:CITY:POSTAL:COUNTRY:DOC_TYPE)
+     * @param country ISO 3166-1 alpha-2 country code
+     * @param documentType Type of address document ("utility", "bank", "tax")
+     * @param timestamp When verification was performed
+     * @param nonce Unique nonce for replay protection
+     * @param deadline Proof expiration time
+     * @param signature EIP-712 signature from trustedVerificationKey
+     *
+     * @dev Requires KYC Tier 1 complete. Address document must be within 3 months.
+     *      Completes Tier 2 when combined with ID verification and selfie.
+     */
+    function submitAddressVerification(
+        bytes32 addressHash,
+        string calldata country,
+        bytes32 documentType,
+        uint256 timestamp,
+        bytes32 nonce,
+        uint256 deadline,
+        bytes calldata signature
+    ) external nonReentrant {
+        // 1. Check trusted verification key is set
+        if (trustedVerificationKey == address(0)) revert TrustedVerificationKeyNotSet();
+
+        // 2. Check deadline not expired
         // solhint-disable-next-line not-rely-on-time
-        emit KycTier2Completed(user, block.timestamp);
+        if (block.timestamp > deadline) revert ProofExpired();
+
+        // 3. Check nonce not already used
+        if (usedNonces[nonce]) revert NonceAlreadyUsed();
+
+        // 4. Check address hash not already used
+        if (usedAddressHashes[addressHash]) revert AddressAlreadyUsed();
+
+        // 5. Check user has KYC Tier 1
+        if (kycTier1CompletedAt[msg.sender] == 0) revert PreviousTierRequired();
+
+        // 6. Verify EIP-712 signature from trustedVerificationKey
+        bytes32 structHash = keccak256(
+            abi.encode(
+                ADDRESS_VERIFICATION_TYPEHASH,
+                msg.sender,
+                addressHash,
+                keccak256(bytes(country)),
+                documentType,
+                timestamp,
+                nonce,
+                deadline
+            )
+        );
+
+        bytes32 digest = keccak256(
+            abi.encodePacked("\x19\x01", DOMAIN_SEPARATOR, structHash)
+        );
+
+        address signer = digest.recover(signature);
+        if (signer != trustedVerificationKey) revert InvalidVerificationProof();
+
+        // 7. Store verification
+        userAddressHashes[msg.sender] = addressHash;
+        usedAddressHashes[addressHash] = true;
+        usedNonces[nonce] = true;
+
+        // 8. Check if KYC Tier 2 complete (ID + Address + Selfie all required)
+        _checkAndUpdateKycTier2(msg.sender);
+
+        // solhint-disable-next-line not-rely-on-time
+        emit AddressVerified(msg.sender, addressHash, country, documentType, timestamp);
+    }
+
+    /**
+     * @notice Submit selfie verification proof (KYC Tier 2 - Required)
+     * @param selfieHash Keccak256 of selfie image data
+     * @param similarity Face match similarity score (0-100, must be 85+)
+     * @param timestamp When verification was performed
+     * @param nonce Unique nonce for replay protection
+     * @param deadline Proof expiration time
+     * @param signature EIP-712 signature from trustedVerificationKey
+     *
+     * @dev Requires ID verification already submitted. Automated face matching
+     *      verifies same person as ID photo (not liveness detection).
+     *      Completes Tier 2 when combined with ID and address verification.
+     */
+    function submitSelfieVerification(
+        bytes32 selfieHash,
+        uint256 similarity,
+        uint256 timestamp,
+        bytes32 nonce,
+        uint256 deadline,
+        bytes calldata signature
+    ) external nonReentrant {
+        // 1. Check trusted verification key is set
+        if (trustedVerificationKey == address(0)) revert TrustedVerificationKeyNotSet();
+
+        // 2. Check deadline not expired
+        // solhint-disable-next-line not-rely-on-time
+        if (block.timestamp > deadline) revert ProofExpired();
+
+        // 3. Check nonce not already used
+        if (usedNonces[nonce]) revert NonceAlreadyUsed();
+
+        // 4. Check ID verification already submitted
+        if (userIDHashes[msg.sender] == bytes32(0)) revert IDVerificationRequired();
+
+        // 5. Verify similarity score meets threshold (85% minimum)
+        if (similarity < 85) revert InsufficientSimilarity();
+
+        // 6. Verify EIP-712 signature from trustedVerificationKey
+        bytes32 structHash = keccak256(
+            abi.encode(
+                SELFIE_VERIFICATION_TYPEHASH,
+                msg.sender,
+                selfieHash,
+                similarity,
+                timestamp,
+                nonce,
+                deadline
+            )
+        );
+
+        bytes32 digest = keccak256(
+            abi.encodePacked("\x19\x01", DOMAIN_SEPARATOR, structHash)
+        );
+
+        address signer = digest.recover(signature);
+        if (signer != trustedVerificationKey) revert InvalidVerificationProof();
+
+        // 7. Mark selfie verified
+        selfieVerified[msg.sender] = true;
+        usedNonces[nonce] = true;
+
+        // 8. Check if KYC Tier 2 complete (ID + Address + Selfie all required)
+        _checkAndUpdateKycTier2(msg.sender);
+
+        // solhint-disable-next-line not-rely-on-time
+        emit SelfieVerified(msg.sender, selfieHash, similarity, timestamp);
     }
 
     /**
@@ -1886,8 +2125,268 @@ contract OmniRegistration is
     }
 
     // ═══════════════════════════════════════════════════════════════════════
+    //                    TRANSACTION LIMITS & VOLUME TRACKING
+    // ═══════════════════════════════════════════════════════════════════════
+
+    /// @notice USD unit with 18 decimals (matches XOM token decimals)
+    /// @dev All transaction limits denominated in USD with same precision as XOM
+    ///      Example: $500 = 500 * USD = 500000000000000000000
+    uint256 private constant USD = 10**18;
+
+    /// @notice Transaction limit configuration per KYC tier
+    /// @dev Limits prevent fraud and ensure regulatory compliance
+    struct TierLimits {
+        uint256 dailyLimit;          // Daily transaction limit in USD (18 decimals)
+        uint256 monthlyLimit;        // Monthly transaction limit in USD (18 decimals)
+        uint256 annualLimit;         // Annual transaction limit in USD (0 = unlimited)
+        uint256 perTransactionLimit; // Maximum single transaction in USD
+        uint16 maxListings;          // Maximum concurrent marketplace listings (0 = unlimited)
+        uint256 maxListingPrice;     // Maximum price per listing in USD (0 = unlimited)
+    }
+
+    /// @notice Tier limit configuration (admin configurable)
+    /// @dev Mapping: tier number (0-4) => TierLimits struct
+    mapping(uint8 => TierLimits) public tierLimits;
+
+    /// @notice User transaction volume tracking for limit enforcement
+    /// @dev Volumes reset automatically based on time period
+    struct VolumeTracking {
+        uint256 dailyVolume;         // Current day's transaction volume in USD
+        uint256 monthlyVolume;       // Current month's transaction volume in USD
+        uint256 annualVolume;        // Current year's transaction volume in USD
+        uint256 lastTransactionDay;  // Day number (timestamp / 86400) for daily reset
+        uint256 lastTransactionMonth; // Month number for monthly reset
+        uint256 lastTransactionYear;  // Year number for annual reset
+    }
+
+    /// @notice Volume tracking per user address
+    mapping(address => VolumeTracking) public userVolumes;
+
+    /// @notice Role for contracts authorized to record transactions
+    /// @dev Marketplace and DEX contracts need this role to call recordTransaction()
+    bytes32 public constant TRANSACTION_RECORDER_ROLE = keccak256("TRANSACTION_RECORDER_ROLE");
+
+    /**
+     * @notice Check if transaction is within user's KYC tier limits
+     * @param user Address to check
+     * @param amount Transaction amount in USD (18 decimals)
+     * @return allowed True if transaction is within limits
+     * @return reason Error message if not allowed (empty string if allowed)
+     *
+     * @dev This is a view function - does not modify state
+     *      Call before executing transaction to verify compliance
+     */
+    function checkTransactionLimit(
+        address user,
+        uint256 amount
+    ) external view returns (bool allowed, string memory reason) {
+        uint8 tier = getUserKYCTier(user);
+        TierLimits memory limits = tierLimits[tier];
+        VolumeTracking memory volume = userVolumes[user];
+
+        uint256 today = block.timestamp / 86400;
+        uint256 thisMonth = block.timestamp / (30 * 86400);
+        uint256 thisYear = block.timestamp / (365 * 86400);
+
+        // Check per-transaction limit
+        if (limits.perTransactionLimit > 0 && amount > limits.perTransactionLimit) {
+            return (false, "Transaction exceeds per-transaction limit for your KYC tier");
+        }
+
+        // Check daily limit
+        uint256 dailyVol = (volume.lastTransactionDay == today) ? volume.dailyVolume : 0;
+        if (limits.dailyLimit > 0 && dailyVol + amount > limits.dailyLimit) {
+            return (false, "Transaction would exceed daily limit for your KYC tier");
+        }
+
+        // Check monthly limit
+        uint256 monthlyVol = (volume.lastTransactionMonth == thisMonth) ? volume.monthlyVolume : 0;
+        if (limits.monthlyLimit > 0 && monthlyVol + amount > limits.monthlyLimit) {
+            return (false, "Transaction would exceed monthly limit for your KYC tier");
+        }
+
+        // Check annual limit
+        uint256 annualVol = (volume.lastTransactionYear == thisYear) ? volume.annualVolume : 0;
+        if (limits.annualLimit > 0 && annualVol + amount > limits.annualLimit) {
+            return (false, "Transaction would exceed annual limit for your KYC tier");
+        }
+
+        return (true, "");
+    }
+
+    /**
+     * @notice Record transaction for volume tracking
+     * @param user Address of user making transaction
+     * @param amount Transaction amount in USD (18 decimals)
+     *
+     * @dev Only callable by authorized contracts (marketplace, DEX, etc.)
+     *      Updates daily, monthly, and annual volume counters
+     *      Automatically resets counters when periods change
+     */
+    function recordTransaction(address user, uint256 amount) external {
+        if (!hasRole(TRANSACTION_RECORDER_ROLE, msg.sender)) {
+            revert UnauthorizedTransactionRecorder();
+        }
+
+        uint256 today = block.timestamp / 86400;
+        uint256 thisMonth = block.timestamp / (30 * 86400);
+        uint256 thisYear = block.timestamp / (365 * 86400);
+
+        VolumeTracking storage volume = userVolumes[user];
+
+        // Reset counters if new period
+        if (volume.lastTransactionDay != today) {
+            volume.dailyVolume = 0;
+            volume.lastTransactionDay = today;
+        }
+        if (volume.lastTransactionMonth != thisMonth) {
+            volume.monthlyVolume = 0;
+            volume.lastTransactionMonth = thisMonth;
+        }
+        if (volume.lastTransactionYear != thisYear) {
+            volume.annualVolume = 0;
+            volume.lastTransactionYear = thisYear;
+        }
+
+        // Add to volumes
+        volume.dailyVolume += amount;
+        volume.monthlyVolume += amount;
+        volume.annualVolume += amount;
+
+        emit TransactionRecorded(user, amount, volume.dailyVolume, volume.monthlyVolume, volume.annualVolume);
+    }
+
+    /**
+     * @notice Get user's current KYC tier
+     * @param user Address to check
+     * @return tier Current KYC tier (0-4)
+     *
+     * @dev Checks tier completion timestamps in reverse order (highest first)
+     *      Returns highest tier achieved that hasn't expired
+     */
+    function getUserKYCTier(address user) public view returns (uint8) {
+        // Tier 4: Institutional or Enhanced KYC
+        if (kycTier4CompletedAt[user] != 0) return 4;
+
+        // Tier 3: Accredited Investor (check expiration)
+        if (kycTier3CompletedAt[user] != 0) {
+            // TODO: Add expiration check when accreditation system implemented
+            return 3;
+        }
+
+        // Tier 2: Verified Identity (ID + Address)
+        if (kycTier2CompletedAt[user] != 0) return 2;
+
+        // Tier 1: Basic (Email + Phone + Social)
+        if (kycTier1CompletedAt[user] != 0) return 1;
+
+        // Tier 0: Anonymous
+        return 0;
+    }
+
+    /**
+     * @notice Admin updates tier limits configuration
+     * @param tier Tier number (0-4)
+     * @param newLimits New limit configuration for this tier
+     *
+     * @dev Only callable by admin, allows adjusting limits based on market conditions
+     */
+    function updateTierLimits(
+        uint8 tier,
+        TierLimits calldata newLimits
+    ) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        if (tier > 4) revert InvalidTier();
+        tierLimits[tier] = newLimits;
+        emit TierLimitsUpdated(tier, newLimits);
+    }
+
+    /**
+     * @notice Initialize tier limits with default values
+     * @dev Called during contract initialization, sets industry-standard limits
+     */
+    function _initializeTierLimits() internal {
+        // Tier 0: Anonymous - Minimal access for browsing
+        tierLimits[0] = TierLimits({
+            dailyLimit: 500 * USD,           // $500 daily
+            monthlyLimit: 5000 * USD,        // $5,000 monthly
+            annualLimit: 25000 * USD,        // $25,000 annual
+            perTransactionLimit: 100 * USD,  // $100 per transaction
+            maxListings: 3,
+            maxListingPrice: 100 * USD       // $100 max item price
+        });
+
+        // Tier 1: Basic (Email + Phone + Social) - Active marketplace user
+        tierLimits[1] = TierLimits({
+            dailyLimit: 5000 * USD,          // $5,000 daily
+            monthlyLimit: 50000 * USD,       // $50,000 monthly
+            annualLimit: 250000 * USD,       // $250,000 annual
+            perTransactionLimit: 2000 * USD, // $2,000 per transaction
+            maxListings: 25,
+            maxListingPrice: 2000 * USD      // $2,000 max item price
+        });
+
+        // Tier 2: Verified Identity (ID + Address) - Public RWA access
+        tierLimits[2] = TierLimits({
+            dailyLimit: 25000 * USD,         // $25,000 daily
+            monthlyLimit: 250000 * USD,      // $250,000 monthly
+            annualLimit: 0,                   // Unlimited annual
+            perTransactionLimit: 25000 * USD, // $25,000 per transaction
+            maxListings: 250,
+            maxListingPrice: 25000 * USD     // $25,000 max item price
+        });
+
+        // Tier 3: Accredited Investor - Private RWA access
+        tierLimits[3] = TierLimits({
+            dailyLimit: 100000 * USD,        // $100,000 daily
+            monthlyLimit: 1000000 * USD,     // $1,000,000 monthly
+            annualLimit: 0,                   // Unlimited annual
+            perTransactionLimit: 100000 * USD, // $100,000 per transaction
+            maxListings: 0,                   // Unlimited listings
+            maxListingPrice: 0                // Unlimited item price
+        });
+
+        // Tier 4: Institutional/Validator - Full access
+        tierLimits[4] = TierLimits({
+            dailyLimit: 0,                    // Unlimited daily
+            monthlyLimit: 0,                  // Unlimited monthly
+            annualLimit: 0,                   // Unlimited annual
+            perTransactionLimit: 0,           // Unlimited per transaction
+            maxListings: 0,                   // Unlimited listings
+            maxListingPrice: 0                // Unlimited item price
+        });
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
     //                            INTERNAL
     // ═══════════════════════════════════════════════════════════════════════
+
+    /**
+     * @notice Check and update KYC Tier 2 status if all requirements met
+     * @param user Address to check
+     *
+     * @dev Tier 2 requires THREE verifications:
+     *      1. ID verification (userIDHashes[user] != 0)
+     *      2. Address verification (userAddressHashes[user] != 0)
+     *      3. Selfie verification (selfieVerified[user] == true)
+     *      Only marks Tier 2 complete when ALL three are present
+     */
+    function _checkAndUpdateKycTier2(address user) internal {
+        // Must have Tier 1 first
+        if (kycTier1CompletedAt[user] == 0) return;
+
+        // Must have all three Tier 2 verifications
+        if (userIDHashes[user] == bytes32(0)) return;         // No ID
+        if (userAddressHashes[user] == bytes32(0)) return;    // No address
+        if (!selfieVerified[user]) return;                     // No selfie
+
+        // All requirements met - mark Tier 2 complete (only if not already complete)
+        if (kycTier2CompletedAt[user] == 0) {
+            // solhint-disable-next-line not-rely-on-time
+            kycTier2CompletedAt[user] = block.timestamp;
+            // solhint-disable-next-line not-rely-on-time
+            emit KycTier2Completed(user, block.timestamp);
+        }
+    }
 
     /**
      * @notice Authorize contract upgrade

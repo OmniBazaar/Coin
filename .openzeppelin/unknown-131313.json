@@ -2,11 +2,11 @@
   "manifestVersion": "3.2",
   "proxies": [
     {
-      "address": "0x0E4E697317117B150481a827f1e5029864aAe781",
+      "address": "0xE2e1b926AE798647DDfD7E5A95862C6C2E3C6F67",
       "kind": "uups"
     },
     {
-      "address": "0xE2e1b926AE798647DDfD7E5A95862C6C2E3C6F67",
+      "address": "0x0E4E697317117B150481a827f1e5029864aAe781",
       "kind": "uups"
     }
   ],
@@ -738,6 +738,570 @@
               "label": "_paused",
               "type": "t_bool",
               "src": "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol:21",
+              "offset": 0,
+              "slot": "0"
+            }
+          ],
+          "erc7201:openzeppelin.storage.AccessControl": [
+            {
+              "contract": "AccessControlUpgradeable",
+              "label": "_roles",
+              "type": "t_mapping(t_bytes32,t_struct(RoleData)26_storage)",
+              "src": "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol:62",
+              "offset": 0,
+              "slot": "0"
+            }
+          ],
+          "erc7201:openzeppelin.storage.Initializable": [
+            {
+              "contract": "Initializable",
+              "label": "_initialized",
+              "type": "t_uint64",
+              "src": "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol:69",
+              "offset": 0,
+              "slot": "0"
+            },
+            {
+              "contract": "Initializable",
+              "label": "_initializing",
+              "type": "t_bool",
+              "src": "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol:73",
+              "offset": 8,
+              "slot": "0"
+            }
+          ]
+        }
+      }
+    },
+    "4de86f95eaf6af935cd0cee730eba4c7cf5ff930b925ef3c36a6eea3a6bcb6c5": {
+      "address": "0xC4f78C9E6A3D37e7bc4eD6d47549B89dd6577855",
+      "layout": {
+        "solcVersion": "0.8.25",
+        "storage": [
+          {
+            "label": "registrations",
+            "offset": 0,
+            "slot": "0",
+            "type": "t_mapping(t_address,t_struct(Registration)7369_storage)",
+            "contract": "OmniRegistration",
+            "src": "contracts/OmniRegistration.sol:116"
+          },
+          {
+            "label": "usedPhoneHashes",
+            "offset": 0,
+            "slot": "1",
+            "type": "t_mapping(t_bytes32,t_bool)",
+            "contract": "OmniRegistration",
+            "src": "contracts/OmniRegistration.sol:119"
+          },
+          {
+            "label": "usedEmailHashes",
+            "offset": 0,
+            "slot": "2",
+            "type": "t_mapping(t_bytes32,t_bool)",
+            "contract": "OmniRegistration",
+            "src": "contracts/OmniRegistration.sol:122"
+          },
+          {
+            "label": "dailyRegistrationCount",
+            "offset": 0,
+            "slot": "3",
+            "type": "t_mapping(t_uint256,t_uint256)",
+            "contract": "OmniRegistration",
+            "src": "contracts/OmniRegistration.sol:126"
+          },
+          {
+            "label": "totalRegistrations",
+            "offset": 0,
+            "slot": "4",
+            "type": "t_uint256",
+            "contract": "OmniRegistration",
+            "src": "contracts/OmniRegistration.sol:128"
+          },
+          {
+            "label": "kycAttestations",
+            "offset": 0,
+            "slot": "5",
+            "type": "t_mapping(t_bytes32,t_array(t_address)dyn_storage)",
+            "contract": "OmniRegistration",
+            "src": "contracts/OmniRegistration.sol:130"
+          },
+          {
+            "label": "DOMAIN_SEPARATOR",
+            "offset": 0,
+            "slot": "6",
+            "type": "t_bytes32",
+            "contract": "OmniRegistration",
+            "src": "contracts/OmniRegistration.sol:135"
+          },
+          {
+            "label": "trustedVerificationKey",
+            "offset": 0,
+            "slot": "7",
+            "type": "t_address",
+            "contract": "OmniRegistration",
+            "src": "contracts/OmniRegistration.sol:149"
+          },
+          {
+            "label": "userSocialHashes",
+            "offset": 0,
+            "slot": "8",
+            "type": "t_mapping(t_address,t_bytes32)",
+            "contract": "OmniRegistration",
+            "src": "contracts/OmniRegistration.sol:154"
+          },
+          {
+            "label": "userEmailHashes",
+            "offset": 0,
+            "slot": "9",
+            "type": "t_mapping(t_address,t_bytes32)",
+            "contract": "OmniRegistration",
+            "src": "contracts/OmniRegistration.sol:158"
+          },
+          {
+            "label": "kycTier1CompletedAt",
+            "offset": 0,
+            "slot": "10",
+            "type": "t_mapping(t_address,t_uint256)",
+            "contract": "OmniRegistration",
+            "src": "contracts/OmniRegistration.sol:163"
+          },
+          {
+            "label": "usedSocialHashes",
+            "offset": 0,
+            "slot": "11",
+            "type": "t_mapping(t_bytes32,t_bool)",
+            "contract": "OmniRegistration",
+            "src": "contracts/OmniRegistration.sol:165"
+          },
+          {
+            "label": "usedNonces",
+            "offset": 0,
+            "slot": "12",
+            "type": "t_mapping(t_bytes32,t_bool)",
+            "contract": "OmniRegistration",
+            "src": "contracts/OmniRegistration.sol:166"
+          },
+          {
+            "label": "userIDHashes",
+            "offset": 0,
+            "slot": "13",
+            "type": "t_mapping(t_address,t_bytes32)",
+            "contract": "OmniRegistration",
+            "src": "contracts/OmniRegistration.sol:214"
+          },
+          {
+            "label": "usedIDHashes",
+            "offset": 0,
+            "slot": "14",
+            "type": "t_mapping(t_bytes32,t_bool)",
+            "contract": "OmniRegistration",
+            "src": "contracts/OmniRegistration.sol:217"
+          },
+          {
+            "label": "userCountries",
+            "offset": 0,
+            "slot": "15",
+            "type": "t_mapping(t_address,t_string_storage)",
+            "contract": "OmniRegistration",
+            "src": "contracts/OmniRegistration.sol:220"
+          },
+          {
+            "label": "userAddressHashes",
+            "offset": 0,
+            "slot": "16",
+            "type": "t_mapping(t_address,t_bytes32)",
+            "contract": "OmniRegistration",
+            "src": "contracts/OmniRegistration.sol:227"
+          },
+          {
+            "label": "usedAddressHashes",
+            "offset": 0,
+            "slot": "17",
+            "type": "t_mapping(t_bytes32,t_bool)",
+            "contract": "OmniRegistration",
+            "src": "contracts/OmniRegistration.sol:229"
+          },
+          {
+            "label": "selfieVerified",
+            "offset": 0,
+            "slot": "18",
+            "type": "t_mapping(t_address,t_bool)",
+            "contract": "OmniRegistration",
+            "src": "contracts/OmniRegistration.sol:234"
+          },
+          {
+            "label": "kycTier2CompletedAt",
+            "offset": 0,
+            "slot": "19",
+            "type": "t_mapping(t_address,t_uint256)",
+            "contract": "OmniRegistration",
+            "src": "contracts/OmniRegistration.sol:237"
+          },
+          {
+            "label": "videoSessionHashes",
+            "offset": 0,
+            "slot": "20",
+            "type": "t_mapping(t_address,t_bytes32)",
+            "contract": "OmniRegistration",
+            "src": "contracts/OmniRegistration.sol:239"
+          },
+          {
+            "label": "kycTier3CompletedAt",
+            "offset": 0,
+            "slot": "21",
+            "type": "t_mapping(t_address,t_uint256)",
+            "contract": "OmniRegistration",
+            "src": "contracts/OmniRegistration.sol:241"
+          },
+          {
+            "label": "trustedKYCProviders",
+            "offset": 0,
+            "slot": "22",
+            "type": "t_mapping(t_address,t_bool)",
+            "contract": "OmniRegistration",
+            "src": "contracts/OmniRegistration.sol:245"
+          },
+          {
+            "label": "kycProviderNames",
+            "offset": 0,
+            "slot": "23",
+            "type": "t_mapping(t_address,t_string_storage)",
+            "contract": "OmniRegistration",
+            "src": "contracts/OmniRegistration.sol:251"
+          },
+          {
+            "label": "kycTier4CompletedAt",
+            "offset": 0,
+            "slot": "24",
+            "type": "t_mapping(t_address,t_uint256)",
+            "contract": "OmniRegistration",
+            "src": "contracts/OmniRegistration.sol:253"
+          },
+          {
+            "label": "userKYCProvider",
+            "offset": 0,
+            "slot": "25",
+            "type": "t_mapping(t_address,t_address)",
+            "contract": "OmniRegistration",
+            "src": "contracts/OmniRegistration.sol:255"
+          },
+          {
+            "label": "referralCounts",
+            "offset": 0,
+            "slot": "26",
+            "type": "t_mapping(t_address,t_uint256)",
+            "contract": "OmniRegistration",
+            "src": "contracts/OmniRegistration.sol:260"
+          },
+          {
+            "label": "tierLimits",
+            "offset": 0,
+            "slot": "27",
+            "type": "t_mapping(t_uint8,t_struct(TierLimits)10804_storage)",
+            "contract": "OmniRegistration",
+            "src": "contracts/OmniRegistration.sol:2257"
+          },
+          {
+            "label": "userVolumes",
+            "offset": 0,
+            "slot": "28",
+            "type": "t_mapping(t_address,t_struct(VolumeTracking)10824_storage)",
+            "contract": "OmniRegistration",
+            "src": "contracts/OmniRegistration.sol:2277"
+          }
+        ],
+        "types": {
+          "t_address": {
+            "label": "address",
+            "numberOfBytes": "20"
+          },
+          "t_bool": {
+            "label": "bool",
+            "numberOfBytes": "1"
+          },
+          "t_bytes32": {
+            "label": "bytes32",
+            "numberOfBytes": "32"
+          },
+          "t_mapping(t_address,t_bool)": {
+            "label": "mapping(address => bool)",
+            "numberOfBytes": "32"
+          },
+          "t_mapping(t_bytes32,t_struct(RoleData)26_storage)": {
+            "label": "mapping(bytes32 => struct AccessControlUpgradeable.RoleData)",
+            "numberOfBytes": "32"
+          },
+          "t_struct(AccessControlStorage)36_storage": {
+            "label": "struct AccessControlUpgradeable.AccessControlStorage",
+            "members": [
+              {
+                "label": "_roles",
+                "type": "t_mapping(t_bytes32,t_struct(RoleData)26_storage)",
+                "offset": 0,
+                "slot": "0"
+              }
+            ],
+            "numberOfBytes": "32"
+          },
+          "t_struct(InitializableStorage)147_storage": {
+            "label": "struct Initializable.InitializableStorage",
+            "members": [
+              {
+                "label": "_initialized",
+                "type": "t_uint64",
+                "offset": 0,
+                "slot": "0"
+              },
+              {
+                "label": "_initializing",
+                "type": "t_bool",
+                "offset": 8,
+                "slot": "0"
+              }
+            ],
+            "numberOfBytes": "32"
+          },
+          "t_struct(ReentrancyGuardStorage)300_storage": {
+            "label": "struct ReentrancyGuardUpgradeable.ReentrancyGuardStorage",
+            "members": [
+              {
+                "label": "_status",
+                "type": "t_uint256",
+                "offset": 0,
+                "slot": "0"
+              }
+            ],
+            "numberOfBytes": "32"
+          },
+          "t_struct(RoleData)26_storage": {
+            "label": "struct AccessControlUpgradeable.RoleData",
+            "members": [
+              {
+                "label": "hasRole",
+                "type": "t_mapping(t_address,t_bool)",
+                "offset": 0,
+                "slot": "0"
+              },
+              {
+                "label": "adminRole",
+                "type": "t_bytes32",
+                "offset": 0,
+                "slot": "1"
+              }
+            ],
+            "numberOfBytes": "64"
+          },
+          "t_uint256": {
+            "label": "uint256",
+            "numberOfBytes": "32"
+          },
+          "t_uint64": {
+            "label": "uint64",
+            "numberOfBytes": "8"
+          },
+          "t_array(t_address)dyn_storage": {
+            "label": "address[]",
+            "numberOfBytes": "32"
+          },
+          "t_mapping(t_address,t_address)": {
+            "label": "mapping(address => address)",
+            "numberOfBytes": "32"
+          },
+          "t_mapping(t_address,t_bytes32)": {
+            "label": "mapping(address => bytes32)",
+            "numberOfBytes": "32"
+          },
+          "t_mapping(t_address,t_string_storage)": {
+            "label": "mapping(address => string)",
+            "numberOfBytes": "32"
+          },
+          "t_mapping(t_address,t_struct(Registration)7369_storage)": {
+            "label": "mapping(address => struct OmniRegistration.Registration)",
+            "numberOfBytes": "32"
+          },
+          "t_mapping(t_address,t_struct(VolumeTracking)10824_storage)": {
+            "label": "mapping(address => struct OmniRegistration.VolumeTracking)",
+            "numberOfBytes": "32"
+          },
+          "t_mapping(t_address,t_uint256)": {
+            "label": "mapping(address => uint256)",
+            "numberOfBytes": "32"
+          },
+          "t_mapping(t_bytes32,t_array(t_address)dyn_storage)": {
+            "label": "mapping(bytes32 => address[])",
+            "numberOfBytes": "32"
+          },
+          "t_mapping(t_bytes32,t_bool)": {
+            "label": "mapping(bytes32 => bool)",
+            "numberOfBytes": "32"
+          },
+          "t_mapping(t_uint256,t_uint256)": {
+            "label": "mapping(uint256 => uint256)",
+            "numberOfBytes": "32"
+          },
+          "t_mapping(t_uint8,t_struct(TierLimits)10804_storage)": {
+            "label": "mapping(uint8 => struct OmniRegistration.TierLimits)",
+            "numberOfBytes": "32"
+          },
+          "t_string_storage": {
+            "label": "string",
+            "numberOfBytes": "32"
+          },
+          "t_struct(Registration)7369_storage": {
+            "label": "struct OmniRegistration.Registration",
+            "members": [
+              {
+                "label": "timestamp",
+                "type": "t_uint256",
+                "offset": 0,
+                "slot": "0"
+              },
+              {
+                "label": "referrer",
+                "type": "t_address",
+                "offset": 0,
+                "slot": "1"
+              },
+              {
+                "label": "registeredBy",
+                "type": "t_address",
+                "offset": 0,
+                "slot": "2"
+              },
+              {
+                "label": "phoneHash",
+                "type": "t_bytes32",
+                "offset": 0,
+                "slot": "3"
+              },
+              {
+                "label": "emailHash",
+                "type": "t_bytes32",
+                "offset": 0,
+                "slot": "4"
+              },
+              {
+                "label": "kycTier",
+                "type": "t_uint8",
+                "offset": 0,
+                "slot": "5"
+              },
+              {
+                "label": "welcomeBonusClaimed",
+                "type": "t_bool",
+                "offset": 1,
+                "slot": "5"
+              },
+              {
+                "label": "firstSaleBonusClaimed",
+                "type": "t_bool",
+                "offset": 2,
+                "slot": "5"
+              }
+            ],
+            "numberOfBytes": "192"
+          },
+          "t_struct(TierLimits)10804_storage": {
+            "label": "struct OmniRegistration.TierLimits",
+            "members": [
+              {
+                "label": "dailyLimit",
+                "type": "t_uint256",
+                "offset": 0,
+                "slot": "0"
+              },
+              {
+                "label": "monthlyLimit",
+                "type": "t_uint256",
+                "offset": 0,
+                "slot": "1"
+              },
+              {
+                "label": "annualLimit",
+                "type": "t_uint256",
+                "offset": 0,
+                "slot": "2"
+              },
+              {
+                "label": "perTransactionLimit",
+                "type": "t_uint256",
+                "offset": 0,
+                "slot": "3"
+              },
+              {
+                "label": "maxListings",
+                "type": "t_uint16",
+                "offset": 0,
+                "slot": "4"
+              },
+              {
+                "label": "maxListingPrice",
+                "type": "t_uint256",
+                "offset": 0,
+                "slot": "5"
+              }
+            ],
+            "numberOfBytes": "192"
+          },
+          "t_struct(VolumeTracking)10824_storage": {
+            "label": "struct OmniRegistration.VolumeTracking",
+            "members": [
+              {
+                "label": "dailyVolume",
+                "type": "t_uint256",
+                "offset": 0,
+                "slot": "0"
+              },
+              {
+                "label": "monthlyVolume",
+                "type": "t_uint256",
+                "offset": 0,
+                "slot": "1"
+              },
+              {
+                "label": "annualVolume",
+                "type": "t_uint256",
+                "offset": 0,
+                "slot": "2"
+              },
+              {
+                "label": "lastTransactionDay",
+                "type": "t_uint256",
+                "offset": 0,
+                "slot": "3"
+              },
+              {
+                "label": "lastTransactionMonth",
+                "type": "t_uint256",
+                "offset": 0,
+                "slot": "4"
+              },
+              {
+                "label": "lastTransactionYear",
+                "type": "t_uint256",
+                "offset": 0,
+                "slot": "5"
+              }
+            ],
+            "numberOfBytes": "192"
+          },
+          "t_uint16": {
+            "label": "uint16",
+            "numberOfBytes": "2"
+          },
+          "t_uint8": {
+            "label": "uint8",
+            "numberOfBytes": "1"
+          }
+        },
+        "namespaces": {
+          "erc7201:openzeppelin.storage.ReentrancyGuard": [
+            {
+              "contract": "ReentrancyGuardUpgradeable",
+              "label": "_status",
+              "type": "t_uint256",
+              "src": "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol:43",
               "offset": 0,
               "slot": "0"
             }
