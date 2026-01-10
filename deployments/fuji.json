@@ -12,7 +12,7 @@
     "PrivateOmniCoin": "0x09F99AE44bd024fD2c16ff6999959d053f0f32B5",
     "MinimalEscrow": "0xa0aF1B47C6B4c56E776c8c920dB677E394060bDD",
     "OmniCore": "0x0Ef606683222747738C04b4b00052F5357AC6c8b",
-    "OmniCoreImplementation": "",
+    "OmniCoreImplementation": "0x00a62B0E0e3bb9D067fC0D62DEd1d07f9f028410",
     "OmniGovernance": "0x56E233DDE02E016AF83e352B9Dd191bc62e108B5",
     "LegacyBalanceClaim": "0x1201b2f0e94B8722792FC4F515E64133c122CD39",
     "QualificationOracle": "0x85722E5bA6d0E8b97a9fB7B6796816C8B9c49356",
@@ -40,5 +40,6 @@
     "type": "AvalanchePoSValidatorManager",
     "precompileAddress": "0x0FEEDC0DE0000000000000000000000000000000",
     "note": "Using standard Avalanche PoS Validator Manager precompile instead of deprecated OmniValidatorManager"
-  }
+  },
+  "upgradedAt": "2026-01-10T23:40:46.197Z"
 }

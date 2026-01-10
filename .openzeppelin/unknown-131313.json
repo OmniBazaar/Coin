@@ -2,1460 +2,151 @@
   "manifestVersion": "3.2",
   "proxies": [
     {
-      "address": "0xE2e1b926AE798647DDfD7E5A95862C6C2E3C6F67",
-      "kind": "uups"
-    },
-    {
-      "address": "0x0E4E697317117B150481a827f1e5029864aAe781",
-      "kind": "uups"
-    },
-    {
-      "address": "0x500436A6bd54A0C5260F961ff5941dDa1549b658",
-      "txHash": "0xe2274996337e402495a9b0bcfbd2cb564d261e38f394a7daef8dfcc796e3552a",
-      "kind": "uups"
-    },
-    {
-      "address": "0x6136A40Ea03586aCA976FA2bbe9deC072EA75869",
-      "txHash": "0x87f668855dfe57c0795d36c46a513655dd0336fd7b666af5705ebf1cf7894b51",
+      "address": "0x0Ef606683222747738C04b4b00052F5357AC6c8b",
       "kind": "uups"
     }
   ],
   "impls": {
-    "bc18785e4a9326d84e8c8d5178dca537f753d4e1b8adfe84e51bf6be713bc2c9": {
-      "address": "0xCeD56b9587f3460503962b868F8eb621Df359D8e",
+    "fb07d78a7217d679f53e46a10402ea3c84ccf5f497b5911ad44542da73040992": {
+      "address": "0x00a62B0E0e3bb9D067fC0D62DEd1d07f9f028410",
       "layout": {
         "solcVersion": "0.8.25",
         "storage": [
           {
-            "label": "registrations",
+            "label": "OMNI_COIN",
             "offset": 0,
             "slot": "0",
-            "type": "t_mapping(t_address,t_struct(Registration)21095_storage)",
-            "contract": "OmniRegistration",
-            "src": "contracts/OmniRegistration.sol:116"
+            "type": "t_contract(IERC20)4165",
+            "contract": "OmniCore",
+            "src": "contracts/OmniCore.sol:59"
           },
           {
-            "label": "usedPhoneHashes",
+            "label": "services",
             "offset": 0,
             "slot": "1",
-            "type": "t_mapping(t_bytes32,t_bool)",
-            "contract": "OmniRegistration",
-            "src": "contracts/OmniRegistration.sol:119"
+            "type": "t_mapping(t_bytes32,t_address)",
+            "contract": "OmniCore",
+            "src": "contracts/OmniCore.sol:62"
           },
           {
-            "label": "usedEmailHashes",
+            "label": "validators",
             "offset": 0,
             "slot": "2",
-            "type": "t_mapping(t_bytes32,t_bool)",
-            "contract": "OmniRegistration",
-            "src": "contracts/OmniRegistration.sol:122"
+            "type": "t_mapping(t_address,t_bool)",
+            "contract": "OmniCore",
+            "src": "contracts/OmniCore.sol:65"
           },
           {
-            "label": "dailyRegistrationCount",
+            "label": "masterRoot",
             "offset": 0,
             "slot": "3",
-            "type": "t_mapping(t_uint256,t_uint256)",
-            "contract": "OmniRegistration",
-            "src": "contracts/OmniRegistration.sol:126"
+            "type": "t_bytes32",
+            "contract": "OmniCore",
+            "src": "contracts/OmniCore.sol:68"
           },
           {
-            "label": "totalRegistrations",
+            "label": "lastRootUpdate",
             "offset": 0,
             "slot": "4",
             "type": "t_uint256",
-            "contract": "OmniRegistration",
-            "src": "contracts/OmniRegistration.sol:128"
+            "contract": "OmniCore",
+            "src": "contracts/OmniCore.sol:71"
           },
           {
-            "label": "kycAttestations",
+            "label": "stakes",
             "offset": 0,
             "slot": "5",
-            "type": "t_mapping(t_bytes32,t_array(t_address)dyn_storage)",
-            "contract": "OmniRegistration",
-            "src": "contracts/OmniRegistration.sol:130"
+            "type": "t_mapping(t_address,t_struct(Stake)17326_storage)",
+            "contract": "OmniCore",
+            "src": "contracts/OmniCore.sol:74"
           },
           {
-            "label": "DOMAIN_SEPARATOR",
+            "label": "totalStaked",
             "offset": 0,
             "slot": "6",
-            "type": "t_bytes32",
-            "contract": "OmniRegistration",
-            "src": "contracts/OmniRegistration.sol:135"
+            "type": "t_uint256",
+            "contract": "OmniCore",
+            "src": "contracts/OmniCore.sol:77"
           },
           {
-            "label": "trustedVerificationKey",
+            "label": "dexBalances",
             "offset": 0,
             "slot": "7",
-            "type": "t_address",
-            "contract": "OmniRegistration",
-            "src": "contracts/OmniRegistration.sol:149"
-          },
-          {
-            "label": "userSocialHashes",
-            "offset": 0,
-            "slot": "8",
-            "type": "t_mapping(t_address,t_bytes32)",
-            "contract": "OmniRegistration",
-            "src": "contracts/OmniRegistration.sol:154"
-          },
-          {
-            "label": "userEmailHashes",
-            "offset": 0,
-            "slot": "9",
-            "type": "t_mapping(t_address,t_bytes32)",
-            "contract": "OmniRegistration",
-            "src": "contracts/OmniRegistration.sol:159"
-          },
-          {
-            "label": "kycTier1CompletedAt",
-            "offset": 0,
-            "slot": "10",
-            "type": "t_mapping(t_address,t_uint256)",
-            "contract": "OmniRegistration",
-            "src": "contracts/OmniRegistration.sol:164"
-          },
-          {
-            "label": "usedSocialHashes",
-            "offset": 0,
-            "slot": "11",
-            "type": "t_mapping(t_bytes32,t_bool)",
-            "contract": "OmniRegistration",
-            "src": "contracts/OmniRegistration.sol:169"
-          },
-          {
-            "label": "usedNonces",
-            "offset": 0,
-            "slot": "12",
-            "type": "t_mapping(t_bytes32,t_bool)",
-            "contract": "OmniRegistration",
-            "src": "contracts/OmniRegistration.sol:174"
-          }
-        ],
-        "types": {
-          "t_address": {
-            "label": "address",
-            "numberOfBytes": "20"
-          },
-          "t_bool": {
-            "label": "bool",
-            "numberOfBytes": "1"
-          },
-          "t_bytes32": {
-            "label": "bytes32",
-            "numberOfBytes": "32"
-          },
-          "t_mapping(t_address,t_bool)": {
-            "label": "mapping(address => bool)",
-            "numberOfBytes": "32"
-          },
-          "t_mapping(t_bytes32,t_struct(RoleData)26_storage)": {
-            "label": "mapping(bytes32 => struct AccessControlUpgradeable.RoleData)",
-            "numberOfBytes": "32"
-          },
-          "t_struct(AccessControlStorage)36_storage": {
-            "label": "struct AccessControlUpgradeable.AccessControlStorage",
-            "members": [
-              {
-                "label": "_roles",
-                "type": "t_mapping(t_bytes32,t_struct(RoleData)26_storage)",
-                "offset": 0,
-                "slot": "0"
-              }
-            ],
-            "numberOfBytes": "32"
-          },
-          "t_struct(InitializableStorage)213_storage": {
-            "label": "struct Initializable.InitializableStorage",
-            "members": [
-              {
-                "label": "_initialized",
-                "type": "t_uint64",
-                "offset": 0,
-                "slot": "0"
-              },
-              {
-                "label": "_initializing",
-                "type": "t_bool",
-                "offset": 8,
-                "slot": "0"
-              }
-            ],
-            "numberOfBytes": "32"
-          },
-          "t_struct(ReentrancyGuardStorage)685_storage": {
-            "label": "struct ReentrancyGuardUpgradeable.ReentrancyGuardStorage",
-            "members": [
-              {
-                "label": "_status",
-                "type": "t_uint256",
-                "offset": 0,
-                "slot": "0"
-              }
-            ],
-            "numberOfBytes": "32"
-          },
-          "t_struct(RoleData)26_storage": {
-            "label": "struct AccessControlUpgradeable.RoleData",
-            "members": [
-              {
-                "label": "hasRole",
-                "type": "t_mapping(t_address,t_bool)",
-                "offset": 0,
-                "slot": "0"
-              },
-              {
-                "label": "adminRole",
-                "type": "t_bytes32",
-                "offset": 0,
-                "slot": "1"
-              }
-            ],
-            "numberOfBytes": "64"
-          },
-          "t_uint256": {
-            "label": "uint256",
-            "numberOfBytes": "32"
-          },
-          "t_uint64": {
-            "label": "uint64",
-            "numberOfBytes": "8"
-          },
-          "t_array(t_address)dyn_storage": {
-            "label": "address[]",
-            "numberOfBytes": "32"
-          },
-          "t_mapping(t_address,t_bytes32)": {
-            "label": "mapping(address => bytes32)",
-            "numberOfBytes": "32"
-          },
-          "t_mapping(t_address,t_struct(Registration)21095_storage)": {
-            "label": "mapping(address => struct OmniRegistration.Registration)",
-            "numberOfBytes": "32"
-          },
-          "t_mapping(t_address,t_uint256)": {
-            "label": "mapping(address => uint256)",
-            "numberOfBytes": "32"
-          },
-          "t_mapping(t_bytes32,t_array(t_address)dyn_storage)": {
-            "label": "mapping(bytes32 => address[])",
-            "numberOfBytes": "32"
-          },
-          "t_mapping(t_bytes32,t_bool)": {
-            "label": "mapping(bytes32 => bool)",
-            "numberOfBytes": "32"
-          },
-          "t_mapping(t_uint256,t_uint256)": {
-            "label": "mapping(uint256 => uint256)",
-            "numberOfBytes": "32"
-          },
-          "t_struct(Registration)21095_storage": {
-            "label": "struct OmniRegistration.Registration",
-            "members": [
-              {
-                "label": "timestamp",
-                "type": "t_uint256",
-                "offset": 0,
-                "slot": "0"
-              },
-              {
-                "label": "referrer",
-                "type": "t_address",
-                "offset": 0,
-                "slot": "1"
-              },
-              {
-                "label": "registeredBy",
-                "type": "t_address",
-                "offset": 0,
-                "slot": "2"
-              },
-              {
-                "label": "phoneHash",
-                "type": "t_bytes32",
-                "offset": 0,
-                "slot": "3"
-              },
-              {
-                "label": "emailHash",
-                "type": "t_bytes32",
-                "offset": 0,
-                "slot": "4"
-              },
-              {
-                "label": "kycTier",
-                "type": "t_uint8",
-                "offset": 0,
-                "slot": "5"
-              },
-              {
-                "label": "welcomeBonusClaimed",
-                "type": "t_bool",
-                "offset": 1,
-                "slot": "5"
-              },
-              {
-                "label": "firstSaleBonusClaimed",
-                "type": "t_bool",
-                "offset": 2,
-                "slot": "5"
-              }
-            ],
-            "numberOfBytes": "192"
-          },
-          "t_uint8": {
-            "label": "uint8",
-            "numberOfBytes": "1"
-          }
-        },
-        "namespaces": {
-          "erc7201:openzeppelin.storage.ReentrancyGuard": [
-            {
-              "contract": "ReentrancyGuardUpgradeable",
-              "label": "_status",
-              "type": "t_uint256",
-              "src": "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol:43",
-              "offset": 0,
-              "slot": "0"
-            }
-          ],
-          "erc7201:openzeppelin.storage.AccessControl": [
-            {
-              "contract": "AccessControlUpgradeable",
-              "label": "_roles",
-              "type": "t_mapping(t_bytes32,t_struct(RoleData)26_storage)",
-              "src": "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol:62",
-              "offset": 0,
-              "slot": "0"
-            }
-          ],
-          "erc7201:openzeppelin.storage.Initializable": [
-            {
-              "contract": "Initializable",
-              "label": "_initialized",
-              "type": "t_uint64",
-              "src": "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol:69",
-              "offset": 0,
-              "slot": "0"
-            },
-            {
-              "contract": "Initializable",
-              "label": "_initializing",
-              "type": "t_bool",
-              "src": "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol:73",
-              "offset": 8,
-              "slot": "0"
-            }
-          ]
-        }
-      },
-      "allAddresses": [
-        "0xCeD56b9587f3460503962b868F8eb621Df359D8e",
-        "0xAC0f714A0Ee01Aeb8083Fe34ABA6C07a07795779"
-      ]
-    },
-    "86063904e70de766efdcbbd79d2d85d636d7dd16bc29af15804d8b81c1b3d37e": {
-      "address": "0xE79723DA110112f46fBd89D37C226F66aDC2A339",
-      "layout": {
-        "solcVersion": "0.8.25",
-        "storage": [
-          {
-            "label": "omniCoin",
-            "offset": 0,
-            "slot": "0",
-            "type": "t_contract(IERC20)2144",
-            "contract": "OmniRewardManager",
-            "src": "contracts/OmniRewardManager.sol:138"
-          },
-          {
-            "label": "welcomeBonusPool",
-            "offset": 0,
-            "slot": "1",
-            "type": "t_struct(PoolState)9610_storage",
-            "contract": "OmniRewardManager",
-            "src": "contracts/OmniRewardManager.sol:141"
-          },
-          {
-            "label": "referralBonusPool",
-            "offset": 0,
-            "slot": "5",
-            "type": "t_struct(PoolState)9610_storage",
-            "contract": "OmniRewardManager",
-            "src": "contracts/OmniRewardManager.sol:144"
-          },
-          {
-            "label": "firstSaleBonusPool",
-            "offset": 0,
-            "slot": "9",
-            "type": "t_struct(PoolState)9610_storage",
-            "contract": "OmniRewardManager",
-            "src": "contracts/OmniRewardManager.sol:147"
-          },
-          {
-            "label": "validatorRewardsPool",
-            "offset": 0,
-            "slot": "13",
-            "type": "t_struct(PoolState)9610_storage",
-            "contract": "OmniRewardManager",
-            "src": "contracts/OmniRewardManager.sol:150"
-          },
-          {
-            "label": "welcomeBonusClaimed",
-            "offset": 0,
-            "slot": "17",
-            "type": "t_mapping(t_address,t_bool)",
-            "contract": "OmniRewardManager",
-            "src": "contracts/OmniRewardManager.sol:153"
-          },
-          {
-            "label": "firstSaleBonusClaimed",
-            "offset": 0,
-            "slot": "18",
-            "type": "t_mapping(t_address,t_bool)",
-            "contract": "OmniRewardManager",
-            "src": "contracts/OmniRewardManager.sol:156"
-          },
-          {
-            "label": "referralBonusesEarned",
-            "offset": 0,
-            "slot": "19",
-            "type": "t_mapping(t_address,t_uint256)",
-            "contract": "OmniRewardManager",
-            "src": "contracts/OmniRewardManager.sol:159"
-          },
-          {
-            "label": "currentVirtualBlockHeight",
-            "offset": 0,
-            "slot": "20",
-            "type": "t_uint256",
-            "contract": "OmniRewardManager",
-            "src": "contracts/OmniRewardManager.sol:162"
-          },
-          {
-            "label": "registrationContract",
-            "offset": 0,
-            "slot": "21",
-            "type": "t_contract(IOmniRegistration)13205",
-            "contract": "OmniRewardManager",
-            "src": "contracts/OmniRewardManager.sol:165"
-          },
-          {
-            "label": "dailyWelcomeBonusCount",
-            "offset": 0,
-            "slot": "22",
-            "type": "t_mapping(t_uint256,t_uint256)",
-            "contract": "OmniRewardManager",
-            "src": "contracts/OmniRewardManager.sol:168"
-          },
-          {
-            "label": "dailyReferralBonusCount",
-            "offset": 0,
-            "slot": "23",
-            "type": "t_mapping(t_uint256,t_uint256)",
-            "contract": "OmniRewardManager",
-            "src": "contracts/OmniRewardManager.sol:171"
-          },
-          {
-            "label": "dailyFirstSaleBonusCount",
-            "offset": 0,
-            "slot": "24",
-            "type": "t_mapping(t_uint256,t_uint256)",
-            "contract": "OmniRewardManager",
-            "src": "contracts/OmniRewardManager.sol:174"
-          },
-          {
-            "label": "claimNonces",
-            "offset": 0,
-            "slot": "25",
-            "type": "t_mapping(t_address,t_uint256)",
-            "contract": "OmniRewardManager",
-            "src": "contracts/OmniRewardManager.sol:177"
+            "type": "t_mapping(t_address,t_mapping(t_address,t_uint256))",
+            "contract": "OmniCore",
+            "src": "contracts/OmniCore.sol:80"
           },
           {
             "label": "oddaoAddress",
             "offset": 0,
-            "slot": "26",
+            "slot": "8",
             "type": "t_address",
-            "contract": "OmniRewardManager",
-            "src": "contracts/OmniRewardManager.sol:180"
+            "contract": "OmniCore",
+            "src": "contracts/OmniCore.sol:83"
           },
           {
-            "label": "legacyBonusClaimsCount",
+            "label": "stakingPoolAddress",
             "offset": 0,
-            "slot": "27",
+            "slot": "9",
+            "type": "t_address",
+            "contract": "OmniCore",
+            "src": "contracts/OmniCore.sol:86"
+          },
+          {
+            "label": "legacyUsernames",
+            "offset": 0,
+            "slot": "10",
+            "type": "t_mapping(t_bytes32,t_bool)",
+            "contract": "OmniCore",
+            "src": "contracts/OmniCore.sol:90"
+          },
+          {
+            "label": "legacyBalances",
+            "offset": 0,
+            "slot": "11",
+            "type": "t_mapping(t_bytes32,t_uint256)",
+            "contract": "OmniCore",
+            "src": "contracts/OmniCore.sol:93"
+          },
+          {
+            "label": "legacyClaimed",
+            "offset": 0,
+            "slot": "12",
+            "type": "t_mapping(t_bytes32,t_address)",
+            "contract": "OmniCore",
+            "src": "contracts/OmniCore.sol:96"
+          },
+          {
+            "label": "legacyAccounts",
+            "offset": 0,
+            "slot": "13",
+            "type": "t_mapping(t_bytes32,t_bytes_storage)",
+            "contract": "OmniCore",
+            "src": "contracts/OmniCore.sol:99"
+          },
+          {
+            "label": "totalLegacySupply",
+            "offset": 0,
+            "slot": "14",
             "type": "t_uint256",
-            "contract": "OmniRewardManager",
-            "src": "contracts/OmniRewardManager.sol:186"
+            "contract": "OmniCore",
+            "src": "contracts/OmniCore.sol:102"
           },
           {
-            "label": "welcomeBonusClaimCount",
+            "label": "totalLegacyClaimed",
             "offset": 0,
-            "slot": "28",
+            "slot": "15",
             "type": "t_uint256",
-            "contract": "OmniRewardManager",
-            "src": "contracts/OmniRewardManager.sol:191"
-          },
-          {
-            "label": "pendingReferralBonuses",
-            "offset": 0,
-            "slot": "29",
-            "type": "t_mapping(t_address,t_uint256)",
-            "contract": "OmniRewardManager",
-            "src": "contracts/OmniRewardManager.sol:196"
+            "contract": "OmniCore",
+            "src": "contracts/OmniCore.sol:105"
           },
           {
             "label": "__gap",
             "offset": 0,
-            "slot": "30",
-            "type": "t_array(t_uint256)35_storage",
-            "contract": "OmniRewardManager",
-            "src": "contracts/OmniRewardManager.sol:199"
-          }
-        ],
-        "types": {
-          "t_address": {
-            "label": "address",
-            "numberOfBytes": "20"
-          },
-          "t_bool": {
-            "label": "bool",
-            "numberOfBytes": "1"
-          },
-          "t_bytes32": {
-            "label": "bytes32",
-            "numberOfBytes": "32"
-          },
-          "t_mapping(t_address,t_bool)": {
-            "label": "mapping(address => bool)",
-            "numberOfBytes": "32"
-          },
-          "t_mapping(t_bytes32,t_struct(RoleData)26_storage)": {
-            "label": "mapping(bytes32 => struct AccessControlUpgradeable.RoleData)",
-            "numberOfBytes": "32"
-          },
-          "t_string_storage": {
-            "label": "string",
-            "numberOfBytes": "32"
-          },
-          "t_struct(AccessControlStorage)36_storage": {
-            "label": "struct AccessControlUpgradeable.AccessControlStorage",
-            "members": [
-              {
-                "label": "_roles",
-                "type": "t_mapping(t_bytes32,t_struct(RoleData)26_storage)",
-                "offset": 0,
-                "slot": "0"
-              }
-            ],
-            "numberOfBytes": "32"
-          },
-          "t_struct(EIP712Storage)425_storage": {
-            "label": "struct EIP712Upgradeable.EIP712Storage",
-            "members": [
-              {
-                "label": "_hashedName",
-                "type": "t_bytes32",
-                "offset": 0,
-                "slot": "0"
-              },
-              {
-                "label": "_hashedVersion",
-                "type": "t_bytes32",
-                "offset": 0,
-                "slot": "1"
-              },
-              {
-                "label": "_name",
-                "type": "t_string_storage",
-                "offset": 0,
-                "slot": "2"
-              },
-              {
-                "label": "_version",
-                "type": "t_string_storage",
-                "offset": 0,
-                "slot": "3"
-              }
-            ],
-            "numberOfBytes": "128"
-          },
-          "t_struct(InitializableStorage)147_storage": {
-            "label": "struct Initializable.InitializableStorage",
-            "members": [
-              {
-                "label": "_initialized",
-                "type": "t_uint64",
-                "offset": 0,
-                "slot": "0"
-              },
-              {
-                "label": "_initializing",
-                "type": "t_bool",
-                "offset": 8,
-                "slot": "0"
-              }
-            ],
-            "numberOfBytes": "32"
-          },
-          "t_struct(PausableStorage)298_storage": {
-            "label": "struct PausableUpgradeable.PausableStorage",
-            "members": [
-              {
-                "label": "_paused",
-                "type": "t_bool",
-                "offset": 0,
-                "slot": "0"
-              }
-            ],
-            "numberOfBytes": "32"
-          },
-          "t_struct(ReentrancyGuardStorage)362_storage": {
-            "label": "struct ReentrancyGuardUpgradeable.ReentrancyGuardStorage",
-            "members": [
-              {
-                "label": "_status",
-                "type": "t_uint256",
-                "offset": 0,
-                "slot": "0"
-              }
-            ],
-            "numberOfBytes": "32"
-          },
-          "t_struct(RoleData)26_storage": {
-            "label": "struct AccessControlUpgradeable.RoleData",
-            "members": [
-              {
-                "label": "hasRole",
-                "type": "t_mapping(t_address,t_bool)",
-                "offset": 0,
-                "slot": "0"
-              },
-              {
-                "label": "adminRole",
-                "type": "t_bytes32",
-                "offset": 0,
-                "slot": "1"
-              }
-            ],
-            "numberOfBytes": "64"
-          },
-          "t_uint256": {
-            "label": "uint256",
-            "numberOfBytes": "32"
-          },
-          "t_uint64": {
-            "label": "uint64",
-            "numberOfBytes": "8"
-          },
-          "t_array(t_uint256)35_storage": {
-            "label": "uint256[35]",
-            "numberOfBytes": "1120"
-          },
-          "t_contract(IERC20)2144": {
-            "label": "contract IERC20",
-            "numberOfBytes": "20"
-          },
-          "t_contract(IOmniRegistration)13205": {
-            "label": "contract IOmniRegistration",
-            "numberOfBytes": "20"
-          },
-          "t_mapping(t_address,t_uint256)": {
-            "label": "mapping(address => uint256)",
-            "numberOfBytes": "32"
-          },
-          "t_mapping(t_uint256,t_uint256)": {
-            "label": "mapping(uint256 => uint256)",
-            "numberOfBytes": "32"
-          },
-          "t_struct(PoolState)9610_storage": {
-            "label": "struct OmniRewardManager.PoolState",
-            "members": [
-              {
-                "label": "initial",
-                "type": "t_uint256",
-                "offset": 0,
-                "slot": "0"
-              },
-              {
-                "label": "remaining",
-                "type": "t_uint256",
-                "offset": 0,
-                "slot": "1"
-              },
-              {
-                "label": "distributed",
-                "type": "t_uint256",
-                "offset": 0,
-                "slot": "2"
-              },
-              {
-                "label": "merkleRoot",
-                "type": "t_bytes32",
-                "offset": 0,
-                "slot": "3"
-              }
-            ],
-            "numberOfBytes": "128"
-          }
-        },
-        "namespaces": {
-          "erc7201:openzeppelin.storage.EIP712": [
-            {
-              "contract": "EIP712Upgradeable",
-              "label": "_hashedName",
-              "type": "t_bytes32",
-              "src": "@openzeppelin/contracts-upgradeable/utils/cryptography/EIP712Upgradeable.sol:38",
-              "offset": 0,
-              "slot": "0"
-            },
-            {
-              "contract": "EIP712Upgradeable",
-              "label": "_hashedVersion",
-              "type": "t_bytes32",
-              "src": "@openzeppelin/contracts-upgradeable/utils/cryptography/EIP712Upgradeable.sol:40",
-              "offset": 0,
-              "slot": "1"
-            },
-            {
-              "contract": "EIP712Upgradeable",
-              "label": "_name",
-              "type": "t_string_storage",
-              "src": "@openzeppelin/contracts-upgradeable/utils/cryptography/EIP712Upgradeable.sol:42",
-              "offset": 0,
-              "slot": "2"
-            },
-            {
-              "contract": "EIP712Upgradeable",
-              "label": "_version",
-              "type": "t_string_storage",
-              "src": "@openzeppelin/contracts-upgradeable/utils/cryptography/EIP712Upgradeable.sol:43",
-              "offset": 0,
-              "slot": "3"
-            }
-          ],
-          "erc7201:openzeppelin.storage.ReentrancyGuard": [
-            {
-              "contract": "ReentrancyGuardUpgradeable",
-              "label": "_status",
-              "type": "t_uint256",
-              "src": "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol:43",
-              "offset": 0,
-              "slot": "0"
-            }
-          ],
-          "erc7201:openzeppelin.storage.Pausable": [
-            {
-              "contract": "PausableUpgradeable",
-              "label": "_paused",
-              "type": "t_bool",
-              "src": "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol:21",
-              "offset": 0,
-              "slot": "0"
-            }
-          ],
-          "erc7201:openzeppelin.storage.AccessControl": [
-            {
-              "contract": "AccessControlUpgradeable",
-              "label": "_roles",
-              "type": "t_mapping(t_bytes32,t_struct(RoleData)26_storage)",
-              "src": "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol:62",
-              "offset": 0,
-              "slot": "0"
-            }
-          ],
-          "erc7201:openzeppelin.storage.Initializable": [
-            {
-              "contract": "Initializable",
-              "label": "_initialized",
-              "type": "t_uint64",
-              "src": "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol:69",
-              "offset": 0,
-              "slot": "0"
-            },
-            {
-              "contract": "Initializable",
-              "label": "_initializing",
-              "type": "t_bool",
-              "src": "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol:73",
-              "offset": 8,
-              "slot": "0"
-            }
-          ]
-        }
-      }
-    },
-    "4de86f95eaf6af935cd0cee730eba4c7cf5ff930b925ef3c36a6eea3a6bcb6c5": {
-      "address": "0xC4f78C9E6A3D37e7bc4eD6d47549B89dd6577855",
-      "layout": {
-        "solcVersion": "0.8.25",
-        "storage": [
-          {
-            "label": "registrations",
-            "offset": 0,
-            "slot": "0",
-            "type": "t_mapping(t_address,t_struct(Registration)7369_storage)",
-            "contract": "OmniRegistration",
-            "src": "contracts/OmniRegistration.sol:116"
-          },
-          {
-            "label": "usedPhoneHashes",
-            "offset": 0,
-            "slot": "1",
-            "type": "t_mapping(t_bytes32,t_bool)",
-            "contract": "OmniRegistration",
-            "src": "contracts/OmniRegistration.sol:119"
-          },
-          {
-            "label": "usedEmailHashes",
-            "offset": 0,
-            "slot": "2",
-            "type": "t_mapping(t_bytes32,t_bool)",
-            "contract": "OmniRegistration",
-            "src": "contracts/OmniRegistration.sol:122"
-          },
-          {
-            "label": "dailyRegistrationCount",
-            "offset": 0,
-            "slot": "3",
-            "type": "t_mapping(t_uint256,t_uint256)",
-            "contract": "OmniRegistration",
-            "src": "contracts/OmniRegistration.sol:126"
-          },
-          {
-            "label": "totalRegistrations",
-            "offset": 0,
-            "slot": "4",
-            "type": "t_uint256",
-            "contract": "OmniRegistration",
-            "src": "contracts/OmniRegistration.sol:128"
-          },
-          {
-            "label": "kycAttestations",
-            "offset": 0,
-            "slot": "5",
-            "type": "t_mapping(t_bytes32,t_array(t_address)dyn_storage)",
-            "contract": "OmniRegistration",
-            "src": "contracts/OmniRegistration.sol:130"
-          },
-          {
-            "label": "DOMAIN_SEPARATOR",
-            "offset": 0,
-            "slot": "6",
-            "type": "t_bytes32",
-            "contract": "OmniRegistration",
-            "src": "contracts/OmniRegistration.sol:135"
-          },
-          {
-            "label": "trustedVerificationKey",
-            "offset": 0,
-            "slot": "7",
-            "type": "t_address",
-            "contract": "OmniRegistration",
-            "src": "contracts/OmniRegistration.sol:149"
-          },
-          {
-            "label": "userSocialHashes",
-            "offset": 0,
-            "slot": "8",
-            "type": "t_mapping(t_address,t_bytes32)",
-            "contract": "OmniRegistration",
-            "src": "contracts/OmniRegistration.sol:154"
-          },
-          {
-            "label": "userEmailHashes",
-            "offset": 0,
-            "slot": "9",
-            "type": "t_mapping(t_address,t_bytes32)",
-            "contract": "OmniRegistration",
-            "src": "contracts/OmniRegistration.sol:158"
-          },
-          {
-            "label": "kycTier1CompletedAt",
-            "offset": 0,
-            "slot": "10",
-            "type": "t_mapping(t_address,t_uint256)",
-            "contract": "OmniRegistration",
-            "src": "contracts/OmniRegistration.sol:163"
-          },
-          {
-            "label": "usedSocialHashes",
-            "offset": 0,
-            "slot": "11",
-            "type": "t_mapping(t_bytes32,t_bool)",
-            "contract": "OmniRegistration",
-            "src": "contracts/OmniRegistration.sol:165"
-          },
-          {
-            "label": "usedNonces",
-            "offset": 0,
-            "slot": "12",
-            "type": "t_mapping(t_bytes32,t_bool)",
-            "contract": "OmniRegistration",
-            "src": "contracts/OmniRegistration.sol:166"
-          },
-          {
-            "label": "userIDHashes",
-            "offset": 0,
-            "slot": "13",
-            "type": "t_mapping(t_address,t_bytes32)",
-            "contract": "OmniRegistration",
-            "src": "contracts/OmniRegistration.sol:214"
-          },
-          {
-            "label": "usedIDHashes",
-            "offset": 0,
-            "slot": "14",
-            "type": "t_mapping(t_bytes32,t_bool)",
-            "contract": "OmniRegistration",
-            "src": "contracts/OmniRegistration.sol:217"
-          },
-          {
-            "label": "userCountries",
-            "offset": 0,
-            "slot": "15",
-            "type": "t_mapping(t_address,t_string_storage)",
-            "contract": "OmniRegistration",
-            "src": "contracts/OmniRegistration.sol:220"
-          },
-          {
-            "label": "userAddressHashes",
-            "offset": 0,
             "slot": "16",
-            "type": "t_mapping(t_address,t_bytes32)",
-            "contract": "OmniRegistration",
-            "src": "contracts/OmniRegistration.sol:227"
-          },
-          {
-            "label": "usedAddressHashes",
-            "offset": 0,
-            "slot": "17",
-            "type": "t_mapping(t_bytes32,t_bool)",
-            "contract": "OmniRegistration",
-            "src": "contracts/OmniRegistration.sol:229"
-          },
-          {
-            "label": "selfieVerified",
-            "offset": 0,
-            "slot": "18",
-            "type": "t_mapping(t_address,t_bool)",
-            "contract": "OmniRegistration",
-            "src": "contracts/OmniRegistration.sol:234"
-          },
-          {
-            "label": "kycTier2CompletedAt",
-            "offset": 0,
-            "slot": "19",
-            "type": "t_mapping(t_address,t_uint256)",
-            "contract": "OmniRegistration",
-            "src": "contracts/OmniRegistration.sol:237"
-          },
-          {
-            "label": "videoSessionHashes",
-            "offset": 0,
-            "slot": "20",
-            "type": "t_mapping(t_address,t_bytes32)",
-            "contract": "OmniRegistration",
-            "src": "contracts/OmniRegistration.sol:239"
-          },
-          {
-            "label": "kycTier3CompletedAt",
-            "offset": 0,
-            "slot": "21",
-            "type": "t_mapping(t_address,t_uint256)",
-            "contract": "OmniRegistration",
-            "src": "contracts/OmniRegistration.sol:241"
-          },
-          {
-            "label": "trustedKYCProviders",
-            "offset": 0,
-            "slot": "22",
-            "type": "t_mapping(t_address,t_bool)",
-            "contract": "OmniRegistration",
-            "src": "contracts/OmniRegistration.sol:245"
-          },
-          {
-            "label": "kycProviderNames",
-            "offset": 0,
-            "slot": "23",
-            "type": "t_mapping(t_address,t_string_storage)",
-            "contract": "OmniRegistration",
-            "src": "contracts/OmniRegistration.sol:251"
-          },
-          {
-            "label": "kycTier4CompletedAt",
-            "offset": 0,
-            "slot": "24",
-            "type": "t_mapping(t_address,t_uint256)",
-            "contract": "OmniRegistration",
-            "src": "contracts/OmniRegistration.sol:253"
-          },
-          {
-            "label": "userKYCProvider",
-            "offset": 0,
-            "slot": "25",
-            "type": "t_mapping(t_address,t_address)",
-            "contract": "OmniRegistration",
-            "src": "contracts/OmniRegistration.sol:255"
-          },
-          {
-            "label": "referralCounts",
-            "offset": 0,
-            "slot": "26",
-            "type": "t_mapping(t_address,t_uint256)",
-            "contract": "OmniRegistration",
-            "src": "contracts/OmniRegistration.sol:260"
-          },
-          {
-            "label": "tierLimits",
-            "offset": 0,
-            "slot": "27",
-            "type": "t_mapping(t_uint8,t_struct(TierLimits)10804_storage)",
-            "contract": "OmniRegistration",
-            "src": "contracts/OmniRegistration.sol:2257"
-          },
-          {
-            "label": "userVolumes",
-            "offset": 0,
-            "slot": "28",
-            "type": "t_mapping(t_address,t_struct(VolumeTracking)10824_storage)",
-            "contract": "OmniRegistration",
-            "src": "contracts/OmniRegistration.sol:2277"
-          }
-        ],
-        "types": {
-          "t_address": {
-            "label": "address",
-            "numberOfBytes": "20"
-          },
-          "t_bool": {
-            "label": "bool",
-            "numberOfBytes": "1"
-          },
-          "t_bytes32": {
-            "label": "bytes32",
-            "numberOfBytes": "32"
-          },
-          "t_mapping(t_address,t_bool)": {
-            "label": "mapping(address => bool)",
-            "numberOfBytes": "32"
-          },
-          "t_mapping(t_bytes32,t_struct(RoleData)26_storage)": {
-            "label": "mapping(bytes32 => struct AccessControlUpgradeable.RoleData)",
-            "numberOfBytes": "32"
-          },
-          "t_struct(AccessControlStorage)36_storage": {
-            "label": "struct AccessControlUpgradeable.AccessControlStorage",
-            "members": [
-              {
-                "label": "_roles",
-                "type": "t_mapping(t_bytes32,t_struct(RoleData)26_storage)",
-                "offset": 0,
-                "slot": "0"
-              }
-            ],
-            "numberOfBytes": "32"
-          },
-          "t_struct(InitializableStorage)147_storage": {
-            "label": "struct Initializable.InitializableStorage",
-            "members": [
-              {
-                "label": "_initialized",
-                "type": "t_uint64",
-                "offset": 0,
-                "slot": "0"
-              },
-              {
-                "label": "_initializing",
-                "type": "t_bool",
-                "offset": 8,
-                "slot": "0"
-              }
-            ],
-            "numberOfBytes": "32"
-          },
-          "t_struct(ReentrancyGuardStorage)300_storage": {
-            "label": "struct ReentrancyGuardUpgradeable.ReentrancyGuardStorage",
-            "members": [
-              {
-                "label": "_status",
-                "type": "t_uint256",
-                "offset": 0,
-                "slot": "0"
-              }
-            ],
-            "numberOfBytes": "32"
-          },
-          "t_struct(RoleData)26_storage": {
-            "label": "struct AccessControlUpgradeable.RoleData",
-            "members": [
-              {
-                "label": "hasRole",
-                "type": "t_mapping(t_address,t_bool)",
-                "offset": 0,
-                "slot": "0"
-              },
-              {
-                "label": "adminRole",
-                "type": "t_bytes32",
-                "offset": 0,
-                "slot": "1"
-              }
-            ],
-            "numberOfBytes": "64"
-          },
-          "t_uint256": {
-            "label": "uint256",
-            "numberOfBytes": "32"
-          },
-          "t_uint64": {
-            "label": "uint64",
-            "numberOfBytes": "8"
-          },
-          "t_array(t_address)dyn_storage": {
-            "label": "address[]",
-            "numberOfBytes": "32"
-          },
-          "t_mapping(t_address,t_address)": {
-            "label": "mapping(address => address)",
-            "numberOfBytes": "32"
-          },
-          "t_mapping(t_address,t_bytes32)": {
-            "label": "mapping(address => bytes32)",
-            "numberOfBytes": "32"
-          },
-          "t_mapping(t_address,t_string_storage)": {
-            "label": "mapping(address => string)",
-            "numberOfBytes": "32"
-          },
-          "t_mapping(t_address,t_struct(Registration)7369_storage)": {
-            "label": "mapping(address => struct OmniRegistration.Registration)",
-            "numberOfBytes": "32"
-          },
-          "t_mapping(t_address,t_struct(VolumeTracking)10824_storage)": {
-            "label": "mapping(address => struct OmniRegistration.VolumeTracking)",
-            "numberOfBytes": "32"
-          },
-          "t_mapping(t_address,t_uint256)": {
-            "label": "mapping(address => uint256)",
-            "numberOfBytes": "32"
-          },
-          "t_mapping(t_bytes32,t_array(t_address)dyn_storage)": {
-            "label": "mapping(bytes32 => address[])",
-            "numberOfBytes": "32"
-          },
-          "t_mapping(t_bytes32,t_bool)": {
-            "label": "mapping(bytes32 => bool)",
-            "numberOfBytes": "32"
-          },
-          "t_mapping(t_uint256,t_uint256)": {
-            "label": "mapping(uint256 => uint256)",
-            "numberOfBytes": "32"
-          },
-          "t_mapping(t_uint8,t_struct(TierLimits)10804_storage)": {
-            "label": "mapping(uint8 => struct OmniRegistration.TierLimits)",
-            "numberOfBytes": "32"
-          },
-          "t_string_storage": {
-            "label": "string",
-            "numberOfBytes": "32"
-          },
-          "t_struct(Registration)7369_storage": {
-            "label": "struct OmniRegistration.Registration",
-            "members": [
-              {
-                "label": "timestamp",
-                "type": "t_uint256",
-                "offset": 0,
-                "slot": "0"
-              },
-              {
-                "label": "referrer",
-                "type": "t_address",
-                "offset": 0,
-                "slot": "1"
-              },
-              {
-                "label": "registeredBy",
-                "type": "t_address",
-                "offset": 0,
-                "slot": "2"
-              },
-              {
-                "label": "phoneHash",
-                "type": "t_bytes32",
-                "offset": 0,
-                "slot": "3"
-              },
-              {
-                "label": "emailHash",
-                "type": "t_bytes32",
-                "offset": 0,
-                "slot": "4"
-              },
-              {
-                "label": "kycTier",
-                "type": "t_uint8",
-                "offset": 0,
-                "slot": "5"
-              },
-              {
-                "label": "welcomeBonusClaimed",
-                "type": "t_bool",
-                "offset": 1,
-                "slot": "5"
-              },
-              {
-                "label": "firstSaleBonusClaimed",
-                "type": "t_bool",
-                "offset": 2,
-                "slot": "5"
-              }
-            ],
-            "numberOfBytes": "192"
-          },
-          "t_struct(TierLimits)10804_storage": {
-            "label": "struct OmniRegistration.TierLimits",
-            "members": [
-              {
-                "label": "dailyLimit",
-                "type": "t_uint256",
-                "offset": 0,
-                "slot": "0"
-              },
-              {
-                "label": "monthlyLimit",
-                "type": "t_uint256",
-                "offset": 0,
-                "slot": "1"
-              },
-              {
-                "label": "annualLimit",
-                "type": "t_uint256",
-                "offset": 0,
-                "slot": "2"
-              },
-              {
-                "label": "perTransactionLimit",
-                "type": "t_uint256",
-                "offset": 0,
-                "slot": "3"
-              },
-              {
-                "label": "maxListings",
-                "type": "t_uint16",
-                "offset": 0,
-                "slot": "4"
-              },
-              {
-                "label": "maxListingPrice",
-                "type": "t_uint256",
-                "offset": 0,
-                "slot": "5"
-              }
-            ],
-            "numberOfBytes": "192"
-          },
-          "t_struct(VolumeTracking)10824_storage": {
-            "label": "struct OmniRegistration.VolumeTracking",
-            "members": [
-              {
-                "label": "dailyVolume",
-                "type": "t_uint256",
-                "offset": 0,
-                "slot": "0"
-              },
-              {
-                "label": "monthlyVolume",
-                "type": "t_uint256",
-                "offset": 0,
-                "slot": "1"
-              },
-              {
-                "label": "annualVolume",
-                "type": "t_uint256",
-                "offset": 0,
-                "slot": "2"
-              },
-              {
-                "label": "lastTransactionDay",
-                "type": "t_uint256",
-                "offset": 0,
-                "slot": "3"
-              },
-              {
-                "label": "lastTransactionMonth",
-                "type": "t_uint256",
-                "offset": 0,
-                "slot": "4"
-              },
-              {
-                "label": "lastTransactionYear",
-                "type": "t_uint256",
-                "offset": 0,
-                "slot": "5"
-              }
-            ],
-            "numberOfBytes": "192"
-          },
-          "t_uint16": {
-            "label": "uint16",
-            "numberOfBytes": "2"
-          },
-          "t_uint8": {
-            "label": "uint8",
-            "numberOfBytes": "1"
-          }
-        },
-        "namespaces": {
-          "erc7201:openzeppelin.storage.ReentrancyGuard": [
-            {
-              "contract": "ReentrancyGuardUpgradeable",
-              "label": "_status",
-              "type": "t_uint256",
-              "src": "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol:43",
-              "offset": 0,
-              "slot": "0"
-            }
-          ],
-          "erc7201:openzeppelin.storage.AccessControl": [
-            {
-              "contract": "AccessControlUpgradeable",
-              "label": "_roles",
-              "type": "t_mapping(t_bytes32,t_struct(RoleData)26_storage)",
-              "src": "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol:62",
-              "offset": 0,
-              "slot": "0"
-            }
-          ],
-          "erc7201:openzeppelin.storage.Initializable": [
-            {
-              "contract": "Initializable",
-              "label": "_initialized",
-              "type": "t_uint64",
-              "src": "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol:69",
-              "offset": 0,
-              "slot": "0"
-            },
-            {
-              "contract": "Initializable",
-              "label": "_initializing",
-              "type": "t_bool",
-              "src": "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol:73",
-              "offset": 8,
-              "slot": "0"
-            }
-          ]
-        }
-      }
-    },
-    "eca230221cc4a80d874db793937d359ad701e5650062ec2bf9b90119bc1e2d5a": {
-      "address": "0x954441dcEc0317C24001ea66dCE905bAb219DCE3",
-      "txHash": "0x24c36e263ba96ebe1511e252f1c0bba1d3dc8b1066b7ec7fd52b600032441070",
-      "layout": {
-        "solcVersion": "0.8.25",
-        "storage": [
-          {
-            "label": "components",
-            "offset": 0,
-            "slot": "0",
-            "type": "t_mapping(t_address,t_struct(ParticipationComponents)20549_storage)",
-            "contract": "OmniParticipation",
-            "src": "contracts/OmniParticipation.sol:160"
-          },
-          {
-            "label": "registration",
-            "offset": 0,
-            "slot": "1",
-            "type": "t_contract(IOmniRegistration)20473",
-            "contract": "OmniParticipation",
-            "src": "contracts/OmniParticipation.sol:163"
-          },
-          {
-            "label": "omniCore",
-            "offset": 0,
-            "slot": "2",
-            "type": "t_contract(IOmniCore)20504",
-            "contract": "OmniParticipation",
-            "src": "contracts/OmniParticipation.sol:165"
-          },
-          {
-            "label": "reviewHistory",
-            "offset": 0,
-            "slot": "3",
-            "type": "t_mapping(t_address,t_array(t_struct(Review)20577_storage)dyn_storage)",
-            "contract": "OmniParticipation",
-            "src": "contracts/OmniParticipation.sol:189"
-          },
-          {
-            "label": "usedTransactions",
-            "offset": 0,
-            "slot": "4",
-            "type": "t_mapping(t_bytes32,t_bool)",
-            "contract": "OmniParticipation",
-            "src": "contracts/OmniParticipation.sol:191"
-          },
-          {
-            "label": "operationalServiceNodes",
-            "offset": 0,
-            "slot": "5",
-            "type": "t_mapping(t_address,t_bool)",
-            "contract": "OmniParticipation",
-            "src": "contracts/OmniParticipation.sol:207"
-          },
-          {
-            "label": "lastServiceNodeHeartbeat",
-            "offset": 0,
-            "slot": "6",
-            "type": "t_mapping(t_address,t_uint256)",
-            "contract": "OmniParticipation",
-            "src": "contracts/OmniParticipation.sol:210"
-          },
-          {
-            "label": "transactionClaims",
-            "offset": 0,
-            "slot": "7",
-            "type": "t_mapping(t_address,t_array(t_struct(TransactionClaim)20607_storage)dyn_storage)",
-            "contract": "OmniParticipation",
-            "src": "contracts/OmniParticipation.sol:228"
-          },
-          {
-            "label": "reportHistory",
-            "offset": 0,
-            "slot": "8",
-            "type": "t_mapping(t_address,t_array(t_struct(Report)20628_storage)dyn_storage)",
-            "contract": "OmniParticipation",
-            "src": "contracts/OmniParticipation.sol:250"
-          },
-          {
-            "label": "forumContributions",
-            "offset": 0,
-            "slot": "9",
-            "type": "t_mapping(t_address,t_array(t_struct(ForumContribution)20645_storage)dyn_storage)",
-            "contract": "OmniParticipation",
-            "src": "contracts/OmniParticipation.sol:275"
-          },
-          {
-            "label": "lastValidatorHeartbeat",
-            "offset": 0,
-            "slot": "10",
-            "type": "t_mapping(t_address,t_uint256)",
-            "contract": "OmniParticipation",
-            "src": "contracts/OmniParticipation.sol:299"
-          },
-          {
-            "label": "uptimeBlocks",
-            "offset": 0,
-            "slot": "11",
-            "type": "t_mapping(t_address,t_uint256)",
-            "contract": "OmniParticipation",
-            "src": "contracts/OmniParticipation.sol:305"
-          },
-          {
-            "label": "totalBlocks",
-            "offset": 0,
-            "slot": "12",
-            "type": "t_mapping(t_address,t_uint256)",
-            "contract": "OmniParticipation",
-            "src": "contracts/OmniParticipation.sol:308"
+            "type": "t_array(t_uint256)50_storage",
+            "contract": "OmniCore",
+            "src": "contracts/OmniCore.sol:108"
           }
         ],
         "types": {
@@ -1547,514 +238,81 @@
             "label": "uint64",
             "numberOfBytes": "8"
           },
-          "t_array(t_struct(ForumContribution)20645_storage)dyn_storage": {
-            "label": "struct OmniParticipation.ForumContribution[]",
+          "t_array(t_uint256)50_storage": {
+            "label": "uint256[50]",
+            "numberOfBytes": "1600"
+          },
+          "t_bytes_storage": {
+            "label": "bytes",
             "numberOfBytes": "32"
-          },
-          "t_array(t_struct(Report)20628_storage)dyn_storage": {
-            "label": "struct OmniParticipation.Report[]",
-            "numberOfBytes": "32"
-          },
-          "t_array(t_struct(Review)20577_storage)dyn_storage": {
-            "label": "struct OmniParticipation.Review[]",
-            "numberOfBytes": "32"
-          },
-          "t_array(t_struct(TransactionClaim)20607_storage)dyn_storage": {
-            "label": "struct OmniParticipation.TransactionClaim[]",
-            "numberOfBytes": "32"
-          },
-          "t_contract(IOmniCore)20504": {
-            "label": "contract IOmniCore",
-            "numberOfBytes": "20"
-          },
-          "t_contract(IOmniRegistration)20473": {
-            "label": "contract IOmniRegistration",
-            "numberOfBytes": "20"
-          },
-          "t_int8": {
-            "label": "int8",
-            "numberOfBytes": "1"
-          },
-          "t_mapping(t_address,t_array(t_struct(ForumContribution)20645_storage)dyn_storage)": {
-            "label": "mapping(address => struct OmniParticipation.ForumContribution[])",
-            "numberOfBytes": "32"
-          },
-          "t_mapping(t_address,t_array(t_struct(Report)20628_storage)dyn_storage)": {
-            "label": "mapping(address => struct OmniParticipation.Report[])",
-            "numberOfBytes": "32"
-          },
-          "t_mapping(t_address,t_array(t_struct(Review)20577_storage)dyn_storage)": {
-            "label": "mapping(address => struct OmniParticipation.Review[])",
-            "numberOfBytes": "32"
-          },
-          "t_mapping(t_address,t_array(t_struct(TransactionClaim)20607_storage)dyn_storage)": {
-            "label": "mapping(address => struct OmniParticipation.TransactionClaim[])",
-            "numberOfBytes": "32"
-          },
-          "t_mapping(t_address,t_struct(ParticipationComponents)20549_storage)": {
-            "label": "mapping(address => struct OmniParticipation.ParticipationComponents)",
-            "numberOfBytes": "32"
-          },
-          "t_mapping(t_address,t_uint256)": {
-            "label": "mapping(address => uint256)",
-            "numberOfBytes": "32"
-          },
-          "t_mapping(t_bytes32,t_bool)": {
-            "label": "mapping(bytes32 => bool)",
-            "numberOfBytes": "32"
-          },
-          "t_string_storage": {
-            "label": "string",
-            "numberOfBytes": "32"
-          },
-          "t_struct(ForumContribution)20645_storage": {
-            "label": "struct OmniParticipation.ForumContribution",
-            "members": [
-              {
-                "label": "contributionType",
-                "type": "t_string_storage",
-                "offset": 0,
-                "slot": "0"
-              },
-              {
-                "label": "contentHash",
-                "type": "t_bytes32",
-                "offset": 0,
-                "slot": "1"
-              },
-              {
-                "label": "timestamp",
-                "type": "t_uint256",
-                "offset": 0,
-                "slot": "2"
-              },
-              {
-                "label": "verified",
-                "type": "t_bool",
-                "offset": 0,
-                "slot": "3"
-              }
-            ],
-            "numberOfBytes": "128"
-          },
-          "t_struct(ParticipationComponents)20549_storage": {
-            "label": "struct OmniParticipation.ParticipationComponents",
-            "members": [
-              {
-                "label": "marketplaceReputation",
-                "type": "t_int8",
-                "offset": 0,
-                "slot": "0"
-              },
-              {
-                "label": "publisherActivity",
-                "type": "t_uint8",
-                "offset": 1,
-                "slot": "0"
-              },
-              {
-                "label": "marketplaceActivity",
-                "type": "t_uint8",
-                "offset": 2,
-                "slot": "0"
-              },
-              {
-                "label": "communityPolicing",
-                "type": "t_uint8",
-                "offset": 3,
-                "slot": "0"
-              },
-              {
-                "label": "forumActivity",
-                "type": "t_uint8",
-                "offset": 4,
-                "slot": "0"
-              },
-              {
-                "label": "reliability",
-                "type": "t_int8",
-                "offset": 5,
-                "slot": "0"
-              },
-              {
-                "label": "lastUpdate",
-                "type": "t_uint256",
-                "offset": 0,
-                "slot": "1"
-              }
-            ],
-            "numberOfBytes": "64"
-          },
-          "t_struct(Report)20628_storage": {
-            "label": "struct OmniParticipation.Report",
-            "members": [
-              {
-                "label": "reporter",
-                "type": "t_address",
-                "offset": 0,
-                "slot": "0"
-              },
-              {
-                "label": "listingHash",
-                "type": "t_bytes32",
-                "offset": 0,
-                "slot": "1"
-              },
-              {
-                "label": "reason",
-                "type": "t_string_storage",
-                "offset": 0,
-                "slot": "2"
-              },
-              {
-                "label": "timestamp",
-                "type": "t_uint256",
-                "offset": 0,
-                "slot": "3"
-              },
-              {
-                "label": "validated",
-                "type": "t_bool",
-                "offset": 0,
-                "slot": "4"
-              },
-              {
-                "label": "isValid",
-                "type": "t_bool",
-                "offset": 1,
-                "slot": "4"
-              }
-            ],
-            "numberOfBytes": "160"
-          },
-          "t_struct(Review)20577_storage": {
-            "label": "struct OmniParticipation.Review",
-            "members": [
-              {
-                "label": "reviewer",
-                "type": "t_address",
-                "offset": 0,
-                "slot": "0"
-              },
-              {
-                "label": "reviewed",
-                "type": "t_address",
-                "offset": 0,
-                "slot": "1"
-              },
-              {
-                "label": "stars",
-                "type": "t_uint8",
-                "offset": 20,
-                "slot": "1"
-              },
-              {
-                "label": "timestamp",
-                "type": "t_uint256",
-                "offset": 0,
-                "slot": "2"
-              },
-              {
-                "label": "transactionHash",
-                "type": "t_bytes32",
-                "offset": 0,
-                "slot": "3"
-              },
-              {
-                "label": "verified",
-                "type": "t_bool",
-                "offset": 0,
-                "slot": "4"
-              }
-            ],
-            "numberOfBytes": "160"
-          },
-          "t_struct(TransactionClaim)20607_storage": {
-            "label": "struct OmniParticipation.TransactionClaim",
-            "members": [
-              {
-                "label": "transactionHash",
-                "type": "t_bytes32",
-                "offset": 0,
-                "slot": "0"
-              },
-              {
-                "label": "timestamp",
-                "type": "t_uint256",
-                "offset": 0,
-                "slot": "1"
-              },
-              {
-                "label": "verified",
-                "type": "t_bool",
-                "offset": 0,
-                "slot": "2"
-              }
-            ],
-            "numberOfBytes": "96"
-          },
-          "t_uint8": {
-            "label": "uint8",
-            "numberOfBytes": "1"
-          }
-        },
-        "namespaces": {
-          "erc7201:openzeppelin.storage.ReentrancyGuard": [
-            {
-              "contract": "ReentrancyGuardUpgradeable",
-              "label": "_status",
-              "type": "t_uint256",
-              "src": "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol:43",
-              "offset": 0,
-              "slot": "0"
-            }
-          ],
-          "erc7201:openzeppelin.storage.AccessControl": [
-            {
-              "contract": "AccessControlUpgradeable",
-              "label": "_roles",
-              "type": "t_mapping(t_bytes32,t_struct(RoleData)26_storage)",
-              "src": "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol:62",
-              "offset": 0,
-              "slot": "0"
-            }
-          ],
-          "erc7201:openzeppelin.storage.Initializable": [
-            {
-              "contract": "Initializable",
-              "label": "_initialized",
-              "type": "t_uint64",
-              "src": "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol:69",
-              "offset": 0,
-              "slot": "0"
-            },
-            {
-              "contract": "Initializable",
-              "label": "_initializing",
-              "type": "t_bool",
-              "src": "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol:73",
-              "offset": 8,
-              "slot": "0"
-            }
-          ]
-        }
-      }
-    },
-    "081aad02137ae1ef6825462d15f8210aa6f6e9229591dc9560d1b8fc9829f592": {
-      "address": "0x83220171d1c4A26574B01e36a713C9Ced5c083FD",
-      "txHash": "0xe308f36db941dfe9ee82e7cc9858d5e0d7aebe6032d0baf24d523e48a505db35",
-      "layout": {
-        "solcVersion": "0.8.25",
-        "storage": [
-          {
-            "label": "xomToken",
-            "offset": 0,
-            "slot": "0",
-            "type": "t_contract(IERC20)4165",
-            "contract": "OmniValidatorRewards",
-            "src": "contracts/OmniValidatorRewards.sol:169"
-          },
-          {
-            "label": "participation",
-            "offset": 0,
-            "slot": "1",
-            "type": "t_contract(IOmniParticipation)30746",
-            "contract": "OmniValidatorRewards",
-            "src": "contracts/OmniValidatorRewards.sol:171"
-          },
-          {
-            "label": "omniCore",
-            "offset": 0,
-            "slot": "2",
-            "type": "t_contract(IOmniCore)30784",
-            "contract": "OmniValidatorRewards",
-            "src": "contracts/OmniValidatorRewards.sol:172"
-          },
-          {
-            "label": "genesisTimestamp",
-            "offset": 0,
-            "slot": "3",
-            "type": "t_uint256",
-            "contract": "OmniValidatorRewards",
-            "src": "contracts/OmniValidatorRewards.sol:175"
-          },
-          {
-            "label": "lastProcessedEpoch",
-            "offset": 0,
-            "slot": "4",
-            "type": "t_uint256",
-            "contract": "OmniValidatorRewards",
-            "src": "contracts/OmniValidatorRewards.sol:177"
-          },
-          {
-            "label": "totalBlocksProduced",
-            "offset": 0,
-            "slot": "5",
-            "type": "t_uint256",
-            "contract": "OmniValidatorRewards",
-            "src": "contracts/OmniValidatorRewards.sol:179"
-          },
-          {
-            "label": "accumulatedRewards",
-            "offset": 0,
-            "slot": "6",
-            "type": "t_mapping(t_address,t_uint256)",
-            "contract": "OmniValidatorRewards",
-            "src": "contracts/OmniValidatorRewards.sol:181"
-          },
-          {
-            "label": "totalClaimed",
-            "offset": 0,
-            "slot": "7",
-            "type": "t_mapping(t_address,t_uint256)",
-            "contract": "OmniValidatorRewards",
-            "src": "contracts/OmniValidatorRewards.sol:184"
-          },
-          {
-            "label": "lastHeartbeat",
-            "offset": 0,
-            "slot": "8",
-            "type": "t_mapping(t_address,t_uint256)",
-            "contract": "OmniValidatorRewards",
-            "src": "contracts/OmniValidatorRewards.sol:189"
-          },
-          {
-            "label": "transactionsProcessed",
-            "offset": 0,
-            "slot": "9",
-            "type": "t_mapping(t_address,t_mapping(t_uint256,t_uint256))",
-            "contract": "OmniValidatorRewards",
-            "src": "contracts/OmniValidatorRewards.sol:194"
-          },
-          {
-            "label": "epochTotalTransactions",
-            "offset": 0,
-            "slot": "10",
-            "type": "t_mapping(t_uint256,t_uint256)",
-            "contract": "OmniValidatorRewards",
-            "src": "contracts/OmniValidatorRewards.sol:198"
-          },
-          {
-            "label": "epochActiveValidators",
-            "offset": 0,
-            "slot": "11",
-            "type": "t_mapping(t_uint256,t_uint256)",
-            "contract": "OmniValidatorRewards",
-            "src": "contracts/OmniValidatorRewards.sol:202"
-          }
-        ],
-        "types": {
-          "t_address": {
-            "label": "address",
-            "numberOfBytes": "20"
-          },
-          "t_bool": {
-            "label": "bool",
-            "numberOfBytes": "1"
-          },
-          "t_bytes32": {
-            "label": "bytes32",
-            "numberOfBytes": "32"
-          },
-          "t_mapping(t_address,t_bool)": {
-            "label": "mapping(address => bool)",
-            "numberOfBytes": "32"
-          },
-          "t_mapping(t_bytes32,t_struct(RoleData)26_storage)": {
-            "label": "mapping(bytes32 => struct AccessControlUpgradeable.RoleData)",
-            "numberOfBytes": "32"
-          },
-          "t_struct(AccessControlStorage)36_storage": {
-            "label": "struct AccessControlUpgradeable.AccessControlStorage",
-            "members": [
-              {
-                "label": "_roles",
-                "type": "t_mapping(t_bytes32,t_struct(RoleData)26_storage)",
-                "offset": 0,
-                "slot": "0"
-              }
-            ],
-            "numberOfBytes": "32"
-          },
-          "t_struct(InitializableStorage)213_storage": {
-            "label": "struct Initializable.InitializableStorage",
-            "members": [
-              {
-                "label": "_initialized",
-                "type": "t_uint64",
-                "offset": 0,
-                "slot": "0"
-              },
-              {
-                "label": "_initializing",
-                "type": "t_bool",
-                "offset": 8,
-                "slot": "0"
-              }
-            ],
-            "numberOfBytes": "32"
-          },
-          "t_struct(ReentrancyGuardStorage)685_storage": {
-            "label": "struct ReentrancyGuardUpgradeable.ReentrancyGuardStorage",
-            "members": [
-              {
-                "label": "_status",
-                "type": "t_uint256",
-                "offset": 0,
-                "slot": "0"
-              }
-            ],
-            "numberOfBytes": "32"
-          },
-          "t_struct(RoleData)26_storage": {
-            "label": "struct AccessControlUpgradeable.RoleData",
-            "members": [
-              {
-                "label": "hasRole",
-                "type": "t_mapping(t_address,t_bool)",
-                "offset": 0,
-                "slot": "0"
-              },
-              {
-                "label": "adminRole",
-                "type": "t_bytes32",
-                "offset": 0,
-                "slot": "1"
-              }
-            ],
-            "numberOfBytes": "64"
-          },
-          "t_uint256": {
-            "label": "uint256",
-            "numberOfBytes": "32"
-          },
-          "t_uint64": {
-            "label": "uint64",
-            "numberOfBytes": "8"
           },
           "t_contract(IERC20)4165": {
             "label": "contract IERC20",
             "numberOfBytes": "20"
           },
-          "t_contract(IOmniCore)30784": {
-            "label": "contract IOmniCore",
-            "numberOfBytes": "20"
+          "t_mapping(t_address,t_mapping(t_address,t_uint256))": {
+            "label": "mapping(address => mapping(address => uint256))",
+            "numberOfBytes": "32"
           },
-          "t_contract(IOmniParticipation)30746": {
-            "label": "contract IOmniParticipation",
-            "numberOfBytes": "20"
-          },
-          "t_mapping(t_address,t_mapping(t_uint256,t_uint256))": {
-            "label": "mapping(address => mapping(uint256 => uint256))",
+          "t_mapping(t_address,t_struct(Stake)17326_storage)": {
+            "label": "mapping(address => struct OmniCore.Stake)",
             "numberOfBytes": "32"
           },
           "t_mapping(t_address,t_uint256)": {
             "label": "mapping(address => uint256)",
             "numberOfBytes": "32"
           },
-          "t_mapping(t_uint256,t_uint256)": {
-            "label": "mapping(uint256 => uint256)",
+          "t_mapping(t_bytes32,t_address)": {
+            "label": "mapping(bytes32 => address)",
             "numberOfBytes": "32"
+          },
+          "t_mapping(t_bytes32,t_bool)": {
+            "label": "mapping(bytes32 => bool)",
+            "numberOfBytes": "32"
+          },
+          "t_mapping(t_bytes32,t_bytes_storage)": {
+            "label": "mapping(bytes32 => bytes)",
+            "numberOfBytes": "32"
+          },
+          "t_mapping(t_bytes32,t_uint256)": {
+            "label": "mapping(bytes32 => uint256)",
+            "numberOfBytes": "32"
+          },
+          "t_struct(Stake)17326_storage": {
+            "label": "struct OmniCore.Stake",
+            "members": [
+              {
+                "label": "amount",
+                "type": "t_uint256",
+                "offset": 0,
+                "slot": "0"
+              },
+              {
+                "label": "tier",
+                "type": "t_uint256",
+                "offset": 0,
+                "slot": "1"
+              },
+              {
+                "label": "duration",
+                "type": "t_uint256",
+                "offset": 0,
+                "slot": "2"
+              },
+              {
+                "label": "lockTime",
+                "type": "t_uint256",
+                "offset": 0,
+                "slot": "3"
+              },
+              {
+                "label": "active",
+                "type": "t_bool",
+                "offset": 0,
+                "slot": "4"
+              }
+            ],
+            "numberOfBytes": "160"
           }
         },
         "namespaces": {
