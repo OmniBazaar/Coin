@@ -1620,15 +1620,26 @@ describe('OmniRewardManager', function () {
             // Set ODDAO address for referral distribution
             await rewardManager.connect(admin).setOddaoAddress(oddao.address);
 
-            const referrerBalanceBefore = await omniCoin.balanceOf(referrer.address);
+            // Check pending bonus before
+            const pendingBefore = await rewardManager.getPendingReferralBonus(referrer.address);
+            expect(pendingBefore).to.equal(0);
 
-            // Claim welcome bonus (should auto-trigger referral bonus)
+            // Claim welcome bonus (should auto-accumulate referral bonus)
             await rewardManager.connect(user1).claimWelcomeBonusTrustless();
 
+            // Referral bonus should be ACCUMULATED (not transferred immediately)
+            // This is the trustless design - referrer must claim via claimReferralBonusPermissionless()
+            const pendingAfter = await rewardManager.getPendingReferralBonus(referrer.address);
+            expect(pendingAfter).to.be.greaterThan(0);
+
+            // Verify referrer can claim the accumulated bonus
+            const referrerBalanceBefore = await omniCoin.balanceOf(referrer.address);
+            await rewardManager.connect(referrer).claimReferralBonusPermissionless();
             const referrerBalanceAfter = await omniCoin.balanceOf(referrer.address);
 
-            // Referrer should have received referral bonus (70% of referral amount)
+            // Referrer should have received the accumulated bonus (70% of referral amount)
             expect(referrerBalanceAfter).to.be.greaterThan(referrerBalanceBefore);
+            expect(referrerBalanceAfter - referrerBalanceBefore).to.equal(pendingAfter);
         });
 
         it('should correctly calculate bonus based on effective registrations', async function () {
