@@ -27,24 +27,39 @@ import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
 contract Bootstrap is AccessControl {
     /**
      * @notice Node information for registered validators/nodes
+     * @dev Struct fields ordered for optimal storage packing:
+     *      Slot 1: active (1) + nodeType (1) + stakingPort (2) + nodeAddress (20) = 24 bytes
+     *      Slot 2: lastUpdate (32 bytes)
+     *      Remaining: string pointers (32 bytes each)
      * @param active Whether this node is currently active
+     * @param nodeType Type of node: 0=gateway, 1=computation, 2=listing
+     * @param stakingPort Port for avalanchego P2P staking connections
      * @param nodeAddress Node's Ethereum address
+     * @param lastUpdate Timestamp of last update (for freshness checking)
      * @param multiaddr libp2p multiaddress for P2P connections
      * @param httpEndpoint HTTP API endpoint
      * @param wsEndpoint WebSocket endpoint
      * @param region Geographic region
-     * @param nodeType Type of node: 0=gateway, 1=computation, 2=listing
-     * @param lastUpdate Timestamp of last update (for freshness checking)
+     * @param avalancheRpcEndpoint RPC endpoint for OmniCoin L1 blockchain
+     * @param publicIp Public IP address for avalanchego peer discovery
+     * @param nodeId TLS-derived NodeID for avalanchego (e.g., "NodeID-...")
      */
     struct NodeInfo {
+        // Slot 1: packed fields (24 bytes used of 32)
         bool active;
+        uint8 nodeType;
+        uint16 stakingPort;
         address nodeAddress;
+        // Slot 2: full slot
+        uint256 lastUpdate;
+        // String pointers (each takes a slot)
         string multiaddr;
         string httpEndpoint;
         string wsEndpoint;
         string region;
-        uint8 nodeType;
-        uint256 lastUpdate;
+        string avalancheRpcEndpoint;
+        string publicIp;
+        string nodeId;
     }
 
     /// @notice Role identifier for bootstrap administrator (emergency actions only)
@@ -196,40 +211,58 @@ contract Bootstrap is AccessControl {
         string calldata region,
         uint8 nodeType
     ) external {
-        if (nodeType > 2) revert InvalidNodeType();
-        if (bytes(httpEndpoint).length == 0) revert InvalidParameter();
-        // multiaddr is required for gateway validators (nodeType 0) for P2P bootstrap
-        if (nodeType == 0 && bytes(multiaddr).length == 0) revert InvalidParameter();
+        _registerNodeInternal(
+            multiaddr,
+            httpEndpoint,
+            wsEndpoint,
+            region,
+            nodeType,
+            "",  // avalancheRpcEndpoint
+            0,   // stakingPort
+            "",  // publicIp
+            ""   // nodeId
+        );
+    }
 
-        NodeInfo storage info = nodeRegistry[msg.sender];
-        bool isNew = bytes(info.httpEndpoint).length == 0;
+    /**
+     * @notice Register or update a gateway node with avalanchego peer discovery info
+     * @dev Gateway validators call this to provide full peer discovery information.
+     *      Required for new validators to bootstrap into the network.
+     * @param multiaddr libp2p multiaddr for P2P connections
+     * @param httpEndpoint HTTP endpoint URL (required)
+     * @param wsEndpoint WebSocket endpoint URL
+     * @param region Geographic region code (e.g. "US", "EU", "ASIA")
+     * @param avalancheRpcEndpoint RPC endpoint for OmniCoin L1 (e.g., "http://x.x.x.x:40681/ext/bc/.../rpc")
+     * @param stakingPort Avalanchego staking port (e.g., 35579)
+     * @param publicIp Public IP address for peer discovery
+     * @param nodeId TLS-derived NodeID (e.g., "NodeID-...")
+     */
+    function registerGatewayNode(
+        string calldata multiaddr,
+        string calldata httpEndpoint,
+        string calldata wsEndpoint,
+        string calldata region,
+        string calldata avalancheRpcEndpoint,
+        uint16 stakingPort,
+        string calldata publicIp,
+        string calldata nodeId
+    ) external {
+        // Gateway validators must provide peer discovery info
+        if (bytes(publicIp).length == 0) revert InvalidParameter();
+        if (bytes(nodeId).length == 0) revert InvalidParameter();
+        if (stakingPort == 0) revert InvalidParameter();
 
-        // If first time registration, add to array
-        if (isNew) {
-            nodeIndex[msg.sender] = registeredNodes.length;
-            registeredNodes.push(msg.sender);
-        }
-
-        // Update active count if status changes
-        if (!info.active && nodeType < 3) {
-            ++activeNodeCounts[nodeType];
-        } else if (info.active && info.nodeType != nodeType && info.nodeType < 3) {
-            // Node type changed - update counts
-            --activeNodeCounts[info.nodeType];
-            ++activeNodeCounts[nodeType];
-        }
-
-        // Update node info
-        info.active = true;
-        info.nodeAddress = msg.sender;
-        info.multiaddr = multiaddr;
-        info.httpEndpoint = httpEndpoint;
-        info.wsEndpoint = wsEndpoint;
-        info.region = region;
-        info.nodeType = nodeType;
-        info.lastUpdate = block.timestamp; // solhint-disable-line not-rely-on-time
-
-        emit NodeRegistered(msg.sender, nodeType, httpEndpoint, isNew);
+        _registerNodeInternal(
+            multiaddr,
+            httpEndpoint,
+            wsEndpoint,
+            region,
+            0,  // nodeType = gateway
+            avalancheRpcEndpoint,
+            stakingPort,
+            publicIp,
+            nodeId
+        );
     }
 
     /**
@@ -553,5 +586,211 @@ contract Bootstrap is AccessControl {
     function isNodeActive(address nodeAddress) external view returns (bool isActive, uint8 nodeType) {
         NodeInfo storage info = nodeRegistry[nodeAddress];
         return (info.active, info.nodeType);
+    }
+
+    // ============================================================
+    //              AVALANCHEGO PEER DISCOVERY FUNCTIONS
+    // ============================================================
+
+    /**
+     * @notice Get all active gateway validators with full information
+     * @dev Used by new validators to discover peers before starting avalanchego.
+     *      Returns complete NodeInfo for each active gateway validator.
+     * @return infos Array of NodeInfo structs for active gateway validators
+     */
+    function getActiveGatewayValidators() external view returns (NodeInfo[] memory infos) {
+        uint256 count = 0;
+
+        // Count active gateway validators
+        for (uint256 i = 0; i < registeredNodes.length; ++i) {
+            NodeInfo storage info = nodeRegistry[registeredNodes[i]];
+            if (info.active && info.nodeType == 0) {
+                ++count;
+            }
+        }
+
+        // Allocate array
+        infos = new NodeInfo[](count);
+        uint256 index = 0;
+
+        // Populate array
+        for (uint256 i = 0; i < registeredNodes.length && index < count; ++i) {
+            address addr = registeredNodes[i];
+            NodeInfo storage info = nodeRegistry[addr];
+            if (info.active && info.nodeType == 0) {
+                infos[index] = info;
+                ++index;
+            }
+        }
+
+        return infos;
+    }
+
+    /**
+     * @notice Get bootstrap peer list in avalanchego format
+     * @dev Returns formatted strings for direct use in avalanchego CLI flags.
+     *      Only includes gateway validators with complete peer discovery info.
+     * @return ips Comma-separated IP:port list for --bootstrap-ips flag
+     * @return ids Comma-separated NodeID list for --bootstrap-ids flag
+     * @return count Number of valid peers found
+     */
+    function getAvalancheBootstrapPeers()
+        external
+        view
+        returns (
+            string memory ips,
+            string memory ids,
+            uint256 count
+        )
+    {
+        // First pass: count valid peers (gateway validators with peer discovery info)
+        for (uint256 i = 0; i < registeredNodes.length; ++i) {
+            NodeInfo storage info = nodeRegistry[registeredNodes[i]];
+            if (
+                info.active &&
+                info.nodeType == 0 &&
+                bytes(info.publicIp).length > 0 &&
+                bytes(info.nodeId).length > 0 &&
+                info.stakingPort > 0
+            ) {
+                ++count;
+            }
+        }
+
+        if (count == 0) {
+            return ("", "", 0);
+        }
+
+        // Second pass: build comma-separated strings
+        // Note: This is gas-intensive but acceptable for view function
+        bool first = true;
+        for (uint256 i = 0; i < registeredNodes.length; ++i) {
+            NodeInfo storage info = nodeRegistry[registeredNodes[i]];
+            if (
+                info.active &&
+                info.nodeType == 0 &&
+                bytes(info.publicIp).length > 0 &&
+                bytes(info.nodeId).length > 0 &&
+                info.stakingPort > 0
+            ) {
+                if (first) {
+                    ips = string.concat(info.publicIp, ":", _uint16ToString(info.stakingPort));
+                    ids = info.nodeId;
+                    first = false;
+                } else {
+                    ips = string.concat(ips, ",", info.publicIp, ":", _uint16ToString(info.stakingPort));
+                    ids = string.concat(ids, ",", info.nodeId);
+                }
+            }
+        }
+
+        return (ips, ids, count);
+    }
+
+    /**
+     * @notice Get extended node information including peer discovery fields
+     * @param nodeAddress Address of the node
+     * @return info Complete NodeInfo struct
+     */
+    function getNodeInfoExtended(address nodeAddress) external view returns (NodeInfo memory info) {
+        return nodeRegistry[nodeAddress];
+    }
+
+    // ============================================================
+    //                    INTERNAL HELPERS
+    // ============================================================
+
+    /**
+     * @notice Internal node registration logic
+     * @param multiaddr libp2p multiaddr
+     * @param httpEndpoint HTTP endpoint URL
+     * @param wsEndpoint WebSocket endpoint URL
+     * @param region Geographic region
+     * @param nodeType Node type (0=gateway, 1=computation, 2=listing)
+     * @param avalancheRpcEndpoint RPC endpoint for OmniCoin L1
+     * @param stakingPort Avalanchego staking port
+     * @param publicIp Public IP address
+     * @param nodeId TLS-derived NodeID
+     */
+    function _registerNodeInternal(
+        string calldata multiaddr,
+        string calldata httpEndpoint,
+        string calldata wsEndpoint,
+        string calldata region,
+        uint8 nodeType,
+        string memory avalancheRpcEndpoint,
+        uint16 stakingPort,
+        string memory publicIp,
+        string memory nodeId
+    ) internal {
+        if (nodeType > 2) revert InvalidNodeType();
+        if (bytes(httpEndpoint).length == 0) revert InvalidParameter();
+        // multiaddr is required for gateway validators (nodeType 0) for P2P bootstrap
+        if (nodeType == 0 && bytes(multiaddr).length == 0) revert InvalidParameter();
+
+        NodeInfo storage info = nodeRegistry[msg.sender];
+        bool isNew = bytes(info.httpEndpoint).length == 0;
+
+        // If first time registration, add to array
+        if (isNew) {
+            nodeIndex[msg.sender] = registeredNodes.length;
+            registeredNodes.push(msg.sender);
+        }
+
+        // Update active count if status changes
+        if (!info.active && nodeType < 3) {
+            ++activeNodeCounts[nodeType];
+        } else if (info.active && info.nodeType != nodeType && info.nodeType < 3) {
+            // Node type changed - update counts
+            --activeNodeCounts[info.nodeType];
+            ++activeNodeCounts[nodeType];
+        }
+
+        // Update node info (following struct field order for clarity)
+        // Slot 1 packed fields
+        info.active = true;
+        info.nodeType = nodeType;
+        info.stakingPort = stakingPort;
+        info.nodeAddress = msg.sender;
+        // Slot 2
+        info.lastUpdate = block.timestamp; // solhint-disable-line not-rely-on-time
+        // String fields
+        info.multiaddr = multiaddr;
+        info.httpEndpoint = httpEndpoint;
+        info.wsEndpoint = wsEndpoint;
+        info.region = region;
+        info.avalancheRpcEndpoint = avalancheRpcEndpoint;
+        info.publicIp = publicIp;
+        info.nodeId = nodeId;
+
+        emit NodeRegistered(msg.sender, nodeType, httpEndpoint, isNew);
+    }
+
+    /**
+     * @notice Convert uint16 to string
+     * @dev Used for building IP:port strings
+     * @param value The uint16 value to convert
+     * @return result String representation
+     */
+    function _uint16ToString(uint16 value) internal pure returns (string memory result) {
+        if (value == 0) {
+            return "0";
+        }
+
+        uint16 temp = value;
+        uint256 digits;
+        while (temp != 0) {
+            ++digits;
+            temp /= 10;
+        }
+
+        bytes memory buffer = new bytes(digits);
+        while (value != 0) {
+            --digits;
+            buffer[digits] = bytes1(uint8(48 + (value % 10)));
+            value /= 10;
+        }
+
+        return string(buffer);
     }
 }
