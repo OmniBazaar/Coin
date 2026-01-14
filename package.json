@@ -37,7 +37,8 @@
     "format": "prettier --write contracts/*.sol",
     "coverage": "hardhat coverage",
     "setup-validators": "hardhat run scripts/setup-validators.js --network localhost",
-    "health-check": "hardhat run scripts/health-check.js --network localhost"
+    "health-check": "hardhat run scripts/health-check.js --network localhost",
+    "generate:error-registry": "ts-node scripts/generate-error-registry.ts"
   },
   "devDependencies": {
     "@avalabs/avalanchejs": "^5.0.0",
