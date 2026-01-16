@@ -34,12 +34,15 @@
       "RWARouter": "0x88fF08e10ab7004ab375AD9e5201Ecad67865be2",
       "deployedAt": "2025-12-30T17:31:49.060Z",
       "note": "RWAAMM uses deployer as fee collector temporarily. Redeploy for production with proper fee collector."
-    }
+    },
+    "LiquidityBootstrappingPool": "0xA46CB51fE7b935883577F9Ec15c0D683BCfe49b6",
+    "OmniBonding": "0x1F976D7F01a31Fd6A1afd3508BfC562D778404Dd",
+    "LiquidityMining": "0xCD2f28E7630d55aC1b10530c5EBA1564a84E4511"
   },
   "validatorManager": {
     "type": "AvalanchePoSValidatorManager",
     "precompileAddress": "0x0FEEDC0DE0000000000000000000000000000000",
     "note": "Using standard Avalanche PoS Validator Manager precompile instead of deprecated OmniValidatorManager"
   },
-  "upgradedAt": "2026-01-10T23:40:46.197Z"
+  "upgradedAt": "2026-01-16T18:02:56.289Z"
 }
