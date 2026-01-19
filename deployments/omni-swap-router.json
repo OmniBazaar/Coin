@@ -1,0 +1,9 @@
+{
+  "OmniSwapRouter": "0x0DCef11B5aaBf8CeAd12Ea4BE2eC1fAb7Efa586B",
+  "deployer": "0xf8C9057d9649daCB06F14A7763233618Cc280663",
+  "feeRecipient": "0xf8C9057d9649daCB06F14A7763233618Cc280663",
+  "swapFeeBps": 30,
+  "network": "omnicoinFuji",
+  "chainId": "131313",
+  "timestamp": "2026-01-18T20:24:49.249Z"
+}

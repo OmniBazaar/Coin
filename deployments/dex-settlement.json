@@ -1,0 +1,10 @@
+{
+  "DEXSettlement": "0x9c0CAEfC312d6b1987967221E8A4a418DCdd5431",
+  "deployer": "0xf8C9057d9649daCB06F14A7763233618Cc280663",
+  "liquidityPool": "0xf8C9057d9649daCB06F14A7763233618Cc280663",
+  "oddao": "0xf8C9057d9649daCB06F14A7763233618Cc280663",
+  "protocol": "0xf8C9057d9649daCB06F14A7763233618Cc280663",
+  "network": "omnicoinFuji",
+  "chainId": "131313",
+  "timestamp": "2026-01-18T20:24:23.463Z"
+}

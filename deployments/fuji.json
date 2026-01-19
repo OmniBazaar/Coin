@@ -37,12 +37,14 @@
     },
     "LiquidityBootstrappingPool": "0xA46CB51fE7b935883577F9Ec15c0D683BCfe49b6",
     "OmniBonding": "0x1F976D7F01a31Fd6A1afd3508BfC562D778404Dd",
-    "LiquidityMining": "0xCD2f28E7630d55aC1b10530c5EBA1564a84E4511"
+    "LiquidityMining": "0xCD2f28E7630d55aC1b10530c5EBA1564a84E4511",
+    "DEXSettlement": "0x9c0CAEfC312d6b1987967221E8A4a418DCdd5431",
+    "OmniSwapRouter": "0x0DCef11B5aaBf8CeAd12Ea4BE2eC1fAb7Efa586B"
   },
   "validatorManager": {
     "type": "AvalanchePoSValidatorManager",
     "precompileAddress": "0x0FEEDC0DE0000000000000000000000000000000",
     "note": "Using standard Avalanche PoS Validator Manager precompile instead of deprecated OmniValidatorManager"
   },
-  "upgradedAt": "2026-01-16T18:02:56.289Z"
+  "upgradedAt": "2026-01-18T20:24:49.249Z"
 }
