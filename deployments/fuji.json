@@ -6,7 +6,7 @@
   "subnetId": "g9rP3Cirj5jJEukLDYQ72EbsRnpwEeVRL9pdLZqhJq1fivCke",
   "rpcUrl": "http://127.0.0.1:40681/ext/bc/2TEeYGdsqvS3eLBk8vrd9bedJiPR7uyeUo1YChM75HtCf9TzFk/rpc",
   "deployer": "0xf8C9057d9649daCB06F14A7763233618Cc280663",
-  "deployedAt": "2025-11-26T00:00:00.000Z",
+  "deployedAt": "2026-01-23T21:24:19.995Z",
   "contracts": {
     "OmniCoin": "0x117defc430E143529a9067A7866A9e7Eb532203C",
     "PrivateOmniCoin": "0x09F99AE44bd024fD2c16ff6999959d053f0f32B5",
@@ -35,16 +35,19 @@
       "deployedAt": "2025-12-30T17:31:49.060Z",
       "note": "RWAAMM uses deployer as fee collector temporarily. Redeploy for production with proper fee collector."
     },
-    "LiquidityBootstrappingPool": "0xA46CB51fE7b935883577F9Ec15c0D683BCfe49b6",
+    "LiquidityBootstrappingPool": "0x5C032b6F109B9d2f2Cf86A0fB70b7A419EeBA408",
     "OmniBonding": "0x1F976D7F01a31Fd6A1afd3508BfC562D778404Dd",
     "LiquidityMining": "0xCD2f28E7630d55aC1b10530c5EBA1564a84E4511",
     "DEXSettlement": "0x9c0CAEfC312d6b1987967221E8A4a418DCdd5431",
-    "OmniSwapRouter": "0x0DCef11B5aaBf8CeAd12Ea4BE2eC1fAb7Efa586B"
+    "OmniSwapRouter": "0x0DCef11B5aaBf8CeAd12Ea4BE2eC1fAb7Efa586B",
+    "TestUSDC": "0xFC866508bb2720054F9e346B286A08E7143423A7",
+    "LiquidityBootstrappingPoolV1": "0x600CC00CBc6749e4840A3a562C69DDDeB4da980D",
+    "XomUsdcPool": "0xF9f7cBe2F8e2920148FC0eaa005d082d278E6bE9"
   },
   "validatorManager": {
     "type": "AvalanchePoSValidatorManager",
     "precompileAddress": "0x0FEEDC0DE0000000000000000000000000000000",
     "note": "Using standard Avalanche PoS Validator Manager precompile instead of deprecated OmniValidatorManager"
   },
-  "upgradedAt": "2026-01-18T20:24:49.249Z"
+  "upgradedAt": "2026-01-23T16:58:36.145Z"
 }
