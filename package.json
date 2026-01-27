@@ -21,7 +21,7 @@
     "marketplace"
   ],
   "scripts": {
-    "compile": "hardhat compile",
+    "compile": "nice -n 10 hardhat compile",
     "test": "hardhat test",
     "test:security": "hardhat test test/security/",
     "test:integration": "hardhat test test/integration/",
@@ -33,7 +33,7 @@
     "deploy:coti-testnet": "hardhat run scripts/deploy.js --network cotiTestnet",
     "deploy:mainnet": "hardhat run scripts/deploy.js --network mainnet",
     "verify": "hardhat verify --network",
-    "lint": "solhint contracts/*.sol",
+    "lint": "nice -n 10 solhint contracts/*.sol",
     "format": "prettier --write contracts/*.sol",
     "coverage": "hardhat coverage",
     "setup-validators": "hardhat run scripts/setup-validators.js --network localhost",
