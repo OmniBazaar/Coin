@@ -38,7 +38,7 @@
     "LiquidityBootstrappingPool": "0x5C032b6F109B9d2f2Cf86A0fB70b7A419EeBA408",
     "OmniBonding": "0x1F976D7F01a31Fd6A1afd3508BfC562D778404Dd",
     "LiquidityMining": "0xCD2f28E7630d55aC1b10530c5EBA1564a84E4511",
-    "DEXSettlement": "0x9c0CAEfC312d6b1987967221E8A4a418DCdd5431",
+    "DEXSettlement": "0xa1Fa0D36586859399b0e6c6E639A50063bBAa2Ce",
     "OmniSwapRouter": "0x0DCef11B5aaBf8CeAd12Ea4BE2eC1fAb7Efa586B",
     "TestUSDC": "0xFC866508bb2720054F9e346B286A08E7143423A7",
     "LiquidityBootstrappingPoolV1": "0x600CC00CBc6749e4840A3a562C69DDDeB4da980D",
@@ -49,5 +49,5 @@
     "precompileAddress": "0x0FEEDC0DE0000000000000000000000000000000",
     "note": "Using standard Avalanche PoS Validator Manager precompile instead of deprecated OmniValidatorManager"
   },
-  "upgradedAt": "2026-01-23T16:58:36.145Z"
+  "upgradedAt": "2026-02-02T12:58:38.699Z"
 }

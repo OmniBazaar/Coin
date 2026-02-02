@@ -822,4 +822,188 @@ contract DEXSettlement is EIP712, Ownable, Pausable, ReentrancyGuard {
             block.timestamp
         );
     }
+
+    // ========================================================================
+    // INTENT-BASED SETTLEMENT FUNCTIONS (Phase 3)
+    // ========================================================================
+
+    /**
+     * @notice Intent collateral record
+     * @param trader Trader address
+     * @param solver Solver address
+     * @param traderAmount Trader collateral amount
+     * @param solverAmount Solver collateral amount
+     * @param deadline Settlement deadline
+     * @param locked Whether collateral is locked
+     * @param settled Whether settlement is complete
+     */
+    struct IntentCollateral {
+        address trader;
+        address solver;
+        uint256 traderAmount;
+        uint256 solverAmount;
+        uint256 deadline;
+        bool locked;
+        bool settled;
+    }
+
+    /// @notice Mapping of intentId => collateral record
+    mapping(bytes32 => IntentCollateral) public intentCollateral;
+
+    /**
+     * @notice Emitted when intent collateral is locked
+     * @param intentId Intent identifier
+     * @param trader Trader address
+     * @param solver Solver address
+     * @param traderAmount Trader collateral
+     * @param solverAmount Solver collateral
+     */
+    event IntentCollateralLocked(
+        bytes32 indexed intentId,
+        address indexed trader,
+        address indexed solver,
+        uint256 traderAmount,
+        uint256 solverAmount
+    );
+
+    /**
+     * @notice Emitted when intent is settled
+     * @param intentId Intent identifier
+     * @param trader Trader address
+     * @param solver Solver address
+     * @param traderAmount Amount from trader
+     * @param solverAmount Amount from solver
+     */
+    event IntentSettled(
+        bytes32 indexed intentId,
+        address indexed trader,
+        address indexed solver,
+        uint256 traderAmount,
+        uint256 solverAmount
+    );
+
+    /**
+     * @notice Emitted when intent is cancelled
+     * @param intentId Intent identifier
+     * @param reason Cancellation reason
+     */
+    event IntentCancelled(bytes32 indexed intentId, string reason);
+
+    /// @notice Thrown when collateral already locked
+    error CollateralAlreadyLocked();
+
+    /// @notice Thrown when collateral not locked
+    error CollateralNotLocked();
+
+    /// @notice Thrown when settlement already complete
+    error AlreadySettled();
+
+    /**
+     * @notice Lock collateral for bilateral intent settlement
+     * @param intentId Intent identifier (bytes32)
+     * @param traderAmount Amount trader is providing
+     * @param solverAmount Amount solver is providing
+     * @param deadline Settlement deadline timestamp
+     * @dev Both trader and solver must approve this contract before calling
+     */
+    function lockIntentCollateral(
+        bytes32 intentId,
+        uint256 traderAmount,
+        uint256 solverAmount,
+        uint256 deadline
+    ) external whenNotPaused {
+        if (intentCollateral[intentId].locked) revert CollateralAlreadyLocked();
+        if (traderAmount == 0 || solverAmount == 0) revert ZeroAmount();
+        if (deadline <= block.timestamp) revert OrderExpired();
+
+        intentCollateral[intentId] = IntentCollateral({
+            trader: msg.sender,
+            solver: address(0), // Solver will be set during settlement
+            traderAmount: traderAmount,
+            solverAmount: solverAmount,
+            deadline: deadline,
+            locked: true,
+            settled: false
+        });
+
+        emit IntentCollateralLocked(intentId, msg.sender, address(0), traderAmount, solverAmount);
+    }
+
+    /**
+     * @notice Settle intent with bilateral swap
+     * @param intentId Intent identifier
+     * @param solver Solver address
+     * @param tokenIn Token trader is selling
+     * @param tokenOut Token trader is buying
+     * @dev Executes atomic swap between trader and solver
+     */
+    function settleIntent(
+        bytes32 intentId,
+        address solver,
+        address tokenIn,
+        address tokenOut
+    ) external nonReentrant whenNotPaused {
+        if (emergencyStop) revert EmergencyStopActive();
+
+        IntentCollateral storage collateral = intentCollateral[intentId];
+
+        if (!collateral.locked) revert CollateralNotLocked();
+        if (collateral.settled) revert AlreadySettled();
+        if (block.timestamp > collateral.deadline) revert OrderExpired();
+
+        // Set solver address
+        collateral.solver = solver;
+
+        // Transfer tokens from trader to solver
+        IERC20(tokenIn).safeTransferFrom(
+            collateral.trader,
+            solver,
+            collateral.traderAmount
+        );
+
+        // Transfer tokens from solver to trader
+        IERC20(tokenOut).safeTransferFrom(
+            solver,
+            collateral.trader,
+            collateral.solverAmount
+        );
+
+        // Mark as settled
+        collateral.settled = true;
+
+        emit IntentSettled(
+            intentId,
+            collateral.trader,
+            solver,
+            collateral.traderAmount,
+            collateral.solverAmount
+        );
+    }
+
+    /**
+     * @notice Cancel intent and release collateral
+     * @param intentId Intent identifier
+     * @dev Can be called by trader if deadline passed
+     */
+    function cancelIntent(bytes32 intentId) external {
+        IntentCollateral storage collateral = intentCollateral[intentId];
+
+        if (!collateral.locked) revert CollateralNotLocked();
+        if (collateral.settled) revert AlreadySettled();
+        if (msg.sender != collateral.trader) revert InvalidSignature();
+
+        // Reset collateral
+        collateral.locked = false;
+
+        emit IntentCancelled(intentId, "Cancelled by trader");
+    }
+
+    /**
+     * @notice Get intent collateral details
+     * @param intentId Intent identifier
+     * @return Collateral record
+     */
+    function getIntentCollateral(bytes32 intentId) external view returns (IntentCollateral memory) {
+        return intentCollateral[intentId];
+    }
 }
