@@ -12,8 +12,8 @@ import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol
  * @author OmniCoin Development Team
  * @notice Upgradeable core contract with UUPS proxy pattern
  * @dev Ultra-lean core contract consolidating registry, validators, and minimal staking
- * @dev max-states-count disabled: Need 21 states for comprehensive functionality including legacy migration
- * @dev ordering disabled: Upgradeable contracts follow specific ordering pattern with _authorizeUpgrade
+ * @dev max-states-count disabled: Need 21+ states for comprehensive functionality
+ * @dev ordering disabled: Upgradeable contracts follow specific ordering pattern
  */
 // solhint-disable max-states-count, ordering
 contract OmniCore is
@@ -37,7 +37,7 @@ contract OmniCore is
     /// @notice Admin role for governance operations
     bytes32 public constant ADMIN_ROLE = keccak256("ADMIN_ROLE");
 
-    /// @notice Role for Avalanche validators to update merkle roots
+    /// @notice Role for Avalanche validators
     bytes32 public constant AVALANCHE_VALIDATOR_ROLE = keccak256("AVALANCHE_VALIDATOR_ROLE");
 
     /// @notice Fee percentage for ODDAO (70% = 7000 basis points)
@@ -52,9 +52,12 @@ contract OmniCore is
     /// @notice Total basis points for percentage calculations
     uint256 public constant BASIS_POINTS = 10000;
 
+    /// @notice Maximum number of validator signatures for multi-sig
+    uint256 public constant MAX_REQUIRED_SIGNATURES = 5;
+
     // State variables (STORAGE LAYOUT - DO NOT REORDER!)
     /// @notice OmniCoin token address (changed from immutable)
-    /// @dev Variable name kept uppercase for backward compatibility with original contract
+    /// @dev Variable name kept uppercase for backward compatibility
     // solhint-disable-next-line var-name-mixedcase
     IERC20 public OMNI_COIN;
 
@@ -64,10 +67,10 @@ contract OmniCore is
     /// @notice Validator registry for active validators
     mapping(address => bool) public validators;
 
-    /// @notice Master merkle root covering ALL off-chain data
+    /// @notice DEPRECATED: kept for UUPS storage layout compatibility. Do not use.
     bytes32 public masterRoot;
 
-    /// @notice Last epoch when root was updated
+    /// @notice DEPRECATED: kept for UUPS storage layout compatibility. Do not use.
     uint256 public lastRootUpdate;
 
     /// @notice User stakes - minimal on-chain data
@@ -104,8 +107,12 @@ contract OmniCore is
     /// @notice Total legacy tokens claimed so far
     uint256 public totalLegacyClaimed;
 
-    /// @notice Storage gap for future upgrades (reserve 50 slots)
-    uint256[50] private __gap;
+    /// @notice Required validator signatures for legacy claims (M-of-N multi-sig)
+    uint256 public requiredSignatures;
+
+    /// @notice Storage gap for future upgrades (reserve 49 slots)
+    /// @dev Reduced from 50 to 49 to accommodate requiredSignatures
+    uint256[49] private __gap;
 
     // Events
     /// @notice Emitted when a service is registered or updated
@@ -146,16 +153,6 @@ contract OmniCore is
     event LegacyUsersRegistered(
         uint256 indexed count,
         uint256 indexed totalAmount
-    );
-
-    /// @notice Emitted when master merkle root is updated
-    /// @param newRoot New merkle root hash
-    /// @param epoch Epoch number for this update
-    /// @param timestamp Block timestamp of update
-    event MasterRootUpdated(
-        bytes32 indexed newRoot,
-        uint256 indexed epoch,
-        uint256 indexed timestamp
     );
 
     /// @notice Emitted when tokens are staked
@@ -228,14 +225,19 @@ contract OmniCore is
         uint256 cotiBlockNumber
     );
 
+    /// @notice Emitted when required signatures count is updated
+    /// @param newCount New required signature count
+    event RequiredSignaturesUpdated(uint256 indexed newCount);
+
     // Custom errors
     error InvalidAddress();
     error InvalidAmount();
     error InvalidSignature();
     error StakeNotFound();
     error StakeLocked();
-    error InvalidProof();
     error Unauthorized();
+    error DuplicateSigner();
+    error InsufficientSignatures();
 
     /**
      * @notice Constructor that disables initializers for the implementation contract
@@ -278,6 +280,7 @@ contract OmniCore is
         OMNI_COIN = IERC20(_omniCoin);
         oddaoAddress = _oddaoAddress;
         stakingPoolAddress = _stakingPoolAddress;
+        requiredSignatures = 1;
     }
 
     /**
@@ -289,7 +292,11 @@ contract OmniCore is
         internal
         override
         onlyRole(ADMIN_ROLE)
-    {}
+    {} // solhint-disable-line no-empty-blocks
+
+    // =============================================================================
+    // Service Registry & Validator Management
+    // =============================================================================
 
     /**
      * @notice Register or update a service in the registry
@@ -323,25 +330,25 @@ contract OmniCore is
     }
 
     /**
-     * @notice Update the master merkle root
-     * @dev Only Avalanche validators can update the root
-     * @param newRoot New merkle root hash
-     * @param epoch Epoch number for this update
+     * @notice Set required number of validator signatures for legacy claims
+     * @dev Only admin can change the multi-sig threshold
+     * @param count Number of required signatures (1 to MAX_REQUIRED_SIGNATURES)
      */
-    function updateMasterRoot(
-        bytes32 newRoot,
-        uint256 epoch
-    ) external onlyRole(AVALANCHE_VALIDATOR_ROLE) {
-        masterRoot = newRoot;
-        lastRootUpdate = epoch;
-        emit MasterRootUpdated(newRoot, epoch, block.timestamp); // solhint-disable-line not-rely-on-time
+    function setRequiredSignatures(uint256 count) external onlyRole(ADMIN_ROLE) {
+        if (count == 0 || count > MAX_REQUIRED_SIGNATURES) revert InvalidAmount();
+        requiredSignatures = count;
+        emit RequiredSignaturesUpdated(count);
     }
+
+    // =============================================================================
+    // Staking Functions
+    // =============================================================================
 
     /**
      * @notice Stake tokens with minimal on-chain data
-     * @dev Locks tokens on-chain, calculations done off-chain
+     * @dev Locks tokens on-chain, reward calculation done by StakingRewardPool
      * @param amount Amount of tokens to stake
-     * @param tier Staking tier (for off-chain calculations)
+     * @param tier Staking tier (determines APR in StakingRewardPool)
      * @param duration Lock duration in seconds
      */
     function stake(
@@ -371,7 +378,8 @@ contract OmniCore is
 
     /**
      * @notice Unlock staked tokens after lock period
-     * @dev Simple unlock without reward calculation (done off-chain)
+     * @dev Returns principal only. Rewards handled by StakingRewardPool contract.
+     *      Call StakingRewardPool.snapshotRewards() BEFORE this to preserve rewards.
      */
     function unlock() external nonReentrant {
         Stake storage userStake = stakes[msg.sender];
@@ -392,40 +400,11 @@ contract OmniCore is
         emit TokensUnlocked(msg.sender, amount, block.timestamp); // solhint-disable-line not-rely-on-time
     }
 
-    /**
-     * @notice Unlock with rewards verified by merkle proof
-     * @dev Validator provides proof of rewards earned
-     * @param user Address of the staker
-     * @param totalAmount Total amount including rewards
-     * @param proof Merkle proof for reward verification
-     */
-    function unlockWithRewards(
-        address user,
-        uint256 totalAmount,
-        bytes32[] calldata proof
-    ) external onlyRole(AVALANCHE_VALIDATOR_ROLE) {
-        Stake storage userStake = stakes[user];
-
-        if (!userStake.active) revert StakeNotFound();
-        if (totalAmount < userStake.amount) revert InvalidAmount();
-
-        // Verify merkle proof (implementation depends on MasterMerkleEngine)
-        if (!verifyProof(user, totalAmount, proof)) revert InvalidProof();
-
-        // Clear stake
-        uint256 baseAmount = userStake.amount;
-        userStake.active = false;
-        userStake.amount = 0;
-        totalStaked -= baseAmount;
-
-        // Transfer total amount (base + rewards)
-        OMNI_COIN.safeTransfer(user, totalAmount);
-
-        emit TokensUnlocked(user, totalAmount, block.timestamp); // solhint-disable-line not-rely-on-time
-    }
-
     // =============================================================================
-    // DEX Settlement Functions (Ultra-Minimal)
+    // DEX Settlement Functions
+    // @deprecated Use DEXSettlement.sol for trustless EIP-712 settlement instead.
+    //             These functions are kept for storage layout safety (dexBalances)
+    //             and backward compatibility during migration.
     // =============================================================================
 
     /**
@@ -436,6 +415,7 @@ contract OmniCore is
      * @param token Token being traded
      * @param amount Amount of tokens
      * @param orderId Off-chain order identifier
+     * @deprecated Use DEXSettlement.sol settleTrade() with EIP-712 signatures
      */
     function settleDEXTrade(
         address buyer,
@@ -466,6 +446,7 @@ contract OmniCore is
      * @param tokens Array of token addresses
      * @param amounts Array of amounts
      * @param batchId Batch identifier
+     * @deprecated Use DEXSettlement.sol for trustless settlement
      */
     function batchSettleDEX(
         address[] calldata buyers,
@@ -481,7 +462,10 @@ contract OmniCore is
         }
 
         for (uint256 i = 0; i < length; ++i) {
-            if (dexBalances[sellers[i]][tokens[i]] > amounts[i] || dexBalances[sellers[i]][tokens[i]] == amounts[i]) {
+            if (
+                dexBalances[sellers[i]][tokens[i]] > amounts[i] ||
+                dexBalances[sellers[i]][tokens[i]] == amounts[i]
+            ) {
                 dexBalances[sellers[i]][tokens[i]] -= amounts[i];
                 dexBalances[buyers[i]][tokens[i]] += amounts[i];
             }
@@ -496,6 +480,7 @@ contract OmniCore is
      * @param token Fee token
      * @param totalFee Total fee amount
      * @param validator Validator processing the transaction
+     * @deprecated Use DEXSettlement.sol for trustless fee distribution
      */
     function distributeDEXFees(
         address token,
@@ -507,7 +492,7 @@ contract OmniCore is
         // Calculate fee splits using basis points for precision
         uint256 oddaoFee = (totalFee * ODDAO_FEE_BPS) / BASIS_POINTS;
         uint256 stakingFee = (totalFee * STAKING_FEE_BPS) / BASIS_POINTS;
-        uint256 validatorFee = totalFee - oddaoFee - stakingFee; // Remainder to avoid rounding loss
+        uint256 validatorFee = totalFee - oddaoFee - stakingFee;
 
         if (oddaoFee > 0) {
             dexBalances[oddaoAddress][token] += oddaoFee;
@@ -522,6 +507,7 @@ contract OmniCore is
 
     // =============================================================================
     // Private DEX Settlement Functions (COTI V2 Integration)
+    // @deprecated Use DEXSettlement.sol for trustless settlement
     // =============================================================================
 
     /**
@@ -533,6 +519,7 @@ contract OmniCore is
      * @param encryptedAmount Encrypted trade amount from COTI MPC (ctUint64 as bytes32)
      * @param cotiTxHash Transaction hash on COTI chain (proof of execution)
      * @param cotiBlockNumber Block number on COTI chain
+     * @deprecated Use DEXSettlement.sol for trustless settlement
      */
     function settlePrivateDEXTrade(
         address buyer,
@@ -546,7 +533,6 @@ contract OmniCore is
         if (token == address(0)) revert InvalidAddress();
         if (cotiTxHash == bytes32(0)) revert InvalidSignature();
 
-        // Record settlement (amounts are encrypted, only addresses and hashes are public)
         emit PrivateDEXSettlement(
             buyer,
             seller,
@@ -566,6 +552,7 @@ contract OmniCore is
      * @param encryptedAmounts Array of encrypted amounts
      * @param cotiTxHashes Array of COTI transaction hashes
      * @param cotiBlockNumber COTI block number containing all trades
+     * @deprecated Use DEXSettlement.sol for trustless settlement
      */
     function batchSettlePrivateDEX(
         address[] calldata buyers,
@@ -633,6 +620,10 @@ contract OmniCore is
         IERC20(token).safeTransfer(msg.sender, amount);
     }
 
+    // =============================================================================
+    // View Functions
+    // =============================================================================
+
     /**
      * @notice Get service address by name
      * @param name Service identifier
@@ -668,35 +659,6 @@ contract OmniCore is
      */
     function getDEXBalance(address user, address token) external view returns (uint256 balance) {
         return dexBalances[user][token];
-    }
-
-    /**
-     * @notice Verify a merkle proof against the master root
-     * @dev Simplified verification - actual implementation in validators
-     * @param user User address
-     * @param amount Amount to verify
-     * @param proof Merkle proof path
-     * @return valid Whether the proof is valid
-     */
-    function verifyProof(
-        address user,
-        uint256 amount,
-        bytes32[] calldata proof
-    ) public view returns (bool valid) {
-        // Simplified verification - actual logic in MasterMerkleEngine
-        bytes32 leaf = keccak256(abi.encodePacked(user, amount));
-        bytes32 computedHash = leaf;
-
-        for (uint256 i = 0; i < proof.length; ++i) {
-            bytes32 proofElement = proof[i];
-            if (computedHash < proofElement || computedHash == proofElement) {
-                computedHash = keccak256(abi.encodePacked(computedHash, proofElement));
-            } else {
-                computedHash = keccak256(abi.encodePacked(proofElement, computedHash));
-            }
-        }
-
-        return computedHash == masterRoot;
     }
 
     // =============================================================================
@@ -741,20 +703,21 @@ contract OmniCore is
     }
 
     /**
-     * @notice Claim legacy balance after off-chain validation
-     * @dev Validators verify legacy credentials off-chain before authorizing claim
+     * @notice Claim legacy balance with M-of-N validator signatures
+     * @dev Validators verify legacy credentials off-chain; multiple signatures required
      * @param username Legacy username
      * @param claimAddress Address to receive the tokens
      * @param nonce Unique nonce to prevent replay
-     * @param signature Validator signature authorizing the claim
+     * @param signatures Array of validator signatures authorizing the claim
      */
     function claimLegacyBalance(
         string calldata username,
         address claimAddress,
         bytes32 nonce,
-        bytes calldata signature
+        bytes[] calldata signatures
     ) external nonReentrant {
         if (claimAddress == address(0)) revert InvalidAddress();
+        if (signatures.length < requiredSignatures) revert InsufficientSignatures();
 
         bytes32 usernameHash = keccak256(abi.encodePacked(username));
 
@@ -762,7 +725,7 @@ contract OmniCore is
         if (!legacyUsernames[usernameHash]) revert InvalidAddress();
         if (legacyClaimed[usernameHash] != address(0)) revert InvalidAmount();
 
-        // Verify validator signature
+        // Compute message hash
         bytes32 messageHash = keccak256(abi.encodePacked(
             username,
             claimAddress,
@@ -776,8 +739,20 @@ contract OmniCore is
             messageHash
         ));
 
-        address signer = _recoverSigner(ethSignedMessageHash, signature);
-        if (!validators[signer]) revert InvalidSignature();
+        // Verify each signature is from a unique active validator
+        uint256 sigCount = signatures.length;
+        address[] memory signers = new address[](sigCount);
+
+        for (uint256 i = 0; i < sigCount; ++i) {
+            address signer = _recoverSigner(ethSignedMessageHash, signatures[i]);
+            if (!validators[signer]) revert InvalidSignature();
+
+            // Check for duplicate signers
+            for (uint256 j = 0; j < i; ++j) {
+                if (signers[j] == signer) revert DuplicateSigner();
+            }
+            signers[i] = signer;
+        }
 
         // Get balance and mark as claimed
         uint256 amount = legacyBalances[usernameHash];
@@ -829,10 +804,14 @@ contract OmniCore is
         publicKey = legacyAccounts[usernameHash];
     }
 
+    // =============================================================================
+    // Internal Functions
+    // =============================================================================
+
     /**
      * @notice Internal function to recover signer from signature
      * @param messageHash Hash of the signed message
-     * @param signature Signature bytes
+     * @param signature Signature bytes (65 bytes: r + s + v)
      * @return Recovered signer address
      */
     function _recoverSigner(

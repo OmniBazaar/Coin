@@ -56,7 +56,7 @@
             "label": "stakes",
             "offset": 0,
             "slot": "5",
-            "type": "t_mapping(t_address,t_struct(Stake)17326_storage)",
+            "type": "t_mapping(t_address,t_struct(Stake)17850_storage)",
             "contract": "OmniCore",
             "src": "contracts/OmniCore.sol:74"
           },
@@ -254,7 +254,7 @@
             "label": "mapping(address => mapping(address => uint256))",
             "numberOfBytes": "32"
           },
-          "t_mapping(t_address,t_struct(Stake)17326_storage)": {
+          "t_mapping(t_address,t_struct(Stake)17850_storage)": {
             "label": "mapping(address => struct OmniCore.Stake)",
             "numberOfBytes": "32"
           },
@@ -278,7 +278,358 @@
             "label": "mapping(bytes32 => uint256)",
             "numberOfBytes": "32"
           },
-          "t_struct(Stake)17326_storage": {
+          "t_struct(Stake)17850_storage": {
+            "label": "struct OmniCore.Stake",
+            "members": [
+              {
+                "label": "amount",
+                "type": "t_uint256",
+                "offset": 0,
+                "slot": "0"
+              },
+              {
+                "label": "tier",
+                "type": "t_uint256",
+                "offset": 0,
+                "slot": "1"
+              },
+              {
+                "label": "duration",
+                "type": "t_uint256",
+                "offset": 0,
+                "slot": "2"
+              },
+              {
+                "label": "lockTime",
+                "type": "t_uint256",
+                "offset": 0,
+                "slot": "3"
+              },
+              {
+                "label": "active",
+                "type": "t_bool",
+                "offset": 0,
+                "slot": "4"
+              }
+            ],
+            "numberOfBytes": "160"
+          }
+        },
+        "namespaces": {
+          "erc7201:openzeppelin.storage.ReentrancyGuard": [
+            {
+              "contract": "ReentrancyGuardUpgradeable",
+              "label": "_status",
+              "type": "t_uint256",
+              "src": "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol:43",
+              "offset": 0,
+              "slot": "0"
+            }
+          ],
+          "erc7201:openzeppelin.storage.AccessControl": [
+            {
+              "contract": "AccessControlUpgradeable",
+              "label": "_roles",
+              "type": "t_mapping(t_bytes32,t_struct(RoleData)26_storage)",
+              "src": "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol:62",
+              "offset": 0,
+              "slot": "0"
+            }
+          ],
+          "erc7201:openzeppelin.storage.Initializable": [
+            {
+              "contract": "Initializable",
+              "label": "_initialized",
+              "type": "t_uint64",
+              "src": "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol:69",
+              "offset": 0,
+              "slot": "0"
+            },
+            {
+              "contract": "Initializable",
+              "label": "_initializing",
+              "type": "t_bool",
+              "src": "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol:73",
+              "offset": 8,
+              "slot": "0"
+            }
+          ]
+        }
+      }
+    },
+    "8d08e957a4deef3935f38c470a80f7ce1f51f6cb925c9fcd9e3d254c3dc32de1": {
+      "address": "0xE0478F2ce45b2D9107A096854C7F13fcB167Ab0C",
+      "txHash": "0x8630b89b047ad12dab9ad6abb2c9f284ea970ce4e6a0bb66d56b26ecc606fdcc",
+      "layout": {
+        "solcVersion": "0.8.25",
+        "storage": [
+          {
+            "label": "OMNI_COIN",
+            "offset": 0,
+            "slot": "0",
+            "type": "t_contract(IERC20)1615",
+            "contract": "OmniCore",
+            "src": "contracts/OmniCore.sol:59"
+          },
+          {
+            "label": "services",
+            "offset": 0,
+            "slot": "1",
+            "type": "t_mapping(t_bytes32,t_address)",
+            "contract": "OmniCore",
+            "src": "contracts/OmniCore.sol:62"
+          },
+          {
+            "label": "validators",
+            "offset": 0,
+            "slot": "2",
+            "type": "t_mapping(t_address,t_bool)",
+            "contract": "OmniCore",
+            "src": "contracts/OmniCore.sol:65"
+          },
+          {
+            "label": "masterRoot",
+            "offset": 0,
+            "slot": "3",
+            "type": "t_bytes32",
+            "contract": "OmniCore",
+            "src": "contracts/OmniCore.sol:68"
+          },
+          {
+            "label": "lastRootUpdate",
+            "offset": 0,
+            "slot": "4",
+            "type": "t_uint256",
+            "contract": "OmniCore",
+            "src": "contracts/OmniCore.sol:71"
+          },
+          {
+            "label": "stakes",
+            "offset": 0,
+            "slot": "5",
+            "type": "t_mapping(t_address,t_struct(Stake)3451_storage)",
+            "contract": "OmniCore",
+            "src": "contracts/OmniCore.sol:74"
+          },
+          {
+            "label": "totalStaked",
+            "offset": 0,
+            "slot": "6",
+            "type": "t_uint256",
+            "contract": "OmniCore",
+            "src": "contracts/OmniCore.sol:77"
+          },
+          {
+            "label": "dexBalances",
+            "offset": 0,
+            "slot": "7",
+            "type": "t_mapping(t_address,t_mapping(t_address,t_uint256))",
+            "contract": "OmniCore",
+            "src": "contracts/OmniCore.sol:80"
+          },
+          {
+            "label": "oddaoAddress",
+            "offset": 0,
+            "slot": "8",
+            "type": "t_address",
+            "contract": "OmniCore",
+            "src": "contracts/OmniCore.sol:83"
+          },
+          {
+            "label": "stakingPoolAddress",
+            "offset": 0,
+            "slot": "9",
+            "type": "t_address",
+            "contract": "OmniCore",
+            "src": "contracts/OmniCore.sol:86"
+          },
+          {
+            "label": "legacyUsernames",
+            "offset": 0,
+            "slot": "10",
+            "type": "t_mapping(t_bytes32,t_bool)",
+            "contract": "OmniCore",
+            "src": "contracts/OmniCore.sol:90"
+          },
+          {
+            "label": "legacyBalances",
+            "offset": 0,
+            "slot": "11",
+            "type": "t_mapping(t_bytes32,t_uint256)",
+            "contract": "OmniCore",
+            "src": "contracts/OmniCore.sol:93"
+          },
+          {
+            "label": "legacyClaimed",
+            "offset": 0,
+            "slot": "12",
+            "type": "t_mapping(t_bytes32,t_address)",
+            "contract": "OmniCore",
+            "src": "contracts/OmniCore.sol:96"
+          },
+          {
+            "label": "legacyAccounts",
+            "offset": 0,
+            "slot": "13",
+            "type": "t_mapping(t_bytes32,t_bytes_storage)",
+            "contract": "OmniCore",
+            "src": "contracts/OmniCore.sol:99"
+          },
+          {
+            "label": "totalLegacySupply",
+            "offset": 0,
+            "slot": "14",
+            "type": "t_uint256",
+            "contract": "OmniCore",
+            "src": "contracts/OmniCore.sol:102"
+          },
+          {
+            "label": "totalLegacyClaimed",
+            "offset": 0,
+            "slot": "15",
+            "type": "t_uint256",
+            "contract": "OmniCore",
+            "src": "contracts/OmniCore.sol:105"
+          },
+          {
+            "label": "__gap",
+            "offset": 0,
+            "slot": "16",
+            "type": "t_array(t_uint256)50_storage",
+            "contract": "OmniCore",
+            "src": "contracts/OmniCore.sol:108"
+          }
+        ],
+        "types": {
+          "t_address": {
+            "label": "address",
+            "numberOfBytes": "20"
+          },
+          "t_bool": {
+            "label": "bool",
+            "numberOfBytes": "1"
+          },
+          "t_bytes32": {
+            "label": "bytes32",
+            "numberOfBytes": "32"
+          },
+          "t_mapping(t_address,t_bool)": {
+            "label": "mapping(address => bool)",
+            "numberOfBytes": "32"
+          },
+          "t_mapping(t_bytes32,t_struct(RoleData)26_storage)": {
+            "label": "mapping(bytes32 => struct AccessControlUpgradeable.RoleData)",
+            "numberOfBytes": "32"
+          },
+          "t_struct(AccessControlStorage)36_storage": {
+            "label": "struct AccessControlUpgradeable.AccessControlStorage",
+            "members": [
+              {
+                "label": "_roles",
+                "type": "t_mapping(t_bytes32,t_struct(RoleData)26_storage)",
+                "offset": 0,
+                "slot": "0"
+              }
+            ],
+            "numberOfBytes": "32"
+          },
+          "t_struct(InitializableStorage)147_storage": {
+            "label": "struct Initializable.InitializableStorage",
+            "members": [
+              {
+                "label": "_initialized",
+                "type": "t_uint64",
+                "offset": 0,
+                "slot": "0"
+              },
+              {
+                "label": "_initializing",
+                "type": "t_bool",
+                "offset": 8,
+                "slot": "0"
+              }
+            ],
+            "numberOfBytes": "32"
+          },
+          "t_struct(ReentrancyGuardStorage)300_storage": {
+            "label": "struct ReentrancyGuardUpgradeable.ReentrancyGuardStorage",
+            "members": [
+              {
+                "label": "_status",
+                "type": "t_uint256",
+                "offset": 0,
+                "slot": "0"
+              }
+            ],
+            "numberOfBytes": "32"
+          },
+          "t_struct(RoleData)26_storage": {
+            "label": "struct AccessControlUpgradeable.RoleData",
+            "members": [
+              {
+                "label": "hasRole",
+                "type": "t_mapping(t_address,t_bool)",
+                "offset": 0,
+                "slot": "0"
+              },
+              {
+                "label": "adminRole",
+                "type": "t_bytes32",
+                "offset": 0,
+                "slot": "1"
+              }
+            ],
+            "numberOfBytes": "64"
+          },
+          "t_uint256": {
+            "label": "uint256",
+            "numberOfBytes": "32"
+          },
+          "t_uint64": {
+            "label": "uint64",
+            "numberOfBytes": "8"
+          },
+          "t_array(t_uint256)50_storage": {
+            "label": "uint256[50]",
+            "numberOfBytes": "1600"
+          },
+          "t_bytes_storage": {
+            "label": "bytes",
+            "numberOfBytes": "32"
+          },
+          "t_contract(IERC20)1615": {
+            "label": "contract IERC20",
+            "numberOfBytes": "20"
+          },
+          "t_mapping(t_address,t_mapping(t_address,t_uint256))": {
+            "label": "mapping(address => mapping(address => uint256))",
+            "numberOfBytes": "32"
+          },
+          "t_mapping(t_address,t_struct(Stake)3451_storage)": {
+            "label": "mapping(address => struct OmniCore.Stake)",
+            "numberOfBytes": "32"
+          },
+          "t_mapping(t_address,t_uint256)": {
+            "label": "mapping(address => uint256)",
+            "numberOfBytes": "32"
+          },
+          "t_mapping(t_bytes32,t_address)": {
+            "label": "mapping(bytes32 => address)",
+            "numberOfBytes": "32"
+          },
+          "t_mapping(t_bytes32,t_bool)": {
+            "label": "mapping(bytes32 => bool)",
+            "numberOfBytes": "32"
+          },
+          "t_mapping(t_bytes32,t_bytes_storage)": {
+            "label": "mapping(bytes32 => bytes)",
+            "numberOfBytes": "32"
+          },
+          "t_mapping(t_bytes32,t_uint256)": {
+            "label": "mapping(bytes32 => uint256)",
+            "numberOfBytes": "32"
+          },
+          "t_struct(Stake)3451_storage": {
             "label": "struct OmniCore.Stake",
             "members": [
               {
