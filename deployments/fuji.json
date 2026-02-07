@@ -12,7 +12,7 @@
     "PrivateOmniCoin": "0x09F99AE44bd024fD2c16ff6999959d053f0f32B5",
     "MinimalEscrow": "0xa0aF1B47C6B4c56E776c8c920dB677E394060bDD",
     "OmniCore": "0x0Ef606683222747738C04b4b00052F5357AC6c8b",
-    "OmniCoreImplementation": "0x00a62B0E0e3bb9D067fC0D62DEd1d07f9f028410",
+    "OmniCoreImplementation": "0x6a65Be8FCc1CaBADE6190B5E473a19ABfca3aBdc",
     "OmniGovernance": "0x56E233DDE02E016AF83e352B9Dd191bc62e108B5",
     "LegacyBalanceClaim": "0x1201b2f0e94B8722792FC4F515E64133c122CD39",
     "QualificationOracle": "0x85722E5bA6d0E8b97a9fB7B6796816C8B9c49356",
@@ -42,12 +42,14 @@
     "OmniSwapRouter": "0x0DCef11B5aaBf8CeAd12Ea4BE2eC1fAb7Efa586B",
     "TestUSDC": "0xFC866508bb2720054F9e346B286A08E7143423A7",
     "LiquidityBootstrappingPoolV1": "0x600CC00CBc6749e4840A3a562C69DDDeB4da980D",
-    "XomUsdcPool": "0xF9f7cBe2F8e2920148FC0eaa005d082d278E6bE9"
+    "XomUsdcPool": "0xF9f7cBe2F8e2920148FC0eaa005d082d278E6bE9",
+    "StakingRewardPool": "0x1A12040129c47B92fd10083d4969Fb392a9554Af",
+    "StakingRewardPoolImplementation": "0xdd6360901c7205661b763BEbd109F248D0954CD1"
   },
   "validatorManager": {
     "type": "AvalanchePoSValidatorManager",
     "precompileAddress": "0x0FEEDC0DE0000000000000000000000000000000",
     "note": "Using standard Avalanche PoS Validator Manager precompile instead of deprecated OmniValidatorManager"
   },
-  "upgradedAt": "2026-02-06T21:24:48.883Z"
+  "upgradedAt": "2026-02-07T00:13:15.501Z"
 }

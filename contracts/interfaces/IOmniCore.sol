@@ -149,9 +149,6 @@ interface IOmniCore {
     /// @notice Unlock staked tokens
     function unlock() external;
 
-    /// @notice Unlock staked tokens with rewards
-    function unlockWithRewards() external;
-
     /// @notice Get stake information
     /// @param user User address
     /// @return Stake struct with staking details
@@ -218,26 +215,8 @@ interface IOmniCore {
     //                         MERKLE ROOT (LEGACY)
     // ═══════════════════════════════════════════════════════════════════════
 
-    /// @notice Update master root hash
-    /// @param rootHash New root hash
-    /// @param nonce Nonce for replay protection
-    /// @param signatures Validator signatures
-    function updateMasterRoot(
-        bytes32 rootHash,
-        uint256 nonce,
-        bytes[] calldata signatures
-    ) external;
-
-    /// @notice Verify a merkle proof
-    /// @param proof Merkle proof
-    /// @param root Root hash
-    /// @param leaf Leaf hash
-    /// @return True if proof is valid
-    function verifyProof(
-        bytes32[] calldata proof,
-        bytes32 root,
-        bytes32 leaf
-    ) external pure returns (bool);
+    // NOTE: updateMasterRoot() and verifyProof() removed — merkle root system deprecated.
+    // See StakingRewardPool.sol for trustless reward computation.
 
     // ═══════════════════════════════════════════════════════════════════════
     //                         LEGACY MIGRATION
@@ -253,9 +232,17 @@ interface IOmniCore {
         bytes32[] calldata merkleRoots
     ) external;
 
-    /// @notice Claim legacy balance
-    /// @param proof Merkle proof
-    function claimLegacyBalance(bytes32[] calldata proof) external;
+    /// @notice Claim legacy balance with M-of-N validator signatures
+    /// @param username Legacy username
+    /// @param claimAddress Address to receive the tokens
+    /// @param nonce Unique nonce to prevent replay
+    /// @param signatures Array of validator signatures authorizing the claim
+    function claimLegacyBalance(
+        string calldata username,
+        address claimAddress,
+        bytes32 nonce,
+        bytes[] calldata signatures
+    ) external;
 
     /// @notice Get legacy status for user
     /// @param user User address

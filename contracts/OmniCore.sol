@@ -284,6 +284,15 @@ contract OmniCore is
     }
 
     /**
+     * @notice V2 initializer — sets new state added after initial deployment
+     * @dev Called once after upgradeProxy to initialize requiredSignatures.
+     *      reinitializer(2) ensures it can only run once and cannot re-run initialize().
+     */
+    function initializeV2() external reinitializer(2) {
+        requiredSignatures = 1;
+    }
+
+    /**
      * @notice Authorize contract upgrades
      * @dev Required by UUPSUpgradeable, only admin can upgrade
      * @param newImplementation Address of new implementation
@@ -415,7 +424,7 @@ contract OmniCore is
      * @param token Token being traded
      * @param amount Amount of tokens
      * @param orderId Off-chain order identifier
-     * @deprecated Use DEXSettlement.sol settleTrade() with EIP-712 signatures
+     * @dev DEPRECATED: Use DEXSettlement.sol settleTrade() with EIP-712 signatures
      */
     function settleDEXTrade(
         address buyer,
@@ -446,7 +455,7 @@ contract OmniCore is
      * @param tokens Array of token addresses
      * @param amounts Array of amounts
      * @param batchId Batch identifier
-     * @deprecated Use DEXSettlement.sol for trustless settlement
+     * @dev DEPRECATED: Use DEXSettlement.sol for trustless settlement
      */
     function batchSettleDEX(
         address[] calldata buyers,
@@ -480,7 +489,7 @@ contract OmniCore is
      * @param token Fee token
      * @param totalFee Total fee amount
      * @param validator Validator processing the transaction
-     * @deprecated Use DEXSettlement.sol for trustless fee distribution
+     * @dev DEPRECATED: Use DEXSettlement.sol for trustless fee distribution
      */
     function distributeDEXFees(
         address token,
@@ -519,7 +528,7 @@ contract OmniCore is
      * @param encryptedAmount Encrypted trade amount from COTI MPC (ctUint64 as bytes32)
      * @param cotiTxHash Transaction hash on COTI chain (proof of execution)
      * @param cotiBlockNumber Block number on COTI chain
-     * @deprecated Use DEXSettlement.sol for trustless settlement
+     * @dev DEPRECATED: Use DEXSettlement.sol for trustless settlement
      */
     function settlePrivateDEXTrade(
         address buyer,
@@ -552,7 +561,7 @@ contract OmniCore is
      * @param encryptedAmounts Array of encrypted amounts
      * @param cotiTxHashes Array of COTI transaction hashes
      * @param cotiBlockNumber COTI block number containing all trades
-     * @deprecated Use DEXSettlement.sol for trustless settlement
+     * @dev DEPRECATED: Use DEXSettlement.sol for trustless settlement
      */
     function batchSettlePrivateDEX(
         address[] calldata buyers,
