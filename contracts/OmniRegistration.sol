@@ -581,6 +581,9 @@ contract OmniRegistration is
     /// @notice Invalid verifier signature
     error InvalidVerifierSignature();
 
+    /// @notice Address is zero
+    error ZeroAddress();
+
     // ═══════════════════════════════════════════════════════════════════════
     //                           INITIALIZATION
     // ═══════════════════════════════════════════════════════════════════════
@@ -2042,6 +2045,7 @@ contract OmniRegistration is
     function setTrustedVerificationKey(
         address newKey
     ) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        if (newKey == address(0)) revert ZeroAddress();
         trustedVerificationKey = newKey;
         emit TrustedVerificationKeyUpdated(newKey);
     }

@@ -199,6 +199,18 @@ contract OmniCore is
         uint256 indexed count
     );
 
+    /// @notice Emitted when a settlement is skipped due to insufficient balance
+    /// @param seller Seller address with insufficient balance
+    /// @param token Token address
+    /// @param amount Requested amount
+    /// @param available Available balance
+    event SettlementSkipped(
+        address indexed seller,
+        address indexed token,
+        uint256 amount,
+        uint256 available
+    );
+
     /// @notice Emitted when private DEX trade is settled
     /// @param buyer Buyer address (public)
     /// @param seller Seller address (public)
@@ -470,17 +482,19 @@ contract OmniCore is
             revert InvalidAmount();
         }
 
+        uint256 settled = 0;
         for (uint256 i = 0; i < length; ++i) {
-            if (
-                dexBalances[sellers[i]][tokens[i]] > amounts[i] ||
-                dexBalances[sellers[i]][tokens[i]] == amounts[i]
-            ) {
+            uint256 available = dexBalances[sellers[i]][tokens[i]];
+            if (available >= amounts[i]) {
                 dexBalances[sellers[i]][tokens[i]] -= amounts[i];
                 dexBalances[buyers[i]][tokens[i]] += amounts[i];
+                ++settled;
+            } else {
+                emit SettlementSkipped(sellers[i], tokens[i], amounts[i], available);
             }
         }
 
-        emit BatchSettlement(batchId, length);
+        emit BatchSettlement(batchId, settled);
     }
 
     /**
@@ -840,6 +854,8 @@ contract OmniCore is
             v := byte(0, mload(add(signature, 96)))
         }
 
-        return ecrecover(messageHash, v, r, s);
+        address signer = ecrecover(messageHash, v, r, s);
+        if (signer == address(0)) revert InvalidSignature();
+        return signer;
     }
 }

@@ -57,7 +57,7 @@
     "merkletreejs": "^0.6.0",
     "prettier": "^3.0.0",
     "prettier-plugin-solidity": "^1.2.0",
-    "solhint": "^6.0.0",
+    "solhint": "^6.0.3",
     "solidity-coverage": "^0.8.5",
     "ts-jest": "^29.1.0",
     "typechain": "^8.3.2",

@@ -440,9 +440,10 @@ contract OmniBonding is ReentrancyGuard, Ownable, Pausable {
 
     /**
      * @notice Update price oracle address
-     * @param _priceOracle New oracle address (set to 0 to use fixed price)
+     * @param _priceOracle New oracle address
      */
     function setPriceOracle(address _priceOracle) external onlyOwner {
+        if (_priceOracle == address(0)) revert InvalidParameters();
         priceOracle = _priceOracle;
     }
 

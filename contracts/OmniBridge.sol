@@ -337,7 +337,7 @@ contract OmniBridge is ReentrancyGuard {
         
         // Transfer tokens to recipient
         uint256 balance = token.balanceOf(address(this));
-        if (balance > amount || balance == amount) {
+        if (balance >= amount) {
             token.safeTransfer(recipient, amount);
         } else {
             // If insufficient, would need minting capability

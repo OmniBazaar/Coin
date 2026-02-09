@@ -88,6 +88,18 @@ contract MinimalEscrow is ReentrancyGuard {
     /// @notice Random seed for arbitrator selection
     uint256 private arbitratorSeed;
 
+    /// @notice Contract admin (deployer) for arbitrator management
+    address public immutable ADMIN;
+
+    /// @notice Registered arbitrator addresses
+    address[] public arbitratorList;
+
+    /// @notice Quick lookup for arbitrator status
+    mapping(address => bool) public isRegisteredArbitrator;
+
+    /// @notice Dispute stakes held per escrow (escrowId => disputer => stake amount)
+    mapping(uint256 => mapping(address => uint256)) public disputeStakes;
+
     // Privacy-related state variables
     /// @notice Encrypted amounts for private escrows (ct = ciphertext for storage)
     mapping(uint256 => ctUint64) private encryptedEscrowAmounts;
@@ -172,6 +184,24 @@ contract MinimalEscrow is ReentrancyGuard {
         address indexed arbitrator
     );
 
+    /// @notice Emitted when arbitrator is added to registry
+    /// @param arbitrator Address of the new arbitrator
+    event ArbitratorAdded(address indexed arbitrator);
+
+    /// @notice Emitted when arbitrator is removed from registry
+    /// @param arbitrator Address of the removed arbitrator
+    event ArbitratorRemoved(address indexed arbitrator);
+
+    /// @notice Emitted when dispute stake is returned
+    /// @param escrowId Escrow identifier
+    /// @param disputer Address receiving stake back
+    /// @param amount Stake amount returned
+    event DisputeStakeReturned(
+        uint256 indexed escrowId,
+        address indexed disputer,
+        uint256 amount
+    );
+
     // Custom errors
     error InvalidAddress();
     error InvalidAmount();
@@ -189,6 +219,8 @@ contract MinimalEscrow is ReentrancyGuard {
     error PrivacyNotAvailable();
     error CannotMixPrivacyModes();
     error AmountTooLarge();
+    error NoArbitratorsAvailable();
+    error OnlyAdmin();
 
     /**
      * @notice Initialize escrow with token and registry
@@ -196,6 +228,12 @@ contract MinimalEscrow is ReentrancyGuard {
      * @param _privateOmniCoin Private OmniCoin token address (pXOM)
      * @param _registry Registry contract address
      */
+    /// @notice Restrict to admin only
+    modifier onlyAdmin() {
+        if (msg.sender != ADMIN) revert OnlyAdmin();
+        _;
+    }
+
     constructor(address _omniCoin, address _privateOmniCoin, address _registry) {
         if (_omniCoin == address(0) || _privateOmniCoin == address(0) || _registry == address(0)) {
             revert InvalidAddress();
@@ -203,6 +241,7 @@ contract MinimalEscrow is ReentrancyGuard {
         OMNI_COIN = IERC20(_omniCoin);
         PRIVATE_OMNI_COIN = IERC20(_privateOmniCoin);
         REGISTRY = _registry;
+        ADMIN = msg.sender;
 
         // solhint-disable-next-line not-rely-on-time
         arbitratorSeed = uint256(keccak256(abi.encodePacked(
@@ -329,7 +368,8 @@ contract MinimalEscrow is ReentrancyGuard {
         // Require dispute stake (paid in OmniCoin)
         uint256 requiredStake = (escrow.amount * DISPUTE_STAKE_BASIS) / BASIS_POINTS;
         OMNI_COIN.safeTransferFrom(msg.sender, address(this), requiredStake);
-        
+        disputeStakes[escrowId][msg.sender] = requiredStake;
+
         disputeCommitments[escrowId] = DisputeCommitment({
             commitment: commitment,
             revealDeadline: block.timestamp + 1 hours, // solhint-disable-line not-rely-on-time
@@ -418,8 +458,9 @@ contract MinimalEscrow is ReentrancyGuard {
     }
 
     /**
-     * @notice Select arbitrator deterministically
-     * @dev Uses escrow creation block and nonce for randomness
+     * @notice Select arbitrator deterministically from registered arbitrator list
+     * @dev Uses escrow creation block and nonce for deterministic selection.
+     *      Excludes buyer and seller from selection to prevent conflict of interest.
      * @param escrowId Escrow identifier
      * @param nonce Random nonce from reveal
      * @return arbitrator Selected arbitrator address
@@ -428,25 +469,36 @@ contract MinimalEscrow is ReentrancyGuard {
         uint256 escrowId,
         uint256 nonce
     ) internal view returns (address arbitrator) {
-        // Get validator list from registry (simplified for now)
-        // In production, this would query the actual validator registry
+        uint256 listLen = arbitratorList.length;
+        if (listLen == 0) revert NoArbitratorsAvailable();
 
-        // Use deterministic randomness based on historic data
+        Escrow storage escrow = escrows[escrowId];
+
+        // Deterministic seed from historic data (not manipulable post-commit)
         uint256 seed = uint256(keccak256(abi.encodePacked(
-            escrows[escrowId].createdAt,
+            escrow.createdAt,
             arbitratorSeed,
             nonce,
             escrowId
         )));
 
-        // For now, return a deterministic address
-        // In production, this would select from validator pool
-        arbitrator = address(uint160(seed));
+        // Try up to listLen times to find an arbitrator who is not a party
+        for (uint256 attempt = 0; attempt < listLen; ++attempt) {
+            uint256 idx = (seed + attempt) % listLen;
+            address candidate = arbitratorList[idx];
+            if (candidate != escrow.buyer && candidate != escrow.seller) {
+                return candidate;
+            }
+        }
+
+        // All arbitrators are parties (should not happen with >2 arbitrators)
+        revert NoArbitratorsAvailable();
     }
 
     /**
      * @notice Resolve escrow and transfer funds
-     * @dev Internal helper to avoid code duplication
+     * @dev Internal helper to avoid code duplication. Returns dispute stakes
+     *      to both parties when a disputed escrow is resolved.
      * @param escrow Escrow data
      * @param escrowId Escrow identifier
      * @param recipient Address to receive funds
@@ -461,7 +513,27 @@ contract MinimalEscrow is ReentrancyGuard {
         escrow.amount = 0;
 
         OMNI_COIN.safeTransfer(recipient, amount);
+
+        // Return dispute stakes to both parties (if any)
+        _returnDisputeStake(escrowId, escrow.buyer);
+        _returnDisputeStake(escrowId, escrow.seller);
+
         emit EscrowResolved(escrowId, recipient, amount);
+    }
+
+    /**
+     * @notice Return dispute stake to a party
+     * @dev Clears stake from mapping and transfers tokens
+     * @param escrowId Escrow identifier
+     * @param party Address to return stake to
+     */
+    function _returnDisputeStake(uint256 escrowId, address party) private {
+        uint256 stakeAmount = disputeStakes[escrowId][party];
+        if (stakeAmount > 0) {
+            disputeStakes[escrowId][party] = 0;
+            OMNI_COIN.safeTransfer(party, stakeAmount);
+            emit DisputeStakeReturned(escrowId, party, stakeAmount);
+        }
     }
 
     /**
@@ -479,6 +551,52 @@ contract MinimalEscrow is ReentrancyGuard {
                            msg.sender == escrow.seller ||
                            (escrow.disputed && msg.sender == escrow.arbitrator);
         if (!isParticipant) revert NotParticipant();
+    }
+
+    // ========================================================================
+    // ARBITRATOR MANAGEMENT (Admin Only)
+    // ========================================================================
+
+    /**
+     * @notice Add an arbitrator to the registry
+     * @dev Only admin can add arbitrators. These addresses can be selected to resolve disputes.
+     * @param arbitrator Address to add as arbitrator
+     */
+    function addArbitrator(address arbitrator) external onlyAdmin {
+        if (arbitrator == address(0)) revert InvalidAddress();
+        if (isRegisteredArbitrator[arbitrator]) revert AlreadyDisputed(); // already registered
+        isRegisteredArbitrator[arbitrator] = true;
+        arbitratorList.push(arbitrator);
+        emit ArbitratorAdded(arbitrator);
+    }
+
+    /**
+     * @notice Remove an arbitrator from the registry
+     * @dev Swaps with last element and pops for O(1) removal
+     * @param arbitrator Address to remove
+     */
+    function removeArbitrator(address arbitrator) external onlyAdmin {
+        if (!isRegisteredArbitrator[arbitrator]) revert InvalidAddress();
+        isRegisteredArbitrator[arbitrator] = false;
+
+        // Find and swap-remove from array
+        uint256 len = arbitratorList.length;
+        for (uint256 i = 0; i < len; ++i) {
+            if (arbitratorList[i] == arbitrator) {
+                arbitratorList[i] = arbitratorList[len - 1];
+                arbitratorList.pop();
+                break;
+            }
+        }
+        emit ArbitratorRemoved(arbitrator);
+    }
+
+    /**
+     * @notice Get the number of registered arbitrators
+     * @return count Number of arbitrators
+     */
+    function arbitratorCount() external view returns (uint256 count) {
+        return arbitratorList.length;
     }
 
     // ========================================================================
@@ -622,7 +740,8 @@ contract MinimalEscrow is ReentrancyGuard {
 
     /**
      * @notice Resolve private escrow and transfer funds
-     * @dev Internal helper for private escrow resolution
+     * @dev Internal helper for private escrow resolution. Returns dispute stakes
+     *      (paid in XOM, not pXOM) to both parties when disputed.
      * @param escrow Escrow data
      * @param escrowId Escrow identifier
      * @param recipient Address to receive funds
@@ -637,6 +756,11 @@ contract MinimalEscrow is ReentrancyGuard {
         escrow.amount = 0;
 
         PRIVATE_OMNI_COIN.safeTransfer(recipient, amount);
+
+        // Return dispute stakes (always in XOM) to both parties
+        _returnDisputeStake(escrowId, escrow.buyer);
+        _returnDisputeStake(escrowId, escrow.seller);
+
         emit PrivateEscrowResolved(escrowId, recipient);
     }
 

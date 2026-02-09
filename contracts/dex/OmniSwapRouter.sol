@@ -266,7 +266,7 @@ contract OmniSwapRouter is Ownable, Pausable, ReentrancyGuard {
         IERC20(params.tokenOut).safeTransfer(params.recipient, amountOut);
 
         // Calculate route identifier
-        bytes32 route = keccak256(abi.encodePacked(params.path, params.sources));
+        bytes32 route = keccak256(abi.encode(params.path, params.sources));
 
         // Update statistics
         totalSwapVolume += params.amountIn;

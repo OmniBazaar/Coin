@@ -271,12 +271,12 @@ contract OmniPrivacyBridge is
         // Check if we have enough locked XOM to release
         if (amount > totalLocked) revert InsufficientLockedFunds();
 
-        // Burn pXOM from user (requires bridge to have BURNER_ROLE or user approval)
-        privateOmniCoin.burnFrom(msg.sender, amount);
-
-        // Update tracking
+        // Update tracking (CEI: state changes before external calls)
         totalLocked -= amount;
         totalConvertedToPublic += amount;
+
+        // Burn pXOM from user (requires bridge to have BURNER_ROLE or user approval)
+        privateOmniCoin.burnFrom(msg.sender, amount);
 
         // Transfer XOM tokens to the user
         omniCoin.safeTransfer(msg.sender, amount);

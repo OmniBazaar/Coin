@@ -138,6 +138,18 @@ contract DEXSettlement is EIP712, Ownable, Pausable, ReentrancyGuard {
     );
 
     /**
+     * @notice Emitted when accrued fees are claimed by a recipient
+     * @param recipient Address claiming fees
+     * @param token Token claimed
+     * @param amount Amount claimed
+     */
+    event FeesClaimed(
+        address indexed recipient,
+        address indexed token,
+        uint256 amount
+    );
+
+    /**
      * @notice Emitted when emergency stop is triggered
      * @param triggeredBy Address that triggered the stop
      * @param reason Reason for emergency stop
@@ -149,6 +161,18 @@ contract DEXSettlement is EIP712, Ownable, Pausable, ReentrancyGuard {
      * @param triggeredBy Address that resumed trading
      */
     event TradingResumed(address indexed triggeredBy);
+
+    /**
+     * @notice Emitted when trading limits are updated
+     * @param maxTradeSize New maximum trade size
+     * @param dailyVolumeLimit New daily volume limit
+     * @param maxSlippageBps New maximum slippage in basis points
+     */
+    event TradingLimitsUpdated(
+        uint256 indexed maxTradeSize,
+        uint256 indexed dailyVolumeLimit,
+        uint256 maxSlippageBps
+    );
 
     // ========================================================================
     // CUSTOM ERRORS
@@ -306,6 +330,9 @@ contract DEXSettlement is EIP712, Ownable, Pausable, ReentrancyGuard {
 
     /// @notice Maximum slippage in basis points
     uint256 public maxSlippageBps;
+
+    /// @notice Accrued fees per recipient per token (recipient => token => amount)
+    mapping(address => mapping(address => uint256)) public accruedFees;
 
     // ========================================================================
     // CONSTRUCTOR
@@ -474,7 +501,11 @@ contract DEXSettlement is EIP712, Ownable, Pausable, ReentrancyGuard {
         dailyVolumeUsed += makerOrder.amountIn;
 
         // Distribute fees to matching validator (NOT msg.sender!)
-        _distributeFees(makerFee, takerFee, makerOrder.matchingValidator);
+        _distributeFees(
+            makerFee, takerFee,
+            makerOrder.tokenOut, takerOrder.tokenOut,
+            makerOrder.matchingValidator
+        );
 
         // Generate trade ID
         bytes32 tradeId = keccak256(abi.encodePacked(makerHash, takerHash));
@@ -538,6 +569,8 @@ contract DEXSettlement is EIP712, Ownable, Pausable, ReentrancyGuard {
         maxTradeSize = _maxTradeSize;
         dailyVolumeLimit = _dailyVolumeLimit;
         maxSlippageBps = _maxSlippageBps;
+
+        emit TradingLimitsUpdated(_maxTradeSize, _dailyVolumeLimit, _maxSlippageBps);
     }
 
     /**
@@ -789,15 +822,20 @@ contract DEXSettlement is EIP712, Ownable, Pausable, ReentrancyGuard {
     }
 
     /**
-     * @notice Distribute trading fees
-     * @param makerFee Fee from maker
-     * @param takerFee Fee from taker
+     * @notice Distribute trading fees per token using pull pattern
+     * @param makerFee Fee from maker (denominated in makerFeeToken)
+     * @param takerFee Fee from taker (denominated in takerFeeToken)
+     * @param makerFeeToken Token in which maker fee was collected
+     * @param takerFeeToken Token in which taker fee was collected
      * @param matchingValidator Validator who matched the orders
-     * @dev Distributes fees: 70% Liquidity Pool, 20% ODDAO, 10% Protocol
+     * @dev Distributes fees: 70% Liquidity Pool, 20% ODDAO, 10% Protocol.
+     *      Fees are accrued per-token so claimFees() transfers the correct token.
      */
     function _distributeFees(
         uint256 makerFee,
         uint256 takerFee,
+        address makerFeeToken,
+        address takerFeeToken,
         address matchingValidator
     ) internal {
         uint256 totalFees = makerFee + takerFee;
@@ -805,22 +843,54 @@ contract DEXSettlement is EIP712, Ownable, Pausable, ReentrancyGuard {
 
         totalFeesCollected += totalFees;
 
-        // Calculate distribution amounts
+        // Accrue maker fees per-token (pull pattern)
+        if (makerFee > 0) {
+            uint256 lp = (makerFee * LIQUIDITY_POOL_SHARE) / BASIS_POINTS_DIVISOR;
+            uint256 od = (makerFee * ODDAO_SHARE) / BASIS_POINTS_DIVISOR;
+            uint256 pr = (makerFee * PROTOCOL_SHARE) / BASIS_POINTS_DIVISOR;
+            accruedFees[feeRecipients.liquidityPool][makerFeeToken] += lp;
+            accruedFees[feeRecipients.oddao][makerFeeToken] += od;
+            accruedFees[feeRecipients.protocol][makerFeeToken] += pr;
+        }
+
+        // Accrue taker fees per-token (pull pattern)
+        if (takerFee > 0) {
+            uint256 lp = (takerFee * LIQUIDITY_POOL_SHARE) / BASIS_POINTS_DIVISOR;
+            uint256 od = (takerFee * ODDAO_SHARE) / BASIS_POINTS_DIVISOR;
+            uint256 pr = (takerFee * PROTOCOL_SHARE) / BASIS_POINTS_DIVISOR;
+            accruedFees[feeRecipients.liquidityPool][takerFeeToken] += lp;
+            accruedFees[feeRecipients.oddao][takerFeeToken] += od;
+            accruedFees[feeRecipients.protocol][takerFeeToken] += pr;
+        }
+
+        // Aggregate amounts for event (monitoring)
         uint256 liquidityPoolAmount = (totalFees * LIQUIDITY_POOL_SHARE) / BASIS_POINTS_DIVISOR;
         uint256 oddaoAmount = (totalFees * ODDAO_SHARE) / BASIS_POINTS_DIVISOR;
         uint256 protocolAmount = (totalFees * PROTOCOL_SHARE) / BASIS_POINTS_DIVISOR;
-
-        // NOTE: Fee distribution implementation depends on token type
-        // For now, fees remain in contract for later distribution
-        // In production, integrate with actual fee distribution mechanism
 
         emit FeesDistributed(
             matchingValidator,
             liquidityPoolAmount,
             oddaoAmount,
             protocolAmount,
-            block.timestamp
+            block.timestamp // solhint-disable-line not-rely-on-time
         );
+    }
+
+    /**
+     * @notice Claim accrued fees for a specific token
+     * @dev Pull pattern: fee recipients call this to withdraw their accrued fees.
+     *      Only the fee recipient can claim their own fees.
+     * @param token ERC20 token to withdraw fees in
+     */
+    function claimFees(address token) external nonReentrant {
+        uint256 amount = accruedFees[msg.sender][token];
+        if (amount == 0) revert ZeroAmount();
+
+        accruedFees[msg.sender][token] = 0;
+        IERC20(token).safeTransfer(msg.sender, amount);
+
+        emit FeesClaimed(msg.sender, token, amount);
     }
 
     // ========================================================================

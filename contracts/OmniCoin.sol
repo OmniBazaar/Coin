@@ -36,20 +36,26 @@ contract OmniCoin is ERC20, ERC20Burnable, ERC20Pausable, ERC20Permit, AccessCon
     error ArrayLengthMismatch();
     error TooManyRecipients();
     error InvalidRecipient();
+    error Unauthorized();
+
+    /// @notice Address that deployed the contract (only address that can call initialize)
+    address private immutable _deployer;
 
     /**
      * @notice Constructor for OmniCoin
-     * @dev Sets up ERC20 with name, symbol, and ERC20Permit
+     * @dev Sets up ERC20 with name, symbol, and ERC20Permit.
+     *      Records deployer address to prevent initialize() front-running.
      */
     constructor() ERC20("OmniCoin", "XOM") ERC20Permit("OmniCoin") {
-        // Empty constructor - initialization done in initialize()
+        _deployer = msg.sender;
     }
 
     /**
      * @notice Initialize OmniCoin token
-     * @dev Mints initial supply to deployer
+     * @dev Mints initial supply to deployer. Only the contract deployer can call this.
      */
     function initialize() external {
+        if (msg.sender != _deployer) revert Unauthorized();
         if (totalSupply() != 0) revert AlreadyInitialized();
 
         // Grant roles to deployer
