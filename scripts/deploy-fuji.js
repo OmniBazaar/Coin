@@ -56,7 +56,11 @@ async function main() {
     console.log("\n=== Deploying MinimalEscrow ===");
     const MinimalEscrow = await ethers.getContractFactory("MinimalEscrow");
     // For Fuji testing, we'll use the deployer as the registry
-    const escrow = await MinimalEscrow.deploy(omniCoinAddress, privateOmniCoinAddress, deployer.address);
+    // Args: omniCoin, privateOmniCoin, registry, feeCollector, marketplaceFeeBps (100 = 1%)
+    const escrow = await MinimalEscrow.deploy(
+      omniCoinAddress, privateOmniCoinAddress, deployer.address,
+      deployer.address, 100
+    );
     await escrow.waitForDeployment();
     const escrowAddress = await escrow.getAddress();
     console.log("MinimalEscrow deployed to:", escrowAddress);

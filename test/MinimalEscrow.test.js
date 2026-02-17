@@ -32,12 +32,14 @@ describe("MinimalEscrow", function () {
     pToken = await Token.connect(owner).deploy();
     await pToken.connect(owner).initialize();
 
-    // Deploy MinimalEscrow with 3 args: omniCoin, privateOmniCoin, registry
+    // Deploy MinimalEscrow: omniCoin, privateOmniCoin, registry, feeCollector, feeBps
     const MinimalEscrow = await ethers.getContractFactory("MinimalEscrow");
     escrow = await MinimalEscrow.connect(owner).deploy(
       token.target,
       pToken.target,
-      registry.address
+      registry.address,
+      owner.address, // feeCollector — deployer receives marketplace fees
+      100 // 1% marketplace fee (100 basis points)
     );
 
     // Register arbitrator (owner is ADMIN since owner deployed the contract)
@@ -150,19 +152,27 @@ describe("MinimalEscrow", function () {
       ).args.escrowId;
     });
 
-    it("Should allow buyer to release funds", async function () {
+    it("Should allow buyer to release funds with 1% marketplace fee", async function () {
       const sellerBalanceBefore = await token.balanceOf(seller.address);
+      const feeCollectorBefore = await token.balanceOf(owner.address);
 
       await escrow.connect(buyer).releaseFunds(escrowId);
 
+      // Seller gets 99% (100 XOM * 99% = 99 XOM)
       const sellerBalanceAfter = await token.balanceOf(seller.address);
-      expect(sellerBalanceAfter - sellerBalanceBefore).to.equal(ESCROW_AMOUNT);
+      const expectedSellerAmount = ESCROW_AMOUNT - (ESCROW_AMOUNT * 100n / 10000n);
+      expect(sellerBalanceAfter - sellerBalanceBefore).to.equal(expectedSellerAmount);
+
+      // Fee collector (owner) gets 1% (100 XOM * 1% = 1 XOM)
+      const feeCollectorAfter = await token.balanceOf(owner.address);
+      const expectedFee = ESCROW_AMOUNT * 100n / 10000n;
+      expect(feeCollectorAfter - feeCollectorBefore).to.equal(expectedFee);
 
       const escrowData = await escrow.escrows(escrowId);
       expect(escrowData.resolved).to.be.true;
     });
 
-    it("Should allow both parties to vote for release", async function () {
+    it("Should allow both parties to vote for release (with fee)", async function () {
       // First vote from seller
       await escrow.connect(seller).vote(escrowId, true);
 
@@ -177,9 +187,10 @@ describe("MinimalEscrow", function () {
       escrowData = await escrow.escrows(escrowId);
       expect(escrowData.resolved).to.be.true;
 
-      // Check seller received funds
+      // Check seller received 99% (initial 100 + 99 from escrow = 199)
       const sellerBalance = await token.balanceOf(seller.address);
-      expect(sellerBalance).to.equal(ethers.parseEther("200")); // 100 initial + 100 from escrow
+      const expectedSellerAmount = ESCROW_AMOUNT - (ESCROW_AMOUNT * 100n / 10000n);
+      expect(sellerBalance).to.equal(ethers.parseEther("100") + expectedSellerAmount);
     });
 
     it("Should allow buyer to request refund after expiry", async function () {
@@ -502,9 +513,11 @@ describe("MinimalEscrow", function () {
         log => log.fragment && log.fragment.name === "EscrowCreated"
       ).args.escrowId;
 
+      const expectedSellerAmount = ESCROW_AMOUNT - (ESCROW_AMOUNT * 100n / 10000n);
       await expect(escrow.connect(buyer).releaseFunds(escrowId))
-        .to.emit(escrow, "EscrowResolved")
-        .withArgs(escrowId, seller.address, ESCROW_AMOUNT);
+        .to.emit(escrow, "MarketplaceFeeCollected")
+        .and.to.emit(escrow, "EscrowResolved")
+        .withArgs(escrowId, seller.address, expectedSellerAmount);
     });
 
     it("Should emit VoteCast event", async function () {

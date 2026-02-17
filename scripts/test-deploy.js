@@ -61,7 +61,10 @@ async function main() {
   const MinimalEscrow = await hre.ethers.getContractFactory("MinimalEscrow");
   const minimalEscrow = await MinimalEscrow.deploy(
     await omniCoin.getAddress(),
-    deployer.address // registry (using deployer for testing)
+    await omniCoin.getAddress(), // pXOM (reuse for testing)
+    deployer.address, // registry
+    deployer.address, // feeCollector
+    100 // 1% marketplace fee
   );
   await minimalEscrow.waitForDeployment();
   console.log("MinimalEscrow deployed to:", await minimalEscrow.getAddress());

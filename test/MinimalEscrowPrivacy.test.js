@@ -19,12 +19,14 @@ describe("MinimalEscrow - Privacy Features", function () {
     // Create mock registry
     const mockRegistry = owner.address;
 
-    // Deploy MinimalEscrow
+    // Deploy MinimalEscrow with fee collection: feeCollector=owner, feeBps=100 (1%)
     const MinimalEscrow = await ethers.getContractFactory("MinimalEscrow");
     const escrow = await MinimalEscrow.deploy(
       await xom.getAddress(),
       await pxom.getAddress(),
-      mockRegistry
+      mockRegistry,
+      owner.address, // feeCollector
+      100 // 1% marketplace fee
     );
 
     // Grant bridge role to escrow on pXOM

@@ -63,6 +63,12 @@ contract MinimalEscrow is ReentrancyGuard {
     /// @notice Basis points denominator
     uint256 public constant BASIS_POINTS = 10000;
 
+    /// @notice Default marketplace fee (1% = 100 bps)
+    uint256 public constant DEFAULT_MARKETPLACE_FEE_BPS = 100;
+
+    /// @notice Maximum marketplace fee cap (5% = 500 bps)
+    uint256 public constant MAX_MARKETPLACE_FEE_BPS = 500;
+
     // State variables (immutables first)
     /// @notice OmniCoin token (XOM)
     IERC20 public immutable OMNI_COIN;
@@ -72,24 +78,34 @@ contract MinimalEscrow is ReentrancyGuard {
 
     /// @notice Registry contract for service lookups
     address public immutable REGISTRY;
-    
-    /// @notice Escrow counter for unique IDs
-    uint256 public escrowCounter;
-    
-    /// @notice Mapping of escrow ID to escrow data
-    mapping(uint256 => Escrow) public escrows;
-    
-    /// @notice Mapping of escrow ID to voter addresses to votes
-    mapping(uint256 => mapping(address => bool)) public hasVoted;
-    
-    /// @notice Mapping of escrow ID to dispute commitments
-    mapping(uint256 => DisputeCommitment) public disputeCommitments;
-    
-    /// @notice Random seed for arbitrator selection
-    uint256 private arbitratorSeed;
+
+    /// @notice Address that receives marketplace fees on escrow release
+    address public immutable FEE_COLLECTOR;
+
+    /// @notice Marketplace fee in basis points (e.g., 100 = 1%)
+    uint256 public immutable MARKETPLACE_FEE_BPS;
 
     /// @notice Contract admin (deployer) for arbitrator management
     address public immutable ADMIN;
+
+    // Non-immutable state variables
+    /// @notice Total marketplace fees collected per token (for transparency)
+    mapping(address => uint256) public totalMarketplaceFees;
+
+    /// @notice Escrow counter for unique IDs
+    uint256 public escrowCounter;
+
+    /// @notice Mapping of escrow ID to escrow data
+    mapping(uint256 => Escrow) public escrows;
+
+    /// @notice Mapping of escrow ID to voter addresses to votes
+    mapping(uint256 => mapping(address => bool)) public hasVoted;
+
+    /// @notice Mapping of escrow ID to dispute commitments
+    mapping(uint256 => DisputeCommitment) public disputeCommitments;
+
+    /// @notice Random seed for arbitrator selection
+    uint256 private arbitratorSeed;
 
     /// @notice Registered arbitrator addresses
     address[] public arbitratorList;
@@ -199,11 +215,22 @@ contract MinimalEscrow is ReentrancyGuard {
     event DisputeStakeReturned(
         uint256 indexed escrowId,
         address indexed disputer,
-        uint256 amount
+        uint256 indexed amount
+    );
+
+    /// @notice Emitted when marketplace fee is collected on escrow release
+    /// @param escrowId Escrow identifier
+    /// @param feeCollector Address receiving the fee
+    /// @param feeAmount Fee amount collected
+    event MarketplaceFeeCollected(
+        uint256 indexed escrowId,
+        address indexed feeCollector,
+        uint256 indexed feeAmount
     );
 
     // Custom errors
     error InvalidAddress();
+    error InvalidFeeConfig();
     error InvalidAmount();
     error InvalidDuration();
     error EscrowNotFound();
@@ -234,13 +261,29 @@ contract MinimalEscrow is ReentrancyGuard {
         _;
     }
 
-    constructor(address _omniCoin, address _privateOmniCoin, address _registry) {
-        if (_omniCoin == address(0) || _privateOmniCoin == address(0) || _registry == address(0)) {
+    constructor(
+        address _omniCoin,
+        address _privateOmniCoin,
+        address _registry,
+        address _feeCollector,
+        uint256 _marketplaceFeeBps
+    ) {
+        if (
+            _omniCoin == address(0) ||
+            _privateOmniCoin == address(0) ||
+            _registry == address(0) ||
+            _feeCollector == address(0)
+        ) {
             revert InvalidAddress();
+        }
+        if (_marketplaceFeeBps > MAX_MARKETPLACE_FEE_BPS) {
+            revert InvalidFeeConfig();
         }
         OMNI_COIN = IERC20(_omniCoin);
         PRIVATE_OMNI_COIN = IERC20(_privateOmniCoin);
         REGISTRY = _registry;
+        FEE_COLLECTOR = _feeCollector;
+        MARKETPLACE_FEE_BPS = _marketplaceFeeBps;
         ADMIN = msg.sender;
 
         // solhint-disable-next-line not-rely-on-time
@@ -308,9 +351,18 @@ contract MinimalEscrow is ReentrancyGuard {
             escrow.resolved = true;
             uint256 amount = escrow.amount;
             escrow.amount = 0;
-            
-            OMNI_COIN.safeTransfer(escrow.seller, amount);
-            emit EscrowResolved(escrowId, escrow.seller, amount);
+
+            // Deduct marketplace fee before paying seller
+            uint256 feeAmount = (amount * MARKETPLACE_FEE_BPS) / BASIS_POINTS;
+            uint256 sellerAmount = amount - feeAmount;
+
+            if (feeAmount > 0) {
+                OMNI_COIN.safeTransfer(FEE_COLLECTOR, feeAmount);
+                totalMarketplaceFees[address(OMNI_COIN)] += feeAmount;
+                emit MarketplaceFeeCollected(escrowId, FEE_COLLECTOR, feeAmount);
+            }
+            OMNI_COIN.safeTransfer(escrow.seller, sellerAmount);
+            emit EscrowResolved(escrowId, escrow.seller, sellerAmount);
         }
     }
 
@@ -512,13 +564,22 @@ contract MinimalEscrow is ReentrancyGuard {
         uint256 amount = escrow.amount;
         escrow.amount = 0;
 
-        OMNI_COIN.safeTransfer(recipient, amount);
+        // Deduct marketplace fee on resolution (release to seller or refund to buyer)
+        uint256 feeAmount = (amount * MARKETPLACE_FEE_BPS) / BASIS_POINTS;
+        uint256 recipientAmount = amount - feeAmount;
+
+        if (feeAmount > 0) {
+            OMNI_COIN.safeTransfer(FEE_COLLECTOR, feeAmount);
+            totalMarketplaceFees[address(OMNI_COIN)] += feeAmount;
+            emit MarketplaceFeeCollected(escrowId, FEE_COLLECTOR, feeAmount);
+        }
+        OMNI_COIN.safeTransfer(recipient, recipientAmount);
 
         // Return dispute stakes to both parties (if any)
         _returnDisputeStake(escrowId, escrow.buyer);
         _returnDisputeStake(escrowId, escrow.seller);
 
-        emit EscrowResolved(escrowId, recipient, amount);
+        emit EscrowResolved(escrowId, recipient, recipientAmount);
     }
 
     /**
@@ -668,7 +729,16 @@ contract MinimalEscrow is ReentrancyGuard {
             uint256 amount = escrow.amount;
             escrow.amount = 0;
 
-            PRIVATE_OMNI_COIN.safeTransfer(escrow.seller, amount);
+            // Deduct marketplace fee before paying seller
+            uint256 feeAmount = (amount * MARKETPLACE_FEE_BPS) / BASIS_POINTS;
+            uint256 sellerAmount = amount - feeAmount;
+
+            if (feeAmount > 0) {
+                PRIVATE_OMNI_COIN.safeTransfer(FEE_COLLECTOR, feeAmount);
+                totalMarketplaceFees[address(PRIVATE_OMNI_COIN)] += feeAmount;
+                emit MarketplaceFeeCollected(escrowId, FEE_COLLECTOR, feeAmount);
+            }
+            PRIVATE_OMNI_COIN.safeTransfer(escrow.seller, sellerAmount);
             emit PrivateEscrowResolved(escrowId, escrow.seller);
         }
     }
