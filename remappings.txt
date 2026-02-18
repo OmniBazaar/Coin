@@ -1,0 +1,4 @@
+@openzeppelin/contracts/=../node_modules/@openzeppelin/contracts/
+@openzeppelin/contracts-upgradeable/=../node_modules/@openzeppelin/contracts-upgradeable/
+@coti-io/coti-contracts/=../node_modules/@coti-io/coti-contracts/
+@coti-io/coti-sdk-typescript/=../node_modules/@coti-io/coti-sdk-typescript/
