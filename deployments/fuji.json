@@ -44,12 +44,26 @@
     "LiquidityBootstrappingPoolV1": "0x600CC00CBc6749e4840A3a562C69DDDeB4da980D",
     "XomUsdcPool": "0xF9f7cBe2F8e2920148FC0eaa005d082d278E6bE9",
     "StakingRewardPool": "0x1A12040129c47B92fd10083d4969Fb392a9554Af",
-    "StakingRewardPoolImplementation": "0xdd6360901c7205661b763BEbd109F248D0954CD1"
+    "StakingRewardPoolImplementation": "0xdd6360901c7205661b763BEbd109F248D0954CD1",
+    "OmniNFTCollection": "0x9FDeB42834Cbe4C83DEe2F318AAAB3C6EDf6C8B0",
+    "OmniNFTFactory": "0x13DFA910fD8D2d061e95C875F737bE89FF073475",
+    "OmniNFTRoyalty": "0x951706B3590728F648FEC362DBEAE9b0cb60b3ed",
+    "OmniNFTLending": "0x2bc4165812b8f3028a4a2E52b2D4C67fE4DF675A",
+    "OmniFractionalNFT": "0x9A59E976c6a9dC08062268e69467E431Eef554fC",
+    "OmniNFTStaking": "0xD5AD7beD2Db6E05925b68a19CA645A3333726380",
+    "OmniEntryPoint": "0xDc3d2d1fC7d2354a56Ae9EF78bF4fB2A2c2712C4",
+    "OmniAccountFactory": "0xB4DA36E4346b702C0705b03883E8b87D3D061379",
+    "OmniPaymaster": "0x8F36f50C92b8c80835263695eda0227fb3968724",
+    "OmniFeeRouter": "0x7e0C0c59E6D87B37920098D4000c3EfE586E6DC5",
+    "OmniPredictionRouter": "0xBBD4C2dca354cfF43458b52c95173131E77443D9",
+    "OmniYieldFeeCollector": "0x1312eE58a794eb3aDa6D38cEbfcBD05f87e76511",
+    "ReputationCredential": "0x4f41a213a4eBa3e74Cc17b28695BCC3e8692be63",
+    "RWAPool": "0x853CB0499b8fb159f48dE7696194Db852b305355"
   },
   "validatorManager": {
     "type": "AvalanchePoSValidatorManager",
     "precompileAddress": "0x0FEEDC0DE0000000000000000000000000000000",
     "note": "Using standard Avalanche PoS Validator Manager precompile instead of deprecated OmniValidatorManager"
   },
-  "upgradedAt": "2026-02-07T00:13:15.501Z"
+  "upgradedAt": "2026-02-20T18:18:27.758Z"
 }
