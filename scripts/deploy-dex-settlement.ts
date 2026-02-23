@@ -15,7 +15,7 @@ import * as path from "path";
  * - Contract verifies order matching logic
  * - ANYONE can submit settlement (no VALIDATOR_ROLE required)
  * - Commit-reveal for MEV protection
- * - Fee split: 70% Liquidity/Staking, 20% ODDAO, 10% Protocol
+ * - Fee split: 70% ODDAO, 20% Staking Pool, 10% Matching Validator
  *
  * Usage:
  * npx hardhat run scripts/deploy-dex-settlement.ts --network omnicoinFuji
@@ -24,9 +24,8 @@ import * as path from "path";
 interface DeploymentResult {
   DEXSettlement: string;
   deployer: string;
-  liquidityPool: string;
   oddao: string;
-  protocol: string;
+  stakingPool: string;
   network: string;
   chainId: string;
   timestamp: string;
@@ -64,16 +63,16 @@ async function main(): Promise<void> {
   }
 
   // Fee recipient addresses
-  // TODO: In production, these should be proper contract addresses or multisigs
-  // For testnet, we'll use deployer as placeholder
-  const liquidityPoolAddress = deployer.address; // TODO: Deploy LiquidityPool contract
-  const oddaoAddress = deployer.address; // TODO: Use ODDAO multisig
-  const protocolAddress = deployer.address; // TODO: Use protocol treasury multisig
+  // In production, these should be proper contract addresses or multisigs.
+  // The 10% validator share is routed dynamically per-trade to the
+  // matchingValidator address in each order -- no static address needed.
+  const oddaoAddress = deployer.address; // Replace with ODDAO multisig
+  const stakingPoolAddress = deployer.address; // Replace with staking pool contract
 
   console.log("Fee Recipients:");
-  console.log("  Liquidity/Staking Pool (70%):", liquidityPoolAddress);
-  console.log("  ODDAO (20%):", oddaoAddress);
-  console.log("  Protocol (10%):", protocolAddress, "\n");
+  console.log("  ODDAO (70%):", oddaoAddress);
+  console.log("  Staking Pool (20%):", stakingPoolAddress);
+  console.log("  Matching Validator (10%): dynamic per-trade\n");
 
   // ================================================================
   // Deploy DEXSettlement
@@ -82,9 +81,8 @@ async function main(): Promise<void> {
 
   const DEXSettlement = await ethers.getContractFactory("DEXSettlement");
   const dexSettlement = await DEXSettlement.deploy(
-    liquidityPoolAddress,  // Liquidity/Staking pool (70% of fees)
-    oddaoAddress,          // ODDAO (20% of fees)
-    protocolAddress        // Protocol (10% of fees)
+    oddaoAddress,          // ODDAO (70% of fees)
+    stakingPoolAddress     // Staking Pool (20% of fees)
   );
   await dexSettlement.waitForDeployment();
 
@@ -94,9 +92,9 @@ async function main(): Promise<void> {
   // Verify deployment
   const feeRecipients = await dexSettlement.getFeeRecipients();
   console.log("\n✓ Fee Recipients Verified:");
-  console.log("  Liquidity Pool:", feeRecipients.liquidityPool);
-  console.log("  ODDAO:", feeRecipients.oddao);
-  console.log("  Protocol:", feeRecipients.protocol);
+  console.log("  ODDAO (70%):", feeRecipients.oddao);
+  console.log("  Staking Pool (20%):", feeRecipients.stakingPool);
+  console.log("  Validator (10%): dynamic per-trade (matchingValidator)");
 
   const stats = await dexSettlement.getTradingStats();
   console.log("\n✓ Initial Trading Limits:");
@@ -109,9 +107,8 @@ async function main(): Promise<void> {
   const deploymentResult: DeploymentResult = {
     DEXSettlement: dexSettlementAddress,
     deployer: deployer.address,
-    liquidityPool: liquidityPoolAddress,
     oddao: oddaoAddress,
-    protocol: protocolAddress,
+    stakingPool: stakingPoolAddress,
     network: network.name,
     chainId: network.chainId.toString(),
     timestamp: new Date().toISOString(),
@@ -140,9 +137,9 @@ async function main(): Promise<void> {
   console.log("\n=== Deployment Summary ===");
   console.log("DEXSettlement:", dexSettlementAddress);
   console.log("\nFee Distribution:");
-  console.log("  70% → Liquidity/Staking Pool:", liquidityPoolAddress);
-  console.log("  20% → ODDAO:", oddaoAddress);
-  console.log("  10% → Protocol:", protocolAddress);
+  console.log("  70% → ODDAO:", oddaoAddress);
+  console.log("  20% → Staking Pool:", stakingPoolAddress);
+  console.log("  10% → Matching Validator: dynamic per-trade");
   console.log("\nDeployer:", deployer.address);
   console.log("Network:", network.name, `(Chain ID: ${network.chainId.toString()})`);
 

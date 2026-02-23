@@ -201,8 +201,26 @@ contract OmniRewardManager is
     ///      This prevents validators from controlling bonus distribution.
     mapping(address => uint256) public pendingReferralBonuses;
 
-    /// @dev Reserved storage gap for future upgrades (reduced due to new variables)
-    uint256[35] private __gap;
+    /// @notice Pending registration contract address (M-03 timelock)
+    address public pendingRegistrationContract;
+
+    /// @notice Timestamp when pending registration contract can be applied (M-03)
+    uint256 public registrationContractTimelockEnd;
+
+    /// @notice Maximum legacy bonus claims count (M-06: prevents overflow/manipulation)
+    uint256 public constant MAX_LEGACY_CLAIMS_COUNT = 10_000_000;
+
+    /// @notice Registration contract change timelock delay (M-03: 48 hours)
+    uint256 public constant REGISTRATION_TIMELOCK_DELAY = 48 hours;
+
+    /// @notice Daily auto-referral count, separate from manual claims (M-05)
+    mapping(uint256 => uint256) public dailyAutoReferralCount;
+
+    /// @notice Whether contract is ossified (permanently non-upgradeable)
+    bool private _ossified;
+
+    /// @dev Reserved storage gap for future upgrades (reduced by 1 for _ossified)
+    uint256[30] private __gap;
 
     // ============ Events ============
 
@@ -279,6 +297,14 @@ contract OmniRewardManager is
     /// @notice Emitted when registration contract is set
     /// @param registrationContract Address of the registration contract
     event RegistrationContractSet(address indexed registrationContract);
+
+    /// @notice Emitted when registration contract change is queued (M-03)
+    /// @param newContract Address of the proposed new registration contract
+    /// @param effectiveTime Timestamp when the change can be applied
+    event RegistrationContractChangeQueued(
+        address indexed newContract,
+        uint256 indexed effectiveTime
+    );
 
     /// @notice Emitted when ODDAO address is set
     /// @param oddaoAddress Address of the ODDAO
@@ -390,6 +416,10 @@ contract OmniRewardManager is
         address relayer
     );
 
+    /// @notice Emitted when the contract is permanently ossified
+    /// @param contractAddress Address of this contract
+    event ContractOssified(address indexed contractAddress);
+
     // ============ Custom Errors ============
 
     /// @notice Thrown when pool has insufficient funds for distribution
@@ -419,6 +449,10 @@ contract OmniRewardManager is
     /// @notice Thrown when user is not registered
     error UserNotRegistered(address user);
 
+    /// @notice Thrown when user tries to claim first sale bonus without completing a sale
+    /// @param user The user who has not completed a sale
+    error FirstSaleNotCompleted(address user);
+
     /// @notice Thrown when ODDAO address is not set
     error OddaoAddressNotSet();
 
@@ -442,6 +476,25 @@ contract OmniRewardManager is
     /// @notice Thrown when user tries to claim but has no pending referral bonus
     /// @param user User address
     error NoPendingReferralBonus(address user);
+
+    /// @notice Thrown when contract token balance is insufficient for declared pools (M-02)
+    /// @param required Total pool allocation declared
+    /// @param actual Actual token balance held by contract
+    error InsufficientInitialBalance(uint256 required, uint256 actual);
+
+    /// @notice Thrown when legacy bonus claims count exceeds maximum (M-06)
+    /// @param provided The count that was provided
+    /// @param maximum The maximum allowed count
+    error LegacyClaimsCountTooHigh(uint256 provided, uint256 maximum);
+
+    /// @notice Thrown when registration contract timelock has not elapsed (M-03)
+    error RegistrationTimelockActive();
+
+    /// @notice Thrown when no pending registration contract change exists (M-03)
+    error NoPendingRegistrationChange();
+
+    /// @notice Thrown when contract is ossified and upgrade attempted
+    error ContractIsOssified();
 
     // ============ Constructor ============
 
@@ -485,6 +538,14 @@ contract OmniRewardManager is
 
         omniCoin = IERC20(_omniCoin);
 
+        // M-02: Verify contract holds enough tokens for all declared pools
+        uint256 totalPool = _welcomeBonusPool + _referralBonusPool +
+            _firstSaleBonusPool + _validatorRewardsPool;
+        uint256 actualBalance = IERC20(_omniCoin).balanceOf(address(this));
+        if (actualBalance < totalPool) {
+            revert InsufficientInitialBalance(totalPool, actualBalance);
+        }
+
         _initializePool(welcomeBonusPool, _welcomeBonusPool);
         _initializePool(referralBonusPool, _referralBonusPool);
         _initializePool(firstSaleBonusPool, _firstSaleBonusPool);
@@ -492,8 +553,6 @@ contract OmniRewardManager is
 
         _setupRoles(_admin);
 
-        uint256 totalPool = _welcomeBonusPool + _referralBonusPool +
-            _firstSaleBonusPool + _validatorRewardsPool;
         emit ContractInitialized(_omniCoin, totalPool, _admin);
     }
 
@@ -501,8 +560,11 @@ contract OmniRewardManager is
      * @notice Reinitialize the contract for V2 (adds EIP-712 support)
      * @dev Call this after upgrading from V1 to enable trustless relay claims.
      *      This function can only be called once (reinitializer(2)).
+     *      Restricted to DEFAULT_ADMIN_ROLE to prevent unauthorized reinitialization.
+     *      While reinitializer(2) already prevents repeated calls, the access control
+     *      ensures only the admin multisig can trigger the upgrade initialization.
      */
-    function reinitializeV2() external reinitializer(2) {
+    function reinitializeV2() external onlyRole(DEFAULT_ADMIN_ROLE) reinitializer(2) {
         __EIP712_init("OmniRewardManager", "1");
     }
 
@@ -546,15 +608,25 @@ contract OmniRewardManager is
         ReferralParams calldata params,
         bytes32[] calldata merkleProof
     ) external onlyRole(BONUS_DISTRIBUTOR_ROLE) nonReentrant whenNotPaused {
-        uint256 totalAmount = params.primaryAmount + params.secondaryAmount;
-        _validateReferralParams(params.referrer, totalAmount);
-        _validatePoolBalance(referralBonusPool, PoolType.ReferralBonus, totalAmount);
+        uint256 referrerTotal = params.primaryAmount + params.secondaryAmount;
+        _validateReferralParams(params.referrer, referrerTotal);
+
+        // Calculate ODDAO share for full pool accounting
+        uint256 oddaoShare;
+        if (params.secondaryAmount != 0 && params.secondLevelReferrer != address(0)) {
+            oddaoShare = (referrerTotal * 10) / 90;
+        } else {
+            oddaoShare = (params.primaryAmount * 30) / 70;
+        }
+        uint256 totalWithOddao = referrerTotal + oddaoShare;
+
+        _validatePoolBalance(referralBonusPool, PoolType.ReferralBonus, totalWithOddao);
         _verifyReferralMerkleProof(params, merkleProof);
 
-        _updatePoolAfterDistribution(referralBonusPool, totalAmount);
+        _updatePoolAfterDistribution(referralBonusPool, totalWithOddao);
         _distributeReferralRewards(params);
 
-        emit ReferralBonusClaimed(params.referrer, params.secondLevelReferrer, totalAmount);
+        emit ReferralBonusClaimed(params.referrer, params.secondLevelReferrer, totalWithOddao);
         _checkPoolThreshold(PoolType.ReferralBonus, referralBonusPool);
     }
 
@@ -643,16 +715,47 @@ contract OmniRewardManager is
     }
 
     /**
-     * @notice Set the OmniRegistration contract address
-     * @dev Only callable by DEFAULT_ADMIN_ROLE. Required for permissionless claiming.
-     * @param _registrationContract Address of the OmniRegistration contract
+     * @notice Queue a registration contract change (M-03: 48-hour timelock)
+     * @dev Only callable by DEFAULT_ADMIN_ROLE. Change takes effect after delay.
+     *      If no registration contract is set yet (initial setup), applies immediately.
+     * @param _registrationContract Address of the new OmniRegistration contract
      */
     function setRegistrationContract(
         address _registrationContract
     ) external onlyRole(DEFAULT_ADMIN_ROLE) {
         if (_registrationContract == address(0)) revert ZeroAddressNotAllowed();
-        registrationContract = IOmniRegistration(_registrationContract);
-        emit RegistrationContractSet(_registrationContract);
+
+        // First-time setup: apply immediately (no timelock needed)
+        if (address(registrationContract) == address(0)) {
+            registrationContract = IOmniRegistration(_registrationContract);
+            emit RegistrationContractSet(_registrationContract);
+            return;
+        }
+
+        // M-03: Subsequent changes require 48-hour timelock
+        pendingRegistrationContract = _registrationContract;
+        // solhint-disable-next-line not-rely-on-time
+        registrationContractTimelockEnd = block.timestamp + REGISTRATION_TIMELOCK_DELAY;
+
+        // solhint-disable-next-line not-rely-on-time
+        emit RegistrationContractChangeQueued(_registrationContract, registrationContractTimelockEnd);
+    }
+
+    /**
+     * @notice Apply a queued registration contract change after timelock expires
+     * @dev Only callable by DEFAULT_ADMIN_ROLE after the timelock period.
+     */
+    function applyRegistrationContract() external onlyRole(DEFAULT_ADMIN_ROLE) {
+        if (pendingRegistrationContract == address(0)) revert NoPendingRegistrationChange();
+        // solhint-disable-next-line not-rely-on-time
+        if (block.timestamp < registrationContractTimelockEnd) revert RegistrationTimelockActive();
+
+        registrationContract = IOmniRegistration(pendingRegistrationContract);
+        emit RegistrationContractSet(pendingRegistrationContract);
+
+        // Clear pending state
+        pendingRegistrationContract = address(0);
+        registrationContractTimelockEnd = 0;
     }
 
     /**
@@ -685,6 +788,11 @@ contract OmniRewardManager is
     function setLegacyBonusClaimsCount(
         uint256 _count
     ) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        // M-06: Prevent manipulation by enforcing upper bound
+        if (_count > MAX_LEGACY_CLAIMS_COUNT) {
+            revert LegacyClaimsCountTooHigh(_count, MAX_LEGACY_CLAIMS_COUNT);
+        }
+
         uint256 oldCount = legacyBonusClaimsCount;
         legacyBonusClaimsCount = _count;
 
@@ -704,11 +812,18 @@ contract OmniRewardManager is
      *      Sets pendingReferralBonuses for users who have accumulated bonuses off-chain.
      *      These users can then claim via claimReferralBonusPermissionless().
      *
-     * SECURITY: This is an ADMIN-ONLY function for migration purposes. Once all legacy
-     *           bonuses are migrated, this function should not be needed.
+     *      SECURITY: This function now properly accounts for pool balance changes.
+     *      Increasing a pending bonus deducts from referralBonusPool.remaining.
+     *      Decreasing a pending bonus credits back to referralBonusPool.remaining.
+     *      This prevents the pool accounting bypass where arbitrary pending amounts
+     *      could be set without deducting from the pool, then claimed from the
+     *      contract's total XOM balance.
+     *
+     *      ADMIN-ONLY function for migration purposes. Once all legacy bonuses
+     *      are migrated, this function should not be needed.
      *
      * @param referrer Address of the referrer
-     * @param amount Amount to add to their pending bonus (in wei)
+     * @param amount New pending bonus amount (in wei). Must be > 0.
      */
     function setPendingReferralBonus(
         address referrer,
@@ -718,6 +833,20 @@ contract OmniRewardManager is
         if (amount == 0) revert ZeroAmountNotAllowed();
 
         uint256 oldPending = pendingReferralBonuses[referrer];
+
+        if (amount > oldPending) {
+            // Increasing pending bonus: deduct the increase from pool
+            uint256 increase = amount - oldPending;
+            _validatePoolBalance(referralBonusPool, PoolType.ReferralBonus, increase);
+            _updatePoolAfterDistribution(referralBonusPool, increase);
+        } else if (amount < oldPending) {
+            // Decreasing pending bonus: credit the decrease back to pool
+            uint256 decrease = oldPending - amount;
+            referralBonusPool.remaining += decrease;
+            referralBonusPool.distributed -= decrease;
+        }
+        // If amount == oldPending, no pool changes needed
+
         pendingReferralBonuses[referrer] = amount;
 
         emit ReferralBonusMigrated(referrer, oldPending, amount);
@@ -727,15 +856,16 @@ contract OmniRewardManager is
 
     /**
      * @notice Claim welcome bonus directly (permissionless)
-     * @dev Users call this directly after registration. No role required.
+     * @dev Users call this directly after completing KYC Tier 1. No role required.
      *      Validates eligibility via OmniRegistration contract.
-     *      Automatically triggers referral bonus distribution.
+     *      Automatically triggers referral bonus accumulation for referrer.
      *
      * Security measures:
      * - Must be registered in OmniRegistration contract
-     * - KYC Tier 1+ required
-     * - Daily rate limit enforced
-     * - Bonus amount calculated based on registration number
+     * - KYC Tier 1 required (phone + social media verified on-chain)
+     * - Daily rate limit enforced (MAX_DAILY_WELCOME_BONUSES per day)
+     * - Bonus amount calculated based on effective claim count
+     * - ODDAO address must be set (required for referral distribution)
      */
     function claimWelcomeBonusPermissionless() external nonReentrant whenNotPaused {
         if (address(registrationContract) == address(0)) {
@@ -749,6 +879,13 @@ contract OmniRewardManager is
         if (reg.timestamp == 0) revert UserNotRegistered(msg.sender);
         if (reg.welcomeBonusClaimed) {
             revert BonusAlreadyClaimed(msg.sender, PoolType.WelcomeBonus);
+        }
+
+        // CRITICAL: Verify KYC Tier 1 completion (phone + social verified)
+        // This prevents Sybil attacks where bots register and immediately claim bonuses
+        // without completing any identity verification
+        if (!registrationContract.hasKycTier1(msg.sender)) {
+            revert KycTier1Required(msg.sender);
         }
 
         // Check daily rate limit
@@ -1113,7 +1250,8 @@ contract OmniRewardManager is
     /**
      * @notice Claim first sale bonus directly (permissionless)
      * @dev Sellers call this after completing their first sale.
-     *      Sale verification done off-chain, marked in OmniRegistration.
+     *      Requires that the user has actually completed a sale, as tracked
+     *      by OmniRegistration.firstSaleCompleted (set by marketplace/escrow).
      */
     function claimFirstSaleBonusPermissionless() external nonReentrant whenNotPaused {
         if (address(registrationContract) == address(0)) {
@@ -1127,6 +1265,11 @@ contract OmniRewardManager is
         if (reg.timestamp == 0) revert UserNotRegistered(msg.sender);
         if (reg.firstSaleBonusClaimed) {
             revert BonusAlreadyClaimed(msg.sender, PoolType.FirstSaleBonus);
+        }
+
+        // Verify user has actually completed a first sale
+        if (!registrationContract.hasCompletedFirstSale(msg.sender)) {
+            revert FirstSaleNotCompleted(msg.sender);
         }
 
         // Check daily rate limit
@@ -1215,6 +1358,11 @@ contract OmniRewardManager is
         if (reg.timestamp == 0) revert UserNotRegistered(user);
         if (reg.firstSaleBonusClaimed) {
             revert BonusAlreadyClaimed(user, PoolType.FirstSaleBonus);
+        }
+
+        // 6b. Verify user has actually completed a first sale
+        if (!registrationContract.hasCompletedFirstSale(user)) {
+            revert FirstSaleNotCompleted(user);
         }
 
         // 7. Check daily rate limit
@@ -1374,14 +1522,21 @@ contract OmniRewardManager is
 
     /**
      * @notice Get the expected first sale bonus amount for sellers
-     * @dev Calculates based on effective CLAIM count (on-chain claims + legacy claims).
-     *      NOTE: Tier is based on number of bonuses paid, not user registrations.
+     * @dev M-04: Uses totalRegistrations + legacyBonusClaimsCount to match actual
+     *      claimFirstSaleBonusPermissionless() logic. First sale bonus tiers are
+     *      based on total registrations, not welcome bonus claim count.
      * @return bonusAmount Expected bonus in wei (18 decimals)
      */
     function getExpectedFirstSaleBonus() external view returns (uint256 bonusAmount) {
-        uint256 effectiveClaims = welcomeBonusClaimCount + legacyBonusClaimsCount;
-        if (effectiveClaims == 0) effectiveClaims = 1;
-        return _calculateFirstSaleBonus(effectiveClaims);
+        // M-04: Match claimFirstSaleBonusPermissionless() which uses totalRegistrations
+        uint256 effectiveRegs;
+        if (address(registrationContract) != address(0)) {
+            effectiveRegs = registrationContract.totalRegistrations() + legacyBonusClaimsCount;
+        } else {
+            effectiveRegs = legacyBonusClaimsCount;
+        }
+        if (effectiveRegs == 0) effectiveRegs = 1;
+        return _calculateFirstSaleBonus(effectiveRegs);
     }
 
     /**
@@ -1473,7 +1628,13 @@ contract OmniRewardManager is
     }
 
     /**
-     * @notice Distribute referral rewards to referrers
+     * @notice Distribute referral rewards to referrers and ODDAO
+     * @dev Enforces the 70/20/10 split by calculating the ODDAO share
+     *      on-chain from the total amount. The total pool deduction
+     *      (done by the caller) includes the ODDAO share.
+     *      Split: primaryAmount (70%) to referrer, secondaryAmount (20%)
+     *      to second-level referrer, remainder (10%) to ODDAO.
+     *      If no second-level referrer, their 20% goes to ODDAO (total 30%).
      * @param params Referral distribution parameters
      */
     function _distributeReferralRewards(ReferralParams calldata params) internal {
@@ -1483,9 +1644,21 @@ contract OmniRewardManager is
             omniCoin.safeTransfer(params.referrer, params.primaryAmount);
         }
 
+        uint256 oddaoShare;
         if (params.secondaryAmount != 0 && params.secondLevelReferrer != address(0)) {
             referralBonusesEarned[params.secondLevelReferrer] += params.secondaryAmount;
             omniCoin.safeTransfer(params.secondLevelReferrer, params.secondaryAmount);
+            // ODDAO gets 10% of total (remainder after 70%+20%)
+            uint256 totalAmount = params.primaryAmount + params.secondaryAmount;
+            oddaoShare = (totalAmount * 10) / 90;
+        } else {
+            // No second-level referrer: ODDAO gets 30% of total (10% + unused 20%)
+            oddaoShare = (params.primaryAmount * 30) / 70;
+        }
+
+        // Send ODDAO share if oddaoAddress is set
+        if (oddaoShare != 0 && oddaoAddress != address(0)) {
+            omniCoin.safeTransfer(oddaoAddress, oddaoShare);
         }
     }
 
@@ -1508,15 +1681,24 @@ contract OmniRewardManager is
     }
 
     /**
-     * @notice Setup all admin roles
-     * @param admin Address to receive roles
+     * @notice Setup initial admin role only
+     * @dev Only grants DEFAULT_ADMIN_ROLE. Other roles (BONUS_DISTRIBUTOR_ROLE,
+     *      VALIDATOR_REWARD_ROLE, UPGRADER_ROLE, PAUSER_ROLE) must be granted
+     *      separately to distinct addresses via grantRole().
+     *
+     *      SECURITY: admin MUST be a multi-sig wallet (Gnosis Safe 3-of-5 minimum)
+     *      with TimelockController for all sensitive operations. Granting all five
+     *      roles to a single EOA creates a single point of compromise. The admin
+     *      should grant operational roles to separate, purpose-specific addresses:
+     *      - BONUS_DISTRIBUTOR_ROLE -> validator service account
+     *      - VALIDATOR_REWARD_ROLE  -> OmniCore scheduler contract
+     *      - UPGRADER_ROLE          -> timelock-controlled upgrade multisig
+     *      - PAUSER_ROLE            -> emergency response multisig
+     *
+     * @param admin Address to receive admin role (must be a multi-sig wallet)
      */
     function _setupRoles(address admin) internal {
         _grantRole(DEFAULT_ADMIN_ROLE, admin);
-        _grantRole(BONUS_DISTRIBUTOR_ROLE, admin);
-        _grantRole(VALIDATOR_REWARD_ROLE, admin);
-        _grantRole(UPGRADER_ROLE, admin);
-        _grantRole(PAUSER_ROLE, admin);
     }
 
     /**
@@ -1615,13 +1797,20 @@ contract OmniRewardManager is
         address referee,
         uint256 registrationNumber
     ) internal {
-        // Check daily rate limit
+        // SECURITY: Revert if ODDAO address not set to prevent stranded funds.
+        // The ODDAO share (10%) would be silently skipped if oddaoAddress == address(0),
+        // causing those tokens to remain locked in the contract permanently.
+        if (oddaoAddress == address(0)) revert OddaoAddressNotSet();
+
+        // M-05: Use SEPARATE daily counter for auto-distribution
+        // This prevents auto-distributions from blocking manual referral claims
+        // solhint-disable-next-line not-rely-on-time
         uint256 today = block.timestamp / 1 days;
-        if (dailyReferralBonusCount[today] >= MAX_DAILY_REFERRAL_BONUSES) {
+        if (dailyAutoReferralCount[today] >= MAX_DAILY_REFERRAL_BONUSES) {
             // Skip referral bonus if daily limit exceeded (don't revert - welcome bonus already claimed)
             return;
         }
-        ++dailyReferralBonusCount[today];
+        ++dailyAutoReferralCount[today];
 
         // Calculate total referral bonus
         uint256 referralAmount = _calculateReferralBonus(registrationNumber);
@@ -1667,14 +1856,33 @@ contract OmniRewardManager is
     }
 
     /**
+     * @notice Permanently remove upgrade capability (one-way, irreversible)
+     * @dev Can only be called by UPGRADER_ROLE (through timelock). Once ossified,
+     *      the contract can never be upgraded again.
+     */
+    function ossify() external onlyRole(UPGRADER_ROLE) {
+        _ossified = true;
+        emit ContractOssified(address(this));
+    }
+
+    /**
+     * @notice Check if the contract has been permanently ossified
+     * @return True if ossified (no further upgrades possible)
+     */
+    function isOssified() external view returns (bool) {
+        return _ossified;
+    }
+
+    /**
      * @notice Authorize upgrade to new implementation
      * @dev Required by UUPS pattern. Only UPGRADER_ROLE can upgrade.
+     *      Reverts if contract is ossified.
      * @param newImplementation Address of new implementation contract
      */
     function _authorizeUpgrade(
         address newImplementation
     ) internal override onlyRole(UPGRADER_ROLE) {
-        // Additional upgrade validation can be added here
+        if (_ossified) revert ContractIsOssified();
     }
 
     // ============ Internal View Functions ============
@@ -1700,20 +1908,31 @@ contract OmniRewardManager is
      * @param params Referral parameters
      * @param proof Merkle proof
      */
+    /**
+     * @notice Verify merkle proof for referral claims
+     * @dev M-01: When merkleRoot is bytes32(0), the proof array MUST be empty.
+     * @param params Referral parameters
+     * @param proof Merkle proof
+     */
     function _verifyReferralMerkleProof(
         ReferralParams calldata params,
         bytes32[] calldata proof
     ) internal view {
-        if (referralBonusPool.merkleRoot != bytes32(0)) {
-            bytes32 leaf = keccak256(abi.encodePacked(
-                params.referrer,
-                params.secondLevelReferrer,
-                params.primaryAmount,
-                params.secondaryAmount
-            ));
-            if (!MerkleProof.verify(proof, referralBonusPool.merkleRoot, leaf)) {
+        if (referralBonusPool.merkleRoot == bytes32(0)) {
+            // M-01: No root set - require empty proof (role-gated callers only)
+            if (proof.length != 0) {
                 revert InvalidMerkleProof(params.referrer, PoolType.ReferralBonus);
             }
+            return;
+        }
+        bytes32 leaf = keccak256(abi.encodePacked(
+            params.referrer,
+            params.secondLevelReferrer,
+            params.primaryAmount,
+            params.secondaryAmount
+        ));
+        if (!MerkleProof.verify(proof, referralBonusPool.merkleRoot, leaf)) {
+            revert InvalidMerkleProof(params.referrer, PoolType.ReferralBonus);
         }
     }
 
@@ -1794,6 +2013,18 @@ contract OmniRewardManager is
      * @param proof Merkle proof
      * @param poolType Pool type for error reporting
      */
+    /**
+     * @notice Verify merkle proof for simple claims (user + amount)
+     * @dev M-01: When merkleRoot is bytes32(0), the proof array MUST be empty.
+     *      This allows initial operation before roots are set (role-gated callers only)
+     *      while preventing arbitrary amount claims with fabricated proofs.
+     *      Once a merkle root is set, proof verification is enforced.
+     * @param merkleRoot Root to verify against
+     * @param user User address
+     * @param amount Claim amount
+     * @param proof Merkle proof
+     * @param poolType Pool type for error reporting
+     */
     function _verifyMerkleProof(
         bytes32 merkleRoot,
         address user,
@@ -1801,11 +2032,14 @@ contract OmniRewardManager is
         bytes32[] calldata proof,
         PoolType poolType
     ) internal pure {
-        if (merkleRoot != bytes32(0)) {
-            bytes32 leaf = keccak256(abi.encodePacked(user, amount));
-            if (!MerkleProof.verify(proof, merkleRoot, leaf)) {
-                revert InvalidMerkleProof(user, poolType);
-            }
+        if (merkleRoot == bytes32(0)) {
+            // M-01: No root set - require empty proof (role-gated callers only)
+            if (proof.length != 0) revert InvalidMerkleProof(user, poolType);
+            return;
+        }
+        bytes32 leaf = keccak256(abi.encodePacked(user, amount));
+        if (!MerkleProof.verify(proof, merkleRoot, leaf)) {
+            revert InvalidMerkleProof(user, poolType);
         }
     }
 }

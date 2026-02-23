@@ -1,6 +1,6 @@
 const { expect } = require("chai");
 const { ethers } = require("hardhat");
-const { loadFixture } = require("@nomicfoundation/hardhat-toolbox/network-helpers");
+const { loadFixture, time } = require("@nomicfoundation/hardhat-network-helpers");
 
 describe("MintController", function () {
   async function deployFixture() {
@@ -17,9 +17,10 @@ describe("MintController", function () {
     const controller = await MintController.deploy(await token.getAddress());
     await controller.waitForDeployment();
 
-    // Grant MINTER_ROLE on OmniCoin to the MintController
+    // Grant MINTER_ROLE on OmniCoin to the MintController and deployer
     const MINTER_ROLE = await token.MINTER_ROLE();
     await token.grantRole(MINTER_ROLE, await controller.getAddress());
+    await token.grantRole(MINTER_ROLE, deployer.address);
 
     // Grant MINTER_ROLE on MintController to the minter
     const CONTROLLER_MINTER_ROLE = await controller.MINTER_ROLE();
@@ -99,7 +100,17 @@ describe("MintController", function () {
     });
 
     it("should revert when minting exceeds MAX_SUPPLY", async function () {
-      const { controller, minter, recipient } = await loadFixture(deployFixture);
+      const { controller, token, deployer, minter, recipient } = await loadFixture(deployFixture);
+
+      // Mint directly on OmniCoin to bring supply close to cap
+      // This bypasses the MintController's epoch limit
+      const maxSupply = await controller.maxSupplyCap();
+      const currentSupply = await token.totalSupply();
+      // Leave only 50M remaining (within one epoch limit of 100M)
+      const directMintAmount = maxSupply - currentSupply - ethers.parseEther("50000000");
+      await token.connect(deployer).mint(recipient.address, directMintAmount);
+
+      // Now remaining via controller is 50M, within epoch limit
       const remaining = await controller.remainingMintable();
 
       // Try to mint 1 more than remaining
@@ -110,22 +121,41 @@ describe("MintController", function () {
     });
 
     it("should allow minting exactly to the cap", async function () {
-      const { controller, minter, recipient } = await loadFixture(deployFixture);
+      const { controller, token, deployer, minter, recipient } = await loadFixture(deployFixture);
+
+      // Mint directly on OmniCoin to bring supply close to cap
+      const maxSupply = await controller.maxSupplyCap();
+      const currentSupply = await token.totalSupply();
+      // Leave only 50M remaining (within one epoch limit of 100M)
+      const directMintAmount = maxSupply - currentSupply - ethers.parseEther("50000000");
+      await token.connect(deployer).mint(recipient.address, directMintAmount);
+
       const remaining = await controller.remainingMintable();
 
       // This should succeed — minting exactly up to the cap
       await controller.connect(minter).mint(recipient.address, remaining);
 
       expect(await controller.remainingMintable()).to.equal(0n);
-      expect(await controller.currentSupply()).to.equal(await controller.maxSupplyCap());
+      expect(await controller.currentSupply()).to.equal(maxSupply);
     });
 
     it("should revert any mint after cap is reached", async function () {
-      const { controller, minter, recipient } = await loadFixture(deployFixture);
+      const { controller, token, deployer, minter, recipient } = await loadFixture(deployFixture);
+
+      // Mint directly on OmniCoin to bring supply close to cap
+      const maxSupply = await controller.maxSupplyCap();
+      const currentSupply = await token.totalSupply();
+      // Leave only 50M remaining (within one epoch limit of 100M)
+      const directMintAmount = maxSupply - currentSupply - ethers.parseEther("50000000");
+      await token.connect(deployer).mint(recipient.address, directMintAmount);
+
       const remaining = await controller.remainingMintable();
 
-      // Mint to cap
+      // Mint to cap via controller
       await controller.connect(minter).mint(recipient.address, remaining);
+
+      // Advance to new epoch to reset epoch counter
+      await time.increase(3601);
 
       // Try to mint 1 more
       await expect(

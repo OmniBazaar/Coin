@@ -83,15 +83,15 @@ interface IOmniCore {
  * @notice Trustless participation scoring for OmniBazaar platform
  * @dev Reputation accumulated on-chain through user actions
  *
- * Score Components (0-100 max):
+ * Score Components (0-88 theoretical max, clamped to 0-100):
  * - KYC Trust (0-20): Queried from OmniRegistration
  * - Marketplace Reputation (-10 to +10): From verified reviews
- * - Staking Score (2-36): Queried from OmniCore
+ * - Staking Score (0-24): (tier*3)+(durationTier*3), OmniCore
  * - Referral Activity (0-10): Queried from OmniRegistration
- * - Publisher Activity (0-4): Service node heartbeat
+ * - Publisher Activity (0-4): Listing count thresholds
  * - Marketplace Activity (0-5): Verified transaction claims
- * - Community Policing (0-5): Validated reports
- * - Forum Activity (0-5): Verified contributions
+ * - Community Policing (0-5): Validated reports (with decay)
+ * - Forum Activity (0-5): Verified contributions (with decay)
  * - Reliability (-5 to +5): Validator heartbeat tracking
  */
 contract OmniParticipation is
@@ -99,6 +99,60 @@ contract OmniParticipation is
     UUPSUpgradeable,
     ReentrancyGuardUpgradeable
 {
+    // ═══════════════════════════════════════════════════════════════════════
+    //                          TYPE DECLARATIONS
+    // ═══════════════════════════════════════════════════════════════════════
+
+    /// @notice Individual participation score components
+    /// @dev Packed into a single storage slot where possible.
+    ///      Fields are ordered by descending size for optimal slot packing.
+    struct ParticipationComponents {
+        uint256 lastUpdate;              // Timestamp of last update
+        int8 marketplaceReputation;      // -10 to +10 (from reviews)
+        uint8 publisherActivity;         // 0-4 (operational status)
+        uint8 marketplaceActivity;       // 0-5 (transaction claims)
+        uint8 communityPolicing;         // 0-5 (validated reports)
+        uint8 forumActivity;             // 0-5 (forum/docs claims)
+        int8 reliability;                // -5 to +5 (heartbeat-based)
+    }
+
+    /// @notice Review data structure for marketplace reputation tracking
+    /// @dev Fields ordered for optimal struct packing.
+    struct Review {
+        address reviewer;
+        uint8 stars;                     // 1-5
+        bool verified;                   // Admin verified transaction occurred
+        address reviewed;
+        uint256 timestamp;
+        bytes32 transactionHash;         // Proof of transaction
+    }
+
+    /// @notice Transaction claim tracking structure
+    struct TransactionClaim {
+        bytes32 transactionHash;
+        uint256 timestamp;
+        bool verified;
+    }
+
+    /// @notice Report data structure for community policing
+    /// @dev Fields ordered for optimal struct packing.
+    struct Report {
+        address reporter;
+        bool validated;
+        bool isValid;                    // True if report was accurate
+        bytes32 listingHash;             // IPFS or database hash
+        uint256 timestamp;
+        string reason;
+    }
+
+    /// @notice Forum contribution tracking structure
+    struct ForumContribution {
+        bytes32 contentHash;             // Hash of contribution content
+        uint256 timestamp;
+        bool verified;
+        string contributionType;         // "thread", "reply", "documentation", "support"
+    }
+
     // ═══════════════════════════════════════════════════════════════════════
     //                              CONSTANTS
     // ═══════════════════════════════════════════════════════════════════════
@@ -118,20 +172,12 @@ contract OmniParticipation is
     /// @notice Validator heartbeat timeout (30 seconds)
     uint256 public constant VALIDATOR_TIMEOUT = 30;
 
+    /// @notice Maximum number of items in a batch operation.
+    uint256 public constant MAX_BATCH_SIZE = 100;
+
     // ═══════════════════════════════════════════════════════════════════════
     //                              STORAGE
     // ═══════════════════════════════════════════════════════════════════════
-
-    /// @notice Individual participation score components
-    struct ParticipationComponents {
-        int8 marketplaceReputation;      // -10 to +10 (from reviews)
-        uint8 publisherActivity;         // 0-4 (operational status)
-        uint8 marketplaceActivity;       // 0-5 (transaction claims)
-        uint8 communityPolicing;         // 0-5 (validated reports)
-        uint8 forumActivity;             // 0-5 (forum/docs claims)
-        int8 reliability;                // -5 to +5 (heartbeat-based)
-        uint256 lastUpdate;              // Timestamp of last update
-    }
 
     /// @notice Participation components by address
     mapping(address => ParticipationComponents) public components;
@@ -142,29 +188,11 @@ contract OmniParticipation is
     /// @notice Reference to OmniCore contract
     IOmniCore public omniCore;
 
-    // ═══════════════════════════════════════════════════════════════════════
-    //                    MARKETPLACE REPUTATION (Reviews)
-    // ═══════════════════════════════════════════════════════════════════════
-
-    /// @notice Review data structure
-    struct Review {
-        address reviewer;
-        address reviewed;
-        uint8 stars;                     // 1-5
-        uint256 timestamp;
-        bytes32 transactionHash;         // Proof of transaction
-        bool verified;                   // Admin verified transaction occurred
-    }
-
     /// @notice Reviews submitted by users
     mapping(address => Review[]) public reviewHistory;
 
     /// @notice Track used transactions to prevent duplicates
     mapping(bytes32 => bool) public usedTransactions;
-
-    // ═══════════════════════════════════════════════════════════════════════
-    //                    PUBLISHER ACTIVITY (Service Nodes)
-    // ═══════════════════════════════════════════════════════════════════════
 
     /// @notice Track operational service nodes
     mapping(address => bool) public operationalServiceNodes;
@@ -172,55 +200,14 @@ contract OmniParticipation is
     /// @notice Last heartbeat timestamp per service node
     mapping(address => uint256) public lastServiceNodeHeartbeat;
 
-    // ═══════════════════════════════════════════════════════════════════════
-    //                    MARKETPLACE ACTIVITY (Transactions)
-    // ═══════════════════════════════════════════════════════════════════════
-
-    /// @notice Transaction claim tracking
-    struct TransactionClaim {
-        bytes32 transactionHash;
-        uint256 timestamp;
-        bool verified;
-    }
-
     /// @notice Transaction claims by address
     mapping(address => TransactionClaim[]) public transactionClaims;
-
-    // ═══════════════════════════════════════════════════════════════════════
-    //                    COMMUNITY POLICING (Reports)
-    // ═══════════════════════════════════════════════════════════════════════
-
-    /// @notice Report data structure
-    struct Report {
-        address reporter;
-        bytes32 listingHash;             // IPFS or database hash
-        string reason;
-        uint256 timestamp;
-        bool validated;
-        bool isValid;                    // True if report was accurate
-    }
 
     /// @notice Reports by reporter address
     mapping(address => Report[]) public reportHistory;
 
-    // ═══════════════════════════════════════════════════════════════════════
-    //                    FORUM ACTIVITY (Contributions)
-    // ═══════════════════════════════════════════════════════════════════════
-
-    /// @notice Forum contribution tracking
-    struct ForumContribution {
-        string contributionType;         // "thread", "reply", "documentation", "support"
-        bytes32 contentHash;             // Hash of contribution content
-        uint256 timestamp;
-        bool verified;
-    }
-
     /// @notice Forum contributions by address
     mapping(address => ForumContribution[]) public forumContributions;
-
-    // ═══════════════════════════════════════════════════════════════════════
-    //                    VALIDATOR RELIABILITY (Heartbeats)
-    // ═══════════════════════════════════════════════════════════════════════
 
     /// @notice Last validator heartbeat timestamp
     mapping(address => uint256) public lastValidatorHeartbeat;
@@ -231,39 +218,122 @@ contract OmniParticipation is
     /// @notice Total blocks tracked
     mapping(address => uint256) public totalBlocks;
 
+    /// @notice Verified review counter per user (replaces O(n) array scan)
+    mapping(address => uint256) public verifiedReviewCount;
+
+    /// @notice Sum of stars from verified reviews (for average calculation)
+    mapping(address => uint256) public verifiedStarSum;
+
+    /// @notice Verified transaction counter per user
+    mapping(address => uint256) public verifiedTransactionCount;
+
+    /// @notice Validated report counter per user (accurate reports only)
+    mapping(address => uint256) public validatedReportCount;
+
+    /// @notice Verified forum contribution counter per user
+    mapping(address => uint256) public verifiedForumCount;
+
+    /// @notice Track used content hashes for forum contribution dedup (M-07)
+    mapping(bytes32 => bool) public usedContentHashes;
+
+    /// @notice Track used listing hashes per reporter for report dedup (M-07)
+    mapping(address => mapping(bytes32 => bool)) public usedReportHashes;
+
+    /// @notice Publisher listing count set by VERIFIER_ROLE (M-04)
+    mapping(address => uint256) public publisherListingCount;
+
+    /// @notice Score decay period (90 days of inactivity = 1 point decay)
+    uint256 public constant DECAY_PERIOD = 90 days;
+
     // ═══════════════════════════════════════════════════════════════════════
     //                              EVENTS
     // ═══════════════════════════════════════════════════════════════════════
 
+    /// @notice Emitted when a marketplace review is submitted
+    /// @param reviewer Address of the reviewer
+    /// @param reviewed Address of the user being reviewed
+    /// @param stars Star rating (1-5)
+    /// @param transactionHash Hash of the associated transaction
     event ReviewSubmitted(
         address indexed reviewer,
         address indexed reviewed,
-        uint8 stars,
+        uint8 indexed stars,
         bytes32 transactionHash
     );
-    event ReviewVerified(address indexed reviewed, uint256 reviewIndex);
-    event ReputationUpdated(address indexed user, int8 newReputation);
-    event ServiceNodeHeartbeat(address indexed serviceNode, uint256 timestamp);
-    event TransactionsClaimed(address indexed user, uint256 count);
-    event TransactionClaimVerified(address indexed user, uint256 claimIndex);
+
+    /// @notice Emitted when a review is verified by an admin
+    /// @param reviewed Address of the reviewed user
+    /// @param reviewIndex Index of the verified review
+    event ReviewVerified(address indexed reviewed, uint256 indexed reviewIndex);
+
+    /// @notice Emitted when a user's reputation score is updated
+    /// @param user Address of the user whose reputation changed
+    /// @param newReputation The new reputation value (-10 to +10)
+    event ReputationUpdated(address indexed user, int8 indexed newReputation);
+
+    /// @notice Emitted when a service node sends a heartbeat
+    /// @param serviceNode Address of the service node
+    /// @param timestamp Block timestamp of the heartbeat
+    event ServiceNodeHeartbeat(address indexed serviceNode, uint256 indexed timestamp);
+
+    /// @notice Emitted when a user claims marketplace transactions
+    /// @param user Address of the claiming user
+    /// @param count Number of transactions claimed
+    event TransactionsClaimed(address indexed user, uint256 indexed count);
+
+    /// @notice Emitted when a transaction claim is verified by an admin
+    /// @param user Address of the user whose claim was verified
+    /// @param claimIndex Index of the verified claim
+    event TransactionClaimVerified(address indexed user, uint256 indexed claimIndex);
+
+    /// @notice Emitted when a listing report is submitted
+    /// @param reporter Address of the reporter
+    /// @param listingHash Hash of the reported listing
+    /// @param reason Reason for the report
     event ReportSubmitted(
         address indexed reporter,
         bytes32 indexed listingHash,
         string reason
     );
+
+    /// @notice Emitted when a report is validated by an admin
+    /// @param reporter Address of the reporter
+    /// @param reportIndex Index of the validated report
+    /// @param isValid Whether the report was deemed valid
     event ReportValidated(
         address indexed reporter,
-        uint256 reportIndex,
-        bool isValid
+        uint256 indexed reportIndex,
+        bool indexed isValid
     );
+
+    /// @notice Emitted when a user claims a forum contribution
+    /// @param user Address of the contributing user
+    /// @param contributionType Type of forum contribution
+    /// @param contentHash Hash of the contributed content
     event ForumContributionClaimed(
         address indexed user,
         string contributionType,
         bytes32 contentHash
     );
-    event ForumContributionVerified(address indexed user, uint256 contributionIndex);
-    event ValidatorHeartbeat(address indexed validator, uint256 timestamp);
-    event ContractsUpdated(address registration, address omniCore);
+
+    /// @notice Emitted when a forum contribution is verified by an admin
+    /// @param user Address of the user whose contribution was verified
+    /// @param contributionIndex Index of the verified contribution
+    event ForumContributionVerified(address indexed user, uint256 indexed contributionIndex);
+
+    /// @notice Emitted when a validator sends a heartbeat
+    /// @param validator Address of the validator
+    /// @param timestamp Block timestamp of the heartbeat
+    event ValidatorHeartbeat(address indexed validator, uint256 indexed timestamp);
+
+    /// @notice Emitted when external contract references are updated
+    /// @param registration New registration contract address
+    /// @param omniCore New OmniCore contract address
+    event ContractsUpdated(address indexed registration, address indexed omniCore);
+
+    /// @notice Emitted when the contract is permanently ossified
+    /// @param contractAddress Address of this contract
+    event ContractOssified(address indexed contractAddress);
 
     // ═══════════════════════════════════════════════════════════════════════
     //                              ERRORS
@@ -308,6 +378,21 @@ contract OmniParticipation is
     /// @notice Contract address cannot be zero
     error ZeroAddress();
 
+    /// @dev Batch size is zero or exceeds MAX_BATCH_SIZE.
+    error InvalidBatchSize();
+
+    /// @notice Reviewer cannot review themselves
+    error CannotReviewSelf();
+
+    /// @notice Content hash already submitted (duplicate)
+    error ContentHashAlreadyUsed();
+
+    /// @notice Report listing hash already submitted by this reporter
+    error ReportAlreadySubmitted();
+
+    /// @notice Thrown when contract is ossified and upgrade attempted
+    error ContractIsOssified();
+
     // ═══════════════════════════════════════════════════════════════════════
     //                           INITIALIZATION
     // ═══════════════════════════════════════════════════════════════════════
@@ -325,7 +410,7 @@ contract OmniParticipation is
     function initialize(
         address registrationAddr,
         address omniCoreAddr
-    ) public initializer {
+    ) external initializer {
         __AccessControl_init();
         __UUPSUpgradeable_init();
         __ReentrancyGuard_init();
@@ -357,6 +442,8 @@ contract OmniParticipation is
         bytes32 transactionHash
     ) external nonReentrant {
         if (stars < 1 || stars > 5) revert InvalidStars();
+        if (msg.sender == reviewed) revert CannotReviewSelf();        // M-03
+        if (reviewed == address(0)) revert ZeroAddress();
         if (usedTransactions[transactionHash]) revert TransactionAlreadyUsed();
         if (!registration.isRegistered(msg.sender)) revert NotRegistered();
         if (!registration.isRegistered(reviewed)) revert NotRegistered();
@@ -389,6 +476,7 @@ contract OmniParticipation is
         address reviewed,
         uint256 reviewIndex
     ) external onlyRole(VERIFIER_ROLE) {
+        // solhint-disable-next-line gas-strict-inequalities
         if (reviewIndex >= reviewHistory[reviewed].length) revert InvalidReviewIndex();
 
         Review storage review = reviewHistory[reviewed][reviewIndex];
@@ -396,40 +484,33 @@ contract OmniParticipation is
 
         review.verified = true;
 
-        // Recalculate reputation with newly verified review
+        // Update incremental counters (O(1) instead of O(n) array scan)
+        ++verifiedReviewCount[reviewed];
+        verifiedStarSum[reviewed] += review.stars;
+
+        // Recalculate reputation using counters
         _updateMarketplaceReputation(reviewed);
 
         emit ReviewVerified(reviewed, reviewIndex);
     }
 
     /**
-     * @notice Calculate marketplace reputation from verified reviews
+     * @notice Calculate marketplace reputation from incremental counters
+     * @dev Uses O(1) counters instead of iterating the full review array.
+     *      Counters are maintained by verifyReview().
      * @param user Address to calculate for
      */
     function _updateMarketplaceReputation(address user) internal {
-        Review[] storage reviews = reviewHistory[user];
+        uint256 vCount = verifiedReviewCount[user];
 
-        // Count only verified reviews
-        uint256 totalStars = 0;
-        uint256 verifiedCount = 0;
-
-        uint256 reviewLen = reviews.length;
-        for (uint256 i = 0; i < reviewLen;) {
-            if (reviews[i].verified) {
-                totalStars += reviews[i].stars;
-                ++verifiedCount;
-            }
-            unchecked { ++i; }
-        }
-
-        if (verifiedCount == 0) {
+        if (vCount == 0) {
             components[user].marketplaceReputation = 0;
             components[user].lastUpdate = block.timestamp; // solhint-disable-line not-rely-on-time
             return;
         }
 
-        // Calculate average star rating
-        uint256 avgStars = totalStars / verifiedCount;
+        // Calculate average star rating from counters
+        uint256 avgStars = verifiedStarSum[user] / vCount;
 
         // Convert to -10 to +10 scale
         // 1 star = -10, 2 stars = -5, 3 stars = 0, 4 stars = +5, 5 stars = +10
@@ -450,9 +531,11 @@ contract OmniParticipation is
     //                    PUBLISHER ACTIVITY (Service Nodes)
     // ═══════════════════════════════════════════════════════════════════════
 
+    /* solhint-disable ordering */
     /**
      * @notice Service node submits heartbeat (proves it's operational)
-     * @dev Service nodes call this regularly to prove they're serving listings
+     * @dev Service nodes call this regularly to prove they're serving listings.
+     *      Grouped with publisher activity functions for readability.
      */
     function submitServiceNodeHeartbeat() external {
         if (!registration.isRegistered(msg.sender)) revert NotRegistered();
@@ -468,6 +551,7 @@ contract OmniParticipation is
 
         emit ServiceNodeHeartbeat(msg.sender, block.timestamp); // solhint-disable-line not-rely-on-time
     }
+    /* solhint-enable ordering */
 
     /**
      * @notice Check if service node is currently operational
@@ -475,22 +559,50 @@ contract OmniParticipation is
      * @return True if heartbeat within timeout
      */
     function isServiceNodeOperational(address serviceNode) public view returns (bool) {
-        // solhint-disable-next-line not-rely-on-time
+        // solhint-disable-next-line not-rely-on-time,gas-strict-inequalities
         return (block.timestamp - lastServiceNodeHeartbeat[serviceNode]) <= SERVICE_NODE_TIMEOUT;
     }
 
     /**
-     * @notice Update publisher activity based on operational status
+     * @notice Update publisher activity based on listing count and operational status
      * @param user Address to update
-     * @dev Called periodically or when calculating score
+     * @dev M-04: Graduated scoring per spec. M-06: Restricted to VERIFIER_ROLE.
+     *      100 listings = 1pt, 1000 = 2pt, 10000 = 3pt, 100000 = 4pt.
+     *      Service node must also be operational.
      */
-    function updatePublisherActivity(address user) public {
-        if (isServiceNodeOperational(user)) {
-            components[user].publisherActivity = 4;
-        } else {
+    function updatePublisherActivity(address user) public onlyRole(VERIFIER_ROLE) {
+        if (!isServiceNodeOperational(user)) {
             components[user].publisherActivity = 0;
+            components[user].lastUpdate = block.timestamp; // solhint-disable-line not-rely-on-time
+            return;
         }
+
+        // M-04: Graduated scoring based on listing count thresholds
+        uint256 listings = publisherListingCount[user];
+        // solhint-disable gas-strict-inequalities
+        uint8 score;
+        if (listings >= 100_000) score = 4;
+        else if (listings >= 10_000) score = 3;
+        else if (listings >= 1_000) score = 2;
+        else if (listings >= 100) score = 1;
+        else score = 0;
+        // solhint-enable gas-strict-inequalities
+
+        components[user].publisherActivity = score;
         components[user].lastUpdate = block.timestamp; // solhint-disable-line not-rely-on-time
+    }
+
+    /**
+     * @notice Set a user's publisher listing count (off-chain data)
+     * @param user Address to update
+     * @param count Number of listings served
+     * @dev Only callable by VERIFIER_ROLE. Used for M-04 graduated scoring.
+     */
+    function setPublisherListingCount(
+        address user,
+        uint256 count
+    ) external onlyRole(VERIFIER_ROLE) {
+        publisherListingCount[user] = count;
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -508,6 +620,7 @@ contract OmniParticipation is
         if (!registration.isRegistered(msg.sender)) revert NotRegistered();
 
         uint256 hashLen = transactionHashes.length;
+        if (hashLen == 0 || hashLen > MAX_BATCH_SIZE) revert InvalidBatchSize();
         for (uint256 i = 0; i < hashLen;) {
             if (usedTransactions[transactionHashes[i]]) revert TransactionAlreadyUsed();
             usedTransactions[transactionHashes[i]] = true;
@@ -536,6 +649,7 @@ contract OmniParticipation is
         address user,
         uint256 claimIndex
     ) external onlyRole(VERIFIER_ROLE) {
+        // solhint-disable-next-line gas-strict-inequalities
         if (claimIndex >= transactionClaims[user].length) revert InvalidClaimIndex();
 
         TransactionClaim storage claim = transactionClaims[user][claimIndex];
@@ -543,35 +657,39 @@ contract OmniParticipation is
 
         claim.verified = true;
 
+        // Update incremental counter (O(1) instead of O(n) array scan)
+        ++verifiedTransactionCount[user];
+
         _updateMarketplaceActivity(user);
 
         emit TransactionClaimVerified(user, claimIndex);
     }
 
     /**
-     * @notice Update marketplace activity based on verified transaction claims
+     * @notice Update marketplace activity based on incremental counter
+     * @dev Uses O(1) counter instead of iterating the full claims array.
+     *      Counter is maintained by verifyTransactionClaim().
+     *      M-05: Applies time decay for inactivity.
      * @param user Address to update
      */
+    // solhint-disable-next-line code-complexity
     function _updateMarketplaceActivity(address user) internal {
-        TransactionClaim[] storage claims = transactionClaims[user];
-
-        // Count verified claims
-        uint256 verifiedCount = 0;
-        uint256 claimLen = claims.length;
-        for (uint256 i = 0; i < claimLen;) {
-            if (claims[i].verified) ++verifiedCount;
-            unchecked { ++i; }
-        }
+        uint256 vCount = verifiedTransactionCount[user];
 
         // Update activity (0-5 scale based on transaction count)
         // 5 txs = 1 point, 10 = 2, 20 = 3, 50 = 4, 100+ = 5
+        // solhint-disable gas-strict-inequalities
         uint8 newActivity;
-        if (verifiedCount >= 100) newActivity = 5;
-        else if (verifiedCount >= 50) newActivity = 4;
-        else if (verifiedCount >= 20) newActivity = 3;
-        else if (verifiedCount >= 10) newActivity = 2;
-        else if (verifiedCount >= 5) newActivity = 1;
+        if (vCount >= 100) newActivity = 5;
+        else if (vCount >= 50) newActivity = 4;
+        else if (vCount >= 20) newActivity = 3;
+        else if (vCount >= 10) newActivity = 2;
+        else if (vCount >= 5) newActivity = 1;
         else newActivity = 0;
+        // solhint-enable gas-strict-inequalities
+
+        // M-05: Apply time decay (1 point per DECAY_PERIOD of inactivity)
+        newActivity = _applyDecay(newActivity, components[user].lastUpdate);
 
         components[user].marketplaceActivity = newActivity;
         components[user].lastUpdate = block.timestamp; // solhint-disable-line not-rely-on-time
@@ -593,6 +711,10 @@ contract OmniParticipation is
     ) external {
         if (!registration.isRegistered(msg.sender)) revert NotRegistered();
         if (bytes(reason).length < 10) revert ReasonTooShort();
+
+        // M-07: Prevent duplicate report submissions per reporter
+        if (usedReportHashes[msg.sender][listingHash]) revert ReportAlreadySubmitted();
+        usedReportHashes[msg.sender][listingHash] = true;
 
         reportHistory[msg.sender].push(Report({
             reporter: msg.sender,
@@ -617,6 +739,7 @@ contract OmniParticipation is
         uint256 reportIndex,
         bool isValid
     ) external onlyRole(VERIFIER_ROLE) {
+        // solhint-disable-next-line gas-strict-inequalities
         if (reportIndex >= reportHistory[reporter].length) revert InvalidReportIndex();
 
         Report storage report = reportHistory[reporter][reportIndex];
@@ -625,37 +748,40 @@ contract OmniParticipation is
         report.validated = true;
         report.isValid = isValid;
 
+        // Update incremental counter for valid reports only
+        if (isValid) {
+            ++validatedReportCount[reporter];
+        }
+
         _updateCommunityPolicing(reporter);
 
         emit ReportValidated(reporter, reportIndex, isValid);
     }
 
     /**
-     * @notice Update community policing score based on validated reports
+     * @notice Update community policing score based on incremental counter
+     * @dev Uses O(1) counter instead of iterating the full report array.
+     *      Counter is maintained by validateReport().
+     *      M-05: Applies time decay for inactivity.
      * @param user Address to update
      */
     function _updateCommunityPolicing(address user) internal {
-        Report[] storage reports = reportHistory[user];
-
-        // Count valid reports
-        uint256 validCount = 0;
-        uint256 reportLen = reports.length;
-        for (uint256 i = 0; i < reportLen;) {
-            if (reports[i].validated && reports[i].isValid) {
-                ++validCount;
-            }
-            unchecked { ++i; }
-        }
+        uint256 vCount = validatedReportCount[user];
 
         // Update policing score (0-5 scale)
         // 1 valid = 1 point, 5 = 2, 10 = 3, 20 = 4, 50+ = 5
+        // solhint-disable gas-strict-inequalities
         uint8 newPolicing;
-        if (validCount >= 50) newPolicing = 5;
-        else if (validCount >= 20) newPolicing = 4;
-        else if (validCount >= 10) newPolicing = 3;
-        else if (validCount >= 5) newPolicing = 2;
-        else if (validCount >= 1) newPolicing = 1;
+        if (vCount >= 50) newPolicing = 5;
+        else if (vCount >= 20) newPolicing = 4;
+        else if (vCount >= 10) newPolicing = 3;
+        else if (vCount >= 5) newPolicing = 2;
+        else if (vCount >= 1) newPolicing = 1;
         else newPolicing = 0;
+        // solhint-enable gas-strict-inequalities
+
+        // M-05: Apply time decay (1 point per DECAY_PERIOD of inactivity)
+        newPolicing = _applyDecay(newPolicing, components[user].lastUpdate);
 
         components[user].communityPolicing = newPolicing;
         components[user].lastUpdate = block.timestamp; // solhint-disable-line not-rely-on-time
@@ -676,6 +802,10 @@ contract OmniParticipation is
         bytes32 contentHash
     ) external {
         if (!registration.isRegistered(msg.sender)) revert NotRegistered();
+
+        // M-07: Prevent duplicate content hash submissions
+        if (usedContentHashes[contentHash]) revert ContentHashAlreadyUsed();
+        usedContentHashes[contentHash] = true;
 
         bytes32 typeHash = keccak256(bytes(contributionType));
         if (
@@ -706,6 +836,7 @@ contract OmniParticipation is
         address user,
         uint256 contributionIndex
     ) external onlyRole(VERIFIER_ROLE) {
+        // solhint-disable-next-line gas-strict-inequalities
         if (contributionIndex >= forumContributions[user].length) {
             revert InvalidContributionIndex();
         }
@@ -715,26 +846,23 @@ contract OmniParticipation is
 
         contribution.verified = true;
 
+        // Update incremental counter (O(1) instead of O(n) array scan)
+        ++verifiedForumCount[user];
+
         _updateForumActivity(user);
 
         emit ForumContributionVerified(user, contributionIndex);
     }
 
     /**
-     * @notice Update forum activity using exponential decay formula
+     * @notice Update forum activity using incremental counter
+     * @dev Uses O(1) counter instead of iterating the full contributions array.
+     *      Counter is maintained by verifyForumContribution().
+     *      M-05: Applies time decay for inactivity.
      * @param user Address to update
-     * @dev Formula approximation: points = 5 * (1 - 1/(1 + count/20))
      */
     function _updateForumActivity(address user) internal {
-        ForumContribution[] storage contributions = forumContributions[user];
-
-        // Count verified contributions
-        uint256 verifiedCount = 0;
-        uint256 contribLen = contributions.length;
-        for (uint256 i = 0; i < contribLen;) {
-            if (contributions[i].verified) ++verifiedCount;
-            unchecked { ++i; }
-        }
+        uint256 vCount = verifiedForumCount[user];
 
         // Simplified exponential decay approximation
         // 1-5 contributions = 1 point
@@ -742,13 +870,18 @@ contract OmniParticipation is
         // 16-30 contributions = 3 points
         // 31-50 contributions = 4 points
         // 51+ contributions = 5 points
+        // solhint-disable gas-strict-inequalities
         uint8 score;
-        if (verifiedCount >= 51) score = 5;
-        else if (verifiedCount >= 31) score = 4;
-        else if (verifiedCount >= 16) score = 3;
-        else if (verifiedCount >= 6) score = 2;
-        else if (verifiedCount >= 1) score = 1;
+        if (vCount >= 51) score = 5;
+        else if (vCount >= 31) score = 4;
+        else if (vCount >= 16) score = 3;
+        else if (vCount >= 6) score = 2;
+        else if (vCount >= 1) score = 1;
         else score = 0;
+        // solhint-enable gas-strict-inequalities
+
+        // M-05: Apply time decay (1 point per DECAY_PERIOD of inactivity)
+        score = _applyDecay(score, components[user].lastUpdate);
 
         components[user].forumActivity = score;
         components[user].lastUpdate = block.timestamp; // solhint-disable-line not-rely-on-time
@@ -775,7 +908,7 @@ contract OmniParticipation is
             totalBlocks[msg.sender] += elapsedBlocks;
 
             // Assume online if heartbeat within expected window
-            // solhint-disable-next-line not-rely-on-time
+            // solhint-disable-next-line not-rely-on-time,gas-strict-inequalities
             if (block.timestamp - lastBeat <= VALIDATOR_TIMEOUT) {
                 uptimeBlocks[msg.sender] += elapsedBlocks;
             }
@@ -801,6 +934,7 @@ contract OmniParticipation is
         uint256 uptime = uptimeBlocks[user];
         uint256 uptimePercent = (uptime * 100) / total;
 
+        // solhint-disable gas-strict-inequalities
         int8 newReliability;
         if (uptimePercent >= 100) newReliability = 5;
         else if (uptimePercent >= 95) newReliability = 3;
@@ -808,6 +942,7 @@ contract OmniParticipation is
         else if (uptimePercent >= 80) newReliability = 0;
         else if (uptimePercent >= 70) newReliability = -2;
         else newReliability = -5;
+        // solhint-enable gas-strict-inequalities
 
         components[user].reliability = newReliability;
         components[user].lastUpdate = block.timestamp; // solhint-disable-line not-rely-on-time
@@ -823,7 +958,7 @@ contract OmniParticipation is
      * @return totalScore Total score and component breakdown
      * @return kycTrust KYC trust points (0-20)
      * @return marketplaceReputation Marketplace reputation (-10 to +10)
-     * @return stakingScore Staking score (0-36)
+     * @return stakingScore Staking score (0-24)
      * @return referralActivity Referral activity (0-10)
      * @return publisherActivity Publisher activity (0-4)
      * @return marketplaceActivity Marketplace activity (0-5)
@@ -893,7 +1028,7 @@ contract OmniParticipation is
     function _getKYCTrust(address user) internal view returns (uint8) {
         // Check tier 4 first (highest)
         if (registration.hasKycTier4(user)) return 20;
-        if (registration.hasKycTier3(user)) return 20;
+        if (registration.hasKycTier3(user)) return 15;   // M-01: was 20, spec says 15
         if (registration.hasKycTier2(user)) return 10;
         if (registration.hasKycTier1(user)) return 5;
         return 0;
@@ -902,13 +1037,15 @@ contract OmniParticipation is
     /**
      * @notice Query staking score from OmniCore
      * @param user Address to check
-     * @return Staking score (0-36)
+     * @return Staking score (0-24)
      */
+    // solhint-disable-next-line code-complexity
     function _getStakingScore(address user) internal view returns (uint8) {
         IOmniCore.Stake memory stake = omniCore.getStake(user);
 
         if (!stake.active || stake.amount == 0) return 0;
 
+        // solhint-disable gas-strict-inequalities
         // Calculate staking tier (1-5) using 18 decimals
         uint8 tier = 0;
         if (stake.amount >= 1_000_000_000 ether) tier = 5;       // 1B+ XOM
@@ -923,6 +1060,7 @@ contract OmniParticipation is
         if (durationDays >= 730) durationTier = 3;               // 2 years
         else if (durationDays >= 180) durationTier = 2;          // 6 months
         else if (durationDays >= 30) durationTier = 1;           // 1 month
+        // solhint-enable gas-strict-inequalities
 
         // Formula: (tier * 3) + (durationTier * 3)
         return (tier * 3) + (durationTier * 3);
@@ -951,6 +1089,7 @@ contract OmniParticipation is
     function canBeValidator(address user) external view returns (bool) {
         (uint256 score,,,,,,,,,) = this.getScore(user);
         bool hasRequiredKYC = registration.hasKycTier4(user);
+        // solhint-disable-next-line gas-strict-inequalities
         return score >= MIN_VALIDATOR_SCORE && hasRequiredKYC;
     }
 
@@ -961,6 +1100,7 @@ contract OmniParticipation is
      */
     function canBeListingNode(address user) external view returns (bool) {
         (uint256 score,,,,,,,,,) = this.getScore(user);
+        // solhint-disable-next-line gas-strict-inequalities
         return score >= MIN_LISTING_NODE_SCORE;
     }
 
@@ -1027,10 +1167,71 @@ contract OmniParticipation is
     // ═══════════════════════════════════════════════════════════════════════
 
     /**
+     * @notice Apply time-based decay to a score component
+     * @dev M-05: Reduces score by 1 point per DECAY_PERIOD of inactivity.
+     *      Score floors at 0. If lastUpdate is 0 (never set), no decay is applied.
+     * @param score Current score value
+     * @param lastUpdate Timestamp of the user's last activity update
+     * @return Decayed score (>= 0)
+     */
+    function _applyDecay(
+        uint8 score,
+        uint256 lastUpdate
+    ) internal view returns (uint8) {
+        if (score == 0 || lastUpdate == 0) return score;
+
+        // solhint-disable-next-line not-rely-on-time
+        uint256 elapsed = block.timestamp - lastUpdate;
+        if (elapsed < DECAY_PERIOD) return score;
+
+        uint256 decayPoints = elapsed / DECAY_PERIOD;
+        // solhint-disable-next-line gas-strict-inequalities
+        if (decayPoints >= score) return 0;
+        return score - uint8(decayPoints);
+    }
+
+    /**
+     * @notice Permanently remove upgrade capability (one-way, irreversible)
+     * @dev Can only be called by admin (through timelock). Once ossified,
+     *      the contract can never be upgraded again.
+     */
+    function ossify() external onlyRole(DEFAULT_ADMIN_ROLE) {
+        _ossified = true;
+        emit ContractOssified(address(this));
+    }
+
+    /**
+     * @notice Check if the contract has been permanently ossified
+     * @return True if ossified (no further upgrades possible)
+     */
+    function isOssified() external view returns (bool) {
+        return _ossified;
+    }
+
+    /**
      * @notice Authorize contract upgrade
      * @param newImplementation Address of new implementation
+     * @dev Reverts if contract is ossified.
      */
     function _authorizeUpgrade(
         address newImplementation
-    ) internal override onlyRole(DEFAULT_ADMIN_ROLE) {}
+    ) internal override onlyRole(DEFAULT_ADMIN_ROLE) {
+        if (_ossified) revert ContractIsOssified();
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    //                        UPGRADE GAP
+    // ═══════════════════════════════════════════════════════════════════════
+
+    /// @notice Whether contract is ossified (permanently non-upgradeable)
+    bool private _ossified;
+
+    /**
+     * @notice Reserved storage gap for future upgrades.
+     * @dev Prevents storage collisions when new state variables are
+     *      added in future implementations. Follows the OpenZeppelin
+     *      upgradeable contract pattern.
+     *      Reduced from 50 to 49 to accommodate _ossified.
+     */
+    uint256[49] private __gap;
 }

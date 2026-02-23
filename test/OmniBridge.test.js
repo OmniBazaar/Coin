@@ -1,5 +1,5 @@
 const { expect } = require("chai");
-const { ethers } = require("hardhat");
+const { ethers, upgrades } = require("hardhat");
 const { time } = require("@nomicfoundation/hardhat-network-helpers");
 
 // Mock Warp Messenger for testing
@@ -54,20 +54,31 @@ describe("OmniBridge", function () {
     await token.initialize();
     
     const PrivateToken = await ethers.getContractFactory("PrivateOmniCoin");
-    privateToken = await PrivateToken.deploy();
-    await privateToken.initialize();
-    
-    // Deploy OmniCore with all required constructor arguments
+    privateToken = await upgrades.deployProxy(
+      PrivateToken,
+      [],
+      { initializer: "initialize", kind: "uups" }
+    );
+
+    // Deploy OmniCore via UUPS proxy (constructor calls _disableInitializers)
     const OmniCore = await ethers.getContractFactory("OmniCore");
-    core = await OmniCore.deploy(admin.address, token.target, admin.address, admin.address);
+    core = await upgrades.deployProxy(
+      OmniCore,
+      [admin.address, token.target, admin.address, admin.address],
+      { initializer: "initialize" }
+    );
     
     // Register services
     await core.connect(admin).setService(ethers.id("OMNICOIN"), token.target);
     await core.connect(admin).setService(ethers.id("PRIVATE_OMNICOIN"), privateToken.target);
     
-    // Deploy OmniBridge - now the mock should be properly in place
+    // Deploy OmniBridge via UUPS proxy (initialize takes _core, admin)
     const OmniBridge = await ethers.getContractFactory("OmniBridge");
-    bridge = await OmniBridge.deploy(core.target);
+    bridge = await upgrades.deployProxy(
+      OmniBridge,
+      [core.target, admin.address],
+      { initializer: "initialize", kind: "uups" }
+    );
     
     // Setup: Give users tokens
     await token.mint(user1.address, ethers.parseEther("100000"));
@@ -448,17 +459,32 @@ describe("OmniBridge", function () {
   });
   
   describe("Token Recovery", function () {
-    it("Should allow admin to recover tokens", async function () {
-      // Send tokens to bridge
+    it("Should allow admin to recover non-bridge tokens", async function () {
+      // Deploy a random ERC20 (not bridge-managed XOM/pXOM)
+      // TestUSDC has 6 decimals; deployer gets 100M at construction
+      const TestToken = await ethers.getContractFactory("TestUSDC");
+      const testToken = await TestToken.deploy();
+
+      // Send some of the deployer's TestUSDC to bridge
+      const amount = 1000n * 10n ** 6n; // 1000 USDC (6 decimals)
+      await testToken.transfer(bridge.target, amount);
+
+      const adminBalanceBefore = await testToken.balanceOf(admin.address);
+
+      await bridge.connect(admin).recoverTokens(testToken.target, amount);
+
+      const adminBalanceAfter = await testToken.balanceOf(admin.address);
+      expect(adminBalanceAfter - adminBalanceBefore).to.equal(amount);
+    });
+
+    it("Should reject recovering bridge tokens (XOM)", async function () {
+      // Send XOM tokens to bridge directly
       const amount = ethers.parseEther("1000");
       await token.connect(user1).transfer(bridge.target, amount);
-      
-      const adminBalanceBefore = await token.balanceOf(admin.address);
-      
-      await bridge.connect(admin).recoverTokens(token.target, amount);
-      
-      const adminBalanceAfter = await token.balanceOf(admin.address);
-      expect(adminBalanceAfter - adminBalanceBefore).to.equal(amount);
+
+      await expect(
+        bridge.connect(admin).recoverTokens(token.target, amount)
+      ).to.be.revertedWithCustomError(bridge, "CannotRecoverBridgeTokens");
     });
     
     it("Should only allow admin to recover", async function () {

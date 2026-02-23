@@ -6,22 +6,40 @@ import {ReentrancyGuardUpgradeable} from "@openzeppelin/contracts-upgradeable/ut
 import {UUPSUpgradeable} from "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import {ECDSA} from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
+import {PausableUpgradeable} from "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol";
+import {Checkpoints} from "@openzeppelin/contracts/utils/structs/Checkpoints.sol";
+import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 
 /**
  * @title OmniCore
  * @author OmniCoin Development Team
  * @notice Upgradeable core contract with UUPS proxy pattern
- * @dev Ultra-lean core contract consolidating registry, validators, and minimal staking
- * @dev max-states-count disabled: Need 21+ states for comprehensive functionality
- * @dev ordering disabled: Upgradeable contracts follow specific ordering pattern
+ * @dev Ultra-lean core contract consolidating registry, validators, and minimal staking.
+ *
+ * SECURITY (H-01): The ADMIN_ROLE holder should be a TimelockController
+ * (48-hour minimum delay) controlled by a multi-sig wallet (3-of-5) to
+ * prevent instant abuse of UUPS upgrade, service registry, and validator
+ * management functions. This is an operational deployment requirement,
+ * not enforced in code since AccessControl already gates all admin calls.
+ *
+ * M-04: PausableUpgradeable added for emergency stops without requiring
+ * a full UUPS upgrade. Applied to stake, unlock, deposit, withdraw,
+ * and legacy claim functions.
+ *
+ * @dev max-states-count disabled: Need 21+ states for comprehensive functionality.
+ *      ordering disabled: Upgradeable contracts follow specific ordering pattern.
  */
-// solhint-disable max-states-count, ordering
+/* solhint-disable max-states-count, ordering */
+// solhint-disable-next-line use-natspec
 contract OmniCore is
     AccessControlUpgradeable,
     ReentrancyGuardUpgradeable,
+    PausableUpgradeable,
     UUPSUpgradeable
 {
     using SafeERC20 for IERC20;
+    using Checkpoints for Checkpoints.Trace224;
 
     // Type declarations
     /// @notice Minimal stake information
@@ -55,10 +73,16 @@ contract OmniCore is
     /// @notice Maximum number of validator signatures for multi-sig
     uint256 public constant MAX_REQUIRED_SIGNATURES = 5;
 
+    /// @notice Maximum valid staking tier (H-02 remediation)
+    uint256 public constant MAX_TIER = 5;
+
+    /// @notice Number of valid lock duration options (0, 30d, 180d, 730d)
+    uint256 public constant DURATION_COUNT = 4;
+
     // State variables (STORAGE LAYOUT - DO NOT REORDER!)
-    /// @notice OmniCoin token address (changed from immutable)
-    /// @dev Variable name kept uppercase for backward compatibility
-    // solhint-disable-next-line var-name-mixedcase
+    /// @notice OmniCoin (XOM) ERC20 token contract reference
+    /// @dev Variable name kept uppercase for backward compatibility.
+    // solhint-disable-next-line var-name-mixedcase, use-natspec
     IERC20 public OMNI_COIN;
 
     /// @notice Service registry mapping service names to addresses
@@ -110,9 +134,17 @@ contract OmniCore is
     /// @notice Required validator signatures for legacy claims (M-of-N multi-sig)
     uint256 public requiredSignatures;
 
-    /// @notice Storage gap for future upgrades (reserve 49 slots)
-    /// @dev Reduced from 50 to 49 to accommodate requiredSignatures
-    uint256[49] private __gap;
+    /// @notice Whether contract is ossified (permanently non-upgradeable)
+    bool private _ossified;
+
+    /// @notice Checkpointed staking amounts for governance snapshot queries
+    /// @dev Used by OmniGovernanceV2.getVotingPowerAt() for flash-loan
+    ///      protection. Writes on stake() and unlock().
+    mapping(address => Checkpoints.Trace224) private _stakeCheckpoints;
+
+    /// @notice Storage gap for future upgrades (reserve 47 slots)
+    /// @dev Reduced from 49 to 47 to accommodate _ossified + _stakeCheckpoints
+    uint256[47] private __gap;
 
     // Events
     /// @notice Emitted when a service is registered or updated
@@ -207,7 +239,7 @@ contract OmniCore is
     event SettlementSkipped(
         address indexed seller,
         address indexed token,
-        uint256 amount,
+        uint256 indexed amount,
         uint256 available
     );
 
@@ -234,12 +266,16 @@ contract OmniCore is
     event BatchPrivateSettlement(
         bytes32 indexed batchId,
         uint256 indexed count,
-        uint256 cotiBlockNumber
+        uint256 indexed cotiBlockNumber
     );
 
     /// @notice Emitted when required signatures count is updated
     /// @param newCount New required signature count
     event RequiredSignaturesUpdated(uint256 indexed newCount);
+
+    /// @notice Emitted when the contract is permanently ossified
+    /// @param contractAddress Address of this contract
+    event ContractOssified(address indexed contractAddress);
 
     // Custom errors
     error InvalidAddress();
@@ -250,6 +286,12 @@ contract OmniCore is
     error Unauthorized();
     error DuplicateSigner();
     error InsufficientSignatures();
+    /// @notice Thrown when staking tier does not match the staked amount
+    error InvalidStakingTier();
+    /// @notice Thrown when lock duration is not one of the valid options
+    error InvalidDuration();
+    /// @notice Thrown when contract is ossified and upgrade attempted
+    error ContractIsOssified();
 
     /**
      * @notice Constructor that disables initializers for the implementation contract
@@ -282,6 +324,7 @@ contract OmniCore is
         // Initialize inherited contracts
         __AccessControl_init();
         __ReentrancyGuard_init();
+        __Pausable_init();
         __UUPSUpgradeable_init();
 
         // Set up roles
@@ -299,21 +342,43 @@ contract OmniCore is
      * @notice V2 initializer — sets new state added after initial deployment
      * @dev Called once after upgradeProxy to initialize requiredSignatures.
      *      reinitializer(2) ensures it can only run once and cannot re-run initialize().
+     *      Access restricted to ADMIN_ROLE to prevent front-running (M-05 remediation).
      */
-    function initializeV2() external reinitializer(2) {
+    function initializeV2() external onlyRole(ADMIN_ROLE) reinitializer(2) {
         requiredSignatures = 1;
     }
 
     /**
+     * @notice Permanently remove upgrade capability (one-way, irreversible)
+     * @dev Can only be called by admin (through timelock). Once ossified,
+     *      the contract can never be upgraded again.
+     */
+    function ossify() external onlyRole(ADMIN_ROLE) {
+        _ossified = true;
+        emit ContractOssified(address(this));
+    }
+
+    /**
+     * @notice Check if the contract has been permanently ossified
+     * @return True if ossified (no further upgrades possible)
+     */
+    function isOssified() external view returns (bool) {
+        return _ossified;
+    }
+
+    /**
      * @notice Authorize contract upgrades
-     * @dev Required by UUPSUpgradeable, only admin can upgrade
+     * @dev Required by UUPSUpgradeable, only admin can upgrade.
+     *      Reverts if contract is ossified.
      * @param newImplementation Address of new implementation
      */
     function _authorizeUpgrade(address newImplementation)
         internal
         override
         onlyRole(ADMIN_ROLE)
-    {} // solhint-disable-line no-empty-blocks
+    {
+        if (_ossified) revert ContractIsOssified();
+    }
 
     // =============================================================================
     // Service Registry & Validator Management
@@ -361,24 +426,59 @@ contract OmniCore is
         emit RequiredSignaturesUpdated(count);
     }
 
+    /**
+     * @notice Pause all staking, DEX, and legacy claim operations
+     * @dev Only admin can pause. M-04 remediation: enables emergency stops
+     *      without requiring a full UUPS upgrade.
+     */
+    function pause() external onlyRole(ADMIN_ROLE) {
+        _pause();
+    }
+
+    /**
+     * @notice Unpause all operations
+     * @dev Only admin can unpause
+     */
+    function unpause() external onlyRole(ADMIN_ROLE) {
+        _unpause();
+    }
+
     // =============================================================================
     // Staking Functions
     // =============================================================================
 
     /**
      * @notice Stake tokens with minimal on-chain data
-     * @dev Locks tokens on-chain, reward calculation done by StakingRewardPool
+     * @dev Locks tokens on-chain, reward calculation done by StakingRewardPool.
+     *      Validates tier against amount thresholds and duration against valid
+     *      lock periods per OmniBazaar tokenomics (H-02 remediation).
+     *
+     * Tier thresholds (18-decimal XOM):
+     *   Tier 1: >= 1 XOM           (5% APR)
+     *   Tier 2: >= 1,000,000 XOM   (6% APR)
+     *   Tier 3: >= 10,000,000 XOM  (7% APR)
+     *   Tier 4: >= 100,000,000 XOM (8% APR)
+     *   Tier 5: >= 1,000,000,000 XOM (9% APR)
+     *
+     * Valid durations: 0 (no commitment), 30 days, 180 days, 730 days
+     *
      * @param amount Amount of tokens to stake
-     * @param tier Staking tier (determines APR in StakingRewardPool)
-     * @param duration Lock duration in seconds
+     * @param tier Staking tier (1-5, must match amount thresholds)
+     * @param duration Lock duration in seconds (must be a valid duration option)
      */
     function stake(
         uint256 amount,
         uint256 tier,
         uint256 duration
-    ) external nonReentrant {
+    ) external nonReentrant whenNotPaused {
         if (amount == 0) revert InvalidAmount();
         if (stakes[msg.sender].active) revert InvalidAmount();
+
+        // H-02: Validate tier is within range and amount matches tier thresholds
+        _validateStakingTier(amount, tier);
+
+        // H-02: Validate duration is one of the allowed lock periods
+        _validateDuration(duration);
 
         // Transfer tokens from user
         OMNI_COIN.safeTransferFrom(msg.sender, address(this), amount);
@@ -394,6 +494,12 @@ contract OmniCore is
 
         totalStaked += amount;
 
+        // Write staking checkpoint for governance snapshot
+        _stakeCheckpoints[msg.sender].push(
+            SafeCast.toUint32(block.number),
+            SafeCast.toUint224(amount)
+        );
+
         emit TokensStaked(msg.sender, amount, tier, duration);
     }
 
@@ -402,7 +508,7 @@ contract OmniCore is
      * @dev Returns principal only. Rewards handled by StakingRewardPool contract.
      *      Call StakingRewardPool.snapshotRewards() BEFORE this to preserve rewards.
      */
-    function unlock() external nonReentrant {
+    function unlock() external nonReentrant whenNotPaused {
         Stake storage userStake = stakes[msg.sender];
 
         if (!userStake.active) revert StakeNotFound();
@@ -414,6 +520,12 @@ contract OmniCore is
         userStake.active = false;
         userStake.amount = 0;
         totalStaked -= amount;
+
+        // Write zero checkpoint for governance snapshot
+        _stakeCheckpoints[msg.sender].push(
+            SafeCast.toUint32(block.number),
+            0
+        );
 
         // Transfer tokens back
         OMNI_COIN.safeTransfer(msg.sender, amount);
@@ -485,6 +597,7 @@ contract OmniCore is
         uint256 settled = 0;
         for (uint256 i = 0; i < length; ++i) {
             uint256 available = dexBalances[sellers[i]][tokens[i]];
+            // solhint-disable-next-line gas-strict-inequalities
             if (available >= amounts[i]) {
                 dexBalances[sellers[i]][tokens[i]] -= amounts[i];
                 dexBalances[buyers[i]][tokens[i]] += amounts[i];
@@ -622,11 +735,16 @@ contract OmniCore is
      * @param token Token to deposit
      * @param amount Amount to deposit
      */
-    function depositToDEX(address token, uint256 amount) external nonReentrant {
+    function depositToDEX(address token, uint256 amount) external nonReentrant whenNotPaused {
         if (token == address(0) || amount == 0) revert InvalidAmount();
 
+        // M-03: Use balance-before/after pattern to handle
+        // fee-on-transfer tokens correctly.
+        uint256 balanceBefore = IERC20(token).balanceOf(address(this));
         IERC20(token).safeTransferFrom(msg.sender, address(this), amount);
-        dexBalances[msg.sender][token] += amount;
+        uint256 received = IERC20(token).balanceOf(address(this)) - balanceBefore;
+
+        dexBalances[msg.sender][token] += received;
     }
 
     /**
@@ -635,7 +753,7 @@ contract OmniCore is
      * @param token Token to withdraw
      * @param amount Amount to withdraw
      */
-    function withdrawFromDEX(address token, uint256 amount) external nonReentrant {
+    function withdrawFromDEX(address token, uint256 amount) external nonReentrant whenNotPaused {
         if (amount == 0) revert InvalidAmount();
         if (dexBalances[msg.sender][token] < amount) revert InvalidAmount();
 
@@ -672,6 +790,23 @@ contract OmniCore is
      */
     function getStake(address user) external view returns (Stake memory) {
         return stakes[user];
+    }
+
+    /**
+     * @notice Get staked amount at a specific past block number
+     * @dev Used by OmniGovernanceV2 for snapshot-based voting power.
+     *      Returns the most recent checkpoint at or before the given block.
+     * @param user Address of the staker
+     * @param blockNumber Block number to query
+     * @return Staked amount at the given block (0 if none)
+     */
+    function getStakedAt(
+        address user,
+        uint256 blockNumber
+    ) external view returns (uint256) {
+        return _stakeCheckpoints[user].upperLookup(
+            SafeCast.toUint32(blockNumber)
+        );
     }
 
     /**
@@ -738,7 +873,7 @@ contract OmniCore is
         address claimAddress,
         bytes32 nonce,
         bytes[] calldata signatures
-    ) external nonReentrant {
+    ) external nonReentrant whenNotPaused {
         if (claimAddress == address(0)) revert InvalidAddress();
         if (signatures.length < requiredSignatures) revert InsufficientSignatures();
 
@@ -748,34 +883,10 @@ contract OmniCore is
         if (!legacyUsernames[usernameHash]) revert InvalidAddress();
         if (legacyClaimed[usernameHash] != address(0)) revert InvalidAmount();
 
-        // Compute message hash
-        bytes32 messageHash = keccak256(abi.encodePacked(
-            username,
-            claimAddress,
-            nonce,
-            address(this),
-            block.chainid
-        ));
-
-        bytes32 ethSignedMessageHash = keccak256(abi.encodePacked(
-            "\x19Ethereum Signed Message:\n32",
-            messageHash
-        ));
-
-        // Verify each signature is from a unique active validator
-        uint256 sigCount = signatures.length;
-        address[] memory signers = new address[](sigCount);
-
-        for (uint256 i = 0; i < sigCount; ++i) {
-            address signer = _recoverSigner(ethSignedMessageHash, signatures[i]);
-            if (!validators[signer]) revert InvalidSignature();
-
-            // Check for duplicate signers
-            for (uint256 j = 0; j < i; ++j) {
-                if (signers[j] == signer) revert DuplicateSigner();
-            }
-            signers[i] = signer;
-        }
+        // Compute and verify validator signatures
+        _verifyClaimSignatures(
+            username, claimAddress, nonce, signatures
+        );
 
         // Get balance and mark as claimed
         uint256 amount = legacyBalances[usernameHash];
@@ -832,30 +943,108 @@ contract OmniCore is
     // =============================================================================
 
     /**
+     * @notice Verify M-of-N validator signatures for a legacy claim
+     * @dev Computes the EIP-191 signed message hash and verifies each
+     *      signature is from a unique active validator.
+     * @param username Legacy username being claimed
+     * @param claimAddress Address that will receive the tokens
+     * @param nonce Unique nonce to prevent replay
+     * @param signatures Array of validator signatures
+     */
+    function _verifyClaimSignatures(
+        string calldata username,
+        address claimAddress,
+        bytes32 nonce,
+        bytes[] calldata signatures
+    ) internal view {
+        // M-02: Use abi.encode instead of abi.encodePacked to prevent
+        // hash collision risk with the dynamic-length username string.
+        bytes32 messageHash = keccak256(abi.encode(
+            username,
+            claimAddress,
+            nonce,
+            address(this),
+            block.chainid
+        ));
+
+        bytes32 ethSignedMessageHash = keccak256(abi.encodePacked(
+            "\x19Ethereum Signed Message:\n32",
+            messageHash
+        ));
+
+        uint256 sigCount = signatures.length;
+        address[] memory signers = new address[](sigCount);
+
+        for (uint256 i = 0; i < sigCount; ++i) {
+            address signer = _recoverSigner(
+                ethSignedMessageHash, signatures[i]
+            );
+            if (!validators[signer]) revert InvalidSignature();
+
+            // Check for duplicate signers
+            for (uint256 j = 0; j < i; ++j) {
+                if (signers[j] == signer) revert DuplicateSigner();
+            }
+            signers[i] = signer;
+        }
+    }
+
+    /**
+     * @notice Validate that the staking tier matches the amount thresholds
+     * @dev Tier minimums per OmniBazaar tokenomics. Tier must be 1-5 and the
+     *      staked amount must meet the minimum for that tier.
+     * @param amount Amount of tokens being staked (18 decimals)
+     * @param tier Staking tier claimed by the user (1-5)
+     */
+    function _validateStakingTier(
+        uint256 amount,
+        uint256 tier
+    ) internal pure {
+        if (tier == 0 || tier > MAX_TIER) revert InvalidStakingTier();
+
+        // Tier minimum thresholds in 18-decimal XOM
+        uint256[5] memory tierMinimums = [
+            uint256(1 ether),                // Tier 1: >= 1 XOM
+            uint256(1_000_000 ether),        // Tier 2: >= 1,000,000 XOM
+            uint256(10_000_000 ether),       // Tier 3: >= 10,000,000 XOM
+            uint256(100_000_000 ether),      // Tier 4: >= 100,000,000 XOM
+            uint256(1_000_000_000 ether)     // Tier 5: >= 1,000,000,000 XOM
+        ];
+
+        if (amount < tierMinimums[tier - 1]) revert InvalidStakingTier();
+    }
+
+    /**
+     * @notice Validate that the lock duration is one of the allowed options
+     * @dev Valid durations: 0 (no lock), 30 days, 180 days, 730 days
+     * @param duration Lock duration in seconds
+     */
+    function _validateDuration(uint256 duration) internal pure {
+        if (
+            duration != 0 &&
+            duration != 30 days &&
+            duration != 180 days &&
+            duration != 730 days
+        ) {
+            revert InvalidDuration();
+        }
+    }
+
+    /**
      * @notice Internal function to recover signer from signature
+     * @dev Uses OpenZeppelin ECDSA.recover() to prevent signature
+     *      malleability attacks (M-01 remediation). ECDSA.recover
+     *      enforces that s is in the lower half of the secp256k1
+     *      curve order and rejects non-standard v values.
      * @param messageHash Hash of the signed message
      * @param signature Signature bytes (65 bytes: r + s + v)
-     * @return Recovered signer address
+     * @return signer Recovered signer address
      */
     function _recoverSigner(
         bytes32 messageHash,
         bytes memory signature
-    ) internal pure returns (address) {
-        if (signature.length != 65) revert InvalidSignature();
-
-        bytes32 r;
-        bytes32 s;
-        uint8 v;
-
-        // solhint-disable-next-line no-inline-assembly
-        assembly {
-            r := mload(add(signature, 32))
-            s := mload(add(signature, 64))
-            v := byte(0, mload(add(signature, 96)))
-        }
-
-        address signer = ecrecover(messageHash, v, r, s);
+    ) internal pure returns (address signer) {
+        signer = ECDSA.recover(messageHash, signature);
         if (signer == address(0)) revert InvalidSignature();
-        return signer;
     }
 }

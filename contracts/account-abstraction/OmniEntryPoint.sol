@@ -81,7 +81,16 @@ contract OmniEntryPoint is IEntryPoint, ReentrancyGuard {
     error GasLimitExceeded();
 
     // ══════════════════════════════════════════════════════════════
-    //                    DEPOSIT MANAGEMENT
+    //                        RECEIVE
+    // ══════════════════════════════════════════════════════════════
+
+    /// @notice Allow deposits of native tokens
+    receive() external payable {
+        _deposits[msg.sender] += msg.value;
+    }
+
+    // ══════════════════════════════════════════════════════════════
+    //                  EXTERNAL FUNCTIONS (NON-VIEW)
     // ══════════════════════════════════════════════════════════════
 
     /**
@@ -111,38 +120,6 @@ contract OmniEntryPoint is IEntryPoint, ReentrancyGuard {
     }
 
     /**
-     * @notice Get the deposit balance for an account
-     * @param account The account to query
-     * @return The deposited balance
-     */
-    function balanceOf(address account) external view override returns (uint256) {
-        return _deposits[account];
-    }
-
-    // ══════════════════════════════════════════════════════════════
-    //                     NONCE MANAGEMENT
-    // ══════════════════════════════════════════════════════════════
-
-    /**
-     * @notice Get the current nonce for a sender and key
-     * @dev The nonce is composed of a 192-bit key and a 64-bit sequential value.
-     *      Full nonce = key << 64 | sequentialNonce
-     * @param sender The account address
-     * @param key The nonce key (allows parallel nonce sequences)
-     * @return nonce The full nonce value
-     */
-    function getNonce(
-        address sender,
-        uint192 key
-    ) external view override returns (uint256 nonce) {
-        return (uint256(key) << 64) | _nonceSequences[sender][key];
-    }
-
-    // ══════════════════════════════════════════════════════════════
-    //                    USEROPERATION HANDLING
-    // ══════════════════════════════════════════════════════════════
-
-    /**
      * @notice Execute a batch of UserOperations
      * @dev Called by bundlers. For each operation:
      *      1. Deploy account if initCode is present
@@ -165,6 +142,34 @@ contract OmniEntryPoint is IEntryPoint, ReentrancyGuard {
         for (uint256 i; i < opsLength; ++i) {
             _handleSingleOp(ops[i], beneficiary);
         }
+    }
+
+    // ══════════════════════════════════════════════════════════════
+    //                  EXTERNAL/PUBLIC VIEW FUNCTIONS
+    // ══════════════════════════════════════════════════════════════
+
+    /**
+     * @notice Get the deposit balance for an account
+     * @param account The account to query
+     * @return The deposited balance
+     */
+    function balanceOf(address account) external view override returns (uint256) {
+        return _deposits[account];
+    }
+
+    /**
+     * @notice Get the current nonce for a sender and key
+     * @dev The nonce is composed of a 192-bit key and a 64-bit sequential value.
+     *      Full nonce = key << 64 | sequentialNonce
+     * @param sender The account address
+     * @param key The nonce key (allows parallel nonce sequences)
+     * @return nonce The full nonce value
+     */
+    function getNonce(
+        address sender,
+        uint192 key
+    ) external view override returns (uint256 nonce) {
+        return (uint256(key) << 64) | _nonceSequences[sender][key];
     }
 
     /**
@@ -200,9 +205,17 @@ contract OmniEntryPoint is IEntryPoint, ReentrancyGuard {
     ) internal {
         uint256 gasStart = gasleft();
 
-        // Step 1: Deploy account if initCode is present
+        // Step 0: Validate total gas does not exceed maximum
+        uint256 totalGas = op.callGasLimit
+            + op.verificationGasLimit
+            + op.preVerificationGas;
+        if (totalGas > MAX_OP_GAS) revert GasLimitExceeded();
+
+        // Step 1: Deploy account if initCode is present, otherwise verify it exists
         if (op.initCode.length > 0) {
             _deployAccount(op);
+        } else if (op.sender.code.length == 0) {
+            revert AccountDeploymentFailed(address(0));
         }
 
         // Step 2: Validate nonce
@@ -235,55 +248,105 @@ contract OmniEntryPoint is IEntryPoint, ReentrancyGuard {
         }
 
         // Step 6: Execute the operation
-        bool success;
-        bytes memory revertReason;
-        {
-            // solhint-disable-next-line avoid-low-level-calls
-            (success, revertReason) = op.sender.call{gas: op.callGasLimit}(op.callData);
-        }
+        // solhint-disable-next-line avoid-low-level-calls
+        (bool success, bytes memory revertReason) = op.sender.call{
+            gas: op.callGasLimit
+        }(op.callData);
 
         if (!success) {
-            emit UserOperationRevertReason(userOpHash, op.sender, op.nonce, revertReason);
+            emit UserOperationRevertReason(
+                userOpHash, op.sender, op.nonce, revertReason
+            );
         }
 
-        // Step 7: Call paymaster postOp
+        // Step 7: Deduct gas, call paymaster postOp, emit event, refund
         uint256 actualGasCost = (gasStart - gasleft()) * tx.gasprice;
-        if (paymaster != address(0) && paymasterContext.length > 0) {
-            IPaymaster.PostOpMode mode = success
-                ? IPaymaster.PostOpMode.opSucceeded
-                : IPaymaster.PostOpMode.opReverted;
-            try IPaymaster(paymaster).postOp(mode, paymasterContext, actualGasCost) {
-                // PostOp succeeded
-            } catch {
-                // PostOp reverted — try again with postOpReverted mode
-                try IPaymaster(paymaster).postOp(
-                    IPaymaster.PostOpMode.postOpReverted,
-                    paymasterContext,
-                    actualGasCost
-                ) {} catch {} // solhint-disable-line no-empty-blocks
-            }
-        }
-
-        // Step 8: Emit result
-        emit UserOperationEvent(
-            userOpHash,
-            op.sender,
-            paymaster,
-            op.nonce,
-            success,
-            actualGasCost,
-            gasStart - gasleft()
+        _deductGasCost(op.sender, paymaster, actualGasCost);
+        _callPaymasterPostOp(
+            paymaster, paymasterContext, success, actualGasCost
         );
 
-        // Step 9: Refund beneficiary
-        if (actualGasCost > 0 && address(this).balance > 0) {
-            uint256 refund = actualGasCost < address(this).balance
-                ? actualGasCost
-                : address(this).balance;
-            // solhint-disable-next-line avoid-low-level-calls
-            (bool refundSuccess,) = beneficiary.call{value: refund}("");
-            (refundSuccess); // Ignore refund failure
+        emit UserOperationEvent(
+            userOpHash, op.sender, paymaster,
+            op.nonce, success, actualGasCost, gasStart - gasleft()
+        );
+
+        _refundBeneficiary(beneficiary, actualGasCost);
+    }
+
+    /**
+     * @notice Deduct gas cost from the responsible party's deposit
+     * @dev If a paymaster is present, it pays; otherwise the sender pays
+     * @param sender The UserOp sender address
+     * @param paymaster The paymaster address (address(0) if none)
+     * @param actualGasCost Gas cost to deduct
+     */
+    function _deductGasCost(
+        address sender,
+        address paymaster,
+        uint256 actualGasCost
+    ) internal {
+        if (paymaster != address(0)) {
+            _deposits[paymaster] -= actualGasCost;
+        } else {
+            _deposits[sender] -= actualGasCost;
         }
+    }
+
+    /**
+     * @notice Call paymaster postOp with fallback retry on revert
+     * @dev If the first postOp call reverts, retries with postOpReverted mode.
+     *      No-ops if paymaster is address(0) or context is empty.
+     * @param paymaster The paymaster address
+     * @param paymasterContext Context from validatePaymasterUserOp
+     * @param success Whether the UserOp execution succeeded
+     * @param actualGasCost Actual gas cost to report
+     */
+    function _callPaymasterPostOp(
+        address paymaster,
+        bytes memory paymasterContext,
+        bool success,
+        uint256 actualGasCost
+    ) internal {
+        if (paymaster == address(0) || paymasterContext.length == 0) return;
+
+        IPaymaster.PostOpMode mode = success
+            ? IPaymaster.PostOpMode.opSucceeded
+            : IPaymaster.PostOpMode.opReverted;
+
+        try IPaymaster(paymaster).postOp(
+            mode, paymasterContext, actualGasCost
+        ) {
+            // PostOp succeeded
+        } catch {
+            // PostOp reverted - retry with postOpReverted mode
+            try IPaymaster(paymaster).postOp(
+                IPaymaster.PostOpMode.postOpReverted,
+                paymasterContext,
+                actualGasCost
+            ) {} catch {} // solhint-disable-line no-empty-blocks
+        }
+    }
+
+    /**
+     * @notice Refund gas costs to the beneficiary
+     * @dev Sends the lesser of actualGasCost and contract balance.
+     *      Silently ignores transfer failure.
+     * @param beneficiary Address to receive the refund
+     * @param actualGasCost Gas cost to refund
+     */
+    function _refundBeneficiary(
+        address payable beneficiary,
+        uint256 actualGasCost
+    ) internal {
+        if (actualGasCost == 0 || address(this).balance == 0) return;
+
+        uint256 refund = actualGasCost < address(this).balance
+            ? actualGasCost
+            : address(this).balance;
+        // solhint-disable-next-line avoid-low-level-calls
+        (bool refundSuccess,) = beneficiary.call{value: refund}("");
+        (refundSuccess); // Ignore refund failure
     }
 
     /**
@@ -301,7 +364,7 @@ contract OmniEntryPoint is IEntryPoint, ReentrancyGuard {
         if (!success) revert AccountDeploymentFailed(factory);
 
         // Verify the deployed address matches sender
-        if (returnData.length >= 32) {
+        if (returnData.length > 31) {
             address deployed = abi.decode(returnData, (address));
             if (deployed != op.sender) revert AccountDeploymentFailed(factory);
         }
@@ -343,8 +406,45 @@ contract OmniEntryPoint is IEntryPoint, ReentrancyGuard {
         // If paymaster is present, paymaster pays — no account prefund needed
         if (op.paymasterAndData.length > 0) return 0;
 
-        if (currentDeposit >= maxGasCost) return 0;
+        if (currentDeposit > maxGasCost - 1) return 0;
         return maxGasCost - currentDeposit;
+    }
+
+    /**
+     * @notice Extract and validate the packed validation data from validateUserOp
+     * @dev ERC-4337 validation data packing:
+     *      - Bits 0-159: aggregator address (0 = no aggregator, 1 = invalid sig)
+     *      - Bits 160-207: validUntil (uint48, 0 = no expiry)
+     *      - Bits 208-255: validAfter (uint48, 0 = no restriction)
+     *      Rejects unknown aggregators (non-zero address other than address(1)).
+     * @param validationData The packed validation data from validateUserOp
+     * @return sigResult 0 if valid, 1 if invalid
+     */
+    function _extractSigResult(
+        uint256 validationData
+    ) internal view returns (uint256 sigResult) {
+        // Extract aggregator from lower 160 bits
+        address aggregator = address(uint160(validationData));
+        if (aggregator == address(1)) return SIG_INVALID;
+
+        // Reject unknown aggregators (aggregator support not implemented)
+        if (aggregator != address(0)) return SIG_INVALID;
+
+        // Extract time range from upper bits
+        uint48 validUntil = uint48(validationData >> 160);
+        uint48 validAfter = uint48(validationData >> 208);
+
+        // Validate time ranges
+        // solhint-disable-next-line not-rely-on-time
+        if (validUntil != 0 && block.timestamp > validUntil) {
+            return SIG_INVALID;
+        }
+        // solhint-disable-next-line not-rely-on-time
+        if (validAfter != 0 && block.timestamp < validAfter) {
+            return SIG_INVALID;
+        }
+
+        return SIG_VALID;
     }
 
     /**
@@ -365,22 +465,6 @@ contract OmniEntryPoint is IEntryPoint, ReentrancyGuard {
     function _getPaymaster(UserOperation calldata op) internal pure returns (address paymaster) {
         if (op.paymasterAndData.length < 20) return address(0);
         return address(bytes20(op.paymasterAndData[:20]));
-    }
-
-    /**
-     * @notice Extract the signature validation result (0 = valid, 1 = invalid)
-     * @param validationData The packed validation data from validateUserOp
-     * @return sigResult 0 if valid, 1 if invalid
-     */
-    function _extractSigResult(uint256 validationData) internal pure returns (uint256 sigResult) {
-        // Lower 160 bits: aggregator address (0 = ECDSA, no aggregator)
-        // We only check the aggregator portion for sig validity
-        // If aggregator == address(1), signature is invalid
-        address aggregator = address(uint160(validationData));
-        if (aggregator == address(0)) return SIG_VALID;
-        if (aggregator == address(1)) return SIG_INVALID;
-        // Non-zero aggregator = aggregated signature (not supported, treat as valid)
-        return SIG_VALID;
     }
 
     /**
@@ -407,12 +491,4 @@ contract OmniEntryPoint is IEntryPoint, ReentrancyGuard {
         );
     }
 
-    // ══════════════════════════════════════════════════════════════
-    //                        RECEIVE
-    // ══════════════════════════════════════════════════════════════
-
-    /// @notice Allow deposits of native tokens
-    receive() external payable {
-        _deposits[msg.sender] += msg.value;
-    }
 }

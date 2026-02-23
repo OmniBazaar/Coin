@@ -1,5 +1,5 @@
 const { expect } = require("chai");
-const { ethers } = require("hardhat");
+const { ethers, upgrades } = require("hardhat");
 
 describe("OmniPrivacyBridge", function () {
   let omniCoin, privateOmniCoin, bridge;
@@ -19,14 +19,21 @@ describe("OmniPrivacyBridge", function () {
     omniCoin = await OmniCoin.deploy();
     await omniCoin.initialize();
 
-    // Deploy PrivateOmniCoin (pXOM)
+    // Deploy PrivateOmniCoin (pXOM) via UUPS proxy
     const PrivateOmniCoin = await ethers.getContractFactory("PrivateOmniCoin");
-    privateOmniCoin = await PrivateOmniCoin.deploy();
-    await privateOmniCoin.initialize();
+    privateOmniCoin = await upgrades.deployProxy(
+      PrivateOmniCoin,
+      [],
+      { initializer: "initialize", kind: "uups" }
+    );
 
-    // Deploy OmniPrivacyBridge
+    // Deploy OmniPrivacyBridge via UUPS proxy
     const Bridge = await ethers.getContractFactory("OmniPrivacyBridge");
-    bridge = await Bridge.deploy(await omniCoin.getAddress(), await privateOmniCoin.getAddress());
+    bridge = await upgrades.deployProxy(
+      Bridge,
+      [await omniCoin.getAddress(), await privateOmniCoin.getAddress()],
+      { initializer: "initialize", kind: "uups" }
+    );
 
     // Grant bridge the MINTER_ROLE on PrivateOmniCoin
     const MINTER_ROLE = await privateOmniCoin.MINTER_ROLE();
@@ -57,8 +64,8 @@ describe("OmniPrivacyBridge", function () {
 
   describe("Deployment and Initialization", function () {
     it("Should set correct token addresses", async function () {
-      expect(await bridge.OMNI_COIN()).to.equal(await omniCoin.getAddress());
-      expect(await bridge.PRIVATE_OMNI_COIN()).to.equal(await privateOmniCoin.getAddress());
+      expect(await bridge.omniCoin()).to.equal(await omniCoin.getAddress());
+      expect(await bridge.privateOmniCoin()).to.equal(await privateOmniCoin.getAddress());
     });
 
     it("Should set correct initial max conversion limit", async function () {
@@ -81,17 +88,25 @@ describe("OmniPrivacyBridge", function () {
       expect(await bridge.totalConvertedToPublic()).to.equal(0);
     });
 
-    it("Should revert deployment with zero address for OmniCoin", async function () {
+    it("Should revert initialization with zero address for OmniCoin", async function () {
       const Bridge = await ethers.getContractFactory("OmniPrivacyBridge");
       await expect(
-        Bridge.deploy(ethers.ZeroAddress, await privateOmniCoin.getAddress())
+        upgrades.deployProxy(
+          Bridge,
+          [ethers.ZeroAddress, await privateOmniCoin.getAddress()],
+          { initializer: "initialize", kind: "uups" }
+        )
       ).to.be.revertedWithCustomError(Bridge, "ZeroAddress");
     });
 
-    it("Should revert deployment with zero address for PrivateOmniCoin", async function () {
+    it("Should revert initialization with zero address for PrivateOmniCoin", async function () {
       const Bridge = await ethers.getContractFactory("OmniPrivacyBridge");
       await expect(
-        Bridge.deploy(await omniCoin.getAddress(), ethers.ZeroAddress)
+        upgrades.deployProxy(
+          Bridge,
+          [await omniCoin.getAddress(), ethers.ZeroAddress],
+          { initializer: "initialize", kind: "uups" }
+        )
       ).to.be.revertedWithCustomError(Bridge, "ZeroAddress");
     });
   });
@@ -113,8 +128,8 @@ describe("OmniPrivacyBridge", function () {
       // Check balances
       expect(await privateOmniCoin.balanceOf(user1.address)).to.equal(amountAfterFee);
 
-      // Check statistics
-      expect(await bridge.totalLocked()).to.equal(amount);
+      // Check statistics - totalLocked tracks amountAfterFee, fees tracked separately
+      expect(await bridge.totalLocked()).to.equal(amountAfterFee);
       expect(await bridge.totalConvertedToPrivate()).to.equal(amount);
     });
 
@@ -133,12 +148,13 @@ describe("OmniPrivacyBridge", function () {
       ).to.be.revertedWithCustomError(bridge, "BelowMinimum");
     });
 
-    it("Should fail conversion exceeding max uint64", async function () {
-      const tooLarge = ethers.parseEther("20000000000000"); // 20 trillion (> uint64 max)
+    it("Should fail conversion exceeding max conversion limit", async function () {
+      // Default limit is 10 million tokens
+      const tooLarge = ethers.parseEther("20000000"); // 20 million (> 10M limit)
 
       await expect(
         bridge.connect(user1).convertXOMtoPXOM(tooLarge)
-      ).to.be.revertedWithCustomError(bridge, "AmountTooLarge");
+      ).to.be.revertedWithCustomError(bridge, "ExceedsConversionLimit");
     });
 
     it("Should fail conversion exceeding configured limit", async function () {
@@ -164,6 +180,8 @@ describe("OmniPrivacyBridge", function () {
     it("Should handle multiple conversions correctly", async function () {
       const amount1 = ethers.parseEther("1");
       const amount2 = ethers.parseEther("2");
+      const fee1 = (amount1 * PRIVACY_FEE_BPS) / BPS_DENOMINATOR;
+      const fee2 = (amount2 * PRIVACY_FEE_BPS) / BPS_DENOMINATOR;
 
       // First conversion
       await omniCoin.connect(user1).approve(await bridge.getAddress(), amount1);
@@ -173,8 +191,9 @@ describe("OmniPrivacyBridge", function () {
       await omniCoin.connect(user2).approve(await bridge.getAddress(), amount2);
       await bridge.connect(user2).convertXOMtoPXOM(amount2);
 
-      // Check total locked
-      expect(await bridge.totalLocked()).to.equal(amount1 + amount2);
+      // Check total locked (tracks amountAfterFee, not full amounts)
+      const expectedLocked = (amount1 - fee1) + (amount2 - fee2);
+      expect(await bridge.totalLocked()).to.equal(expectedLocked);
       expect(await bridge.totalConvertedToPrivate()).to.equal(amount1 + amount2);
     });
   });
@@ -270,13 +289,15 @@ describe("OmniPrivacyBridge", function () {
     it("Should return correct bridge statistics", async function () {
       // Convert some tokens
       const amount = ethers.parseEther("5");
+      const fee = (amount * PRIVACY_FEE_BPS) / BPS_DENOMINATOR;
+      const amountAfterFee = amount - fee;
       await omniCoin.connect(user1).approve(await bridge.getAddress(), amount);
       await bridge.connect(user1).convertXOMtoPXOM(amount);
 
       const [totalLocked, totalToPrivate, totalToPublic] = await bridge.getBridgeStats();
 
-      expect(totalLocked).to.equal(amount);
-      expect(totalToPrivate).to.equal(amount);
+      expect(totalLocked).to.equal(amountAfterFee); // tracks amountAfterFee
+      expect(totalToPrivate).to.equal(amount); // tracks full amount
       expect(totalToPublic).to.equal(0);
     });
   });
@@ -298,12 +319,12 @@ describe("OmniPrivacyBridge", function () {
       ).to.be.revertedWithCustomError(bridge, "ZeroAmount");
     });
 
-    it("Should fail to set limit exceeding MAX_CONVERSION_AMOUNT", async function () {
-      const tooLarge = ethers.parseEther("20000000000000"); // > uint64 max
+    it("Should allow setting very large conversion limit (no upper bound)", async function () {
+      const veryLarge = ethers.parseEther("1000000000"); // 1 billion
 
-      await expect(
-        bridge.setMaxConversionLimit(tooLarge)
-      ).to.be.revertedWithCustomError(bridge, "ExceedsMaximum");
+      await bridge.setMaxConversionLimit(veryLarge);
+
+      expect(await bridge.maxConversionLimit()).to.equal(veryLarge);
     });
 
     it("Should fail when called by non-admin", async function () {
@@ -420,22 +441,24 @@ describe("OmniPrivacyBridge", function () {
       await omniCoin.connect(user3).approve(await bridge.getAddress(), amounts[2]);
       await bridge.connect(user3).convertXOMtoPXOM(amounts[2]);
 
-      // Check total locked
+      // Check total locked (tracks amountAfterFee for each conversion)
       const totalAmount = amounts[0] + amounts[1] + amounts[2];
-      expect(await bridge.totalLocked()).to.equal(totalAmount);
+      const totalFees = (totalAmount * PRIVACY_FEE_BPS) / BPS_DENOMINATOR;
+      expect(await bridge.totalLocked()).to.equal(totalAmount - totalFees);
     });
   });
 
   describe("Edge Cases", function () {
-    it("Should handle max uint64 conversion correctly", async function () {
-      const maxAmount = ethers.parseEther("15"); // Just under uint64 max and within user balance
+    it("Should handle large conversion correctly", async function () {
+      const maxAmount = ethers.parseEther("15"); // Within user balance
       await bridge.setMaxConversionLimit(maxAmount);
 
       await omniCoin.connect(user1).approve(await bridge.getAddress(), maxAmount);
       await bridge.connect(user1).convertXOMtoPXOM(maxAmount);
 
-      // Should succeed
-      expect(await bridge.totalLocked()).to.equal(maxAmount);
+      // Should succeed - totalLocked tracks amountAfterFee
+      const fee = (maxAmount * PRIVACY_FEE_BPS) / BPS_DENOMINATOR;
+      expect(await bridge.totalLocked()).to.equal(maxAmount - fee);
     });
 
     it("Should handle minimum conversion correctly", async function () {
@@ -444,13 +467,16 @@ describe("OmniPrivacyBridge", function () {
       await omniCoin.connect(user1).approve(await bridge.getAddress(), minAmount);
       await bridge.connect(user1).convertXOMtoPXOM(minAmount);
 
-      // Should succeed
-      expect(await bridge.totalLocked()).to.equal(minAmount);
+      // Should succeed - totalLocked tracks amountAfterFee
+      const fee = (minAmount * PRIVACY_FEE_BPS) / BPS_DENOMINATOR;
+      expect(await bridge.totalLocked()).to.equal(minAmount - fee);
     });
 
     it("Should maintain accurate statistics across many operations", async function () {
       const convertAmount = ethers.parseEther("1");
       const revertAmount = ethers.parseEther("0.5");
+      const fee = (convertAmount * PRIVACY_FEE_BPS) / BPS_DENOMINATOR;
+      const lockedAfterConvert = convertAmount - fee; // amountAfterFee
 
       // Convert XOM to pXOM
       await omniCoin.connect(user1).approve(await bridge.getAddress(), convertAmount);
@@ -462,7 +488,7 @@ describe("OmniPrivacyBridge", function () {
 
       // Check statistics
       const [totalLocked, totalToPrivate, totalToPublic] = await bridge.getBridgeStats();
-      expect(totalLocked).to.equal(convertAmount - revertAmount);
+      expect(totalLocked).to.equal(lockedAfterConvert - revertAmount);
       expect(totalToPrivate).to.equal(convertAmount);
       expect(totalToPublic).to.equal(revertAmount);
     });

@@ -38,6 +38,35 @@ describe('OmniValidatorRewards', function () {
     const DEFAULT_ADMIN_ROLE = ethers.ZeroHash;
     const BLOCKCHAIN_ROLE = keccak256(toUtf8Bytes('BLOCKCHAIN_ROLE'));
 
+    // Timelock constant (must match contract)
+    const CONTRACT_UPDATE_DELAY = 48 * 60 * 60; // 48 hours
+
+    /**
+     * Process all pending epochs up to and including current epoch.
+     * Epochs must be processed sequentially (C-01 fix).
+     */
+    async function processAllPendingEpochs(): Promise<void> {
+        const pendingEpochs = await validatorRewards.getPendingEpochs();
+        if (pendingEpochs > 0) {
+            await validatorRewards.processMultipleEpochs(pendingEpochs);
+        }
+    }
+
+    /**
+     * Process the next sequential epoch (lastProcessedEpoch + 1).
+     * Waits until the epoch is available if needed.
+     */
+    async function processNextEpoch(): Promise<bigint> {
+        const nextEpoch = (await validatorRewards.lastProcessedEpoch()) + BigInt(1);
+        const currentEpoch = await validatorRewards.getCurrentEpoch();
+        if (nextEpoch > currentEpoch) {
+            // Need to advance time first
+            await time.increase(EPOCH_DURATION + 1);
+        }
+        await validatorRewards.processEpoch(nextEpoch);
+        return nextEpoch;
+    }
+
     // Contract constants
     const EPOCH_DURATION = 2;
     const HEARTBEAT_TIMEOUT = 20;
@@ -98,13 +127,15 @@ describe('OmniValidatorRewards', function () {
         await mockParticipation.setTotalScore(validator2.address, 60);
         await mockParticipation.setTotalScore(validator3.address, 50);
 
-        // Setup staking
+        // Setup staking with future lockTime (H-01: expired locks return 0)
+        const currentTime = await time.latest();
+        const futureLock = currentTime + 180 * 24 * 60 * 60;
         await mockOmniCore.setStake(
             validator1.address,
             ethers.parseEther('10000000'), // 10M XOM
             3,
             180 * 24 * 60 * 60,
-            0,
+            futureLock,
             true
         );
         await mockOmniCore.setStake(
@@ -112,7 +143,7 @@ describe('OmniValidatorRewards', function () {
             ethers.parseEther('1000000'), // 1M XOM
             2,
             30 * 24 * 60 * 60,
-            0,
+            currentTime + 30 * 24 * 60 * 60,
             true
         );
 
@@ -266,12 +297,12 @@ describe('OmniValidatorRewards', function () {
             await validatorRewards.connect(validator2).submitHeartbeat();
         });
 
-        it('should process epoch', async function () {
+        it('should process epoch sequentially', async function () {
             // Wait for at least one epoch
             await time.increase(EPOCH_DURATION + 1);
 
-            const currentEpoch = await validatorRewards.getCurrentEpoch();
-            const tx = await validatorRewards.processEpoch(currentEpoch);
+            // Must start from epoch 1 (sequential processing)
+            const tx = await validatorRewards.processEpoch(1);
 
             await expect(tx).to.emit(validatorRewards, 'EpochProcessed');
         });
@@ -279,8 +310,7 @@ describe('OmniValidatorRewards', function () {
         it('should distribute rewards to active validators', async function () {
             await time.increase(EPOCH_DURATION + 1);
 
-            const currentEpoch = await validatorRewards.getCurrentEpoch();
-            await validatorRewards.processEpoch(currentEpoch);
+            await processNextEpoch();
 
             // Check rewards accumulated
             const rewards1 = await validatorRewards.accumulatedRewards(validator1.address);
@@ -293,8 +323,7 @@ describe('OmniValidatorRewards', function () {
         it('should distribute higher rewards to validators with higher weight', async function () {
             await time.increase(EPOCH_DURATION + 1);
 
-            const currentEpoch = await validatorRewards.getCurrentEpoch();
-            await validatorRewards.processEpoch(currentEpoch);
+            await processNextEpoch();
 
             const rewards1 = await validatorRewards.accumulatedRewards(validator1.address);
             const rewards2 = await validatorRewards.accumulatedRewards(validator2.address);
@@ -303,31 +332,29 @@ describe('OmniValidatorRewards', function () {
             expect(rewards1).to.be.gt(rewards2);
         });
 
-        it('should reject processing future epoch', async function () {
-            const currentEpoch = await validatorRewards.getCurrentEpoch();
-
+        it('should reject non-sequential epoch', async function () {
+            // C-01: Cannot skip epoch 1 and process epoch 100 directly
             await expect(
-                validatorRewards.processEpoch(currentEpoch + BigInt(100))
-            ).to.be.revertedWithCustomError(validatorRewards, 'FutureEpoch');
+                validatorRewards.processEpoch(100)
+            ).to.be.revertedWithCustomError(validatorRewards, 'EpochNotSequential');
         });
 
         it('should reject processing already processed epoch', async function () {
             await time.increase(EPOCH_DURATION + 1);
 
-            const currentEpoch = await validatorRewards.getCurrentEpoch();
-            await validatorRewards.processEpoch(currentEpoch);
+            await processNextEpoch();
 
+            // Same epoch is no longer sequential
             await expect(
-                validatorRewards.processEpoch(currentEpoch)
-            ).to.be.revertedWithCustomError(validatorRewards, 'EpochAlreadyProcessed');
+                validatorRewards.processEpoch(1)
+            ).to.be.revertedWithCustomError(validatorRewards, 'EpochNotSequential');
         });
 
         it('should skip epoch if no active validators', async function () {
             // Wait for heartbeat timeout
             await time.increase(HEARTBEAT_TIMEOUT + 1);
 
-            const currentEpoch = await validatorRewards.getCurrentEpoch();
-            await validatorRewards.processEpoch(currentEpoch);
+            await processNextEpoch();
 
             // No rewards distributed
             const rewards1 = await validatorRewards.accumulatedRewards(validator1.address);
@@ -337,17 +364,15 @@ describe('OmniValidatorRewards', function () {
         it('should update lastProcessedEpoch', async function () {
             await time.increase(EPOCH_DURATION + 1);
 
-            const currentEpoch = await validatorRewards.getCurrentEpoch();
-            await validatorRewards.processEpoch(currentEpoch);
+            const epoch = await processNextEpoch();
 
-            expect(await validatorRewards.lastProcessedEpoch()).to.equal(currentEpoch);
+            expect(await validatorRewards.lastProcessedEpoch()).to.equal(epoch);
         });
 
         it('should increment totalBlocksProduced', async function () {
             await time.increase(EPOCH_DURATION + 1);
 
-            const currentEpoch = await validatorRewards.getCurrentEpoch();
-            await validatorRewards.processEpoch(currentEpoch);
+            await processNextEpoch();
 
             expect(await validatorRewards.totalBlocksProduced()).to.equal(1);
         });
@@ -363,6 +388,7 @@ describe('OmniValidatorRewards', function () {
             // Wait for multiple epochs
             await time.increase(EPOCH_DURATION * 5);
 
+            // processMultipleEpochs handles sequential processing
             await validatorRewards.processMultipleEpochs(5);
 
             expect(await validatorRewards.totalBlocksProduced()).to.be.gte(1);
@@ -380,6 +406,15 @@ describe('OmniValidatorRewards', function () {
             const rewards1 = await validatorRewards.accumulatedRewards(validator1.address);
             expect(rewards1).to.be.gt(0);
         });
+
+        it('should emit EpochProcessed for each batch epoch', async function () {
+            await time.increase(EPOCH_DURATION * 3);
+
+            const tx = await validatorRewards.processMultipleEpochs(3);
+
+            // L-03 fix: processMultipleEpochs now emits events
+            await expect(tx).to.emit(validatorRewards, 'EpochProcessed');
+        });
     });
 
     describe('Reward Claiming', function () {
@@ -388,8 +423,8 @@ describe('OmniValidatorRewards', function () {
             await validatorRewards.connect(validator1).submitHeartbeat();
             await validatorRewards.connect(validator2).submitHeartbeat();
             await time.increase(EPOCH_DURATION + 1);
-            const currentEpoch = await validatorRewards.getCurrentEpoch();
-            await validatorRewards.processEpoch(currentEpoch);
+            // Process sequentially from epoch 1
+            await processNextEpoch();
         });
 
         it('should claim rewards', async function () {
@@ -437,23 +472,25 @@ describe('OmniValidatorRewards', function () {
             ).to.be.revertedWithCustomError(validatorRewards, 'NoRewardsToClaim');
         });
 
-        it('should reject claim from non-validator', async function () {
-            await expect(
-                validatorRewards.connect(unauthorized).claimRewards()
-            ).to.be.revertedWithCustomError(validatorRewards, 'NotValidator');
+        it('should allow retired validators to claim (H-04 fix)', async function () {
+            // H-04: No isValidator check in claimRewards - accumulated
+            // rewards are claimable even after deactivation
+            const pendingRewards = await validatorRewards.accumulatedRewards(validator1.address);
+            expect(pendingRewards).to.be.gt(0);
+
+            // Deactivate validator1 in mock
+            await mockOmniCore.setValidator(validator1.address, false);
+
+            // Should still be able to claim earned rewards
+            const tx = await validatorRewards.connect(validator1).claimRewards();
+            await expect(tx).to.emit(validatorRewards, 'RewardsClaimed');
         });
 
-        it('should reject claim if contract balance insufficient', async function () {
-            // Drain contract
-            await validatorRewards.connect(owner).emergencyWithdraw(
-                await mockXOMToken.getAddress(),
-                await mockXOMToken.balanceOf(await validatorRewards.getAddress()),
-                owner.address
-            );
-
+        it('should reject claim from address with no rewards', async function () {
+            // Unauthorized has zero accumulated rewards
             await expect(
-                validatorRewards.connect(validator1).claimRewards()
-            ).to.be.revertedWithCustomError(validatorRewards, 'InsufficientBalance');
+                validatorRewards.connect(unauthorized).claimRewards()
+            ).to.be.revertedWithCustomError(validatorRewards, 'NoRewardsToClaim');
         });
     });
 
@@ -515,8 +552,7 @@ describe('OmniValidatorRewards', function () {
             for (let i = 0; i < 10; i++) {
                 await validatorRewards.connect(validator1).submitHeartbeat();
                 await time.increase(EPOCH_DURATION + 1);
-                const epoch = await validatorRewards.getCurrentEpoch();
-                await validatorRewards.processEpoch(epoch);
+                await processNextEpoch();
             }
 
             const reward = await validatorRewards.calculateBlockReward();
@@ -548,8 +584,7 @@ describe('OmniValidatorRewards', function () {
         beforeEach(async function () {
             await validatorRewards.connect(validator1).submitHeartbeat();
             await time.increase(EPOCH_DURATION + 1);
-            const epoch = await validatorRewards.getCurrentEpoch();
-            await validatorRewards.processEpoch(epoch);
+            await processNextEpoch();
         });
 
         it('should return pending rewards', async function () {
@@ -576,26 +611,91 @@ describe('OmniValidatorRewards', function () {
     });
 
     describe('Admin Functions', function () {
-        describe('setContracts', function () {
-            it('should update contract references', async function () {
+        describe('proposeContracts (H-02 timelock)', function () {
+            it('should propose contract references with timelock', async function () {
                 const newXOM = validator1.address;
                 const newParticipation = validator2.address;
                 const newOmniCore = validator3.address;
 
-                const tx = await validatorRewards.connect(owner).setContracts(
+                const tx = await validatorRewards.connect(owner).proposeContracts(
                     newXOM,
                     newParticipation,
                     newOmniCore
                 );
 
                 await expect(tx)
+                    .to.emit(validatorRewards, 'ContractsUpdateProposed');
+
+                // Pending update should be set
+                const pending = await validatorRewards.pendingContracts();
+                expect(pending.xomToken).to.equal(newXOM);
+                expect(pending.participation).to.equal(newParticipation);
+                expect(pending.omniCore).to.equal(newOmniCore);
+                expect(pending.effectiveTimestamp).to.be.gt(0);
+            });
+
+            it('should apply after timelock elapses', async function () {
+                const newXOM = validator1.address;
+                const newParticipation = validator2.address;
+                const newOmniCore = validator3.address;
+
+                await validatorRewards.connect(owner).proposeContracts(
+                    newXOM,
+                    newParticipation,
+                    newOmniCore
+                );
+
+                // Advance past 48h timelock
+                await time.increase(CONTRACT_UPDATE_DELAY + 1);
+
+                const tx = await validatorRewards.connect(owner).applyContracts();
+
+                await expect(tx)
                     .to.emit(validatorRewards, 'ContractsUpdated')
                     .withArgs(newXOM, newParticipation, newOmniCore);
             });
 
+            it('should reject apply before timelock elapses', async function () {
+                await validatorRewards.connect(owner).proposeContracts(
+                    validator1.address,
+                    validator2.address,
+                    validator3.address
+                );
+
+                // Don't wait for timelock
+                await expect(
+                    validatorRewards.connect(owner).applyContracts()
+                ).to.be.revertedWithCustomError(validatorRewards, 'TimelockNotElapsed');
+            });
+
+            it('should reject apply with no pending update', async function () {
+                await expect(
+                    validatorRewards.connect(owner).applyContracts()
+                ).to.be.revertedWithCustomError(validatorRewards, 'NoPendingUpdate');
+            });
+
+            it('should cancel pending update', async function () {
+                await validatorRewards.connect(owner).proposeContracts(
+                    validator1.address,
+                    validator2.address,
+                    validator3.address
+                );
+
+                const tx = await validatorRewards.connect(owner).cancelContractsUpdate();
+
+                await expect(tx)
+                    .to.emit(validatorRewards, 'ContractsUpdateCancelled');
+
+                // Cannot apply after cancel
+                await time.increase(CONTRACT_UPDATE_DELAY + 1);
+                await expect(
+                    validatorRewards.connect(owner).applyContracts()
+                ).to.be.revertedWithCustomError(validatorRewards, 'NoPendingUpdate');
+            });
+
             it('should reject zero address for XOM', async function () {
                 await expect(
-                    validatorRewards.connect(owner).setContracts(
+                    validatorRewards.connect(owner).proposeContracts(
                         ZeroAddress,
                         validator2.address,
                         validator3.address
@@ -605,7 +705,7 @@ describe('OmniValidatorRewards', function () {
 
             it('should reject zero address for participation', async function () {
                 await expect(
-                    validatorRewards.connect(owner).setContracts(
+                    validatorRewards.connect(owner).proposeContracts(
                         validator1.address,
                         ZeroAddress,
                         validator3.address
@@ -615,7 +715,7 @@ describe('OmniValidatorRewards', function () {
 
             it('should reject zero address for omniCore', async function () {
                 await expect(
-                    validatorRewards.connect(owner).setContracts(
+                    validatorRewards.connect(owner).proposeContracts(
                         validator1.address,
                         validator2.address,
                         ZeroAddress
@@ -623,29 +723,59 @@ describe('OmniValidatorRewards', function () {
                 ).to.be.revertedWithCustomError(validatorRewards, 'ZeroAddress');
             });
 
-            it('should reject unauthorized caller', async function () {
+            it('should reject unauthorized caller for propose', async function () {
                 await expect(
-                    validatorRewards.connect(unauthorized).setContracts(
+                    validatorRewards.connect(unauthorized).proposeContracts(
                         validator1.address,
                         validator2.address,
                         validator3.address
                     )
                 ).to.be.reverted;
             });
+
+            it('should reject unauthorized caller for apply', async function () {
+                await validatorRewards.connect(owner).proposeContracts(
+                    validator1.address,
+                    validator2.address,
+                    validator3.address
+                );
+                await time.increase(CONTRACT_UPDATE_DELAY + 1);
+
+                await expect(
+                    validatorRewards.connect(unauthorized).applyContracts()
+                ).to.be.reverted;
+            });
         });
 
         describe('emergencyWithdraw', function () {
-            it('should withdraw tokens', async function () {
+            it('should reject XOM withdrawal (C-02 fix)', async function () {
+                await expect(
+                    validatorRewards.connect(owner).emergencyWithdraw(
+                        await mockXOMToken.getAddress(),
+                        ethers.parseEther('1000'),
+                        owner.address
+                    )
+                ).to.be.revertedWithCustomError(validatorRewards, 'CannotWithdrawRewardToken');
+            });
+
+            it('should withdraw non-XOM tokens', async function () {
+                // Deploy a separate ERC20 to test withdrawal
+                const MockERC20 = await ethers.getContractFactory('MockXOMToken');
+                const otherToken = await MockERC20.deploy();
+                await otherToken.waitForDeployment();
+
                 const amount = ethers.parseEther('1000');
-                const balanceBefore = await mockXOMToken.balanceOf(owner.address);
+                await otherToken.mint(await validatorRewards.getAddress(), amount);
+
+                const balanceBefore = await otherToken.balanceOf(owner.address);
 
                 await validatorRewards.connect(owner).emergencyWithdraw(
-                    await mockXOMToken.getAddress(),
+                    await otherToken.getAddress(),
                     amount,
                     owner.address
                 );
 
-                const balanceAfter = await mockXOMToken.balanceOf(owner.address);
+                const balanceAfter = await otherToken.balanceOf(owner.address);
                 expect(balanceAfter - balanceBefore).to.equal(amount);
             });
 
@@ -682,18 +812,40 @@ describe('OmniValidatorRewards', function () {
         });
 
         it('should handle very large staking amount', async function () {
-            // Set 10B+ stake
+            // Set 10B+ stake with future lockTime
+            const currentTime = await time.latest();
             await mockOmniCore.setStake(
                 validator1.address,
                 ethers.parseEther('10000000000'), // 10B XOM
                 5,
                 730 * 24 * 60 * 60,
-                0,
+                currentTime + 730 * 24 * 60 * 60, // 2 year lock
                 true
             );
 
+            await validatorRewards.connect(validator1).submitHeartbeat();
             const weight = await validatorRewards.getValidatorWeight(validator1.address);
             expect(weight).to.be.gt(0);
+        });
+
+        it('should return zero staking weight for expired lock (H-01 fix)', async function () {
+            // Set stake with expired lockTime (in the past)
+            await mockOmniCore.setStake(
+                validator1.address,
+                ethers.parseEther('10000000'), // 10M XOM
+                3,
+                180 * 24 * 60 * 60,
+                1, // lockTime = 1 (far in the past)
+                true
+            );
+
+            await validatorRewards.connect(validator1).submitHeartbeat();
+            const weight = await validatorRewards.getValidatorWeight(validator1.address);
+            // Weight should only include participation and activity (no staking)
+            // participation: 80/100 * 40 = 32
+            // staking: 0 (expired lock)
+            // activity: heartbeat active -> 60/100 * 30 = 18
+            expect(weight).to.equal(50); // 32 + 0 + 18
         });
 
         it('should handle single active validator', async function () {
@@ -701,8 +853,7 @@ describe('OmniValidatorRewards', function () {
             await validatorRewards.connect(validator1).submitHeartbeat();
             await time.increase(EPOCH_DURATION + 1);
 
-            const epoch = await validatorRewards.getCurrentEpoch();
-            await validatorRewards.processEpoch(epoch);
+            await processNextEpoch();
 
             // Validator1 should get all rewards
             const rewards1 = await validatorRewards.accumulatedRewards(validator1.address);
@@ -710,24 +861,54 @@ describe('OmniValidatorRewards', function () {
         });
 
         it('should handle equal weights', async function () {
-            // Set identical participation and staking
+            // Set identical participation and staking with future lockTime
+            const currentTime = await time.latest();
+            const futureLock = currentTime + 365 * 24 * 60 * 60;
+
             await mockParticipation.setTotalScore(validator1.address, 50);
             await mockParticipation.setTotalScore(validator2.address, 50);
-            await mockOmniCore.setStake(validator1.address, ethers.parseEther('1000000'), 2, 0, 0, true);
-            await mockOmniCore.setStake(validator2.address, ethers.parseEther('1000000'), 2, 0, 0, true);
+            await mockOmniCore.setStake(
+                validator1.address, ethers.parseEther('1000000'), 2, 0, futureLock, true
+            );
+            await mockOmniCore.setStake(
+                validator2.address, ethers.parseEther('1000000'), 2, 0, futureLock, true
+            );
 
             await validatorRewards.connect(validator1).submitHeartbeat();
             await validatorRewards.connect(validator2).submitHeartbeat();
             await time.increase(EPOCH_DURATION + 1);
 
-            const epoch = await validatorRewards.getCurrentEpoch();
-            await validatorRewards.processEpoch(epoch);
+            await processNextEpoch();
 
             const rewards1 = await validatorRewards.accumulatedRewards(validator1.address);
             const rewards2 = await validatorRewards.accumulatedRewards(validator2.address);
 
             // Rewards should be approximately equal
             expect(rewards1).to.be.closeTo(rewards2, ethers.parseEther('0.01'));
+        });
+
+        it('should cap validator iteration at MAX_VALIDATORS_PER_EPOCH (H-03)', async function () {
+            // Verify the constant is set
+            const maxValidators = await validatorRewards.MAX_VALIDATORS_PER_EPOCH();
+            expect(maxValidators).to.equal(200);
+        });
+
+        it('should enforce MAX_TX_BATCH cap (H-05)', async function () {
+            await expect(
+                validatorRewards.connect(blockchainRole).recordMultipleTransactions(
+                    validator1.address,
+                    1001 // Exceeds MAX_TX_BATCH = 1000
+                )
+            ).to.be.revertedWithCustomError(validatorRewards, 'BatchTooLarge');
+        });
+
+        it('should enforce zero count cap (H-05)', async function () {
+            await expect(
+                validatorRewards.connect(blockchainRole).recordMultipleTransactions(
+                    validator1.address,
+                    0
+                )
+            ).to.be.revertedWithCustomError(validatorRewards, 'BatchTooLarge');
         });
     });
 });

@@ -47,15 +47,18 @@ contract OmniPaymaster is IPaymaster, Ownable {
     /// @notice Maximum allowed free operations per account
     uint256 public constant MAX_FREE_OPS = 100;
 
+    /// @notice Nominal XOM fee per operation (0.001 XOM = 1e15 wei at 18 decimals)
+    uint256 public constant XOM_GAS_FEE = 1e15;
+
     // ══════════════════════════════════════════════════════════════
     //                      STATE VARIABLES
     // ══════════════════════════════════════════════════════════════
 
     /// @notice The ERC-4337 EntryPoint contract
-    address public immutable entryPoint;
+    address public immutable entryPoint; // solhint-disable-line immutable-vars-naming
 
     /// @notice XOM token contract for gas payment mode
-    IERC20 public immutable xomToken;
+    IERC20 public immutable xomToken; // solhint-disable-line immutable-vars-naming
 
     /// @notice Number of free operations per new account
     uint256 public freeOpsLimit;
@@ -75,6 +78,15 @@ contract OmniPaymaster is IPaymaster, Ownable {
     /// @notice Total operations sponsored (for stats)
     uint256 public totalOpsSponsored;
 
+    /// @notice Maximum number of free/subsidized operations allowed per day (0 = unlimited)
+    uint256 public dailySponsorshipBudget;
+
+    /// @notice Number of free/subsidized operations consumed in the current day
+    uint256 public dailySponsorshipUsed;
+
+    /// @notice Timestamp of last daily budget reset (midnight UTC boundary)
+    uint256 public lastBudgetReset;
+
     // ══════════════════════════════════════════════════════════════
     //                          EVENTS
     // ══════════════════════════════════════════════════════════════
@@ -88,7 +100,7 @@ contract OmniPaymaster is IPaymaster, Ownable {
     /// @notice Emitted when XOM is collected for gas payment
     /// @param account The account that paid in XOM
     /// @param xomAmount Amount of XOM collected
-    event XOMGasPayment(address indexed account, uint256 xomAmount);
+    event XOMGasPayment(address indexed account, uint256 indexed xomAmount);
 
     /// @notice Emitted when an account is whitelisted
     /// @param account The whitelisted account
@@ -100,11 +112,15 @@ contract OmniPaymaster is IPaymaster, Ownable {
 
     /// @notice Emitted when free operations limit is updated
     /// @param newLimit The new limit
-    event FreeOpsLimitUpdated(uint256 newLimit);
+    event FreeOpsLimitUpdated(uint256 indexed newLimit);
 
     /// @notice Emitted when sponsorship is toggled
     /// @param enabled Whether sponsorship is now enabled
-    event SponsorshipToggled(bool enabled);
+    event SponsorshipToggled(bool indexed enabled);
+
+    /// @notice Emitted when the daily sponsorship budget is updated
+    /// @param newBudget The new daily budget (0 = unlimited)
+    event DailySponsorshipBudgetUpdated(uint256 indexed newBudget);
 
     // ══════════════════════════════════════════════════════════════
     //                       CUSTOM ERRORS
@@ -118,6 +134,9 @@ contract OmniPaymaster is IPaymaster, Ownable {
 
     /// @notice Account has exceeded free operation limit and has no XOM
     error NotSponsored();
+
+    /// @notice Daily sponsorship budget has been exhausted
+    error DailyBudgetExhausted();
 
     /// @notice Invalid address (zero)
     error InvalidAddress();
@@ -159,6 +178,9 @@ contract OmniPaymaster is IPaymaster, Ownable {
         xomToken = IERC20(xomToken_);
         freeOpsLimit = DEFAULT_FREE_OPS;
         sponsorshipEnabled = true;
+        dailySponsorshipBudget = 1000; // Default: 1000 sponsored ops per day
+        // solhint-disable-next-line not-rely-on-time
+        lastBudgetReset = block.timestamp;
     }
 
     // ══════════════════════════════════════════════════════════════
@@ -195,10 +217,18 @@ contract OmniPaymaster is IPaymaster, Ownable {
             mode = SponsorMode.subsidized;
         } else if (sponsoredOpsCount[account] < freeOpsLimit) {
             mode = SponsorMode.free;
-        } else if (xomToken.balanceOf(account) > 0) {
+        } else if (
+            xomToken.balanceOf(account) > XOM_GAS_FEE - 1
+            && xomToken.allowance(account, address(this)) > XOM_GAS_FEE - 1
+        ) {
             mode = SponsorMode.xomPayment;
         } else {
             revert NotSponsored();
+        }
+
+        // Enforce daily sponsorship budget for non-XOM modes (sybil protection)
+        if (mode != SponsorMode.xomPayment) {
+            _checkDailyBudget();
         }
 
         context = abi.encode(mode, account);
@@ -220,23 +250,23 @@ contract OmniPaymaster is IPaymaster, Ownable {
         // Decode context
         (SponsorMode sponsorMode, address account) = abi.decode(context, (SponsorMode, address));
 
-        // Update counters
-        ++sponsoredOpsCount[account];
-        ++totalOpsSponsored;
-        totalGasSponsored += actualGasCost;
+        // Only update counters on successful operations (failed ops should not
+        // consume the user's free ops allocation)
+        if (mode == PostOpMode.opSucceeded) {
+            ++sponsoredOpsCount[account];
+            ++totalOpsSponsored;
+            totalGasSponsored += actualGasCost;
+        }
 
-        // For XOM payment mode, collect a nominal XOM fee
+        // For XOM payment mode, collect a nominal XOM fee only on success
         // On OmniCoin L1, gas is effectively free, so this is a micro-fee
-        if (sponsorMode == SponsorMode.xomPayment && mode != PostOpMode.postOpReverted) {
-            // Nominal fee: 0.001 XOM per operation (1e15 wei with 18 decimals)
-            uint256 xomFee = 1e15;
-            uint256 userBalance = xomToken.balanceOf(account);
-            if (userBalance >= xomFee) {
-                // Transfer XOM from account to paymaster owner
-                // Note: This requires the account to have approved the paymaster
-                xomToken.safeTransferFrom(account, owner(), xomFee);
-                emit XOMGasPayment(account, xomFee);
-            }
+        if (
+            sponsorMode == SponsorMode.xomPayment
+            && mode == PostOpMode.opSucceeded
+        ) {
+            // Validated in validatePaymasterUserOp: balance and allowance > XOM_GAS_FEE - 1
+            xomToken.safeTransferFrom(account, owner(), XOM_GAS_FEE);
+            emit XOMGasPayment(account, XOM_GAS_FEE);
         }
 
         emit GasSponsored(account, sponsorMode, actualGasCost);
@@ -311,13 +341,52 @@ contract OmniPaymaster is IPaymaster, Ownable {
     }
 
     /**
+     * @notice Set the daily sponsorship budget
+     * @dev Controls the maximum number of free/subsidized operations per day.
+     *      Set to 0 to disable the daily limit (unlimited sponsorship).
+     * @param newBudget The new daily budget (operations per day, 0 = unlimited)
+     */
+    function setDailySponsorshipBudget(uint256 newBudget) external onlyOwner {
+        dailySponsorshipBudget = newBudget;
+        emit DailySponsorshipBudgetUpdated(newBudget);
+    }
+
+    /**
      * @notice Get remaining free operations for an account
      * @param account The account to query
      * @return remaining Number of free operations remaining
      */
     function remainingFreeOps(address account) external view returns (uint256 remaining) {
         uint256 used = sponsoredOpsCount[account];
-        if (used >= freeOpsLimit) return 0;
+        if (used > freeOpsLimit - 1) return 0;
         return freeOpsLimit - used;
+    }
+
+    // ══════════════════════════════════════════════════════════════
+    //                    INTERNAL FUNCTIONS
+    // ══════════════════════════════════════════════════════════════
+
+    /**
+     * @notice Check and update the daily sponsorship budget
+     * @dev Resets the counter when a new day begins (24h period from last reset).
+     *      Reverts if the daily budget has been exhausted.
+     *      If dailySponsorshipBudget is 0, the budget is unlimited.
+     */
+    function _checkDailyBudget() internal {
+        if (dailySponsorshipBudget == 0) return; // Unlimited
+
+        // Reset counter if 24 hours have passed since last reset
+        // solhint-disable-next-line not-rely-on-time
+        if (block.timestamp > lastBudgetReset + 1 days - 1) {
+            dailySponsorshipUsed = 0;
+            // solhint-disable-next-line not-rely-on-time
+            lastBudgetReset = block.timestamp;
+        }
+
+        if (dailySponsorshipUsed > dailySponsorshipBudget - 1) {
+            revert DailyBudgetExhausted();
+        }
+
+        ++dailySponsorshipUsed;
     }
 }

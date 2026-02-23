@@ -39,6 +39,9 @@ contract OmniRegistration is
     /// @notice Role for KYC attestors (trusted validators)
     bytes32 public constant KYC_ATTESTOR_ROLE = keccak256("KYC_ATTESTOR_ROLE");
 
+    /// @notice Role for contracts/services authorized to mark bonuses as claimed
+    bytes32 public constant BONUS_MARKER_ROLE = keccak256("BONUS_MARKER_ROLE");
+
     /// @notice Maximum registrations per day (rate limiting)
     uint256 public constant MAX_DAILY_REGISTRATIONS = 10000;
 
@@ -228,6 +231,11 @@ contract OmniRegistration is
 
     /// @notice Referral count per user (how many users they referred)
     mapping(address => uint256) public referralCounts;
+
+    /// @notice Whether a user has completed their first marketplace sale
+    /// @dev Set by TRANSACTION_RECORDER_ROLE when a sale is finalized.
+    ///      Used by OmniRewardManager to gate first sale bonus claims.
+    mapping(address => bool) public firstSaleCompleted;
 
     // ═══════════════════════════════════════════════════════════════════════
     //                              EVENTS
@@ -475,6 +483,10 @@ contract OmniRegistration is
         uint256 timestamp
     );
 
+    /// @notice Emitted when the contract is permanently ossified
+    /// @param contractAddress Address of this contract
+    event ContractOssified(address indexed contractAddress);
+
     // ═══════════════════════════════════════════════════════════════════════
     //                              ERRORS
     // ═══════════════════════════════════════════════════════════════════════
@@ -584,6 +596,12 @@ contract OmniRegistration is
     /// @notice Address is zero
     error ZeroAddress();
 
+    /// @notice Thrown when batch operation exceeds the maximum allowed size
+    error BatchTooLarge();
+
+    /// @notice Thrown when contract is ossified and upgrade attempted
+    error ContractIsOssified();
+
     // ═══════════════════════════════════════════════════════════════════════
     //                           INITIALIZATION
     // ═══════════════════════════════════════════════════════════════════════
@@ -624,7 +642,7 @@ contract OmniRegistration is
      * @dev Can only be called once per version number
      * @param version The reinitializer version number
      */
-    function reinitialize(uint64 version) public reinitializer(version) {
+    function reinitialize(uint64 version) public onlyRole(DEFAULT_ADMIN_ROLE) reinitializer(version) {
         // Set EIP-712 domain separator if not already set
         if (DOMAIN_SEPARATOR == bytes32(0)) {
             DOMAIN_SEPARATOR = keccak256(
@@ -878,14 +896,16 @@ contract OmniRegistration is
         uint256 today = block.timestamp / 1 days; // solhint-disable-line not-rely-on-time
         if (dailyRegistrationCount[today] >= MAX_DAILY_REGISTRATIONS) revert DailyLimitExceeded();
 
-        // Create registration (phone verified separately after registration)
+        // M-02: Trustless registration sets kycTier to 0 (not 1).
+        // Users must complete phone + social verification to earn Tier 1.
+        // This prevents Sybil attackers from getting KYC Tier 1 with only email.
         registrations[user] = Registration({ // solhint-disable-line not-rely-on-time
             timestamp: block.timestamp,
             referrer: referrer,
             registeredBy: msg.sender,
             phoneHash: bytes32(0),
             emailHash: emailHash,
-            kycTier: 1,
+            kycTier: 0,
             welcomeBonusClaimed: false,
             firstSaleBonusClaimed: false
         });
@@ -960,6 +980,19 @@ contract OmniRegistration is
         if (attestors.length >= KYC_ATTESTATION_THRESHOLD) {
             uint8 oldTier = registrations[user].kycTier;
             registrations[user].kycTier = tier;
+
+            // M-01: Synchronize kycTierXCompletedAt timestamps with attestation upgrades
+            // This prevents dual-tracking inconsistencies between Registration.kycTier
+            // and the per-tier completion timestamps used by getUserKYCTier().
+            // solhint-disable-next-line not-rely-on-time
+            if (tier == 2 && kycTier2CompletedAt[user] == 0) {
+                kycTier2CompletedAt[user] = block.timestamp; // solhint-disable-line not-rely-on-time
+            } else if (tier == 3 && kycTier3CompletedAt[user] == 0) {
+                kycTier3CompletedAt[user] = block.timestamp; // solhint-disable-line not-rely-on-time
+            } else if (tier == 4 && kycTier4CompletedAt[user] == 0) {
+                kycTier4CompletedAt[user] = block.timestamp; // solhint-disable-line not-rely-on-time
+            }
+
             emit KYCUpgraded(user, oldTier, tier);
         }
     }
@@ -1912,11 +1945,9 @@ contract OmniRegistration is
     /**
      * @notice Mark welcome bonus as claimed for a user
      * @param user The user who claimed the bonus
-     * @dev Only callable by OmniRewardManager contract
+     * @dev Only callable by addresses with BONUS_MARKER_ROLE (e.g., OmniRewardManager)
      */
-    function markWelcomeBonusClaimed(address user) external {
-        // This should be called by OmniRewardManager
-        // We'll add proper access control when integrating
+    function markWelcomeBonusClaimed(address user) external onlyRole(BONUS_MARKER_ROLE) {
         Registration storage reg = registrations[user];
         if (reg.timestamp == 0) revert NotRegistered();
         if (reg.welcomeBonusClaimed) revert BonusAlreadyClaimed();
@@ -1928,15 +1959,40 @@ contract OmniRegistration is
     /**
      * @notice Mark first sale bonus as claimed for a user
      * @param user The user who claimed the bonus
-     * @dev Only callable by OmniRewardManager contract
+     * @dev Only callable by addresses with BONUS_MARKER_ROLE (e.g., OmniRewardManager)
      */
-    function markFirstSaleBonusClaimed(address user) external {
+    function markFirstSaleBonusClaimed(address user) external onlyRole(BONUS_MARKER_ROLE) {
         Registration storage reg = registrations[user];
         if (reg.timestamp == 0) revert NotRegistered();
         if (reg.firstSaleBonusClaimed) revert BonusAlreadyClaimed();
 
         reg.firstSaleBonusClaimed = true;
+        // solhint-disable-next-line not-rely-on-time
         emit FirstSaleBonusMarkedClaimed(user, block.timestamp);
+    }
+
+    /**
+     * @notice Mark a user as having completed their first marketplace sale
+     * @dev Only callable by TRANSACTION_RECORDER_ROLE (marketplace/escrow contracts).
+     *      This flag gates the first sale bonus in OmniRewardManager, ensuring
+     *      that users cannot claim the bonus without actually completing a sale.
+     * @param user The seller's address who completed the sale
+     */
+    function markFirstSaleCompleted(
+        address user
+    ) external onlyRole(TRANSACTION_RECORDER_ROLE) {
+        Registration storage reg = registrations[user];
+        if (reg.timestamp == 0) revert NotRegistered();
+        firstSaleCompleted[user] = true;
+    }
+
+    /**
+     * @notice Check if a user has completed their first marketplace sale
+     * @param user The user address to check
+     * @return True if the user has completed at least one sale
+     */
+    function hasCompletedFirstSale(address user) external view returns (bool) {
+        return firstSaleCompleted[user];
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -2052,8 +2108,10 @@ contract OmniRegistration is
 
     /**
      * @notice Unregister a user (admin only)
-     * @dev Clears all registration data including email/phone hash reservations.
-     *      This allows the user to re-register with the same credentials.
+     * @dev Clears ALL registration data including email/phone hash reservations,
+     *      social/ID/address hash reservations, KYC tier timestamps, provider data,
+     *      volume tracking, and referral counts. This ensures the user can
+     *      cleanly re-register with the same credentials without ghost state.
      *      Use cases: account deletion (GDPR), testing, fixing registration errors.
      * @param user The address of the user to unregister
      */
@@ -2069,6 +2127,11 @@ contract OmniRegistration is
         bytes32 emailHash = reg.emailHash;
         bytes32 phoneHash = reg.phoneHash;
 
+        // Decrement referrer's referral count if applicable
+        if (reg.referrer != address(0) && referralCounts[reg.referrer] > 0) {
+            --referralCounts[reg.referrer];
+        }
+
         // Clear email hash reservation (allows re-use)
         if (emailHash != bytes32(0)) {
             usedEmailHashes[emailHash] = false;
@@ -2079,30 +2142,82 @@ contract OmniRegistration is
             usedPhoneHashes[phoneHash] = false;
         }
 
+        // Clear social hash reservation (allows re-use)
+        bytes32 socialHash = userSocialHashes[user];
+        if (socialHash != bytes32(0)) {
+            usedSocialHashes[socialHash] = false;
+            delete userSocialHashes[user];
+        }
+
+        // Clear separate email hash mapping
+        delete userEmailHashes[user];
+
+        // Clear ID hash reservation (allows re-use of government ID)
+        bytes32 idHash = userIDHashes[user];
+        if (idHash != bytes32(0)) {
+            usedIDHashes[idHash] = false;
+            delete userIDHashes[user];
+        }
+
+        // Clear address hash reservation (allows re-use of address docs)
+        bytes32 addrHash = userAddressHashes[user];
+        if (addrHash != bytes32(0)) {
+            usedAddressHashes[addrHash] = false;
+            delete userAddressHashes[user];
+        }
+
+        // Clear selfie and video verification
+        delete selfieVerified[user];
+        delete videoSessionHashes[user];
+
+        // Clear all KYC tier completion timestamps
+        delete kycTier1CompletedAt[user];
+        delete kycTier2CompletedAt[user];
+        delete kycTier3CompletedAt[user];
+        delete kycTier4CompletedAt[user];
+
+        // Clear KYC provider and country data
+        delete userKYCProvider[user];
+        delete userCountries[user];
+
+        // Clear volume tracking
+        delete userVolumes[user];
+
         // Clear the registration struct
         delete registrations[user];
 
         // Decrement total registrations count
         totalRegistrations--;
 
+        // solhint-disable-next-line not-rely-on-time
         emit UserUnregistered(user, msg.sender, block.timestamp);
     }
 
     /**
      * @notice Batch unregister multiple users (admin only)
-     * @dev More gas-efficient for unregistering multiple users at once
-     * @param users Array of user addresses to unregister
+     * @dev Performs complete state cleanup for each user, clearing all
+     *      registration data, KYC tier timestamps, hash reservations,
+     *      volume tracking, and referral counts. Capped at 100 users
+     *      per batch to prevent exceeding block gas limits.
+     * @param users Array of user addresses to unregister (max 100)
      */
     function adminUnregisterBatch(
         address[] calldata users
     ) external onlyRole(DEFAULT_ADMIN_ROLE) {
         uint256 length = users.length;
+        if (length > 100) revert BatchTooLarge();
+
         for (uint256 i = 0; i < length; ) {
             address user = users[i];
             Registration storage reg = registrations[user];
 
             // Skip users who aren't registered
             if (reg.timestamp != 0) {
+                // Decrement referrer's referral count
+                if (reg.referrer != address(0) && referralCounts[reg.referrer] > 0) {
+                    --referralCounts[reg.referrer];
+                }
+
                 // Clear email hash reservation
                 if (reg.emailHash != bytes32(0)) {
                     usedEmailHashes[reg.emailHash] = false;
@@ -2113,12 +2228,48 @@ contract OmniRegistration is
                     usedPhoneHashes[reg.phoneHash] = false;
                 }
 
+                // Clear social hash reservation
+                bytes32 socialHash = userSocialHashes[user];
+                if (socialHash != bytes32(0)) {
+                    usedSocialHashes[socialHash] = false;
+                    delete userSocialHashes[user];
+                }
+
+                // Clear separate email hash mapping
+                delete userEmailHashes[user];
+
+                // Clear ID hash reservation
+                bytes32 idHash = userIDHashes[user];
+                if (idHash != bytes32(0)) {
+                    usedIDHashes[idHash] = false;
+                    delete userIDHashes[user];
+                }
+
+                // Clear address hash reservation
+                bytes32 addrHash = userAddressHashes[user];
+                if (addrHash != bytes32(0)) {
+                    usedAddressHashes[addrHash] = false;
+                    delete userAddressHashes[user];
+                }
+
+                // Clear selfie, video, KYC timestamps, provider, country
+                delete selfieVerified[user];
+                delete videoSessionHashes[user];
+                delete kycTier1CompletedAt[user];
+                delete kycTier2CompletedAt[user];
+                delete kycTier3CompletedAt[user];
+                delete kycTier4CompletedAt[user];
+                delete userKYCProvider[user];
+                delete userCountries[user];
+                delete userVolumes[user];
+
                 // Clear the registration struct
                 delete registrations[user];
 
                 // Decrement total registrations count
                 totalRegistrations--;
 
+                // solhint-disable-next-line not-rely-on-time
                 emit UserUnregistered(user, msg.sender, block.timestamp);
             }
 
@@ -2227,14 +2378,31 @@ contract OmniRegistration is
      *      Updates daily, monthly, and annual volume counters
      *      Automatically resets counters when periods change
      */
+    /// @notice Thrown when a transaction exceeds the user's KYC tier limit
+    /// @param user User address
+    /// @param limitType Which limit was exceeded (daily, monthly, annual, per-transaction)
+    error TransactionLimitExceeded(address user, string limitType);
+
+    /**
+     * @notice Record transaction for volume tracking and enforce on-chain limits
+     * @param user Address of user making transaction
+     * @param amount Transaction amount in USD (18 decimals)
+     *
+     * @dev Only callable by authorized contracts (marketplace, DEX, etc.)
+     *      Updates daily, monthly, and annual volume counters.
+     *      Automatically resets counters when periods change.
+     *      M-04: Now enforces tier limits on-chain (not just advisory).
+     */
     function recordTransaction(address user, uint256 amount) external {
         if (!hasRole(TRANSACTION_RECORDER_ROLE, msg.sender)) {
             revert UnauthorizedTransactionRecorder();
         }
 
+        // solhint-disable not-rely-on-time
         uint256 today = block.timestamp / 86400;
         uint256 thisMonth = block.timestamp / (30 * 86400);
         uint256 thisYear = block.timestamp / (365 * 86400);
+        // solhint-enable not-rely-on-time
 
         VolumeTracking storage volume = userVolumes[user];
 
@@ -2252,12 +2420,31 @@ contract OmniRegistration is
             volume.lastTransactionYear = thisYear;
         }
 
+        // M-04: Enforce tier limits on-chain
+        uint8 tier = getUserKYCTier(user);
+        TierLimits memory limits = tierLimits[tier];
+
+        if (limits.perTransactionLimit > 0 && amount > limits.perTransactionLimit) {
+            revert TransactionLimitExceeded(user, "per-transaction");
+        }
+        if (limits.dailyLimit > 0 && volume.dailyVolume + amount > limits.dailyLimit) {
+            revert TransactionLimitExceeded(user, "daily");
+        }
+        if (limits.monthlyLimit > 0 && volume.monthlyVolume + amount > limits.monthlyLimit) {
+            revert TransactionLimitExceeded(user, "monthly");
+        }
+        if (limits.annualLimit > 0 && volume.annualVolume + amount > limits.annualLimit) {
+            revert TransactionLimitExceeded(user, "annual");
+        }
+
         // Add to volumes
         volume.dailyVolume += amount;
         volume.monthlyVolume += amount;
         volume.annualVolume += amount;
 
-        emit TransactionRecorded(user, amount, volume.dailyVolume, volume.monthlyVolume, volume.annualVolume);
+        emit TransactionRecorded(
+            user, amount, volume.dailyVolume, volume.monthlyVolume, volume.annualVolume
+        );
     }
 
     /**
@@ -2393,11 +2580,47 @@ contract OmniRegistration is
     }
 
     /**
+     * @notice Permanently remove upgrade capability (one-way, irreversible)
+     * @dev Can only be called by admin (through timelock). Once ossified,
+     *      the contract can never be upgraded again.
+     */
+    function ossify() external onlyRole(DEFAULT_ADMIN_ROLE) {
+        _ossified = true;
+        emit ContractOssified(address(this));
+    }
+
+    /**
+     * @notice Check if the contract has been permanently ossified
+     * @return True if ossified (no further upgrades possible)
+     */
+    function isOssified() external view returns (bool) {
+        return _ossified;
+    }
+
+    /**
      * @notice Authorize contract upgrade
      * @param newImplementation Address of new implementation
-     * @dev Only callable by DEFAULT_ADMIN_ROLE
+     * @dev Only callable by DEFAULT_ADMIN_ROLE. Reverts if contract is ossified.
      */
     function _authorizeUpgrade(
         address newImplementation
-    ) internal override onlyRole(DEFAULT_ADMIN_ROLE) {}
+    ) internal override onlyRole(DEFAULT_ADMIN_ROLE) {
+        if (_ossified) revert ContractIsOssified();
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    //                         STORAGE GAP
+    // ═══════════════════════════════════════════════════════════════════════
+
+    /// @notice Whether contract is ossified (permanently non-upgradeable)
+    bool private _ossified;
+
+    /**
+     * @dev Reserved storage gap for future upgrades.
+     *      Ensures that adding new state variables in upgraded versions
+     *      does not corrupt existing storage layout. Standard UUPS pattern
+     *      used by all other OmniBazaar upgradeable contracts.
+     *      Reduced from 50 to 49 to accommodate _ossified.
+     */
+    uint256[49] private __gap;
 }

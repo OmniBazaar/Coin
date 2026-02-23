@@ -21,10 +21,10 @@ contract OmniAccountFactory {
     // ══════════════════════════════════════════════════════════════
 
     /// @notice The OmniAccount implementation contract (template for clones)
-    address public immutable accountImplementation;
+    address public immutable accountImplementation; // solhint-disable-line immutable-vars-naming
 
     /// @notice The ERC-4337 EntryPoint contract
-    address public immutable entryPoint;
+    address public immutable entryPoint; // solhint-disable-line immutable-vars-naming
 
     /// @notice Total number of accounts created
     uint256 public accountCount;
@@ -37,7 +37,7 @@ contract OmniAccountFactory {
     /// @param account Address of the deployed account
     /// @param owner Owner of the new account
     /// @param salt Salt used for CREATE2
-    event AccountCreated(address indexed account, address indexed owner, uint256 salt);
+    event AccountCreated(address indexed account, address indexed owner, uint256 indexed salt);
 
     // ══════════════════════════════════════════════════════════════
     //                       CUSTOM ERRORS

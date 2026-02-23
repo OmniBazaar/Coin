@@ -73,9 +73,6 @@ contract OmniPrivacyBridge is
     /// @notice Role identifier for fee management
     bytes32 public constant FEE_MANAGER_ROLE = keccak256("FEE_MANAGER_ROLE");
 
-    /// @notice Maximum single conversion amount (18.4 ether due to uint64 limit in MPC)
-    uint256 public constant MAX_CONVERSION_AMOUNT = type(uint64).max;
-
     /// @notice Privacy conversion fee in basis points (30 = 0.3%)
     uint16 public constant PRIVACY_FEE_BPS = 30;
 
@@ -109,14 +106,34 @@ contract OmniPrivacyBridge is
     /// @notice Total conversions to public (cumulative metric)
     uint256 public totalConvertedToPublic;
 
+    /// @notice Total pXOM minted through this bridge (excludes genesis supply)
+    uint256 public bridgeMintedPXOM;
+
+    /// @notice Total accumulated conversion fees available for withdrawal
+    uint256 public totalFeesCollected;
+
+    /// @notice Maximum total conversion volume allowed per day (0 = unlimited)
+    uint256 public dailyVolumeLimit;
+
+    /// @notice Cumulative conversion volume in the current day
+    uint256 public currentDayVolume;
+
+    /// @notice Timestamp of the start of the current daily period
+    uint256 public currentDayStart;
+
+    /// @notice Whether contract is ossified (permanently non-upgradeable)
+    bool private _ossified;
+
     /**
      * @dev Storage gap for future upgrades
      * @notice Reserves storage slots to allow adding new variables in upgrades
-     * Current storage: 6 variables (OMNI_COIN, PRIVATE_OMNI_COIN, maxConversionLimit,
-     * totalLocked, totalConvertedToPrivate, totalConvertedToPublic)
-     * Gap size: 50 - 6 = 44 slots reserved
+     * Current storage: 12 variables (omniCoin, privateOmniCoin,
+     * maxConversionLimit, totalLocked, totalConvertedToPrivate,
+     * totalConvertedToPublic, bridgeMintedPXOM, totalFeesCollected,
+     * dailyVolumeLimit, currentDayVolume, currentDayStart, _ossified)
+     * Gap size: 50 - 12 = 38 slots reserved
      */
-    uint256[44] private __gap;
+    uint256[38] private __gap;
 
     // ========================================================================
     // EVENTS
@@ -148,7 +165,31 @@ contract OmniPrivacyBridge is
     /// @param token Address of token withdrawn
     /// @param to Recipient address
     /// @param amount Amount withdrawn
-    event EmergencyWithdrawal(address indexed token, address indexed to, uint256 indexed amount);
+    event EmergencyWithdrawal(
+        address indexed token,
+        address indexed to,
+        uint256 indexed amount
+    );
+
+    /// @notice Emitted when accumulated fees are withdrawn
+    /// @param recipient Address receiving the fees
+    /// @param amount Amount of fees withdrawn
+    event FeesWithdrawn(
+        address indexed recipient,
+        uint256 indexed amount
+    );
+
+    /// @notice Emitted when daily volume limit is updated
+    /// @param oldLimit Previous daily limit
+    /// @param newLimit New daily limit (0 = unlimited)
+    event DailyVolumeLimitUpdated(
+        uint256 indexed oldLimit,
+        uint256 indexed newLimit
+    );
+
+    /// @notice Emitted when the contract is permanently ossified
+    /// @param contractAddress Address of this contract
+    event ContractOssified(address indexed contractAddress);
 
     // ========================================================================
     // CUSTOM ERRORS
@@ -159,12 +200,6 @@ contract OmniPrivacyBridge is
 
     /// @notice Thrown when amount is below minimum
     error BelowMinimum();
-
-    /// @notice Thrown when amount exceeds maximum
-    error ExceedsMaximum();
-
-    /// @notice Thrown when amount exceeds uint64 limit for MPC
-    error AmountTooLarge();
 
     /// @notice Thrown when insufficient locked funds for release
     error InsufficientLockedFunds();
@@ -177,6 +212,12 @@ contract OmniPrivacyBridge is
 
     /// @notice Thrown when conversion would exceed configured limit
     error ExceedsConversionLimit();
+
+    /// @notice Thrown when daily volume limit would be exceeded
+    error DailyVolumeLimitExceeded();
+
+    /// @notice Thrown when contract is ossified and upgrade attempted
+    error ContractIsOssified();
 
     // ========================================================================
     // CONSTRUCTOR & INITIALIZATION
@@ -215,6 +256,11 @@ contract OmniPrivacyBridge is
         // Set initial max conversion limit (10 million tokens)
         maxConversionLimit = 10_000_000 * 1e18;
 
+        // Set initial daily volume limit (50 million tokens per day)
+        dailyVolumeLimit = 50_000_000 * 1e18;
+        // solhint-disable-next-line not-rely-on-time
+        currentDayStart = block.timestamp;
+
         // Grant roles to deployer
         _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
         _grantRole(OPERATOR_ROLE, msg.sender);
@@ -227,55 +273,81 @@ contract OmniPrivacyBridge is
 
     /**
      * @notice Convert public XOM to public pXOM
-     * @dev User must approve bridge contract before calling. Charges 0.3% fee.
-     *      User can then call PrivateOmniCoin.convertToPrivate() to make pXOM private.
-     * @param amount Amount of XOM to convert (must fit in uint64)
+     * @dev User must approve bridge contract before calling.
+     *      Charges 0.3% fee. User can then call
+     *      PrivateOmniCoin.convertToPrivate() to make pXOM private.
+     *      Fee XOM is held separately and withdrawable by FEE_MANAGER.
+     * @param amount Amount of XOM to convert
      */
-    function convertXOMtoPXOM(uint256 amount) external nonReentrant whenNotPaused {
+    function convertXOMtoPXOM(
+        uint256 amount
+    ) external nonReentrant whenNotPaused {
         // Input validation
         if (amount == 0) revert ZeroAmount();
         if (amount < MIN_CONVERSION_AMOUNT) revert BelowMinimum();
-        if (amount > MAX_CONVERSION_AMOUNT) revert AmountTooLarge();
         if (amount > maxConversionLimit) revert ExceedsConversionLimit();
 
+        // Enforce daily volume limit
+        _checkAndUpdateDailyVolume(amount);
+
         // Calculate fee and amount after fee
-        uint256 fee = (amount * PRIVACY_FEE_BPS) / BPS_DENOMINATOR;
+        uint256 fee =
+            (amount * PRIVACY_FEE_BPS) / BPS_DENOMINATOR;
         uint256 amountAfterFee = amount - fee;
 
         // Transfer XOM from user to bridge (locks tokens)
-        omniCoin.safeTransferFrom(msg.sender, address(this), amount);
+        omniCoin.safeTransferFrom(
+            msg.sender, address(this), amount
+        );
 
-        // Update tracking
-        totalLocked += amount;
+        // Update tracking: only lock the backed amount, track fees separately
+        totalLocked += amountAfterFee;
+        totalFeesCollected += fee;
         totalConvertedToPrivate += amount;
 
-        // Mint public pXOM to user (requires bridge to have MINTER_ROLE on PrivateOmniCoin)
-        // User can then call PrivateOmniCoin.convertToPrivate() to convert to encrypted balance
+        // Mint public pXOM to user (bridge needs MINTER_ROLE on pXOM)
         privateOmniCoin.mint(msg.sender, amountAfterFee);
 
-        emit ConvertedToPrivate(msg.sender, amount, amountAfterFee, fee);
+        // Track bridge-minted pXOM (excludes genesis supply)
+        bridgeMintedPXOM += amountAfterFee;
+
+        emit ConvertedToPrivate(
+            msg.sender, amount, amountAfterFee, fee
+        );
     }
 
     /**
      * @notice Convert public pXOM back to public XOM
-     * @dev No fee charged for this direction. User must approve bridge to spend pXOM.
-     *      If user has encrypted pXOM balance, they must first call PrivateOmniCoin.convertToPublic().
+     * @dev No fee charged for this direction. User must approve
+     *      bridge to spend pXOM. If user has encrypted pXOM
+     *      balance, they must first call
+     *      PrivateOmniCoin.convertToPublic(). Only bridge-minted
+     *      pXOM can be redeemed (not genesis supply).
      * @param amount Amount of pXOM to convert
      */
-    function convertPXOMtoXOM(uint256 amount) external nonReentrant whenNotPaused {
+    function convertPXOMtoXOM(
+        uint256 amount
+    ) external nonReentrant whenNotPaused {
         // Input validation
         if (amount == 0) revert ZeroAmount();
         if (amount < MIN_CONVERSION_AMOUNT) revert BelowMinimum();
-        if (amount > MAX_CONVERSION_AMOUNT) revert AmountTooLarge();
+        if (amount > maxConversionLimit) revert ExceedsConversionLimit();
+
+        // Enforce daily volume limit
+        _checkAndUpdateDailyVolume(amount);
+
+        // Only allow redemption of bridge-minted pXOM, not genesis supply
+        if (amount > bridgeMintedPXOM) revert InsufficientLockedFunds();
 
         // Check if we have enough locked XOM to release
         if (amount > totalLocked) revert InsufficientLockedFunds();
 
         // Update tracking (CEI: state changes before external calls)
         totalLocked -= amount;
+        bridgeMintedPXOM -= amount;
         totalConvertedToPublic += amount;
 
-        // Burn pXOM from user (requires bridge to have BURNER_ROLE or user approval)
+        // Burn pXOM from user (bridge needs BURNER_ROLE or approval)
         privateOmniCoin.burnFrom(msg.sender, amount);
 
         // Transfer XOM tokens to the user
@@ -290,17 +362,33 @@ contract OmniPrivacyBridge is
 
     /**
      * @notice Update maximum single conversion limit
-     * @dev Only admin can update
+     * @dev Only admin can update. There is no upper bound other
+     *      than uint256 max; admin should set prudent limits.
      * @param newLimit New maximum conversion amount
      */
-    function setMaxConversionLimit(uint256 newLimit) external onlyRole(DEFAULT_ADMIN_ROLE) {
+    function setMaxConversionLimit(
+        uint256 newLimit
+    ) external onlyRole(DEFAULT_ADMIN_ROLE) {
         if (newLimit == 0) revert ZeroAmount();
-        if (newLimit > MAX_CONVERSION_AMOUNT) revert ExceedsMaximum();
 
         uint256 oldLimit = maxConversionLimit;
         maxConversionLimit = newLimit;
 
         emit MaxConversionLimitUpdated(oldLimit, newLimit);
+    }
+
+    /**
+     * @notice Update the daily volume limit for conversions
+     * @dev Only admin can update. Set to 0 to disable the
+     *      daily limit (unlimited conversions).
+     * @param newLimit New daily volume limit (0 = unlimited)
+     */
+    function setDailyVolumeLimit(
+        uint256 newLimit
+    ) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        uint256 oldLimit = dailyVolumeLimit;
+        dailyVolumeLimit = newLimit;
+        emit DailyVolumeLimitUpdated(oldLimit, newLimit);
     }
 
     /**
@@ -321,7 +409,11 @@ contract OmniPrivacyBridge is
 
     /**
      * @notice Emergency withdrawal of tokens
-     * @dev Only admin can withdraw. Use only in emergency situations.
+     * @dev Only admin can withdraw. Pauses contract on XOM
+     *      withdrawal to prevent redemptions against depleted
+     *      reserves. Use only in emergency situations.
+     *      SECURITY: Admin MUST be a multi-sig wallet with
+     *      timelock.
      * @param token Address of token to withdraw
      * @param to Recipient address
      * @param amount Amount to withdraw
@@ -334,27 +426,41 @@ contract OmniPrivacyBridge is
         if (to == address(0)) revert ZeroAddress();
         if (amount == 0) revert ZeroAmount();
 
+        // If withdrawing the locked XOM token, update solvency
+        // tracking and pause to prevent redemptions
+        if (token == address(omniCoin)) {
+            if (amount < totalLocked) {
+                totalLocked -= amount;
+            } else {
+                totalLocked = 0;
+            }
+            // Pause the bridge to prevent redemptions
+            _pause();
+        }
+
         IERC20(token).safeTransfer(to, amount);
 
         emit EmergencyWithdrawal(token, to, amount);
     }
 
-    // ========================================================================
-    // UUPS UPGRADE AUTHORIZATION
-    // ========================================================================
-
     /**
-     * @notice Authorize contract upgrades (UUPS pattern)
-     * @dev Only admin can authorize upgrades to new implementation
-     * @param newImplementation Address of new implementation contract
+     * @notice Withdraw accumulated conversion fees
+     * @dev Only fee manager can withdraw fees. Fees are held
+     *      separately from locked funds and do not affect
+     *      solvency of the bridge.
+     * @param recipient Address to receive fees
      */
-    function _authorizeUpgrade(address newImplementation)
-        internal
-        override
-        onlyRole(DEFAULT_ADMIN_ROLE)
-    {
-        // Authorization check handled by onlyRole modifier
-        // newImplementation parameter required by UUPS but not used in authorization logic
+    function withdrawFees(
+        address recipient
+    ) external onlyRole(FEE_MANAGER_ROLE) {
+        if (recipient == address(0)) revert ZeroAddress();
+        uint256 fees = totalFeesCollected;
+        if (fees == 0) revert ZeroAmount();
+
+        totalFeesCollected = 0;
+        omniCoin.safeTransfer(recipient, fees);
+
+        emit FeesWithdrawn(recipient, fees);
     }
 
     // ========================================================================
@@ -364,8 +470,8 @@ contract OmniPrivacyBridge is
     /**
      * @notice Get bridge statistics
      * @return _totalLocked Current amount of XOM locked
-     * @return _totalConvertedToPrivate Cumulative conversions to private
-     * @return _totalConvertedToPublic Cumulative conversions to public
+     * @return _totalConvertedToPrivate Cumulative to private
+     * @return _totalConvertedToPublic Cumulative to public
      */
     function getBridgeStats()
         external
@@ -376,25 +482,35 @@ contract OmniPrivacyBridge is
             uint256 _totalConvertedToPublic
         )
     {
-        return (totalLocked, totalConvertedToPrivate, totalConvertedToPublic);
+        return (
+            totalLocked,
+            totalConvertedToPrivate,
+            totalConvertedToPublic
+        );
     }
 
     /**
      * @notice Get conversion rate (always 1:1, but fees apply)
-     * @dev Fee is 0.3% for XOM → pXOM, 0% for pXOM → XOM
+     * @dev Fee is 0.3% for XOM to pXOM, 0% for pXOM to XOM
      * @return rate Conversion rate (always 1e18 for 1:1)
      */
-    function getConversionRate() external pure returns (uint256 rate) {
+    function getConversionRate()
+        external
+        pure
+        returns (uint256 rate)
+    {
         return 1e18; // 1:1 conversion rate
     }
 
     /**
-     * @notice Calculate exact output amount for XOM → pXOM conversion
+     * @notice Calculate output for XOM to pXOM conversion
      * @param amountIn Amount of XOM to convert
-     * @return amountOut Amount of pXOM received (after 0.3% fee)
+     * @return amountOut pXOM received (after 0.3% fee)
      * @return fee Fee charged
      */
-    function previewConvertToPrivate(uint256 amountIn)
+    function previewConvertToPrivate(
+        uint256 amountIn
+    )
         external
         pure
         returns (uint256 amountOut, uint256 fee)
@@ -404,11 +520,77 @@ contract OmniPrivacyBridge is
     }
 
     /**
-     * @notice Calculate exact output amount for pXOM → XOM conversion
+     * @notice Calculate output for pXOM to XOM conversion
      * @param amountIn Amount of pXOM to convert
      * @return amountOut Amount of XOM received (no fee)
      */
-    function previewConvertToPublic(uint256 amountIn) external pure returns (uint256 amountOut) {
+    function previewConvertToPublic(
+        uint256 amountIn
+    ) external pure returns (uint256 amountOut) {
         return amountIn; // No fee for this direction
+    }
+
+    // ========================================================================
+    // INTERNAL FUNCTIONS
+    // ========================================================================
+
+    /**
+     * @notice Check and update the daily volume counter
+     * @dev Resets the counter when a new 24-hour period begins.
+     *      Reverts if the daily volume limit would be exceeded.
+     *      If dailyVolumeLimit is 0, no limit is enforced.
+     * @param amount The conversion amount to add to today's volume
+     */
+    function _checkAndUpdateDailyVolume(
+        uint256 amount
+    ) internal {
+        if (dailyVolumeLimit == 0) return; // Unlimited
+
+        // Reset counter if 24 hours have passed
+        // solhint-disable-next-line not-rely-on-time
+        if (block.timestamp > currentDayStart + 1 days - 1) {
+            currentDayVolume = 0;
+            // solhint-disable-next-line not-rely-on-time
+            currentDayStart = block.timestamp;
+        }
+
+        if (currentDayVolume + amount > dailyVolumeLimit) {
+            revert DailyVolumeLimitExceeded();
+        }
+        currentDayVolume += amount;
+    }
+
+    /**
+     * @notice Permanently remove upgrade capability (one-way, irreversible)
+     * @dev Can only be called by admin (through timelock). Once ossified,
+     *      the contract can never be upgraded again.
+     */
+    function ossify() external onlyRole(DEFAULT_ADMIN_ROLE) {
+        _ossified = true;
+        emit ContractOssified(address(this));
+    }
+
+    /**
+     * @notice Check if the contract has been permanently ossified
+     * @return True if ossified (no further upgrades possible)
+     */
+    function isOssified() external view returns (bool) {
+        return _ossified;
+    }
+
+    /**
+     * @notice Authorize contract upgrades (UUPS pattern)
+     * @dev Only admin can authorize upgrades to new
+     *      implementation. Reverts if contract is ossified.
+     * @param newImplementation Address of new implementation
+     */
+    function _authorizeUpgrade(
+        address newImplementation
+    )
+        internal
+        override
+        onlyRole(DEFAULT_ADMIN_ROLE)
+    {
+        if (_ossified) revert ContractIsOssified();
     }
 }

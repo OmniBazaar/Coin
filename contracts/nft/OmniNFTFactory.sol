@@ -4,8 +4,23 @@ pragma solidity ^0.8.24;
 import {Clones} from "@openzeppelin/contracts/proxy/Clones.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 
-/// @dev Minimal interface for initializing a freshly cloned collection.
+/**
+ * @title IOmniNFTCollection
+ * @author OmniBazaar Development Team
+ * @notice Minimal interface for initializing a cloned collection.
+ * @dev Called by OmniNFTFactory immediately after ERC-1167 cloning.
+ */
 interface IOmniNFTCollection {
+    /**
+     * @notice Initialize a freshly cloned collection.
+     * @param _owner Creator / owner address.
+     * @param _name Collection name.
+     * @param _symbol Collection symbol.
+     * @param _maxSupply Maximum mintable tokens.
+     * @param _royaltyBps Royalty in basis points.
+     * @param _royaltyRecipient Address that receives royalties.
+     * @param _unrevealedURI URI shown before reveal.
+     */
     function initialize(
         address _owner,
         string calldata _name,
@@ -23,12 +38,63 @@ interface IOmniNFTCollection {
  * @notice Deploys ERC-1167 minimal proxy clones of OmniNFTCollection.
  * @dev Each `createCollection` call produces a new, independently-owned
  *      NFT collection at a unique address. The factory tracks all
- *      deployed collections and charges a configurable platform fee
- *      on primary sales (collected by the collection contract itself,
- *      distributed off-chain by the platform).
+ *      deployed collections. Platform fee (platformFeeBps) is stored
+ *      on-chain for transparency and enforced off-chain by the platform
+ *      indexer when processing primary sales from factory-deployed
+ *      collections. The fee percentage is included in the
+ *      CollectionCreated event for auditability.
  */
 contract OmniNFTFactory is Ownable {
-    // ── Custom errors ────────────────────────────────────────────────────
+    // ── Constants ────────────────────────────────────────────────────
+    /// @notice Maximum platform fee: 10 % (1000 basis points).
+    uint16 public constant MAX_PLATFORM_FEE_BPS = 1000;
+
+    // ── Storage ──────────────────────────────────────────────────────
+    /// @notice Implementation contract for ERC-1167 clones.
+    address public implementation;
+    /// @notice Platform fee in bps on primary sales (default 2.5 %).
+    uint16 public platformFeeBps;
+    /// @notice Array of all deployed collection addresses.
+    address[] public collections;
+    /// @notice Whether an address was deployed by this factory.
+    mapping(address => bool) public isFactoryCollection;
+    /// @notice Collections deployed by a specific creator.
+    mapping(address => address[]) public creatorCollections;
+
+    // ── Events ───────────────────────────────────────────────────────
+    /**
+     * @notice Emitted when a new collection is deployed.
+     * @dev M-02: Includes platformFeeBps so off-chain indexers can
+     *      enforce the fee that was in effect at deployment time.
+     * @param collection  The deployed clone address.
+     * @param creator     The collection owner.
+     * @param name        Collection name.
+     * @param symbol      Collection symbol.
+     * @param maxSupply   Maximum token supply.
+     * @param royaltyBps  Royalty in basis points.
+     * @param feeBps      Platform fee in basis points at creation time.
+     */
+    event CollectionCreated(
+        address indexed collection,
+        address indexed creator,
+        string name,
+        string symbol,
+        uint256 indexed maxSupply,
+        uint96 royaltyBps,
+        uint16 feeBps
+    );
+
+    /// @notice Emitted when the platform fee is updated.
+    /// @param newFeeBps New fee in basis points.
+    event PlatformFeeUpdated(uint16 indexed newFeeBps);
+
+    /// @notice Emitted when the implementation address is updated.
+    /// @param newImplementation New implementation address.
+    event ImplementationUpdated(
+        address indexed newImplementation
+    );
+
+    // ── Custom errors ────────────────────────────────────────────────
     /// @dev Thrown when the implementation address is zero.
     error InvalidImplementation();
     /// @dev Thrown when the platform fee exceeds the maximum.
@@ -36,62 +102,26 @@ contract OmniNFTFactory is Ownable {
     /// @dev Thrown when maxSupply is zero.
     error InvalidMaxSupply();
 
-    // ── Events ───────────────────────────────────────────────────────────
-    /**
-     * @notice Emitted when a new collection is deployed through the factory.
-     * @param collection   The deployed clone address.
-     * @param creator      The collection owner.
-     * @param name         Collection name.
-     * @param symbol       Collection symbol.
-     * @param maxSupply    Maximum token supply.
-     * @param royaltyBps   Royalty in basis points.
-     */
-    event CollectionCreated(
-        address indexed collection,
-        address indexed creator,
-        string name,
-        string symbol,
-        uint256 maxSupply,
-        uint96 royaltyBps
-    );
-
-    /// @notice Emitted when the platform fee is updated.
-    event PlatformFeeUpdated(uint16 newFeeBps);
-    /// @notice Emitted when the implementation address is updated.
-    event ImplementationUpdated(address indexed newImplementation);
-
-    // ── Constants ────────────────────────────────────────────────────────
-    /// @notice Maximum platform fee: 10 % (1000 basis points).
-    uint16 public constant MAX_PLATFORM_FEE_BPS = 1000;
-
-    // ── Storage ──────────────────────────────────────────────────────────
-    /// @notice Implementation contract address used for ERC-1167 clones.
-    address public implementation;
-    /// @notice Platform fee in basis points on primary sales (default 250 = 2.5%).
-    uint16 public platformFeeBps;
-    /// @notice Array of all deployed collection addresses.
-    address[] public collections;
-    /// @notice Mapping from collection address to whether it was deployed by this factory.
-    mapping(address => bool) public isFactoryCollection;
-    /// @notice Collections deployed by a specific creator.
-    mapping(address => address[]) public creatorCollections;
-
-    // ── Constructor ──────────────────────────────────────────────────────
+    // ── Constructor ──────────────────────────────────────────────────
     /**
      * @notice Deploy the factory with the given implementation.
-     * @param _implementation OmniNFTCollection implementation address.
+     * @param _implementation OmniNFTCollection implementation.
      */
-    constructor(address _implementation) Ownable(msg.sender) {
-        if (_implementation == address(0)) revert InvalidImplementation();
+    constructor(
+        address _implementation
+    ) Ownable(msg.sender) {
+        if (_implementation == address(0)) {
+            revert InvalidImplementation();
+        }
         implementation = _implementation;
         platformFeeBps = 250; // 2.5%
     }
 
-    // ── Collection creation ──────────────────────────────────────────────
+    // ── Collection creation ──────────────────────────────────────────
     /**
      * @notice Deploy a new NFT collection as a minimal proxy clone.
-     * @param name             Collection name.
-     * @param symbol           Collection symbol.
+     * @param collectionName  Collection name.
+     * @param collectionSymbol Collection symbol.
      * @param maxSupply        Maximum token supply.
      * @param royaltyBps       Royalty in basis points (0-2500).
      * @param royaltyRecipient Address receiving royalties.
@@ -99,8 +129,8 @@ contract OmniNFTFactory is Ownable {
      * @return clone           Address of the deployed collection.
      */
     function createCollection(
-        string calldata name,
-        string calldata symbol,
+        string calldata collectionName,
+        string calldata collectionSymbol,
         uint256 maxSupply,
         uint96 royaltyBps,
         address royaltyRecipient,
@@ -112,8 +142,8 @@ contract OmniNFTFactory is Ownable {
 
         IOmniNFTCollection(clone).initialize(
             msg.sender,
-            name,
-            symbol,
+            collectionName,
+            collectionSymbol,
             maxSupply,
             royaltyBps,
             royaltyRecipient,
@@ -124,10 +154,19 @@ contract OmniNFTFactory is Ownable {
         isFactoryCollection[clone] = true;
         creatorCollections[msg.sender].push(clone);
 
-        emit CollectionCreated(clone, msg.sender, name, symbol, maxSupply, royaltyBps);
+        // M-02: Include platformFeeBps in event for off-chain enforcement
+        emit CollectionCreated(
+            clone,
+            msg.sender,
+            collectionName,
+            collectionSymbol,
+            maxSupply,
+            royaltyBps,
+            platformFeeBps
+        );
     }
 
-    // ── Admin ────────────────────────────────────────────────────────────
+    // ── Admin ────────────────────────────────────────────────────────
     /**
      * @notice Update the platform fee.
      * @param newFeeBps New fee in basis points.
@@ -142,18 +181,26 @@ contract OmniNFTFactory is Ownable {
      * @notice Update the implementation contract for future clones.
      * @param _implementation New implementation address.
      */
-    function setImplementation(address _implementation) external onlyOwner {
-        if (_implementation == address(0)) revert InvalidImplementation();
+    function setImplementation(
+        address _implementation
+    ) external onlyOwner {
+        if (_implementation == address(0)) {
+            revert InvalidImplementation();
+        }
         implementation = _implementation;
         emit ImplementationUpdated(_implementation);
     }
 
-    // ── View helpers ─────────────────────────────────────────────────────
+    // ── View helpers ─────────────────────────────────────────────────
     /**
      * @notice Total number of collections deployed.
      * @return count Number of collections.
      */
-    function totalCollections() external view returns (uint256) {
+    function totalCollections()
+        external
+        view
+        returns (uint256)
+    {
         return collections.length;
     }
 
@@ -162,7 +209,9 @@ contract OmniNFTFactory is Ownable {
      * @param creator Creator address.
      * @return count Number of collections.
      */
-    function creatorCollectionCount(address creator) external view returns (uint256) {
+    function creatorCollectionCount(
+        address creator
+    ) external view returns (uint256) {
         return creatorCollections[creator].length;
     }
 }

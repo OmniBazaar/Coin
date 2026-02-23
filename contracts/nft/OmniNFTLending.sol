@@ -3,62 +3,138 @@ pragma solidity ^0.8.24;
 
 import {IERC721} from "@openzeppelin/contracts/token/ERC721/IERC721.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
-import {ERC721Holder} from "@openzeppelin/contracts/token/ERC721/utils/ERC721Holder.sol";
-import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
-import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
+import {SafeERC20} from
+    "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import {ERC721Holder} from
+    "@openzeppelin/contracts/token/ERC721/utils/ERC721Holder.sol";
+import {ReentrancyGuard} from
+    "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import {Ownable2Step, Ownable} from
+    "@openzeppelin/contracts/access/Ownable2Step.sol";
 
 /**
  * @title OmniNFTLending
  * @author OmniBazaar Development Team
- * @notice P2P NFT lending: lenders post offers, borrowers accept with NFT collateral.
- * @dev Uses escrow pattern — NFT held by contract during active loan, principal
- *      deposited by lender on offer creation and released to borrower on acceptance.
- *      Platform fee (10 % of interest) collected on repayment, split off-chain per
- *      OmniBazaar 70/20/10 model.
+ * @notice P2P NFT lending: lenders post offers, borrowers accept with
+ *         NFT collateral.
+ * @dev Uses escrow pattern -- NFT held by contract during active loan,
+ *      principal deposited by lender on offer creation and released to
+ *      borrower on acceptance. Platform fee (percentage of interest)
+ *      collected on repayment, split off-chain per OmniBazaar 70/20/10
+ *      model.
+ *
+ *      Security notes:
+ *        - Interest is annualized and pro-rated by loan duration (H-01).
+ *        - Platform fee is snapshotted at loan creation (H-02).
+ *        - NFT transfer failure during repayment does not block the
+ *          financial settlement; borrower can claim the NFT later via
+ *          claimNFT() (H-03).
  */
-contract OmniNFTLending is ERC721Holder, ReentrancyGuard, Ownable {
+contract OmniNFTLending is ERC721Holder, ReentrancyGuard, Ownable2Step {
     using SafeERC20 for IERC20;
 
-    // ── Custom errors ────────────────────────────────────────────────────
-    /// @dev Offer does not exist.
-    error OfferNotFound();
-    /// @dev Offer is not in the expected status.
-    error OfferNotActive();
-    /// @dev Loan does not exist.
-    error LoanNotFound();
-    /// @dev Loan is not in the expected status.
-    error LoanNotActive();
-    /// @dev Caller is not the lender for this offer.
-    error NotLender();
-    /// @dev Caller is not the borrower for this loan.
-    error NotBorrower();
-    /// @dev Collection is not accepted by this offer.
-    error CollectionNotAccepted();
-    /// @dev Loan is not yet past its due time.
-    error LoanNotExpired();
-    /// @dev Interest rate exceeds maximum (50 %).
-    error InterestTooHigh();
-    /// @dev Duration is zero or exceeds maximum (365 days).
-    error InvalidDuration();
-    /// @dev Principal is zero.
-    error ZeroPrincipal();
-    /// @dev No accepted collections provided.
-    error NoCollections();
-    /// @dev Platform fee basis points exceed maximum.
-    error FeeTooHigh();
+    // ── Structs ──────────────────────────────────────────────────────────
+
+    /// @notice On-chain lending offer.
+    /// @dev Struct packing: lender (20) + currency (20) occupy two
+    ///      slots; principal (32) one slot; the uint16 pair + bool fit
+    ///      into a single slot.
+    // solhint-disable-next-line gas-struct-packing
+    struct Offer {
+        address lender;
+        address currency;
+        uint256 principal;
+        uint16 interestBps;
+        uint16 durationDays;
+        bool active;
+    }
+
+    /// @notice Active loan backed by an NFT.
+    /// @dev H-02: platformFeeBps is snapshotted at loan creation so
+    ///      admin fee changes never affect active loans.
+    // solhint-disable-next-line gas-struct-packing
+    struct Loan {
+        uint256 offerId;
+        address borrower;
+        address lender;
+        address collection;
+        uint256 tokenId;
+        address currency;
+        uint256 principal;
+        uint256 interest;
+        uint64 startTime;
+        uint64 dueTime;
+        uint16 platformFeeBps;
+        bool repaid;
+        bool liquidated;
+    }
+
+    // ── Constants ────────────────────────────────────────────────────────
+
+    /// @notice 100 % in basis points.
+    uint16 public constant BPS_DENOMINATOR = 10000;
+
+    /// @notice Maximum interest rate: 50 % annual (5000 bps).
+    uint16 public constant MAX_INTEREST_BPS = 5000;
+
+    /// @notice Maximum loan duration: 365 days.
+    uint16 public constant MAX_DURATION_DAYS = 365;
+
+    /// @notice Maximum platform fee: 20 % of interest (2000 bps).
+    uint16 public constant MAX_PLATFORM_FEE_BPS = 2000;
+
+    /// @notice Number of days in a year for interest pro-rating.
+    uint256 public constant DAYS_PER_YEAR = 365;
+
+    /// @notice Grace period after loan due time before liquidation (24h).
+    /// @dev M-01 (NFTSuite): Borrower has 24 hours after dueTime to repay
+    ///      before the lender can liquidate.
+    uint256 public constant LIQUIDATION_GRACE_PERIOD = 1 days;
+
+    /// @notice Maximum number of accepted collections per offer (M-05).
+    uint256 public constant MAX_COLLECTIONS_PER_OFFER = 50;
+
+    // ── Storage ──────────────────────────────────────────────────────────
+
+    /// @notice Platform fee in bps of interest (default 10 % = 1000).
+    uint16 public platformFeeBps;
+
+    /// @notice Address receiving platform fees.
+    address public feeRecipient;
+
+    /// @notice Next offer ID.
+    uint256 public nextOfferId;
+
+    /// @notice Next loan ID.
+    uint256 public nextLoanId;
+
+    /// @notice Offer by ID.
+    mapping(uint256 => Offer) public offers;
+
+    /// @notice Accepted collections per offer.
+    mapping(uint256 => mapping(address => bool))
+        public offerCollections;
+
+    /// @notice Loan by ID.
+    mapping(uint256 => Loan) public loans;
+
+    /// @notice Whether an NFT is claimable after a failed transfer.
+    /// @dev H-03: set to true when NFT safeTransferFrom fails in
+    ///      repay(), allowing the borrower to retry via claimNFT().
+    mapping(uint256 => bool) public nftClaimable;
 
     // ── Events ───────────────────────────────────────────────────────────
+
     /// @notice Emitted when a lending offer is created.
     /// @param offerId Unique offer identifier.
     /// @param lender Address of the lender.
     /// @param principal Amount of currency offered.
-    /// @param interestBps Annual interest in basis points.
+    /// @param interestBps Annual interest rate in basis points.
     /// @param durationDays Loan duration in days.
     event OfferCreated(
         uint256 indexed offerId,
         address indexed lender,
-        uint256 principal,
+        uint256 indexed principal,
         uint16 interestBps,
         uint16 durationDays
     );
@@ -85,83 +161,126 @@ contract OmniNFTLending is ERC721Holder, ReentrancyGuard, Ownable {
     event LoanRepaid(
         uint256 indexed loanId,
         address indexed borrower,
-        uint256 totalRepaid,
+        uint256 indexed totalRepaid,
         uint256 platformFee
     );
 
     /// @notice Emitted when a defaulted loan is liquidated.
     /// @param loanId Loan that was liquidated.
     /// @param lender Lender who received the NFT.
-    event LoanLiquidated(uint256 indexed loanId, address indexed lender);
+    event LoanLiquidated(
+        uint256 indexed loanId,
+        address indexed lender
+    );
 
     /// @notice Emitted when an offer is cancelled.
     /// @param offerId Cancelled offer.
     /// @param lender Lender who cancelled.
-    event OfferCancelled(uint256 indexed offerId, address indexed lender);
+    event OfferCancelled(
+        uint256 indexed offerId,
+        address indexed lender
+    );
 
-    // ── Constants ────────────────────────────────────────────────────────
-    /// @notice 100 % in basis points.
-    uint16 public constant BPS_DENOMINATOR = 10000;
-    /// @notice Maximum interest rate: 50 % (5000 bps).
-    uint16 public constant MAX_INTEREST_BPS = 5000;
-    /// @notice Maximum loan duration: 365 days.
-    uint16 public constant MAX_DURATION_DAYS = 365;
-    /// @notice Maximum platform fee: 20 % of interest (2000 bps).
-    uint16 public constant MAX_PLATFORM_FEE_BPS = 2000;
+    /// @notice Emitted when an NFT transfer fails during repayment.
+    /// @param loanId Loan whose NFT transfer failed.
+    /// @param borrower Borrower who will need to call claimNFT().
+    event NFTClaimReady(
+        uint256 indexed loanId,
+        address indexed borrower
+    );
 
-    // ── Structs ──────────────────────────────────────────────────────────
-    /// @notice On-chain lending offer.
-    struct Offer {
-        address lender;
-        address currency;
-        uint256 principal;
-        uint16 interestBps;
-        uint16 durationDays;
-        bool active;
-    }
+    /// @notice Emitted when a borrower claims an NFT after a failed
+    ///         transfer during repayment.
+    /// @param loanId Loan whose NFT was claimed.
+    /// @param borrower Borrower who claimed.
+    event NFTClaimed(
+        uint256 indexed loanId,
+        address indexed borrower
+    );
 
-    /// @notice Active loan backed by an NFT.
-    struct Loan {
-        uint256 offerId;
-        address borrower;
-        address lender;
-        address collection;
-        uint256 tokenId;
-        address currency;
-        uint256 principal;
-        uint256 interest;
-        uint64 startTime;
-        uint64 dueTime;
-        bool repaid;
-        bool liquidated;
-    }
+    /// @notice Emitted when the platform fee is updated.
+    /// @param oldFeeBps Previous fee in basis points.
+    /// @param newFeeBps New fee in basis points.
+    event PlatformFeeUpdated(
+        uint16 indexed oldFeeBps,
+        uint16 indexed newFeeBps
+    );
 
-    // ── Storage ──────────────────────────────────────────────────────────
-    /// @notice Platform fee in basis points of interest (default 10 % = 1000 bps).
-    uint16 public platformFeeBps;
-    /// @notice Address receiving platform fees.
-    address public feeRecipient;
-    /// @notice Next offer ID.
-    uint256 public nextOfferId;
-    /// @notice Next loan ID.
-    uint256 public nextLoanId;
-    /// @notice Offer by ID.
-    mapping(uint256 => Offer) public offers;
-    /// @notice Accepted collections per offer (offerId => collection => accepted).
-    mapping(uint256 => mapping(address => bool)) public offerCollections;
-    /// @notice Loan by ID.
-    mapping(uint256 => Loan) public loans;
+    /// @notice Emitted when the fee recipient is updated.
+    /// @param oldRecipient Previous recipient address.
+    /// @param newRecipient New recipient address.
+    event FeeRecipientUpdated(
+        address indexed oldRecipient,
+        address indexed newRecipient
+    );
+
+    // ── Custom errors ────────────────────────────────────────────────────
+
+    /// @dev Offer does not exist.
+    error OfferNotFound();
+
+    /// @dev Offer is not in the expected status.
+    error OfferNotActive();
+
+    /// @dev Loan does not exist.
+    error LoanNotFound();
+
+    /// @dev Loan is not in the expected status.
+    error LoanNotActive();
+
+    /// @dev Caller is not the lender for this offer.
+    error NotLender();
+
+    /// @dev Caller is not the borrower for this loan.
+    error NotBorrower();
+
+    /// @dev Collection is not accepted by this offer.
+    error CollectionNotAccepted();
+
+    /// @dev Loan is not yet past its due time.
+    error LoanNotExpired();
+
+    /// @dev Interest rate exceeds maximum (50 %).
+    error InterestTooHigh();
+
+    /// @dev Duration is zero or exceeds maximum (365 days).
+    error InvalidDuration();
+
+    /// @dev Principal is zero.
+    error ZeroPrincipal();
+
+    /// @dev No accepted collections provided.
+    error NoCollections();
+
+    /// @dev Platform fee basis points exceed maximum.
+    error FeeTooHigh();
+
+    /// @dev NFT is not claimable for this loan.
+    error NFTNotClaimable();
+
+    /// @dev Address is the zero address (M-01).
+    error ZeroAddress();
+
+    /// @dev Too many collections in a single offer (M-05).
+    error TooManyCollections();
+
+    /// @dev Loan is still within the grace period (M-01 NFTSuite).
+    error GracePeriodActive();
 
     // ── Constructor ──────────────────────────────────────────────────────
+
     /**
      * @notice Deploy the lending contract.
      * @param initialFeeRecipient Address that receives platform fees.
-     * @param initialFeeBps Platform fee in bps of interest (e.g. 1000 = 10 %).
+     * @param initialFeeBps Platform fee in bps of interest
+     *        (e.g. 1000 = 10 %).
      */
     constructor(
         address initialFeeRecipient,
         uint16 initialFeeBps
     ) Ownable(msg.sender) {
+        // M-01: Validate fee recipient is non-zero
+        if (initialFeeRecipient == address(0)) revert ZeroAddress();
         if (initialFeeBps > MAX_PLATFORM_FEE_BPS) revert FeeTooHigh();
         feeRecipient = initialFeeRecipient;
         platformFeeBps = initialFeeBps;
@@ -170,11 +289,12 @@ contract OmniNFTLending is ERC721Holder, ReentrancyGuard, Ownable {
     // ── External functions ───────────────────────────────────────────────
 
     /**
-     * @notice Create a lending offer. Lender deposits principal into contract.
+     * @notice Create a lending offer. Lender deposits principal into
+     *         the contract.
      * @param collections Accepted NFT collection addresses.
      * @param currency ERC-20 token used for the loan.
      * @param principal Loan amount in currency wei.
-     * @param interestBps Interest rate in basis points.
+     * @param interestBps Annual interest rate in basis points.
      * @param durationDays Loan duration in days.
      * @return offerId The newly created offer ID.
      */
@@ -186,13 +306,18 @@ contract OmniNFTLending is ERC721Holder, ReentrancyGuard, Ownable {
         uint16 durationDays
     ) external nonReentrant returns (uint256 offerId) {
         if (collections.length == 0) revert NoCollections();
+        // M-05: Bound collections array to prevent gas DoS
+        if (collections.length > MAX_COLLECTIONS_PER_OFFER) {
+            revert TooManyCollections();
+        }
         if (principal == 0) revert ZeroPrincipal();
         if (interestBps > MAX_INTEREST_BPS) revert InterestTooHigh();
         if (durationDays == 0 || durationDays > MAX_DURATION_DAYS) {
             revert InvalidDuration();
         }
 
-        offerId = nextOfferId++;
+        offerId = nextOfferId;
+        ++nextOfferId;
 
         offers[offerId] = Offer({
             lender: msg.sender,
@@ -203,18 +328,28 @@ contract OmniNFTLending is ERC721Holder, ReentrancyGuard, Ownable {
             active: true
         });
 
-        for (uint256 i = 0; i < collections.length; i++) {
+        uint256 colLen = collections.length;
+        for (uint256 i; i < colLen; ++i) {
             offerCollections[offerId][collections[i]] = true;
         }
 
         // Transfer principal from lender to contract
-        IERC20(currency).safeTransferFrom(msg.sender, address(this), principal);
+        IERC20(currency).safeTransferFrom(
+            msg.sender, address(this), principal
+        );
 
-        emit OfferCreated(offerId, msg.sender, principal, interestBps, durationDays);
+        emit OfferCreated(
+            offerId, msg.sender, principal,
+            interestBps, durationDays
+        );
     }
 
     /**
      * @notice Accept an offer by providing an NFT as collateral.
+     * @dev H-01: Interest is calculated as an annual rate pro-rated
+     *      by the loan's duration in days.
+     *      H-02: The current platformFeeBps is snapshotted into the
+     *      Loan struct so future admin changes do not affect this loan.
      * @param offerId The offer to accept.
      * @param collection NFT collection address.
      * @param tokenId Token ID to use as collateral.
@@ -234,13 +369,23 @@ contract OmniNFTLending is ERC721Holder, ReentrancyGuard, Ownable {
 
         offer.active = false;
 
-        uint256 interest = (offer.principal * offer.interestBps) /
-            BPS_DENOMINATOR;
+        // H-01: Pro-rate annual interest by loan duration.
+        // interest = principal * interestBps * durationDays
+        //          / (BPS_DENOMINATOR * 365)
+        uint256 interest = (
+            uint256(offer.principal)
+                * uint256(offer.interestBps)
+                * uint256(offer.durationDays)
+        ) / (uint256(BPS_DENOMINATOR) * DAYS_PER_YEAR);
+
+        // solhint-disable-next-line not-rely-on-time
+        uint256 nowTs = block.timestamp;
         uint64 dueTime = uint64(
-            block.timestamp + (uint256(offer.durationDays) * 1 days)
+            nowTs + (uint256(offer.durationDays) * 1 days)
         );
 
-        loanId = nextLoanId++;
+        loanId = nextLoanId;
+        ++nextLoanId;
 
         loans[loanId] = Loan({
             offerId: offerId,
@@ -251,8 +396,11 @@ contract OmniNFTLending is ERC721Holder, ReentrancyGuard, Ownable {
             currency: offer.currency,
             principal: offer.principal,
             interest: interest,
+            // solhint-disable-next-line not-rely-on-time
             startTime: uint64(block.timestamp),
             dueTime: dueTime,
+            // H-02: Snapshot fee at loan creation
+            platformFeeBps: platformFeeBps,
             repaid: false,
             liquidated: false
         });
@@ -264,13 +412,24 @@ contract OmniNFTLending is ERC721Holder, ReentrancyGuard, Ownable {
             tokenId
         );
         // Transfer principal from contract to borrower
-        IERC20(offer.currency).safeTransfer(msg.sender, offer.principal);
+        IERC20(offer.currency).safeTransfer(
+            msg.sender, offer.principal
+        );
 
-        emit LoanStarted(loanId, offerId, msg.sender, collection, tokenId);
+        emit LoanStarted(
+            loanId, offerId, msg.sender, collection, tokenId
+        );
     }
 
     /**
-     * @notice Repay a loan. Borrower pays principal + interest, gets NFT back.
+     * @notice Repay a loan. Borrower pays principal + interest, gets
+     *         NFT back.
+     * @dev H-02: Uses the snapshotted platformFeeBps stored in the
+     *      loan, not the current global value.
+     *      H-03: If the NFT transfer back to the borrower fails (e.g.
+     *      paused or malicious collection), the financial settlement
+     *      still completes and the NFT is marked claimable via
+     *      claimNFT().
      * @param loanId The loan to repay.
      */
     function repay(uint256 loanId) external nonReentrant {
@@ -281,9 +440,11 @@ contract OmniNFTLending is ERC721Holder, ReentrancyGuard, Ownable {
 
         loan.repaid = true;
 
-        uint256 platformFee = (loan.interest * platformFeeBps) /
-            BPS_DENOMINATOR;
-        uint256 lenderAmount = loan.principal + loan.interest - platformFee;
+        // H-02: Use snapshotted fee, not current global value
+        uint256 platformFee = (loan.interest * loan.platformFeeBps)
+            / BPS_DENOMINATOR;
+        uint256 lenderAmount = loan.principal + loan.interest
+            - platformFee;
         uint256 totalFromBorrower = loan.principal + loan.interest;
 
         // Borrower pays principal + interest
@@ -293,23 +454,68 @@ contract OmniNFTLending is ERC721Holder, ReentrancyGuard, Ownable {
             totalFromBorrower
         );
         // Lender receives principal + interest - platform fee
-        IERC20(loan.currency).safeTransfer(loan.lender, lenderAmount);
+        IERC20(loan.currency).safeTransfer(
+            loan.lender, lenderAmount
+        );
         // Platform fee to fee recipient
         if (platformFee > 0) {
-            IERC20(loan.currency).safeTransfer(feeRecipient, platformFee);
+            IERC20(loan.currency).safeTransfer(
+                feeRecipient, platformFee
+            );
         }
-        // Return NFT to borrower
+
+        // H-03: Try to return NFT. If it fails (paused/blocklisted
+        // collection), mark NFT as claimable so the borrower can
+        // retrieve it later via claimNFT(). The financial settlement
+        // is NOT blocked.
+        // solhint-disable-next-line no-empty-blocks
+        try IERC721(loan.collection).safeTransferFrom(
+            address(this),
+            msg.sender,
+            loan.tokenId
+        ) {
+            // NFT returned successfully
+        } catch {
+            // NFT transfer failed -- mark for manual claim
+            nftClaimable[loanId] = true;
+            emit NFTClaimReady(loanId, msg.sender);
+        }
+
+        emit LoanRepaid(
+            loanId, msg.sender, totalFromBorrower, platformFee
+        );
+    }
+
+    /**
+     * @notice Claim an NFT that could not be transferred during
+     *         repayment.
+     * @dev H-03: Provides a fallback for borrowers whose NFT transfer
+     *      failed in repay() due to a paused or malicious collection.
+     *      The loan must already be marked repaid and the NFT marked
+     *      claimable.
+     * @param loanId The loan whose NFT to claim.
+     */
+    function claimNFT(uint256 loanId) external nonReentrant {
+        if (!nftClaimable[loanId]) revert NFTNotClaimable();
+        Loan storage loan = loans[loanId];
+        if (msg.sender != loan.borrower) revert NotBorrower();
+
+        nftClaimable[loanId] = false;
+
         IERC721(loan.collection).safeTransferFrom(
             address(this),
             msg.sender,
             loan.tokenId
         );
 
-        emit LoanRepaid(loanId, msg.sender, totalFromBorrower, platformFee);
+        emit NFTClaimed(loanId, msg.sender);
     }
 
     /**
      * @notice Liquidate a defaulted loan. Lender claims the NFT.
+     * @dev M-01 (NFTSuite): Liquidation is only permitted after
+     *      dueTime + LIQUIDATION_GRACE_PERIOD, giving the borrower
+     *      24 hours to repay after the loan expires.
      * @param loanId The loan to liquidate.
      */
     function liquidate(uint256 loanId) external nonReentrant {
@@ -318,6 +524,13 @@ contract OmniNFTLending is ERC721Holder, ReentrancyGuard, Ownable {
         if (loan.repaid || loan.liquidated) revert LoanNotActive();
         // solhint-disable-next-line not-rely-on-time
         if (block.timestamp < loan.dueTime) revert LoanNotExpired();
+        // M-01 (NFTSuite): Enforce grace period before liquidation
+        uint256 gracePeriodEnd =
+            loan.dueTime + LIQUIDATION_GRACE_PERIOD;
+        // solhint-disable-next-line not-rely-on-time
+        if (block.timestamp < gracePeriodEnd) {
+            revert GracePeriodActive();
+        }
         if (msg.sender != loan.lender) revert NotLender();
 
         loan.liquidated = true;
@@ -344,7 +557,9 @@ contract OmniNFTLending is ERC721Holder, ReentrancyGuard, Ownable {
 
         offer.active = false;
 
-        IERC20(offer.currency).safeTransfer(msg.sender, offer.principal);
+        IERC20(offer.currency).safeTransfer(
+            msg.sender, offer.principal
+        );
 
         emit OfferCancelled(offerId, msg.sender);
     }
@@ -353,11 +568,15 @@ contract OmniNFTLending is ERC721Holder, ReentrancyGuard, Ownable {
 
     /**
      * @notice Update the platform fee percentage.
+     * @dev Only affects future loans. Active loans use the fee
+     *      snapshotted at loan creation (H-02).
      * @param newFeeBps New fee in basis points of interest.
      */
     function setPlatformFee(uint16 newFeeBps) external onlyOwner {
         if (newFeeBps > MAX_PLATFORM_FEE_BPS) revert FeeTooHigh();
+        uint16 oldFeeBps = platformFeeBps;
         platformFeeBps = newFeeBps;
+        emit PlatformFeeUpdated(oldFeeBps, newFeeBps);
     }
 
     /**
@@ -365,7 +584,11 @@ contract OmniNFTLending is ERC721Holder, ReentrancyGuard, Ownable {
      * @param newRecipient New fee recipient.
      */
     function setFeeRecipient(address newRecipient) external onlyOwner {
+        // M-01: Validate new recipient is non-zero
+        if (newRecipient == address(0)) revert ZeroAddress();
+        address oldRecipient = feeRecipient;
         feeRecipient = newRecipient;
+        emit FeeRecipientUpdated(oldRecipient, newRecipient);
     }
 
     // ── View functions ───────────────────────────────────────────────────
@@ -376,7 +599,7 @@ contract OmniNFTLending is ERC721Holder, ReentrancyGuard, Ownable {
      * @return lender Lender address.
      * @return currency Currency address.
      * @return principal Loan amount.
-     * @return interestBps Interest in bps.
+     * @return interestBps Annual interest rate in bps.
      * @return durationDays Duration.
      * @return active Whether the offer is active.
      */
@@ -392,14 +615,14 @@ contract OmniNFTLending is ERC721Holder, ReentrancyGuard, Ownable {
             bool active
         )
     {
-        Offer storage o = offers[offerId];
+        Offer storage offer = offers[offerId];
         return (
-            o.lender,
-            o.currency,
-            o.principal,
-            o.interestBps,
-            o.durationDays,
-            o.active
+            offer.lender,
+            offer.currency,
+            offer.principal,
+            offer.interestBps,
+            offer.durationDays,
+            offer.active
         );
     }
 
@@ -426,6 +649,8 @@ contract OmniNFTLending is ERC721Holder, ReentrancyGuard, Ownable {
      * @return principal Principal amount.
      * @return interest Interest amount.
      * @return dueTime Loan due timestamp.
+     * @return snapshotFeeBps Platform fee in bps snapshotted at loan
+     *         creation (H-02).
      * @return repaid Whether the loan is repaid.
      * @return liquidated Whether the loan is liquidated.
      */
@@ -440,21 +665,33 @@ contract OmniNFTLending is ERC721Holder, ReentrancyGuard, Ownable {
             uint256 principal,
             uint256 interest,
             uint64 dueTime,
+            uint16 snapshotFeeBps,
             bool repaid,
             bool liquidated
         )
     {
-        Loan storage l = loans[loanId];
+        Loan storage loanData = loans[loanId];
         return (
-            l.borrower,
-            l.lender,
-            l.collection,
-            l.tokenId,
-            l.principal,
-            l.interest,
-            l.dueTime,
-            l.repaid,
-            l.liquidated
+            loanData.borrower,
+            loanData.lender,
+            loanData.collection,
+            loanData.tokenId,
+            loanData.principal,
+            loanData.interest,
+            loanData.dueTime,
+            loanData.platformFeeBps,
+            loanData.repaid,
+            loanData.liquidated
         );
+    }
+
+    // ── Pure functions ──────────────────────────────────────────────────
+
+    /**
+     * @notice Disable renounceOwnership to prevent accidental lockout.
+     * @dev M-04: Always reverts to protect contract administration.
+     */
+    function renounceOwnership() public pure override {
+        revert ZeroAddress();
     }
 }

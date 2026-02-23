@@ -4,6 +4,16 @@ require("hardhat-contract-sizer");
 require("@typechain/hardhat");
 require("dotenv").config();
 
+// Exclude test/deprecated/ from test runs — Hardhat resolves files before
+// passing to Mocha, so mocha.ignore alone does not work.
+const { subtask } = require("hardhat/config");
+const { TASK_TEST_GET_TEST_FILES } = require("hardhat/builtin-tasks/task-names");
+
+subtask(TASK_TEST_GET_TEST_FILES).setAction(async (args, hre, runSuper) => {
+  const files = await runSuper(args);
+  return files.filter((f) => !f.includes("/deprecated/"));
+});
+
 /** @type import('hardhat/config').HardhatUserConfig */
 module.exports = {
   solidity: {
@@ -131,7 +141,11 @@ module.exports = {
     disambiguatePaths: false
   },
   mocha: {
-    timeout: 100000
+    timeout: 100000,
+    ignore: [
+      "test/deprecated/**/*.js",
+      "test/deprecated/**/*.test.js"
+    ]
   },
   gasReporter: {
     enabled: process.env.REPORT_GAS !== undefined,

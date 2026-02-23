@@ -112,8 +112,15 @@ async function main() {
   console.log("STEP 1: Deploy LegacyBalanceClaim");
   console.log("=".repeat(80));
 
+  // Validator address defaults to deployer; replace in production
+  const validatorAddress = deployer.address; // CHANGE THIS IN PRODUCTION
+
   const LegacyBalanceClaim = await hre.ethers.getContractFactory("LegacyBalanceClaim");
-  const legacyClaim = await LegacyBalanceClaim.deploy(omniCoinAddress, deployer.address);
+  const legacyClaim = await LegacyBalanceClaim.deploy(
+    omniCoinAddress,
+    deployer.address,
+    validatorAddress
+  );
   await legacyClaim.waitForDeployment();
 
   const legacyClaimAddress = await legacyClaim.getAddress();
@@ -198,19 +205,14 @@ async function main() {
 
   console.log(`\n✅ Successfully added all ${legacyUsers.length} legacy users in ${batches.length} batches`);
 
-  // Step 5: Set validator backend address
+  // Step 5: Validator already set in constructor
   console.log("\n" + "=".repeat(80));
-  console.log("STEP 5: Set Validator Backend Address");
+  console.log("STEP 5: Verify Validator Backend Address");
   console.log("=".repeat(80));
 
-  // For now, use deployer address as validator
-  // In production, replace with actual validator backend address
-  const validatorAddress = deployer.address; // CHANGE THIS IN PRODUCTION
-
-  console.log("Setting validator to:", validatorAddress);
-  const setValidatorTx = await legacyClaim.setValidator(validatorAddress);
-  await setValidatorTx.wait();
-  console.log("✅ Validator address set");
+  const currentValidator = await legacyClaim.validator();
+  console.log("Validator set in constructor to:", currentValidator);
+  console.log("✅ Validator address confirmed");
 
   // Step 6: Verify stats
   console.log("\n" + "=".repeat(80));

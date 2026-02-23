@@ -1,5 +1,5 @@
 const { expect } = require("chai");
-const { ethers } = require("hardhat");
+const { ethers, upgrades } = require("hardhat");
 const { time, loadFixture } = require("@nomicfoundation/hardhat-network-helpers");
 
 describe("MinimalEscrow - Privacy Features", function () {
@@ -12,9 +12,13 @@ describe("MinimalEscrow - Privacy Features", function () {
     const xom = await OmniCoin.deploy();
     await xom.initialize();
 
+    // Deploy PrivateOmniCoin (pXOM) via UUPS proxy
     const PrivateOmniCoin = await ethers.getContractFactory("PrivateOmniCoin");
-    const pxom = await PrivateOmniCoin.deploy();
-    await pxom.initialize();
+    const pxom = await upgrades.deployProxy(
+      PrivateOmniCoin,
+      [],
+      { initializer: "initialize", kind: "uups" }
+    );
 
     // Create mock registry
     const mockRegistry = owner.address;
@@ -30,11 +34,17 @@ describe("MinimalEscrow - Privacy Features", function () {
     );
 
     // Grant bridge role to escrow on pXOM
-    const BRIDGE_ROLE = ethers.keccak256(ethers.toUtf8Bytes("BRIDGE_ROLE"));
+    const BRIDGE_ROLE = await pxom.BRIDGE_ROLE();
     await pxom.grantRole(BRIDGE_ROLE, await escrow.getAddress());
 
-    // Transfer tokens to buyer for testing
-    await xom.transfer(buyer.address, ethers.parseEther("1000"));
+    // Grant minter role to owner on XOM for minting test tokens
+    const MINTER_ROLE_XOM = await xom.MINTER_ROLE();
+    await xom.grantRole(MINTER_ROLE_XOM, owner.address);
+
+    // Transfer XOM tokens to buyer for testing
+    await xom.mint(buyer.address, ethers.parseEther("1000"));
+
+    // Mint pXOM to buyer for testing (deployer has MINTER_ROLE from initialize)
     await pxom.mint(buyer.address, ethers.parseEther("1000"));
 
     return { escrow, xom, pxom, owner, buyer, seller, arbitrator };
@@ -60,7 +70,13 @@ describe("MinimalEscrow - Privacy Features", function () {
       const MinimalEscrow = await ethers.getContractFactory("MinimalEscrow");
 
       await expect(
-        MinimalEscrow.deploy(ethers.ZeroAddress, await pxom.getAddress(), owner.address)
+        MinimalEscrow.deploy(
+          ethers.ZeroAddress,
+          await pxom.getAddress(),
+          owner.address,
+          owner.address,
+          100
+        )
       ).to.be.revertedWithCustomError(MinimalEscrow, "InvalidAddress");
     });
 
@@ -69,16 +85,28 @@ describe("MinimalEscrow - Privacy Features", function () {
       const MinimalEscrow = await ethers.getContractFactory("MinimalEscrow");
 
       await expect(
-        MinimalEscrow.deploy(await xom.getAddress(), ethers.ZeroAddress, owner.address)
+        MinimalEscrow.deploy(
+          await xom.getAddress(),
+          ethers.ZeroAddress,
+          owner.address,
+          owner.address,
+          100
+        )
       ).to.be.revertedWithCustomError(MinimalEscrow, "InvalidAddress");
     });
 
     it("Should revert if registry address is zero", async function () {
-      const { xom, pxom } = await loadFixture(deployEscrowFixture);
+      const { xom, pxom, owner } = await loadFixture(deployEscrowFixture);
       const MinimalEscrow = await ethers.getContractFactory("MinimalEscrow");
 
       await expect(
-        MinimalEscrow.deploy(await xom.getAddress(), await pxom.getAddress(), ethers.ZeroAddress)
+        MinimalEscrow.deploy(
+          await xom.getAddress(),
+          await pxom.getAddress(),
+          ethers.ZeroAddress,
+          owner.address,
+          100
+        )
       ).to.be.revertedWithCustomError(MinimalEscrow, "InvalidAddress");
     });
   });
@@ -169,7 +197,6 @@ describe("MinimalEscrow - Privacy Features", function () {
   describe("Privacy Events", function () {
     it("Should have PrivateEscrowCreated event defined", async function () {
       const { escrow } = await loadFixture(deployEscrowFixture);
-      const MinimalEscrow = await ethers.getContractFactory("MinimalEscrow");
 
       // Check if event exists in ABI
       const eventFragment = escrow.interface.getEvent("PrivateEscrowCreated");

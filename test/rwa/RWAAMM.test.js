@@ -13,6 +13,18 @@ describe('RWAAMM Protocol', function () {
     let feeCollectorOwner;
     let emergencySigners;
 
+    /**
+     * @notice Get a block-timestamp-relative deadline to avoid DeadlineExpired
+     *         errors when the Hardhat EVM timestamp diverges from wall clock
+     *         (which happens during long full-suite test runs).
+     * @param {number} offset Seconds from latest block (default 3600)
+     * @returns {Promise<number>} Future deadline timestamp
+     */
+    async function futureDeadline(offset = 3600) {
+        const block = await ethers.provider.getBlock('latest');
+        return block.timestamp + offset;
+    }
+
     // Contracts
     let amm;
     let router;
@@ -58,17 +70,27 @@ describe('RWAAMM Protocol', function () {
         complianceOracle = await ComplianceOracle.deploy(owner.address);
         await complianceOracle.waitForDeployment();
 
-        // Deploy fee collector (using owner as staking pool and liquidity pool for tests)
+        // Pre-compute AMM address so the fee collector's immutable AMM_CONTRACT
+        // is correct from deployment (both AMM and FeeCollector use immutables).
+        const deployerNonce = await ethers.provider.getTransactionCount(owner.address);
+        // FeeCollector will be deployed at nonce, AMM at nonce+1
+        const predictedAmmAddress = ethers.getCreateAddress({
+            from: owner.address,
+            nonce: deployerNonce + 1,
+        });
+
+        // Deploy fee collector with predicted AMM address
         const FeeCollector = await ethers.getContractFactory('RWAFeeCollector');
         feeCollector = await FeeCollector.deploy(
             await xomToken.getAddress(),
             owner.address, // staking pool
-            owner.address, // AMM contract (will update after AMM deployment)
+            predictedAmmAddress, // AMM contract (pre-computed)
             owner.address, // liquidity pool
+            owner.address, // admin
         );
         await feeCollector.waitForDeployment();
 
-        // Deploy RWAAMM
+        // Deploy RWAAMM (will land at predictedAmmAddress)
         const emergencyAddresses = emergencySigners.map(s => s.address);
         const RWAAMM = await ethers.getContractFactory('RWAAMM');
         amm = await RWAAMM.deploy(
@@ -81,7 +103,7 @@ describe('RWAAMM Protocol', function () {
 
         // Deploy router
         const Router = await ethers.getContractFactory('RWARouter');
-        router = await Router.deploy(await amm.getAddress(), await wavax.getAddress());
+        router = await Router.deploy(await amm.getAddress());
         await router.waitForDeployment();
 
         // Mint tokens to users
@@ -135,7 +157,7 @@ describe('RWAAMM Protocol', function () {
             await rwaToken.connect(owner).approve(await amm.getAddress(), INITIAL_LIQUIDITY);
 
             // Add liquidity (creates pool)
-            const deadline = Math.floor(Date.now() / 1000) + 3600;
+            const deadline = await futureDeadline();
             await amm.connect(owner).addLiquidity(
                 xomAddr,
                 rwaAddr,
@@ -158,7 +180,7 @@ describe('RWAAMM Protocol', function () {
             await xomToken.connect(owner).approve(await amm.getAddress(), INITIAL_LIQUIDITY);
             await rwaToken.connect(owner).approve(await amm.getAddress(), INITIAL_LIQUIDITY);
 
-            const deadline = Math.floor(Date.now() / 1000) + 3600;
+            const deadline = await futureDeadline();
 
             await expect(
                 amm.connect(owner).addLiquidity(
@@ -178,7 +200,7 @@ describe('RWAAMM Protocol', function () {
 
             await xomToken.connect(owner).approve(await amm.getAddress(), INITIAL_LIQUIDITY * 2n);
 
-            const deadline = Math.floor(Date.now() / 1000) + 3600;
+            const deadline = await futureDeadline();
 
             await expect(
                 amm.connect(owner).addLiquidity(
@@ -203,7 +225,7 @@ describe('RWAAMM Protocol', function () {
             await xomToken.connect(owner).approve(await amm.getAddress(), INITIAL_LIQUIDITY);
             await rwaToken.connect(owner).approve(await amm.getAddress(), INITIAL_LIQUIDITY);
 
-            const deadline = Math.floor(Date.now() / 1000) + 3600;
+            const deadline = await futureDeadline();
             await amm.connect(owner).addLiquidity(
                 xomAddr,
                 rwaAddr,
@@ -223,7 +245,7 @@ describe('RWAAMM Protocol', function () {
             await xomToken.connect(user1).approve(await amm.getAddress(), additionalLiquidity);
             await rwaToken.connect(user1).approve(await amm.getAddress(), additionalLiquidity);
 
-            const deadline = Math.floor(Date.now() / 1000) + 3600;
+            const deadline = await futureDeadline();
             await expect(
                 amm.connect(user1).addLiquidity(
                     xomAddr,
@@ -251,7 +273,7 @@ describe('RWAAMM Protocol', function () {
 
             // Remove half liquidity
             const removeAmount = lpBalance / 2n;
-            const deadline = Math.floor(Date.now() / 1000) + 3600;
+            const deadline = await futureDeadline();
 
             // Approve LP tokens for AMM
             await poolContract.connect(owner).approve(await amm.getAddress(), removeAmount);
@@ -278,7 +300,7 @@ describe('RWAAMM Protocol', function () {
             await xomToken.connect(owner).approve(await amm.getAddress(), INITIAL_LIQUIDITY);
             await rwaToken.connect(owner).approve(await amm.getAddress(), INITIAL_LIQUIDITY);
 
-            const deadline = Math.floor(Date.now() / 1000) + 3600;
+            const deadline = await futureDeadline();
             await amm.connect(owner).addLiquidity(
                 xomAddr,
                 rwaAddr,
@@ -297,7 +319,7 @@ describe('RWAAMM Protocol', function () {
             // User1 swaps XOM for RWA
             await xomToken.connect(user1).approve(await amm.getAddress(), SWAP_AMOUNT);
 
-            const deadline = Math.floor(Date.now() / 1000) + 3600;
+            const deadline = await futureDeadline();
             const user1RwaBefore = await rwaToken.balanceOf(user1.address);
 
             await amm.connect(user1).swap(
@@ -318,7 +340,7 @@ describe('RWAAMM Protocol', function () {
 
             await xomToken.connect(user1).approve(await amm.getAddress(), SWAP_AMOUNT);
 
-            const deadline = Math.floor(Date.now() / 1000) + 3600;
+            const deadline = await futureDeadline();
 
             await expect(
                 amm.connect(user1).swap(
@@ -337,7 +359,9 @@ describe('RWAAMM Protocol', function () {
 
             await xomToken.connect(user1).approve(await amm.getAddress(), SWAP_AMOUNT);
 
-            const expiredDeadline = Math.floor(Date.now() / 1000) - 3600;
+            // Use block-relative past timestamp to guarantee expiry
+            const block = await ethers.provider.getBlock('latest');
+            const expiredDeadline = block.timestamp - 3600;
 
             await expect(
                 amm.connect(user1).swap(
@@ -356,7 +380,7 @@ describe('RWAAMM Protocol', function () {
 
             await xomToken.connect(user1).approve(await amm.getAddress(), SWAP_AMOUNT);
 
-            const deadline = Math.floor(Date.now() / 1000) + 3600;
+            const deadline = await futureDeadline();
             const unreasonableMinOut = ethers.parseEther('1000'); // Way too high
 
             await expect(
@@ -380,7 +404,7 @@ describe('RWAAMM Protocol', function () {
             await xomToken.connect(owner).approve(await amm.getAddress(), INITIAL_LIQUIDITY);
             await rwaToken.connect(owner).approve(await amm.getAddress(), INITIAL_LIQUIDITY);
 
-            const deadline = Math.floor(Date.now() / 1000) + 3600;
+            const deadline = await futureDeadline();
             await amm.connect(owner).addLiquidity(
                 xomAddr,
                 rwaAddr,
@@ -431,7 +455,10 @@ describe('RWAAMM Protocol', function () {
         });
 
         it('Should have correct fee distribution ratios', async function () {
-            expect(await feeCollector.FEE_LP_BPS()).to.equal(7000n); // 70%
+            // FEE_LP_BPS (70%) is on the AMM contract, not the FeeCollector.
+            // The FeeCollector only receives 30% of the protocol fee and
+            // splits it into staking (2/3 = 20%) and liquidity (1/3 = 10%).
+            expect(await amm.FEE_LP_BPS()).to.equal(7000n); // 70% (on AMM)
             expect(await feeCollector.FEE_STAKING_BPS()).to.equal(2000n); // 20%
             expect(await feeCollector.FEE_LIQUIDITY_BPS()).to.equal(1000n); // 10%
         });
@@ -470,11 +497,13 @@ describe('RWAAMM Protocol', function () {
             expect(result.status).to.equal(0n); // COMPLIANT
         });
 
-        it('Should return compliant for unregistered tokens', async function () {
+        it('Should return non-compliant for unregistered tokens (H-01 fail-closed)', async function () {
             const unregisteredToken = ethers.Wallet.createRandom().address;
 
+            // H-01 audit fix: unregistered tokens default to NON_COMPLIANT
+            // to prevent unregistered wrapper tokens from bypassing compliance.
             const result = await complianceOracle.checkCompliance(user1.address, unregisteredToken);
-            expect(result.status).to.equal(0n); // COMPLIANT
+            expect(result.status).to.equal(1n); // NON_COMPLIANT
         });
     });
 
@@ -487,7 +516,7 @@ describe('RWAAMM Protocol', function () {
             await xomToken.connect(owner).approve(await amm.getAddress(), INITIAL_LIQUIDITY);
             await rwaToken.connect(owner).approve(await amm.getAddress(), INITIAL_LIQUIDITY);
 
-            const deadline = Math.floor(Date.now() / 1000) + 3600;
+            const deadline = await futureDeadline();
             await amm.connect(owner).addLiquidity(
                 xomAddr,
                 rwaAddr,
@@ -503,18 +532,22 @@ describe('RWAAMM Protocol', function () {
             expect(await router.AMM()).to.equal(await amm.getAddress());
         });
 
-        it('Should execute swap through router', async function () {
+        it('Should route swaps through AMM (C-01 fix)', async function () {
             const xomAddr = await xomToken.getAddress();
             const rwaAddr = await rwaToken.getAddress();
 
+            // C-01 fix: Router now routes ALL swaps through RWAAMM, which
+            // calls pool.swap() as the factory. This ensures compliance
+            // checks and fee collection are never bypassed.
             await xomToken.connect(user1).approve(await router.getAddress(), SWAP_AMOUNT);
 
-            const deadline = Math.floor(Date.now() / 1000) + 3600;
+            const deadline = await futureDeadline();
             const user1RwaBefore = await rwaToken.balanceOf(user1.address);
 
+            // amountOutMin must be > 0 (router enforces ZeroMinimumOutput)
             await router.connect(user1).swapExactTokensForTokens(
                 SWAP_AMOUNT,
-                0n,
+                1n, // Minimum 1 wei output (slippage protection)
                 [xomAddr, rwaAddr],
                 user1.address,
                 deadline,
@@ -524,22 +557,20 @@ describe('RWAAMM Protocol', function () {
             expect(user1RwaAfter).to.be.gt(user1RwaBefore);
         });
 
-        it('Should add liquidity through router', async function () {
+        it('Should route addLiquidity through AMM (C-01 fix)', async function () {
             const xomAddr = await xomToken.getAddress();
             const rwaAddr = await rwaToken.getAddress();
             const addAmount = ethers.parseEther('100');
 
+            // C-01 fix: Router now routes addLiquidity through RWAAMM, which
+            // calls pool.mint() as the factory. This ensures compliance
+            // checks are enforced for LP operations.
             await xomToken.connect(user1).approve(await router.getAddress(), addAmount);
             await rwaToken.connect(user1).approve(await router.getAddress(), addAmount);
 
-            const deadline = Math.floor(Date.now() / 1000) + 3600;
+            const deadline = await futureDeadline();
 
-            // Get pool address before add - use signature to disambiguate
-            const poolAddr = await amm['getPool(address,address)'](xomAddr, rwaAddr);
-            const poolContract = await ethers.getContractAt('RWAPool', poolAddr);
-            const lpBefore = await poolContract.balanceOf(user1.address);
-
-            // Add liquidity through router
+            // Should succeed — router delegates to AMM which is the pool factory
             await router.connect(user1).addLiquidity(
                 xomAddr,
                 rwaAddr,
@@ -551,9 +582,11 @@ describe('RWAAMM Protocol', function () {
                 deadline,
             );
 
-            // Verify LP tokens were received
-            const lpAfter = await poolContract.balanceOf(user1.address);
-            expect(lpAfter).to.be.gt(lpBefore);
+            // Verify LP tokens were minted to user1
+            const poolAddr = await amm['getPool(address,address)'](xomAddr, rwaAddr);
+            const poolContract = await ethers.getContractAt('RWAPool', poolAddr);
+            const lpBalance = await poolContract.balanceOf(user1.address);
+            expect(lpBalance).to.be.gt(0n);
         });
     });
 

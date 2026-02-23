@@ -46,14 +46,14 @@ contract PrivateDEXSettlement is Ownable, Pausable, ReentrancyGuard {
     /// @notice Basis points divisor (100%)
     uint256 public constant BASIS_POINTS_DIVISOR = 10000;
 
-    /// @notice Liquidity/Staking pool fee share (70%)
-    uint256 public constant LIQUIDITY_POOL_SHARE = 7000;
+    /// @notice ODDAO fee share (70%)
+    uint256 public constant ODDAO_SHARE = 7000;
 
-    /// @notice ODDAO fee share (20%)
-    uint256 public constant ODDAO_SHARE = 2000;
+    /// @notice Staking pool fee share (20%)
+    uint256 public constant STAKING_POOL_SHARE = 2000;
 
-    /// @notice Protocol fee share (10%)
-    uint256 public constant PROTOCOL_SHARE = 1000;
+    /// @notice Validator fee share (10%)
+    uint256 public constant VALIDATOR_SHARE = 1000;
 
     /// @notice Trading fee in basis points (0.2%)
     uint256 public constant TRADING_FEE_BPS = 20;
@@ -84,14 +84,12 @@ contract PrivateDEXSettlement is Ownable, Pausable, ReentrancyGuard {
 
     /**
      * @notice Fee distribution addresses
-     * @param liquidityPool Address of liquidity/staking pool
-     * @param oddao Address of ODDAO treasury
-     * @param protocol Address of protocol treasury
+     * @param oddao Address of ODDAO treasury (receives 70%)
+     * @param stakingPool Address of staking pool (receives 20%)
      */
     struct FeeRecipients {
-        address liquidityPool;
         address oddao;
-        address protocol;
+        address stakingPool;
     }
 
     // ========================================================================
@@ -175,23 +173,20 @@ contract PrivateDEXSettlement is Ownable, Pausable, ReentrancyGuard {
 
     /**
      * @notice Constructor to initialize the PrivateDEXSettlement contract
-     * @param _liquidityPool Address of liquidity/staking pool
-     * @param _oddao Address of ODDAO treasury
-     * @param _protocol Address of protocol treasury
+     * @param _oddao Address of ODDAO treasury (receives 70%)
+     * @param _stakingPool Address of staking pool (receives 20%)
      */
     constructor(
-        address _liquidityPool,
         address _oddao,
-        address _protocol
+        address _stakingPool
     ) Ownable(msg.sender) {
-        if (_liquidityPool == address(0) || _oddao == address(0) || _protocol == address(0)) {
+        if (_oddao == address(0) || _stakingPool == address(0)) {
             revert InvalidAddress();
         }
 
         feeRecipients = FeeRecipients({
-            liquidityPool: _liquidityPool,
             oddao: _oddao,
-            protocol: _protocol
+            stakingPool: _stakingPool
         });
     }
 
@@ -315,23 +310,20 @@ contract PrivateDEXSettlement is Ownable, Pausable, ReentrancyGuard {
 
     /**
      * @notice Update fee recipient addresses
-     * @param _liquidityPool New liquidity pool address
-     * @param _oddao New ODDAO address
-     * @param _protocol New protocol address
+     * @param _oddao New ODDAO address (receives 70%)
+     * @param _stakingPool New staking pool address (receives 20%)
      */
     function updateFeeRecipients(
-        address _liquidityPool,
         address _oddao,
-        address _protocol
+        address _stakingPool
     ) external onlyOwner {
-        if (_liquidityPool == address(0) || _oddao == address(0) || _protocol == address(0)) {
+        if (_oddao == address(0) || _stakingPool == address(0)) {
             revert InvalidAddress();
         }
 
         feeRecipients = FeeRecipients({
-            liquidityPool: _liquidityPool,
             oddao: _oddao,
-            protocol: _protocol
+            stakingPool: _stakingPool
         });
     }
 

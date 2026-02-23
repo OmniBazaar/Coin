@@ -15,7 +15,7 @@ interface IRWAPool {
     /// @notice Emitted when reserves are synchronized
     /// @param reserve0 New reserve of token0
     /// @param reserve1 New reserve of token1
-    event Sync(uint256 reserve0, uint256 reserve1);
+    event Sync(uint256 indexed reserve0, uint256 indexed reserve1);
 
     /// @notice Emitted when tokens are minted
     /// @param sender Address that triggered mint
@@ -23,8 +23,25 @@ interface IRWAPool {
     /// @param amount1 Token1 deposited
     event Mint(
         address indexed sender,
-        uint256 amount0,
-        uint256 amount1
+        uint256 indexed amount0,
+        uint256 indexed amount1
+    );
+
+    /* solhint-disable gas-indexed-events */
+    /// @notice Emitted when a swap is executed on the pool
+    /// @param sender Address that triggered the swap (factory)
+    /// @param amount0In Token0 input amount
+    /// @param amount1In Token1 input amount
+    /// @param amount0Out Token0 output amount
+    /// @param amount1Out Token1 output amount
+    /// @param to Recipient address
+    event Swap(
+        address indexed sender,
+        uint256 amount0In,
+        uint256 amount1In,
+        uint256 amount0Out,
+        uint256 amount1Out,
+        address indexed to
     );
 
     /// @notice Emitted when tokens are burned
@@ -34,10 +51,11 @@ interface IRWAPool {
     /// @param to Recipient address
     event Burn(
         address indexed sender,
-        uint256 amount0,
+        uint256 indexed amount0,
         uint256 amount1,
         address indexed to
     );
+    /* solhint-enable gas-indexed-events */
 
     // ========================================================================
     // ERRORS
@@ -115,12 +133,15 @@ interface IRWAPool {
      */
     function kLast() external view returns (uint256);
 
+    /* solhint-disable func-name-mixedcase */
     /**
      * @notice Get minimum liquidity locked on first mint
      * @return Minimum liquidity amount (1000)
      */
     function MINIMUM_LIQUIDITY() external pure returns (uint256);
+    /* solhint-enable func-name-mixedcase */
 
+    /* solhint-disable ordering */
     // ========================================================================
     // STATE-CHANGING FUNCTIONS
     // ========================================================================
@@ -131,6 +152,7 @@ interface IRWAPool {
      * @param _token1 Second token address
      */
     function initialize(address _token0, address _token1) external;
+    /* solhint-enable ordering */
 
     /**
      * @notice Mint LP tokens for deposited liquidity

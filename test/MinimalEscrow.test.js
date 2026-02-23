@@ -319,7 +319,7 @@ describe("MinimalEscrow", function () {
       }
     });
 
-    it("Should return dispute stake after resolution", async function () {
+    it("Should deduct arbitration fee from dispute stake after resolution", async function () {
       await time.increase(ARBITRATOR_DELAY + 1);
 
       const nonce = 12345;
@@ -333,7 +333,7 @@ describe("MinimalEscrow", function () {
       await escrow.connect(buyer).commitDispute(escrowId, commitment);
 
       const buyerBalanceAfterStake = await token.balanceOf(buyer.address);
-      const stakeAmount = ESCROW_AMOUNT / 1000n; // 0.1% of 100 = 0.1 ETH
+      const stakeAmount = ESCROW_AMOUNT / 1000n; // 0.1% of 100 = 0.1 XOM
       expect(buyerBalanceBefore - buyerBalanceAfterStake).to.equal(stakeAmount);
 
       // Reveal dispute
@@ -357,10 +357,12 @@ describe("MinimalEscrow", function () {
       await escrow.connect(arbitratorSigner).vote(escrowId, true);
       await escrow.connect(seller).vote(escrowId, true);
 
-      // Buyer should get stake back after resolution
+      // Arbitration fee is 5% of escrow amount = 5 XOM
+      // Half from buyer stake = 2.5 XOM, but buyer stake is only 0.1 XOM
+      // So buyer's entire stake (0.1 XOM) is consumed as arbitration fee
+      // Buyer does NOT get stake back
       const buyerBalanceAfter = await token.balanceOf(buyer.address);
-      // Buyer lost 100 escrow (went to seller) but got back 0.1 stake
-      expect(buyerBalanceAfter).to.equal(buyerBalanceAfterStake + stakeAmount);
+      expect(buyerBalanceAfter).to.equal(buyerBalanceAfterStake);
 
       if (assignedArbitrator !== arbitrator.address) {
         await ethers.provider.send("hardhat_stopImpersonatingAccount", [assignedArbitrator]);

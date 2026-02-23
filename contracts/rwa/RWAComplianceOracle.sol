@@ -41,8 +41,14 @@ contract RWAComplianceOracle is IRWAComplianceOracle, ReentrancyGuard {
     /// @notice ERC-1400 interface ID
     bytes4 private constant ERC1400_INTERFACE = 0x985e8bff;
 
-    /// @notice ERC-4626 interface ID
-    bytes4 private constant ERC4626_INTERFACE = 0x7ecebe00;
+    /// @notice ERC-4626 asset() function selector for probing
+    /// @dev ERC-4626 has no standardized ERC-165 ID; we probe for
+    ///      asset() (0x38d52e0f) which is unique to ERC-4626 vaults.
+    ///      The previous value 0x7ecebe00 was EIP-2612 nonces().
+    bytes4 private constant ERC4626_ASSET_SELECTOR = 0x38d52e0f;
+
+    /// @notice Maximum batch size for compliance checks
+    uint256 public constant MAX_BATCH_SIZE = 50;
 
     // ========================================================================
     // STATE VARIABLES
@@ -69,6 +75,20 @@ contract RWAComplianceOracle is IRWAComplianceOracle, ReentrancyGuard {
     /// @param newRegistrar New registrar
     event RegistrarUpdated(address indexed oldRegistrar, address indexed newRegistrar);
 
+    /// @notice Emitted when a token configuration is updated
+    /// @param token Token address
+    /// @param complianceContract New compliance contract
+    /// @param complianceEnabled Whether compliance is enabled
+    event TokenConfigUpdated(
+        address indexed token,
+        address indexed complianceContract,
+        bool indexed complianceEnabled
+    );
+
+    /// @notice Emitted when a token is deregistered
+    /// @param token Token address
+    event TokenDeregistered(address indexed token);
+
     // ========================================================================
     // ERRORS (Additional)
     // ========================================================================
@@ -87,18 +107,10 @@ contract RWAComplianceOracle is IRWAComplianceOracle, ReentrancyGuard {
     /// @param tokensLength Tokens array length
     error ArrayLengthMismatch(uint256 usersLength, uint256 tokensLength);
 
-    // ========================================================================
-    // CONSTRUCTOR
-    // ========================================================================
-
-    /**
-     * @notice Deploy compliance oracle
-     * @param _registrar Initial registrar address
-     */
-    constructor(address _registrar) {
-        if (_registrar == address(0)) revert ZeroAddress();
-        registrar = _registrar;
-    }
+    /// @notice Thrown when batch size exceeds maximum
+    /// @param provided Provided batch size
+    /// @param maxAllowed Maximum allowed batch size
+    error BatchSizeTooLarge(uint256 provided, uint256 maxAllowed);
 
     // ========================================================================
     // MODIFIERS
@@ -110,6 +122,19 @@ contract RWAComplianceOracle is IRWAComplianceOracle, ReentrancyGuard {
     modifier onlyRegistrar() {
         if (msg.sender != registrar) revert NotRegistrar();
         _;
+    }
+
+    // ========================================================================
+    // CONSTRUCTOR
+    // ========================================================================
+
+    /**
+     * @notice Deploy compliance oracle
+     * @param _registrar Initial registrar address
+     */
+    constructor(address _registrar) {
+        if (_registrar == address(0)) revert ZeroAddress();
+        registrar = _registrar;
     }
 
     // ========================================================================
@@ -135,12 +160,65 @@ contract RWAComplianceOracle is IRWAComplianceOracle, ReentrancyGuard {
             registered: true,
             complianceEnabled: standard != TokenStandard.ERC20,
             complianceContract: complianceContract != address(0) ? complianceContract : token,
+            // solhint-disable-next-line not-rely-on-time
             lastUpdated: block.timestamp
         });
 
         _registeredTokens.push(token);
 
         emit TokenRegistered(token, standard, complianceContract);
+    }
+
+    /**
+     * @notice Update configuration for a registered token
+     * @dev Allows the registrar to change the compliance contract,
+     *      enable/disable compliance, or correct misconfigurations
+     *      without requiring a new oracle deployment.
+     * @param token Token address to update
+     * @param complianceContract New compliance contract address
+     * @param complianceEnabled Whether compliance is enabled
+     */
+    function updateTokenConfig(
+        address token,
+        address complianceContract,
+        bool complianceEnabled
+    ) external onlyRegistrar {
+        if (!_tokenConfigs[token].registered) {
+            revert TokenNotRegistered(token);
+        }
+
+        TokenConfig storage config = _tokenConfigs[token];
+        config.complianceContract = complianceContract != address(0)
+            ? complianceContract
+            : token;
+        config.complianceEnabled = complianceEnabled;
+        // solhint-disable-next-line not-rely-on-time
+        config.lastUpdated = block.timestamp;
+
+        emit TokenConfigUpdated(
+            token, complianceContract, complianceEnabled
+        );
+    }
+
+    /**
+     * @notice Deregister a token from the compliance oracle
+     * @dev Marks the token as unregistered. Does not remove from
+     *      _registeredTokens array (gas cost prohibitive for on-chain
+     *      array removal). Deregistered tokens will be treated as
+     *      NON_COMPLIANT per the fail-closed default.
+     * @param token Token address to deregister
+     */
+    function deregisterToken(
+        address token
+    ) external onlyRegistrar {
+        if (!_tokenConfigs[token].registered) {
+            revert TokenNotRegistered(token);
+        }
+
+        _tokenConfigs[token].registered = false;
+        _tokenConfigs[token].complianceEnabled = false;
+
+        emit TokenDeregistered(token);
     }
 
     /**
@@ -158,8 +236,14 @@ contract RWAComplianceOracle is IRWAComplianceOracle, ReentrancyGuard {
     // COMPLIANCE CHECKING
     // ========================================================================
 
+    /* solhint-disable code-complexity */
     /**
-     * @inheritdoc IRWAComplianceOracle
+     * @notice Check if a user is compliant for a given token
+     * @dev Checks cache first, then evaluates compliance based on
+     *      token standard. Unregistered tokens default to NON_COMPLIANT.
+     * @param user User address
+     * @param token Token address
+     * @return result Compliance result with status and details
      */
     function checkCompliance(
         address user,
@@ -172,20 +256,25 @@ contract RWAComplianceOracle is IRWAComplianceOracle, ReentrancyGuard {
             return cached;
         }
 
-        // If token not registered, return compliant (no restrictions)
+        // If token not registered, fail-closed: return NON_COMPLIANT.
+        // All RWA tokens must be explicitly registered before trading.
+        // This prevents unregistered wrapper tokens or newly deployed
+        // security tokens from bypassing compliance checks.
+        /* solhint-disable not-rely-on-time, gas-small-strings */
         if (!_tokenConfigs[token].registered) {
             return ComplianceResult({
-                status: ComplianceStatus.COMPLIANT,
-                tokenStandard: TokenStandard.ERC20,
+                status: ComplianceStatus.NON_COMPLIANT,
+                tokenStandard: TokenStandard.UNKNOWN,
                 kycRequired: false,
                 accreditedInvestorRequired: false,
                 holdingPeriodSeconds: 0,
                 maxHolding: 0,
-                reason: "Token not registered - no compliance required",
+                reason: "Token not registered - compliance unknown",
                 timestamp: block.timestamp,
                 validUntil: block.timestamp + CACHE_TTL
             });
         }
+        /* solhint-enable gas-small-strings */
 
         TokenConfig memory config = _tokenConfigs[token];
 
@@ -223,7 +312,9 @@ contract RWAComplianceOracle is IRWAComplianceOracle, ReentrancyGuard {
             timestamp: block.timestamp,
             validUntil: block.timestamp + CACHE_TTL
         });
+        /* solhint-enable not-rely-on-time */
     }
+    /* solhint-enable code-complexity */
 
     /**
      * @inheritdoc IRWAComplianceOracle
@@ -260,16 +351,41 @@ contract RWAComplianceOracle is IRWAComplianceOracle, ReentrancyGuard {
         }
     }
 
+    /* solhint-disable ordering */
     /**
-     * @inheritdoc IRWAComplianceOracle
+     * @notice Refresh cached compliance for a user/token pair
+     * @dev Restricted to registrar only to prevent cache poisoning.
+     *      An attacker could otherwise call refreshCompliance() during
+     *      a compliance contract reconfiguration window to cache
+     *      stale or permissive results for the full TTL period.
+     * @param user User address to refresh compliance for
+     * @param token Token address to refresh compliance for
      */
-    function refreshCompliance(address user, address token) external override nonReentrant {
+    function refreshCompliance(
+        address user,
+        address token
+    ) external override onlyRegistrar nonReentrant {
         // Re-check compliance and update cache
         ComplianceResult memory result = this.checkCompliance(user, token);
 
         _complianceCache[user][token] = result;
 
         emit ComplianceCached(user, token, result.validUntil);
+    }
+    /* solhint-enable ordering */
+
+    /**
+     * @notice Invalidate a cached compliance result immediately
+     * @dev Allows the registrar to force re-evaluation on next check.
+     *      Use when a compliance contract is being updated/reconfigured.
+     * @param user User address
+     * @param token Token address
+     */
+    function invalidateCache(
+        address user,
+        address token
+    ) external onlyRegistrar {
+        delete _complianceCache[user][token];
     }
 
     /**
@@ -281,6 +397,9 @@ contract RWAComplianceOracle is IRWAComplianceOracle, ReentrancyGuard {
     ) external view override returns (ComplianceResult[] memory results) {
         if (users.length != tokens.length) {
             revert ArrayLengthMismatch(users.length, tokens.length);
+        }
+        if (users.length > MAX_BATCH_SIZE) {
+            revert BatchSizeTooLarge(users.length, MAX_BATCH_SIZE);
         }
 
         results = new ComplianceResult[](users.length);
@@ -325,11 +444,42 @@ contract RWAComplianceOracle is IRWAComplianceOracle, ReentrancyGuard {
     }
 
     /**
-     * @notice Get all registered tokens
+     * @notice Get all registered tokens (bounded by array size)
+     * @dev For large registries, use getRegisteredTokensPaginated instead
      * @return Array of registered token addresses
      */
     function getRegisteredTokens() external view returns (address[] memory) {
         return _registeredTokens;
+    }
+
+    /**
+     * @notice Get registered tokens with pagination
+     * @dev Prevents gas issues with large registries by limiting return size
+     * @param offset Starting index in the _registeredTokens array
+     * @param limit Maximum number of tokens to return
+     * @return tokens Array of registered token addresses
+     * @return total Total number of registered tokens
+     */
+    function getRegisteredTokensPaginated(
+        uint256 offset,
+        uint256 limit
+    ) external view returns (
+        address[] memory tokens,
+        uint256 total
+    ) {
+        total = _registeredTokens.length;
+        // solhint-disable-next-line gas-strict-inequalities
+        if (offset >= total) {
+            return (new address[](0), total);
+        }
+
+        uint256 remaining = total - offset;
+        uint256 count = remaining < limit ? remaining : limit;
+
+        tokens = new address[](count);
+        for (uint256 i = 0; i < count; ++i) {
+            tokens[i] = _registeredTokens[offset + i];
+        }
     }
 
     /**
@@ -364,11 +514,12 @@ contract RWAComplianceOracle is IRWAComplianceOracle, ReentrancyGuard {
             // Interface check not supported, continue
         }
 
-        // Try ERC-4626 check
-        try IERC165(token).supportsInterface(ERC4626_INTERFACE) returns (bool supported) {
-            if (supported) return TokenStandard.ERC4626;
+        // Probe for ERC-4626 vault via asset() function
+        // (ERC-4626 has no ERC-165 ID; we call asset() directly)
+        try IERC4626Probe(token).asset() returns (address) {
+            return TokenStandard.ERC4626;
         } catch {
-            // Interface check not supported, continue
+            // Not ERC-4626, continue
         }
 
         // Check for ERC-3643 canTransfer function
@@ -383,11 +534,16 @@ contract RWAComplianceOracle is IRWAComplianceOracle, ReentrancyGuard {
     }
 
     /**
-     * @notice Check ERC-3643 compliance
-     * @param user User address
-     * @param config Token configuration
-     * @return Compliance result
+     * @notice Check ERC-3643 compliance via canTransfer call
+     * @dev Uses canTransfer(user, oracleAddress, 1) instead of
+     *      self-transfer (user, user, 1) because some T-REX
+     *      implementations treat self-transfers as no-ops that
+     *      bypass compliance checks.
+     * @param user User address to check compliance for
+     * @param config Token configuration with compliance contract address
+     * @return Compliance result with status, reason, and cache timestamps
      */
+    /* solhint-disable not-rely-on-time */
     function _checkERC3643Compliance(
         address user,
         address /* token */,
@@ -395,8 +551,12 @@ contract RWAComplianceOracle is IRWAComplianceOracle, ReentrancyGuard {
     ) internal view returns (ComplianceResult memory) {
         address complianceAddr = config.complianceContract;
 
-        // Call canTransfer on the token/compliance contract
-        try IERC3643(complianceAddr).canTransfer(user, user, 1) returns (
+        // Call canTransfer with oracle as destination (not self-transfer)
+        // to get a realistic compliance check. Self-transfers (from==to)
+        // may be treated as no-ops in some T-REX implementations.
+        try IERC3643(complianceAddr).canTransfer(
+            user, address(this), 1
+        ) returns (
             bool canTransfer,
             bytes1 /* reasonCode */,
             bytes32 /* messageId */
@@ -440,13 +600,18 @@ contract RWAComplianceOracle is IRWAComplianceOracle, ReentrancyGuard {
             });
         }
     }
+    /* solhint-enable not-rely-on-time */
 
     /**
-     * @notice Check ERC-1400 compliance
-     * @param user User address
-     * @param config Token configuration
-     * @return Compliance result
+     * @notice Check ERC-1400 compliance via canTransferByPartition call
+     * @dev Uses bytes32("default") as the partition identifier, which is
+     *      the standard convention for ERC-1400 tokens. Also checks the
+     *      returned reasonCode: 0xA0-0xAF indicates success per ERC-1066.
+     * @param user User address to check compliance for
+     * @param config Token configuration with compliance contract address
+     * @return Compliance result with status, reason, and cache timestamps
      */
+    /* solhint-disable not-rely-on-time */
     function _checkERC1400Compliance(
         address user,
         address /* token */,
@@ -454,33 +619,50 @@ contract RWAComplianceOracle is IRWAComplianceOracle, ReentrancyGuard {
     ) internal view returns (ComplianceResult memory) {
         address complianceAddr = config.complianceContract;
 
-        // Call canTransferByPartition on the token/compliance contract
-        // Using default partition
-        bytes32 defaultPartition = bytes32(0);
+        // Use "default" partition (not bytes32(0) which many tokens reject)
+        bytes32 defaultPartition = bytes32("default");
 
         try IERC1400(complianceAddr).canTransferByPartition(
             user,
-            user,
+            address(this),
             defaultPartition,
             1,
             ""
         ) returns (
-            bytes1 /* reasonCode */,
+            bytes1 reasonCode,
             bytes32 /* appCode */,
             bytes32 /* destPartition */
         ) {
-            // If call succeeds, user is compliant
-            return ComplianceResult({
-                status: ComplianceStatus.COMPLIANT,
-                tokenStandard: TokenStandard.ERC1400,
-                kycRequired: true,
-                accreditedInvestorRequired: true,
-                holdingPeriodSeconds: 0,
-                maxHolding: 0,
-                reason: "ERC-1400 compliance verified",
-                timestamp: block.timestamp,
-                validUntil: block.timestamp + CACHE_TTL
-            });
+            // Check reasonCode per ERC-1066:
+            // 0xA0-0xAF = success range (strict: > 0x9F and < 0xB0)
+            // Any other value = failure (even without revert)
+            bool isSuccess = (reasonCode > 0x9F && reasonCode < 0xB0);
+
+            if (isSuccess) {
+                return ComplianceResult({
+                    status: ComplianceStatus.COMPLIANT,
+                    tokenStandard: TokenStandard.ERC1400,
+                    kycRequired: true,
+                    accreditedInvestorRequired: true,
+                    holdingPeriodSeconds: 0,
+                    maxHolding: 0,
+                    reason: "ERC-1400 compliance verified",
+                    timestamp: block.timestamp,
+                    validUntil: block.timestamp + CACHE_TTL
+                });
+            } else {
+                return ComplianceResult({
+                    status: ComplianceStatus.NON_COMPLIANT,
+                    tokenStandard: TokenStandard.ERC1400,
+                    kycRequired: true,
+                    accreditedInvestorRequired: true,
+                    holdingPeriodSeconds: 0,
+                    maxHolding: 0,
+                    reason: "ERC-1400 transfer not allowed",
+                    timestamp: block.timestamp,
+                    validUntil: block.timestamp + CACHE_TTL
+                });
+            }
         } catch {
             return ComplianceResult({
                 status: ComplianceStatus.CHECK_FAILED,
@@ -495,12 +677,14 @@ contract RWAComplianceOracle is IRWAComplianceOracle, ReentrancyGuard {
             });
         }
     }
+    /* solhint-enable not-rely-on-time */
 }
 
 // ========================================================================
 // HELPER INTERFACES
 // ========================================================================
 
+/* solhint-disable ordering */
 /**
  * @title IERC165
  * @author OpenZeppelin
@@ -561,4 +745,18 @@ interface IERC1400 {
         uint256 amount,
         bytes calldata data
     ) external view returns (bytes1 reasonCode, bytes32 appCode, bytes32 destPartition);
+}
+
+/**
+ * @title IERC4626Probe
+ * @author OmniCoin Development Team
+ * @notice Minimal interface for probing ERC-4626 vault contracts
+ * @dev Used to detect ERC-4626 vaults by calling asset()
+ */
+interface IERC4626Probe {
+    /**
+     * @notice Get the underlying asset address
+     * @return Underlying token address
+     */
+    function asset() external view returns (address);
 }

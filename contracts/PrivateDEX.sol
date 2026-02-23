@@ -44,20 +44,7 @@ contract PrivateDEX is
     using MpcCore for gtBool;
 
     // ========================================================================
-    // CONSTANTS
-    // ========================================================================
-
-    /// @notice Role identifier for order matchers
-    bytes32 public constant MATCHER_ROLE = keccak256("MATCHER_ROLE");
-
-    /// @notice Role identifier for admin operations
-    bytes32 public constant ADMIN_ROLE = keccak256("ADMIN_ROLE");
-
-    /// @notice Maximum orders per user to prevent spam
-    uint256 public constant MAX_ORDERS_PER_USER = 100;
-
-    // ========================================================================
-    // ENUMS
+    // TYPE DECLARATIONS (enums + structs before constants per solhint)
     // ========================================================================
 
     /// @notice Order status enumeration
@@ -68,13 +55,11 @@ contract PrivateDEX is
         CANCELLED          // Order was cancelled by user
     }
 
-    // ========================================================================
-    // STRUCTS
-    // ========================================================================
-
     /**
      * @notice Private order structure with encrypted fields
-     * @dev Amount and price are encrypted using COTI V2 MPC
+     * @dev Amount and price are encrypted using COTI V2 MPC.
+     *      Includes expiry for time-limited orders (M-02) and
+     *      minFillAmount for slippage protection (M-03).
      */
     struct PrivateOrder {
         bytes32 orderId;         // Unique order identifier
@@ -86,7 +71,22 @@ contract PrivateDEX is
         uint256 timestamp;       // Order creation time (public)
         OrderStatus status;      // Order status (public)
         ctUint64 encFilled;      // Encrypted filled amount
+        uint256 expiry;          // Order expiration timestamp (M-02)
+        ctUint64 encMinFill;     // Encrypted minimum fill amount (M-03)
     }
+
+    // ========================================================================
+    // CONSTANTS
+    // ========================================================================
+
+    /// @notice Role identifier for order matchers
+    bytes32 public constant MATCHER_ROLE = keccak256("MATCHER_ROLE");
+
+    /// @notice Role identifier for admin operations
+    bytes32 public constant ADMIN_ROLE = keccak256("ADMIN_ROLE");
+
+    /// @notice Maximum orders per user to prevent spam
+    uint256 public constant MAX_ORDERS_PER_USER = 100;
 
     // ========================================================================
     // STATE VARIABLES
@@ -107,13 +107,22 @@ contract PrivateDEX is
     /// @notice Total number of trades executed
     uint256 public totalTrades;
 
+    /// @notice Active (non-filled, non-cancelled) order count per user
+    mapping(address => uint256) public activeOrderCount;
+
+    /// @notice Per-user order submission counter (used for order ID entropy)
+    mapping(address => uint256) public userOrderCount;
+
+    /// @notice Whether contract is ossified (permanently non-upgradeable)
+    bool private _ossified;
+
     /**
      * @dev Storage gap for future upgrades
      * @notice Reserves storage slots for adding new variables without breaking upgradeability
-     * Current storage: 5 variables (orders, orderIds, userOrders, totalOrders, totalTrades)
-     * Gap size: 50 - 5 = 45 slots reserved
+     * Current storage: 8 variables (including _ossified)
+     * Gap size: 50 - 8 = 42 slots reserved
      */
-    uint256[45] private __gap;
+    uint256[42] private __gap;
 
     // ========================================================================
     // EVENTS
@@ -146,6 +155,10 @@ contract PrivateDEX is
     /// @param newStatus New status
     event OrderStatusChanged(bytes32 indexed orderId, OrderStatus oldStatus, OrderStatus newStatus);
 
+    /// @notice Emitted when the contract is permanently ossified
+    /// @param contractAddress Address of this contract
+    event ContractOssified(address indexed contractAddress);
+
     // ========================================================================
     // CUSTOM ERRORS
     // ========================================================================
@@ -167,6 +180,21 @@ contract PrivateDEX is
 
     /// @notice Thrown when trading pair is invalid
     error InvalidPair();
+
+    /// @notice Thrown when fill amount exceeds order amount (overfill)
+    error OverfillDetected();
+
+    /// @notice Thrown when an invalid address is provided
+    error InvalidAddress();
+
+    /// @notice Thrown when order has expired (M-02)
+    error OrderExpired();
+
+    /// @notice Thrown when fill amount is below minimum (M-03)
+    error FillBelowMinimum();
+
+    /// @notice Thrown when contract is ossified and upgrade attempted
+    error ContractIsOssified();
 
     // ========================================================================
     // CONSTRUCTOR & INITIALIZATION
@@ -198,50 +226,47 @@ contract PrivateDEX is
     }
 
     // ========================================================================
-    // UUPS UPGRADE AUTHORIZATION
-    // ========================================================================
-
-    /**
-     * @notice Authorize contract upgrades (UUPS pattern)
-     * @dev Only admin can authorize upgrades to new implementation
-     * @param newImplementation Address of new implementation contract
-     */
-    function _authorizeUpgrade(address newImplementation)
-        internal
-        override
-        onlyRole(ADMIN_ROLE)
-    {
-        // Authorization check handled by onlyRole modifier
-        // newImplementation parameter required by UUPS but not used in authorization logic
-    }
-
-    // ========================================================================
     // ORDER SUBMISSION
     // ========================================================================
 
     /**
      * @notice Submit a private order with encrypted amount and price
-     * @dev Amount and price remain encrypted throughout matching process
+     * @dev Amount and price remain encrypted throughout matching process.
+     *      Includes time-limited expiry (M-02) and minimum fill size (M-03).
      * @param isBuy Whether this is a buy order
      * @param pair Trading pair symbol (e.g., "pXOM-USDC")
      * @param encAmount Encrypted order amount (ctUint64)
      * @param encPrice Encrypted limit price (ctUint64)
+     * @param expiry Unix timestamp after which the order cannot be matched (M-02).
+     *        Pass 0 for no expiry (good-till-cancelled).
+     * @param encMinFill Encrypted minimum fill amount per match (M-03).
+     *        Pass encrypted zero for no minimum.
      * @return orderId Unique order identifier
      */
     function submitPrivateOrder(
         bool isBuy,
         string calldata pair,
         ctUint64 encAmount,
-        ctUint64 encPrice
+        ctUint64 encPrice,
+        uint256 expiry,
+        ctUint64 encMinFill
     ) external whenNotPaused nonReentrant returns (bytes32 orderId) {
         if (bytes(pair).length == 0) revert InvalidPair();
-        if (userOrders[msg.sender].length >= MAX_ORDERS_PER_USER) revert TooManyOrders();
+        // Cap based on active orders (not lifetime)
+        // solhint-disable-next-line gas-strict-inequalities
+        if (activeOrderCount[msg.sender] >= MAX_ORDERS_PER_USER) {
+            revert TooManyOrders();
+        }
 
-        // Generate unique order ID
-        orderId = keccak256(abi.encodePacked(
+        // Generate unique order ID with improved entropy (H-03 fix)
+        // Uses abi.encode to prevent hash collisions from variable-length pair string,
+        // adds block.prevrandao and per-user counter for stronger uniqueness
+        uint256 userCount = ++userOrderCount[msg.sender];
+        orderId = keccak256(abi.encode(
             msg.sender,
-            pair,
-            block.timestamp,
+            block.timestamp, // solhint-disable-line not-rely-on-time
+            block.prevrandao,
+            userCount,
             totalOrders
         ));
 
@@ -257,15 +282,18 @@ contract PrivateDEX is
             pair: pair,
             encAmount: encAmount,
             encPrice: encPrice,
-            timestamp: block.timestamp,
+            timestamp: block.timestamp, // solhint-disable-line not-rely-on-time
             status: OrderStatus.OPEN,
-            encFilled: encZero
+            encFilled: encZero,
+            expiry: expiry,
+            encMinFill: encMinFill
         });
 
         // Track order
         orderIds.push(orderId);
         userOrders[msg.sender].push(orderId);
         ++totalOrders;
+        ++activeOrderCount[msg.sender];
 
         emit PrivateOrderSubmitted(orderId, msg.sender, pair);
         return orderId;
@@ -277,15 +305,16 @@ contract PrivateDEX is
 
     /**
      * @notice Check if two orders can match using MPC price comparison
-     * @dev Uses MPC ge() and decrypt() which modify state, cannot be view
+     * @dev Uses MPC ge() and decrypt() which modify state, cannot be view.
+     *      Restricted to MATCHER_ROLE to prevent price oracle attacks (M-04).
      * @param buyOrderId Buy order ID
      * @param sellOrderId Sell order ID
      * @return canMatch Whether orders can match (true if buy price >= sell price)
      */
-    function canOrdersMatch(
+    function canOrdersMatch( // solhint-disable-line code-complexity
         bytes32 buyOrderId,
         bytes32 sellOrderId
-    ) external returns (bool canMatch) {
+    ) external onlyRole(MATCHER_ROLE) returns (bool canMatch) {
         PrivateOrder storage buyOrder = orders[buyOrderId];
         PrivateOrder storage sellOrder = orders[sellOrderId];
 
@@ -298,6 +327,16 @@ contract PrivateDEX is
             return false;
         }
         if (sellOrder.status != OrderStatus.OPEN && sellOrder.status != OrderStatus.PARTIALLY_FILLED) {
+            return false;
+        }
+
+        // M-02: Check expiry (0 means no expiry / good-till-cancelled)
+        // solhint-disable-next-line not-rely-on-time
+        if (buyOrder.expiry != 0 && block.timestamp > buyOrder.expiry) {
+            return false;
+        }
+        // solhint-disable-next-line not-rely-on-time
+        if (sellOrder.expiry != 0 && block.timestamp > sellOrder.expiry) {
             return false;
         }
 
@@ -322,7 +361,8 @@ contract PrivateDEX is
 
     /**
      * @notice Calculate match amount (minimum of remaining amounts)
-     * @dev Uses MPC operations which modify state, cannot be view
+     * @dev Uses MPC operations which modify state, cannot be view.
+     *      Restricted to MATCHER_ROLE to limit price leakage (M-04).
      * @param buyOrderId Buy order ID
      * @param sellOrderId Sell order ID
      * @return encMatchAmount Encrypted match amount (ctUint64)
@@ -330,7 +370,7 @@ contract PrivateDEX is
     function calculateMatchAmount(
         bytes32 buyOrderId,
         bytes32 sellOrderId
-    ) external returns (ctUint64 encMatchAmount) {
+    ) external onlyRole(MATCHER_ROLE) returns (ctUint64 encMatchAmount) {
         PrivateOrder storage buyOrder = orders[buyOrderId];
         PrivateOrder storage sellOrder = orders[sellOrderId];
 
@@ -391,7 +431,7 @@ contract PrivateDEX is
      * @param encMatchAmount Encrypted match amount (from calculateMatchAmount)
      * @return tradeId Unique trade identifier
      */
-    function executePrivateTrade(
+    function executePrivateTrade( // solhint-disable-line code-complexity
         bytes32 buyOrderId,
         bytes32 sellOrderId,
         ctUint64 encMatchAmount
@@ -403,23 +443,61 @@ contract PrivateDEX is
             revert OrderNotFound();
         }
 
+        // C-02 fix: Re-validate order statuses
+        if (buyOrder.status == OrderStatus.FILLED || buyOrder.status == OrderStatus.CANCELLED) {
+            revert InvalidOrderStatus();
+        }
+        if (sellOrder.status == OrderStatus.FILLED || sellOrder.status == OrderStatus.CANCELLED) {
+            revert InvalidOrderStatus();
+        }
+
+        // M-02: Check order expiry
+        // solhint-disable-next-line not-rely-on-time
+        if (buyOrder.expiry != 0 && block.timestamp > buyOrder.expiry) {
+            revert OrderExpired();
+        }
+        // solhint-disable-next-line not-rely-on-time
+        if (sellOrder.expiry != 0 && block.timestamp > sellOrder.expiry) {
+            revert OrderExpired();
+        }
+
+        // M-03: Check minimum fill amount for both orders
+        gtUint64 gtMatchAmount_ = MpcCore.onBoard(encMatchAmount);
+        _checkMinFill(buyOrder.encMinFill, gtMatchAmount_);
+        _checkMinFill(sellOrder.encMinFill, gtMatchAmount_);
+
         // Update buy order filled amount: filled += matchAmount
         gtUint64 gtBuyFilled = MpcCore.onBoard(buyOrder.encFilled);
         gtUint64 gtMatchAmount = MpcCore.onBoard(encMatchAmount);
         gtUint64 gtNewBuyFilled = MpcCore.add(gtBuyFilled, gtMatchAmount);
-        buyOrder.encFilled = MpcCore.offBoard(gtNewBuyFilled);
 
         // Update sell order filled amount: filled += matchAmount
         gtUint64 gtSellFilled = MpcCore.onBoard(sellOrder.encFilled);
         gtUint64 gtNewSellFilled = MpcCore.add(gtSellFilled, gtMatchAmount);
+
+        // H-02 fix: Overfill guard -- ensure filled does not exceed order amount
+        gtUint64 gtBuyAmount = MpcCore.onBoard(buyOrder.encAmount);
+        gtBool buyNotOverfilled = MpcCore.ge(gtBuyAmount, gtNewBuyFilled);
+        if (!MpcCore.decrypt(buyNotOverfilled)) revert OverfillDetected();
+
+        gtUint64 gtSellAmount = MpcCore.onBoard(sellOrder.encAmount);
+        gtBool sellNotOverfilled = MpcCore.ge(gtSellAmount, gtNewSellFilled);
+        if (!MpcCore.decrypt(sellNotOverfilled)) revert OverfillDetected();
+
+        // Commit updated fill amounts after validation
+        buyOrder.encFilled = MpcCore.offBoard(gtNewBuyFilled);
         sellOrder.encFilled = MpcCore.offBoard(gtNewSellFilled);
 
         // Check if buy order is fully filled: filled == amount
+        // (reuse gtBuyAmount from overfill check above)
         OrderStatus oldBuyStatus = buyOrder.status;
-        gtUint64 gtBuyAmount = MpcCore.onBoard(buyOrder.encAmount);
         gtBool buyFullyFilled = MpcCore.eq(gtNewBuyFilled, gtBuyAmount);
         if (MpcCore.decrypt(buyFullyFilled)) {
             buyOrder.status = OrderStatus.FILLED;
+            // Decrement active order count for fully filled orders (H-01 fix)
+            if (activeOrderCount[buyOrder.trader] > 0) {
+                --activeOrderCount[buyOrder.trader];
+            }
         } else {
             buyOrder.status = OrderStatus.PARTIALLY_FILLED;
         }
@@ -428,11 +506,15 @@ contract PrivateDEX is
         }
 
         // Check if sell order is fully filled: filled == amount
+        // (reuse gtSellAmount from overfill check above)
         OrderStatus oldSellStatus = sellOrder.status;
-        gtUint64 gtSellAmount = MpcCore.onBoard(sellOrder.encAmount);
         gtBool sellFullyFilled = MpcCore.eq(gtNewSellFilled, gtSellAmount);
         if (MpcCore.decrypt(sellFullyFilled)) {
             sellOrder.status = OrderStatus.FILLED;
+            // Decrement active order count for fully filled orders (H-01 fix)
+            if (activeOrderCount[sellOrder.trader] > 0) {
+                --activeOrderCount[sellOrder.trader];
+            }
         } else {
             sellOrder.status = OrderStatus.PARTIALLY_FILLED;
         }
@@ -442,6 +524,7 @@ contract PrivateDEX is
 
         // Generate trade ID
         ++totalTrades;
+        // solhint-disable-next-line not-rely-on-time
         tradeId = keccak256(abi.encodePacked(buyOrderId, sellOrderId, block.timestamp, totalTrades));
 
         // Emit match event (amount is encrypted in event data)
@@ -471,33 +554,18 @@ contract PrivateDEX is
         OrderStatus oldStatus = order.status;
         order.status = OrderStatus.CANCELLED;
 
+        // Decrement active order count (H-01 fix)
+        if (activeOrderCount[msg.sender] > 0) {
+            --activeOrderCount[msg.sender];
+        }
+
         emit OrderStatusChanged(orderId, oldStatus, OrderStatus.CANCELLED);
         emit PrivateOrderCancelled(orderId, msg.sender);
     }
 
     // ========================================================================
-    // QUERY FUNCTIONS
+    // QUERY FUNCTIONS (non-view external)
     // ========================================================================
-
-    /**
-     * @notice Get encrypted order details
-     * @dev Anyone can query, but only trader can decrypt amounts
-     * @param orderId Order ID to query
-     * @return order Private order struct (includes encrypted amounts)
-     */
-    function getPrivateOrder(bytes32 orderId) external view returns (PrivateOrder memory order) {
-        if (orders[orderId].trader == address(0)) revert OrderNotFound();
-        return orders[orderId];
-    }
-
-    /**
-     * @notice Get user's private order IDs
-     * @param trader Trader address
-     * @return orderList Array of order IDs
-     */
-    function getUserOrders(address trader) external view returns (bytes32[] memory orderList) {
-        return userOrders[trader];
-    }
 
     /**
      * @notice Check if order is fully filled using MPC comparison
@@ -525,6 +593,49 @@ contract PrivateDEX is
 
         return MpcCore.decrypt(gtIsFull);
     }
+
+    // ========================================================================
+    // ADMIN FUNCTIONS (external non-view, before view per solhint ordering)
+    // ========================================================================
+
+    /**
+     * @notice Pause all trading operations
+     * @dev Only admin can pause
+     */
+    function pause() external onlyRole(ADMIN_ROLE) {
+        _pause();
+    }
+
+    /**
+     * @notice Unpause trading operations
+     * @dev Only admin can unpause
+     */
+    function unpause() external onlyRole(ADMIN_ROLE) {
+        _unpause();
+    }
+
+    /**
+     * @notice Grant matcher role to address
+     * @dev Only admin can grant matcher role
+     * @param matcher Address to grant matcher role
+     */
+    function grantMatcherRole(address matcher) external onlyRole(ADMIN_ROLE) {
+        if (matcher == address(0)) revert InvalidAddress();
+        _grantRole(MATCHER_ROLE, matcher);
+    }
+
+    /**
+     * @notice Revoke matcher role from address
+     * @dev Only admin can revoke matcher role
+     * @param matcher Address to revoke matcher role from
+     */
+    function revokeMatcherRole(address matcher) external onlyRole(ADMIN_ROLE) {
+        _revokeRole(MATCHER_ROLE, matcher);
+    }
+
+    // ========================================================================
+    // VIEW FUNCTIONS (external view, after non-view per solhint ordering)
+    // ========================================================================
 
     /**
      * @notice Get privacy statistics
@@ -557,7 +668,7 @@ contract PrivateDEX is
      * @return buyOrders Array of buy order IDs
      * @return sellOrders Array of sell order IDs
      */
-    function getOrderBook(string calldata pair, uint256 maxOrders)
+    function getOrderBook(string calldata pair, uint256 maxOrders) // solhint-disable-line code-complexity
         external
         view
         returns (bytes32[] memory buyOrders, bytes32[] memory sellOrders)
@@ -616,41 +727,63 @@ contract PrivateDEX is
     }
 
     // ========================================================================
-    // ADMIN FUNCTIONS
+    // INTERNAL FUNCTIONS (after external per solhint ordering)
     // ========================================================================
 
     /**
-     * @notice Pause all trading operations
-     * @dev Only admin can pause
+     * @notice Verify fill amount meets minimum requirement (M-03)
+     * @dev Uses MPC comparison to check encrypted values. Skips check
+     *      if encMinFill decrypts to zero (no minimum specified).
+     * @param encMinFill Encrypted minimum fill amount from the order
+     * @param gtFillAmount The proposed fill amount (already onboarded)
      */
-    function pause() external onlyRole(ADMIN_ROLE) {
-        _pause();
+    function _checkMinFill(
+        ctUint64 encMinFill,
+        gtUint64 gtFillAmount
+    ) internal {
+        gtUint64 gtMinFill = MpcCore.onBoard(encMinFill);
+        gtUint64 gtZero = MpcCore.setPublic64(uint64(0));
+
+        // Skip check if minFill is zero (no minimum set)
+        gtBool isZero = MpcCore.eq(gtMinFill, gtZero);
+        if (MpcCore.decrypt(isZero)) return;
+
+        // Fill amount must be >= minimum fill amount
+        gtBool meetsMinimum = MpcCore.ge(gtFillAmount, gtMinFill);
+        if (!MpcCore.decrypt(meetsMinimum)) {
+            revert FillBelowMinimum();
+        }
     }
 
     /**
-     * @notice Unpause trading operations
-     * @dev Only admin can unpause
+     * @notice Permanently remove upgrade capability (one-way, irreversible)
+     * @dev Can only be called by admin (through timelock). Once ossified,
+     *      the contract can never be upgraded again.
      */
-    function unpause() external onlyRole(ADMIN_ROLE) {
-        _unpause();
+    function ossify() external onlyRole(ADMIN_ROLE) {
+        _ossified = true;
+        emit ContractOssified(address(this));
     }
 
     /**
-     * @notice Grant matcher role to address
-     * @dev Only admin can grant matcher role
-     * @param matcher Address to grant matcher role
+     * @notice Check if the contract has been permanently ossified
+     * @return True if ossified (no further upgrades possible)
      */
-    function grantMatcherRole(address matcher) external onlyRole(ADMIN_ROLE) {
-        if (matcher == address(0)) revert InvalidAmount();
-        _grantRole(MATCHER_ROLE, matcher);
+    function isOssified() external view returns (bool) {
+        return _ossified;
     }
 
     /**
-     * @notice Revoke matcher role from address
-     * @dev Only admin can revoke matcher role
-     * @param matcher Address to revoke matcher role from
+     * @notice Authorize contract upgrades (UUPS pattern)
+     * @dev Only admin can authorize upgrades to new implementation.
+     *      Reverts if contract is ossified.
+     * @param newImplementation Address of new implementation contract
      */
-    function revokeMatcherRole(address matcher) external onlyRole(ADMIN_ROLE) {
-        _revokeRole(MATCHER_ROLE, matcher);
+    function _authorizeUpgrade(address newImplementation)
+        internal
+        override
+        onlyRole(ADMIN_ROLE)
+    {
+        if (_ossified) revert ContractIsOssified();
     }
 }

@@ -6,7 +6,7 @@ describe("OmniCoin", function () {
   let omniCoin;
   let owner, minter, burner, user1, user2, user3;
   
-  const INITIAL_SUPPLY = ethers.parseEther("1000000000"); // 1 billion
+  const INITIAL_SUPPLY = ethers.parseEther("4130000000"); // 4.13 billion (genesis migration)
   
   beforeEach(async function () {
     [owner, minter, burner, user1, user2, user3] = await ethers.getSigners();

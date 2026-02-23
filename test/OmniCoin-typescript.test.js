@@ -60,7 +60,7 @@ describe("OmniCoin TypeScript-Style Tests", function () {
 
             await expect(
                 omniCoin.batchTransfer(recipients, amounts)
-            ).to.be.revertedWith("Arrays length mismatch");
+            ).to.be.revertedWithCustomError(omniCoin, "ArrayLengthMismatch");
         });
     });
 

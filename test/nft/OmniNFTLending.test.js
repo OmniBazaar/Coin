@@ -332,8 +332,12 @@ describe("OmniNFTLending", function () {
       expect(loan.collection).to.equal(await nft.getAddress());
       expect(loan.tokenId).to.equal(TOKEN_ID);
       expect(loan.principal).to.equal(PRINCIPAL);
-      // interest = 100 * 1000 / 10000 = 10
-      expect(loan.interest).to.equal(ethers.parseEther("10"));
+      // H-01: Interest is now annualized and pro-rated by duration.
+      // interest = 100e18 * 1000 * 30 / (10000 * 365)
+      //          = 100e18 * 30000 / 3650000 = 821917808219178082
+      const expectedInterest = (PRINCIPAL * BigInt(INTEREST_BPS) * BigInt(DURATION_DAYS))
+        / (10000n * 365n);
+      expect(loan.interest).to.equal(expectedInterest);
       expect(loan.repaid).to.equal(false);
       expect(loan.liquidated).to.equal(false);
     });
@@ -496,8 +500,12 @@ describe("OmniNFTLending", function () {
       const lenderAfter = await token.balanceOf(lender.address);
       const feeAfter = await token.balanceOf(feeRecipient.address);
 
+      // H-01: Interest is now annualized. For 30-day loan at 10% annual:
+      // interest = 100e18 * 1000 * 30 / (10000 * 365)
+      const expectedInterest = (PRINCIPAL * BigInt(INTEREST_BPS) * BigInt(DURATION_DAYS))
+        / (10000n * 365n);
       expect(lenderAfter - lenderBefore).to.equal(
-        PRINCIPAL + ethers.parseEther("10")
+        PRINCIPAL + expectedInterest
       );
       expect(feeAfter - feeBefore).to.equal(0);
     });
@@ -526,7 +534,7 @@ describe("OmniNFTLending", function () {
     it("Should reject repay on liquidated loan", async function () {
       const { loanId } = await createAndAcceptOffer();
       // Advance time past due date
-      await time.increase(DURATION_DAYS * 86400 + 1);
+      await time.increase(DURATION_DAYS * 86400 + 86400 + 1); // past dueTime + grace period
       // Liquidate first
       await lending.connect(lender).liquidate(loanId);
       // Then try repay
@@ -541,14 +549,14 @@ describe("OmniNFTLending", function () {
   describe("Liquidate", function () {
     it("Should transfer NFT to lender after due time", async function () {
       const { loanId } = await createAndAcceptOffer();
-      await time.increase(DURATION_DAYS * 86400 + 1);
+      await time.increase(DURATION_DAYS * 86400 + 86400 + 1); // past dueTime + grace period
       await lending.connect(lender).liquidate(loanId);
       expect(await nft.ownerOf(TOKEN_ID)).to.equal(lender.address);
     });
 
     it("Should emit LoanLiquidated with correct args", async function () {
       const { loanId } = await createAndAcceptOffer();
-      await time.increase(DURATION_DAYS * 86400 + 1);
+      await time.increase(DURATION_DAYS * 86400 + 86400 + 1); // past dueTime + grace period
       await expect(lending.connect(lender).liquidate(loanId))
         .to.emit(lending, "LoanLiquidated")
         .withArgs(loanId, lender.address);
@@ -556,7 +564,7 @@ describe("OmniNFTLending", function () {
 
     it("Should mark loan as liquidated", async function () {
       const { loanId } = await createAndAcceptOffer();
-      await time.increase(DURATION_DAYS * 86400 + 1);
+      await time.increase(DURATION_DAYS * 86400 + 86400 + 1); // past dueTime + grace period
       await lending.connect(lender).liquidate(loanId);
       const loan = await lending.getLoan(loanId);
       expect(loan.liquidated).to.equal(true);
@@ -572,7 +580,7 @@ describe("OmniNFTLending", function () {
 
     it("Should reject liquidation from non-lender", async function () {
       const { loanId } = await createAndAcceptOffer();
-      await time.increase(DURATION_DAYS * 86400 + 1);
+      await time.increase(DURATION_DAYS * 86400 + 86400 + 1); // past dueTime + grace period
       await expect(
         lending.connect(other).liquidate(loanId)
       ).to.be.revertedWithCustomError(lending, "NotLender");
@@ -581,7 +589,7 @@ describe("OmniNFTLending", function () {
     it("Should reject liquidation of already-repaid loan", async function () {
       const { loanId } = await createAndAcceptOffer();
       await lending.connect(borrower).repay(loanId);
-      await time.increase(DURATION_DAYS * 86400 + 1);
+      await time.increase(DURATION_DAYS * 86400 + 86400 + 1); // past dueTime + grace period
       await expect(
         lending.connect(lender).liquidate(loanId)
       ).to.be.revertedWithCustomError(lending, "LoanNotActive");
@@ -589,7 +597,7 @@ describe("OmniNFTLending", function () {
 
     it("Should reject double liquidation", async function () {
       const { loanId } = await createAndAcceptOffer();
-      await time.increase(DURATION_DAYS * 86400 + 1);
+      await time.increase(DURATION_DAYS * 86400 + 86400 + 1); // past dueTime + grace period
       await lending.connect(lender).liquidate(loanId);
       await expect(
         lending.connect(lender).liquidate(loanId)
@@ -602,22 +610,31 @@ describe("OmniNFTLending", function () {
       ).to.be.revertedWithCustomError(lending, "LoanNotFound");
     });
 
-    it("Should allow liquidation at exactly the due timestamp", async function () {
+    it("Should allow liquidation after grace period ends", async function () {
       const { loanId } = await createAndAcceptOffer();
       const loan = await lending.getLoan(loanId);
+      const GRACE_PERIOD = 86400n; // 1 day (LIQUIDATION_GRACE_PERIOD)
 
-      // Two seconds before due time — the liquidate tx will mine at dueTime - 2,
-      // which is strictly less than dueTime, so it should revert.
-      await time.setNextBlockTimestamp(BigInt(loan.dueTime) - 2n);
-      await ethers.provider.send("evm_mine", []);
+      // Before dueTime: LoanNotExpired
       await time.setNextBlockTimestamp(BigInt(loan.dueTime) - 1n);
       await expect(
         lending.connect(lender).liquidate(loanId)
       ).to.be.revertedWithCustomError(lending, "LoanNotExpired");
 
-      // At exactly dueTime: block.timestamp == dueTime, which is NOT < dueTime,
-      // so the contract allows liquidation (strict less-than check).
+      // At dueTime but within grace period: GracePeriodActive
       await time.setNextBlockTimestamp(BigInt(loan.dueTime));
+      await expect(
+        lending.connect(lender).liquidate(loanId)
+      ).to.be.revertedWithCustomError(lending, "GracePeriodActive");
+
+      // Still within grace period (dueTime + 12h): GracePeriodActive
+      await time.setNextBlockTimestamp(BigInt(loan.dueTime) + GRACE_PERIOD / 2n);
+      await expect(
+        lending.connect(lender).liquidate(loanId)
+      ).to.be.revertedWithCustomError(lending, "GracePeriodActive");
+
+      // At exactly grace period end (dueTime + 1 day): should succeed
+      await time.setNextBlockTimestamp(BigInt(loan.dueTime) + GRACE_PERIOD);
       await lending.connect(lender).liquidate(loanId);
       expect(await nft.ownerOf(TOKEN_ID)).to.equal(lender.address);
     });
@@ -766,7 +783,10 @@ describe("OmniNFTLending", function () {
         expect(loan.collection).to.equal(await nft.getAddress());
         expect(loan.tokenId).to.equal(TOKEN_ID);
         expect(loan.principal).to.equal(PRINCIPAL);
-        expect(loan.interest).to.equal(ethers.parseEther("10"));
+        // H-01: Interest is annualized and pro-rated by duration
+        const expectedInterest = (PRINCIPAL * BigInt(INTEREST_BPS) * BigInt(DURATION_DAYS))
+          / (10000n * 365n);
+        expect(loan.interest).to.equal(expectedInterest);
         expect(loan.dueTime).to.be.gt(0);
         expect(loan.repaid).to.equal(false);
         expect(loan.liquidated).to.equal(false);
@@ -831,7 +851,7 @@ describe("OmniNFTLending", function () {
       const { loanId } = await createAndAcceptOffer();
 
       // Advance past due time
-      await time.increase(DURATION_DAYS * 86400 + 1);
+      await time.increase(DURATION_DAYS * 86400 + 86400 + 1); // past dueTime + grace period
 
       // Lender liquidates
       await lending.connect(lender).liquidate(loanId);
@@ -878,30 +898,36 @@ describe("OmniNFTLending", function () {
       expect(await nft.ownerOf(10)).to.equal(borrower.address);
 
       // Liquidate second loan
-      await time.increase(60 * 86400 + 1);
+      await time.increase(60 * 86400 + 86400 + 1); // past dueTime + grace period
       await lending.connect(lender).liquidate(loanId2);
       expect(await nft.ownerOf(20)).to.equal(lender.address);
 
       expect(await lending.nextLoanId()).to.equal(2);
     });
 
-    it("Changed platform fee applies only to future repayments", async function () {
-      // Start loan with 10% fee
+    it("Changed platform fee applies only to future loans, not active ones", async function () {
+      // H-02: Platform fee is now snapshotted at loan creation time.
+      // Start loan with 10% fee (1000 bps)
       const { loanId } = await createAndAcceptOffer();
 
       // Owner changes fee to 20%
       await lending.connect(owner).setPlatformFee(2000);
 
-      // Repay — the loan was created with platformFeeBps at repay time
-      // The contract reads platformFeeBps at repay time, so the new fee applies
+      // Repay -- H-02 ensures the snapshotted fee (1000 bps) is used,
+      // NOT the new global fee (2000 bps). This protects borrowers
+      // from retroactive fee increases.
       const loan = await lending.getLoan(loanId);
-      const platformFee = (loan.interest * 2000n) / 10000n;
+      // Fee is based on the ORIGINAL 1000 bps, not the new 2000 bps
+      const platformFee = (loan.interest * BigInt(PLATFORM_FEE_BPS)) / 10000n;
 
       const feeBefore = await token.balanceOf(feeRecipient.address);
       await lending.connect(borrower).repay(loanId);
       const feeAfter = await token.balanceOf(feeRecipient.address);
 
       expect(feeAfter - feeBefore).to.equal(platformFee);
+
+      // Verify the snapshotted fee matches the creation-time value
+      expect(loan.snapshotFeeBps).to.equal(PLATFORM_FEE_BPS);
     });
   });
 });

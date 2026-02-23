@@ -10,15 +10,20 @@ import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
 /**
  * @title LiquidityBootstrappingPool
  * @author OmniCoin Development Team
- * @notice Weighted pool with time-based weight shifting for fair token distribution
+ * @notice Weighted pool with time-based weight shifting for fair token
+ *         distribution
  * @dev Implements Balancer-style weighted AMM with dynamic weight changes.
- *      Used for initial XOM distribution with minimal counter-asset capital.
+ *      Uses the correct Balancer weighted constant product formula:
+ *      amountOut = Bo * (1 - (Bi / (Bi + Ai))^(Wi/Wo))
+ *      where exponentiation uses fixed-point ln/exp (exp(y*ln(x)) identity).
  *
  * Key features:
  * - Time-based weight shifting from high XOM ratio to balanced
  * - Fair price discovery through auction-like mechanism
  * - Discourages front-running and whale manipulation
  * - Minimal initial capital requirements ($5K-$25K seed)
+ * - MAX_OUT_RATIO caps each swap to 30% of output reserve
+ * - CEI pattern: state updates before external transfers
  *
  * Weight Progression Example:
  * - Start: 90% XOM / 10% USDC (need $10K USDC for $100K XOM)
@@ -41,19 +46,23 @@ contract LiquidityBootstrappingPool is ReentrancyGuard, Ownable, Pausable {
     /// @notice Maximum XOM weight allowed (96%)
     uint256 public constant MAX_XOM_WEIGHT = 9_600;
 
-    /// @notice Precision for fixed-point math
+    /// @notice Maximum output as a fraction of output reserve per swap
+    ///         (30% = 3000 bps). Prevents excessive pool imbalance.
+    uint256 public constant MAX_OUT_RATIO = 3_000;
+
+    /// @notice Precision for fixed-point math (1e18 = 1.0)
     uint256 private constant PRECISION = 1e18;
 
     // ============ Immutables ============
 
     /// @notice XOM token contract address
-    IERC20 public immutable xom;
+    IERC20 public immutable XOM_TOKEN;
 
     /// @notice Counter-asset token (USDC) contract address
-    IERC20 public immutable counterAsset;
+    IERC20 public immutable COUNTER_ASSET_TOKEN;
 
     /// @notice Counter-asset decimals (for normalization)
-    uint8 public immutable counterAssetDecimals;
+    uint8 public immutable COUNTER_ASSET_DECIMALS;
 
     // ============ State Variables ============
 
@@ -93,6 +102,11 @@ contract LiquidityBootstrappingPool is ReentrancyGuard, Ownable, Pausable {
     /// @notice Address to receive raised funds
     address public treasury;
 
+    /// @notice M-02: Cumulative counter-asset spent per address.
+    ///         Prevents flash-loan attacks that circumvent per-tx
+    ///         maxPurchaseAmount by splitting into multiple swaps.
+    mapping(address => uint256) public cumulativePurchases;
+
     // ============ Events ============
 
     /// @notice Emitted when a swap occurs
@@ -103,37 +117,40 @@ contract LiquidityBootstrappingPool is ReentrancyGuard, Ownable, Pausable {
     /// @param timestamp Block timestamp
     event Swap(
         address indexed buyer,
-        uint256 counterAssetIn,
-        uint256 xomOut,
-        uint256 indexed spotPrice,
+        uint256 indexed counterAssetIn,
+        uint256 indexed xomOut,
+        uint256 spotPrice,
         uint256 timestamp
     );
 
     /// @notice Emitted when liquidity is added by owner
     /// @param xomAmount Amount of XOM added
     /// @param counterAssetAmount Amount of counter-asset added
-    event LiquidityAdded(uint256 xomAmount, uint256 counterAssetAmount);
+    event LiquidityAdded(
+        uint256 indexed xomAmount,
+        uint256 indexed counterAssetAmount
+    );
 
     /// @notice Emitted when LBP parameters are updated
-    /// @param startTime New start time
-    /// @param endTime New end time
-    /// @param startWeightXOM New starting XOM weight
-    /// @param endWeightXOM New ending XOM weight
+    /// @param newStartTime New start time
+    /// @param newEndTime New end time
+    /// @param newStartWeightXOM New starting XOM weight
+    /// @param newEndWeightXOM New ending XOM weight
     event ParametersUpdated(
-        uint256 startTime,
-        uint256 endTime,
-        uint256 startWeightXOM,
-        uint256 endWeightXOM
+        uint256 indexed newStartTime,
+        uint256 indexed newEndTime,
+        uint256 indexed newStartWeightXOM,
+        uint256 newEndWeightXOM
     );
 
     /// @notice Emitted when LBP is finalized
-    /// @param totalRaised Total counter-asset raised
-    /// @param totalDistributed Total XOM distributed
+    /// @param raisedTotal Total counter-asset raised
+    /// @param distributedTotal Total XOM distributed
     /// @param remainingXom Remaining XOM returned to treasury
     event LBPFinalized(
-        uint256 totalRaised,
-        uint256 totalDistributed,
-        uint256 remainingXom
+        uint256 indexed raisedTotal,
+        uint256 indexed distributedTotal,
+        uint256 indexed remainingXom
     );
 
     // ============ Errors ============
@@ -168,13 +185,28 @@ contract LiquidityBootstrappingPool is ReentrancyGuard, Ownable, Pausable {
     /// @notice Thrown when transfer fails
     error TransferFailed();
 
+    /// @notice Thrown when swap output exceeds max out ratio
+    error ExceedsMaxOutRatio();
+
+    /// @notice Thrown when logarithm input is zero or negative
+    error LogInputOutOfRange();
+
+    /// @notice Thrown when exponential input overflows
+    error ExpInputOverflow();
+
+    /// @notice Thrown when counter-asset decimals exceed 18
+    error DecimalsOutOfRange();
+
+    /// @notice Thrown when cumulative purchase exceeds per-address limit
+    error CumulativePurchaseExceeded();
+
     // ============ Constructor ============
 
     /**
      * @notice Initialize the LBP contract
      * @param _xom XOM token address
      * @param _counterAsset Counter-asset (USDC) token address
-     * @param _counterAssetDecimals Decimals of counter-asset (typically 6 for USDC)
+     * @param _counterAssetDecimals Decimals of counter-asset (6 for USDC)
      * @param _treasury Address to receive raised funds
      */
     constructor(
@@ -183,13 +215,21 @@ contract LiquidityBootstrappingPool is ReentrancyGuard, Ownable, Pausable {
         uint8 _counterAssetDecimals,
         address _treasury
     ) Ownable(msg.sender) {
-        if (_xom == address(0) || _counterAsset == address(0) || _treasury == address(0)) {
+        if (
+            _xom == address(0) ||
+            _counterAsset == address(0) ||
+            _treasury == address(0)
+        ) {
             revert InvalidParameters();
         }
 
-        xom = IERC20(_xom);
-        counterAsset = IERC20(_counterAsset);
-        counterAssetDecimals = _counterAssetDecimals;
+        // M-03: Validate counter-asset decimals do not exceed 18
+        // to prevent underflow in getSpotPrice() normalization
+        if (_counterAssetDecimals > 18) revert DecimalsOutOfRange();
+
+        XOM_TOKEN = IERC20(_xom);
+        COUNTER_ASSET_TOKEN = IERC20(_counterAsset);
+        COUNTER_ASSET_DECIMALS = _counterAssetDecimals;
         treasury = _treasury;
     }
 
@@ -197,13 +237,14 @@ contract LiquidityBootstrappingPool is ReentrancyGuard, Ownable, Pausable {
 
     /**
      * @notice Configure LBP parameters before start
-     * @dev Can only be called before LBP starts
-     * @param _startTime Unix timestamp when LBP starts
+     * @dev Can only be called before LBP starts. Start time must be in the
+     *      future. Weight must decrease from start to end (Dutch auction).
+     * @param _startTime Unix timestamp when LBP starts (must be future)
      * @param _endTime Unix timestamp when LBP ends
      * @param _startWeightXOM Starting XOM weight in basis points
      * @param _endWeightXOM Ending XOM weight in basis points
      * @param _priceFloor Minimum XOM price in counter-asset (18 decimals)
-     * @param _maxPurchaseAmount Maximum single purchase amount (0 for no limit)
+     * @param _maxPurchaseAmount Max single purchase amount (0 = no limit)
      */
     function configure(
         uint256 _startTime,
@@ -214,15 +255,25 @@ contract LiquidityBootstrappingPool is ReentrancyGuard, Ownable, Pausable {
         uint256 _maxPurchaseAmount
     ) external onlyOwner {
         // solhint-disable-next-line not-rely-on-time
-        if (startTime != 0 && block.timestamp >= startTime) revert LBPAlreadyStarted();
-        if (_startTime >= _endTime) revert InvalidParameters();
-        if (_startWeightXOM > MAX_XOM_WEIGHT || _startWeightXOM < MIN_XOM_WEIGHT) {
+        if (startTime != 0 && block.timestamp > startTime - 1) {
+            revert LBPAlreadyStarted();
+        }
+        // solhint-disable-next-line not-rely-on-time
+        if (_startTime < block.timestamp + 1) revert InvalidParameters();
+        if (_startTime > _endTime - 1) revert InvalidParameters();
+        if (
+            _startWeightXOM > MAX_XOM_WEIGHT ||
+            _startWeightXOM < MIN_XOM_WEIGHT
+        ) {
             revert InvalidWeights();
         }
-        if (_endWeightXOM > MAX_XOM_WEIGHT || _endWeightXOM < MIN_XOM_WEIGHT) {
+        if (
+            _endWeightXOM > MAX_XOM_WEIGHT ||
+            _endWeightXOM < MIN_XOM_WEIGHT
+        ) {
             revert InvalidWeights();
         }
-        if (_startWeightXOM <= _endWeightXOM) revert InvalidWeights();
+        if (_startWeightXOM < _endWeightXOM + 1) revert InvalidWeights();
 
         startTime = _startTime;
         endTime = _endTime;
@@ -231,7 +282,9 @@ contract LiquidityBootstrappingPool is ReentrancyGuard, Ownable, Pausable {
         priceFloor = _priceFloor;
         maxPurchaseAmount = _maxPurchaseAmount;
 
-        emit ParametersUpdated(_startTime, _endTime, _startWeightXOM, _endWeightXOM);
+        emit ParametersUpdated(
+            _startTime, _endTime, _startWeightXOM, _endWeightXOM
+        );
     }
 
     /**
@@ -247,12 +300,16 @@ contract LiquidityBootstrappingPool is ReentrancyGuard, Ownable, Pausable {
         if (finalized) revert AlreadyFinalized();
 
         if (xomAmount > 0) {
-            xom.safeTransferFrom(msg.sender, address(this), xomAmount);
+            XOM_TOKEN.safeTransferFrom(
+                msg.sender, address(this), xomAmount
+            );
             xomReserve += xomAmount;
         }
 
         if (counterAssetAmount > 0) {
-            counterAsset.safeTransferFrom(msg.sender, address(this), counterAssetAmount);
+            COUNTER_ASSET_TOKEN.safeTransferFrom(
+                msg.sender, address(this), counterAssetAmount
+            );
             counterAssetReserve += counterAssetAmount;
         }
 
@@ -261,8 +318,10 @@ contract LiquidityBootstrappingPool is ReentrancyGuard, Ownable, Pausable {
 
     /**
      * @notice Swap counter-asset for XOM tokens
-     * @dev Main swap function for LBP participants
-     * @param counterAssetIn Amount of counter-asset to swap
+     * @dev Main swap function for LBP participants. Follows CEI pattern:
+     *      checks, then state updates, then external calls. Price floor
+     *      is validated against post-swap reserves.
+     * @param counterAssetIn Amount of counter-asset to swap (must be > 0)
      * @param minXomOut Minimum XOM to receive (slippage protection)
      * @return xomOut Amount of XOM tokens received
      */
@@ -270,51 +329,56 @@ contract LiquidityBootstrappingPool is ReentrancyGuard, Ownable, Pausable {
         uint256 counterAssetIn,
         uint256 minXomOut
     ) external nonReentrant whenNotPaused returns (uint256 xomOut) {
-        if (!isActive()) revert LBPNotActive();
-        if (maxPurchaseAmount > 0 && counterAssetIn > maxPurchaseAmount) {
-            revert ExceedsMaxPurchase();
-        }
+        // --- Checks ---
+        _validateSwapInput(counterAssetIn);
 
-        // Get current weights
-        (uint256 weightXOM, uint256 weightCounterAsset) = getCurrentWeights();
-
-        // Calculate output using weighted constant product formula
-        xomOut = _calculateSwapOutput(
-            counterAssetReserve,
-            weightCounterAsset,
-            xomReserve,
-            weightXOM,
-            counterAssetIn
-        );
+        xomOut = _computeSwapOutput(counterAssetIn);
 
         // Slippage check
         if (xomOut < minXomOut) revert SlippageExceeded();
 
-        // Price floor check
-        uint256 currentPrice = getSpotPrice();
-        if (currentPrice < priceFloor) revert PriceBelowFloor();
+        // Max output ratio check (30% of output reserve)
+        if (xomOut * BASIS_POINTS > xomReserve * MAX_OUT_RATIO) {
+            revert ExceedsMaxOutRatio();
+        }
 
-        // Execute swap
-        counterAsset.safeTransferFrom(msg.sender, address(this), counterAssetIn);
-        xom.safeTransfer(msg.sender, xomOut);
-
-        // Update reserves
+        // --- Effects (state updates BEFORE transfers) ---
         counterAssetReserve += counterAssetIn;
         xomReserve -= xomOut;
-
-        // Update totals
         totalRaised += counterAssetIn;
         totalDistributed += xomOut;
 
+        // Price floor check uses post-swap reserves (H-01 fix)
+        uint256 postSwapPrice = getSpotPrice();
+        if (postSwapPrice < priceFloor) revert PriceBelowFloor();
+
+        // M-02: Track cumulative purchases per address
+        _enforceCumulativePurchaseLimit(counterAssetIn);
+
+        // --- Interactions (transfers AFTER state updates) ---
+        uint256 actualReceived = _transferCounterAssetIn(
+            counterAssetIn
+        );
+
+        XOM_TOKEN.safeTransfer(msg.sender, xomOut);
+
         // solhint-disable-next-line not-rely-on-time
-        emit Swap(msg.sender, counterAssetIn, xomOut, currentPrice, block.timestamp);
+        uint256 swapTimestamp = block.timestamp;
+        emit Swap(
+            msg.sender,
+            actualReceived,
+            xomOut,
+            postSwapPrice,
+            swapTimestamp
+        );
 
         return xomOut;
     }
 
     /**
      * @notice Finalize LBP and transfer funds to treasury
-     * @dev Can only be called after LBP ends
+     * @dev Can only be called after LBP ends. Transfers all remaining
+     *      counter-asset and XOM back to the treasury address.
      */
     function finalize() external onlyOwner nonReentrant {
         // solhint-disable-next-line not-rely-on-time
@@ -326,15 +390,15 @@ contract LiquidityBootstrappingPool is ReentrancyGuard, Ownable, Pausable {
         // Transfer raised funds to treasury
         uint256 raisedAmount = counterAssetReserve;
         if (raisedAmount > 0) {
-            counterAsset.safeTransfer(treasury, raisedAmount);
             counterAssetReserve = 0;
+            COUNTER_ASSET_TOKEN.safeTransfer(treasury, raisedAmount);
         }
 
         // Return remaining XOM to treasury
         uint256 remainingXom = xomReserve;
         if (remainingXom > 0) {
-            xom.safeTransfer(treasury, remainingXom);
             xomReserve = 0;
+            XOM_TOKEN.safeTransfer(treasury, remainingXom);
         }
 
         emit LBPFinalized(totalRaised, totalDistributed, remainingXom);
@@ -342,6 +406,7 @@ contract LiquidityBootstrappingPool is ReentrancyGuard, Ownable, Pausable {
 
     /**
      * @notice Pause the LBP (emergency only)
+     * @dev Only callable by the contract owner
      */
     function pause() external onlyOwner {
         _pause();
@@ -349,6 +414,7 @@ contract LiquidityBootstrappingPool is ReentrancyGuard, Ownable, Pausable {
 
     /**
      * @notice Unpause the LBP
+     * @dev Only callable by the contract owner
      */
     function unpause() external onlyOwner {
         _unpause();
@@ -356,6 +422,7 @@ contract LiquidityBootstrappingPool is ReentrancyGuard, Ownable, Pausable {
 
     /**
      * @notice Update treasury address
+     * @dev Only callable by the contract owner. Reverts on zero address.
      * @param _treasury New treasury address
      */
     function setTreasury(address _treasury) external onlyOwner {
@@ -363,87 +430,29 @@ contract LiquidityBootstrappingPool is ReentrancyGuard, Ownable, Pausable {
         treasury = _treasury;
     }
 
-    // ============ View Functions ============
-
-    /**
-     * @notice Get current pool weights based on time progression
-     * @return weightXOM Current XOM weight in basis points
-     * @return weightCounterAsset Current counter-asset weight in basis points
-     */
-    function getCurrentWeights()
-        public
-        view
-        returns (uint256 weightXOM, uint256 weightCounterAsset)
-    {
-        // solhint-disable-next-line not-rely-on-time
-        if (block.timestamp <= startTime) {
-            return (startWeightXOM, BASIS_POINTS - startWeightXOM);
-        }
-        // solhint-disable-next-line not-rely-on-time
-        if (block.timestamp >= endTime) {
-            return (endWeightXOM, BASIS_POINTS - endWeightXOM);
-        }
-
-        // Linear interpolation
-        // solhint-disable-next-line not-rely-on-time
-        uint256 elapsed = block.timestamp - startTime;
-        uint256 duration = endTime - startTime;
-        uint256 weightChange = ((startWeightXOM - endWeightXOM) * elapsed) / duration;
-
-        weightXOM = startWeightXOM - weightChange;
-        weightCounterAsset = BASIS_POINTS - weightXOM;
-    }
-
-    /**
-     * @notice Get current spot price of XOM in counter-asset terms
-     * @dev Price = (counterAssetReserve / weightCounterAsset) / (xomReserve / weightXOM)
-     * @return price Price in counter-asset per XOM (18 decimals)
-     */
-    function getSpotPrice() public view returns (uint256 price) {
-        if (xomReserve == 0) return 0;
-
-        (uint256 weightXOM, uint256 weightCounterAsset) = getCurrentWeights();
-
-        // Normalize counter-asset to 18 decimals
-        uint256 normalizedCounterAsset = counterAssetReserve *
-            (10 ** (18 - counterAssetDecimals));
-
-        // Price = (counterAssetReserve / weightCounterAsset) / (xomReserve / weightXOM)
-        // Simplified: (counterAssetReserve * weightXOM) / (xomReserve * weightCounterAsset)
-        price =
-            (normalizedCounterAsset * weightXOM * PRECISION) /
-            (xomReserve * weightCounterAsset);
-    }
+    // ============ External View Functions ============
 
     /**
      * @notice Calculate expected output for a given input
+     * @dev Uses the same Balancer weighted formula as the actual swap.
+     *      Does not account for MAX_OUT_RATIO limit.
      * @param counterAssetIn Amount of counter-asset to swap
      * @return xomOut Expected XOM output
      */
     function getExpectedOutput(
         uint256 counterAssetIn
     ) external view returns (uint256 xomOut) {
-        (uint256 weightXOM, uint256 weightCounterAsset) = getCurrentWeights();
-        return
-            _calculateSwapOutput(
-                counterAssetReserve,
-                weightCounterAsset,
-                xomReserve,
-                weightXOM,
-                counterAssetIn
-            );
-    }
-
-    /**
-     * @notice Check if LBP is currently active
-     * @return active True if LBP is within active time window
-     */
-    function isActive() public view returns (bool active) {
-        // solhint-disable-next-line not-rely-on-time
-        return block.timestamp >= startTime &&
-            block.timestamp <= endTime &&
-            !finalized &&
-            startTime != 0;
+        (
+            uint256 weightXOM,
+            uint256 weightCounterAsset
+        ) = getCurrentWeights();
+        return _calculateSwapOutput(
+            counterAssetReserve,
+            weightCounterAsset,
+            xomReserve,
+            weightXOM,
+            counterAssetIn
+        );
     }
 
     /**
@@ -477,15 +486,186 @@ contract LiquidityBootstrappingPool is ReentrancyGuard, Ownable, Pausable {
         );
     }
 
+    // ============ Public View Functions ============
+
+    /**
+     * @notice Get current pool weights based on time progression
+     * @dev Linear interpolation between start and end weights.
+     *      Before start returns start weights; after end returns end
+     *      weights.
+     * @return weightXOM Current XOM weight in basis points
+     * @return weightCounterAsset Current counter-asset weight in bps
+     */
+    function getCurrentWeights()
+        public
+        view
+        returns (uint256 weightXOM, uint256 weightCounterAsset)
+    {
+        // solhint-disable-next-line not-rely-on-time
+        if (block.timestamp < startTime + 1) {
+            return (startWeightXOM, BASIS_POINTS - startWeightXOM);
+        }
+        // solhint-disable-next-line not-rely-on-time
+        if (block.timestamp > endTime - 1) {
+            return (endWeightXOM, BASIS_POINTS - endWeightXOM);
+        }
+
+        // Linear interpolation
+        // solhint-disable-next-line not-rely-on-time
+        uint256 elapsed = block.timestamp - startTime;
+        uint256 duration = endTime - startTime;
+        uint256 weightChange =
+            ((startWeightXOM - endWeightXOM) * elapsed) / duration;
+
+        weightXOM = startWeightXOM - weightChange;
+        weightCounterAsset = BASIS_POINTS - weightXOM;
+    }
+
+    /**
+     * @notice Get current spot price of XOM in counter-asset terms
+     * @dev Price = (counterReserve / wCounter) / (xomReserve / wXOM)
+     *      Simplified: (counterReserve * wXOM) / (xomReserve * wCounter)
+     *      Counter-asset is normalized to 18 decimals.
+     * @return price Price in counter-asset per XOM (18 decimals)
+     */
+    function getSpotPrice() public view returns (uint256 price) {
+        if (xomReserve == 0) return 0;
+
+        (
+            uint256 weightXOM,
+            uint256 weightCounterAsset
+        ) = getCurrentWeights();
+
+        // Normalize counter-asset to 18 decimals
+        uint256 normalizedCounterAsset = counterAssetReserve *
+            (10 ** (18 - COUNTER_ASSET_DECIMALS));
+
+        // price = (counterReserve * wXOM * 1e18) / (xomReserve * wCA)
+        price =
+            (normalizedCounterAsset * weightXOM * PRECISION) /
+            (xomReserve * weightCounterAsset);
+    }
+
+    /**
+     * @notice Check if LBP is currently active
+     * @dev Active when: configured, current time within window, not
+     *      finalized. Uses block.timestamp for time-window gating which
+     *      is the intended business logic for an LBP lifecycle.
+     * @return active True if LBP is within active time window
+     */
+    function isActive() public view returns (bool active) {
+        // solhint-disable-next-line not-rely-on-time
+        uint256 ts = block.timestamp;
+        return startTime != 0 &&
+            !finalized &&
+            ts > startTime - 1 &&
+            ts < endTime + 1;
+    }
+
     // ============ Internal Functions ============
 
     /**
+     * @notice Enforce cumulative purchase limit per address
+     * @dev M-02: Prevents flash-loan bypass of maxPurchaseAmount
+     *      via multiple swaps within the same block.
+     * @param counterAssetIn Amount of counter-asset in this swap
+     */
+    function _enforceCumulativePurchaseLimit(
+        uint256 counterAssetIn
+    ) internal {
+        if (maxPurchaseAmount > 0) {
+            cumulativePurchases[msg.sender] += counterAssetIn;
+            if (
+                cumulativePurchases[msg.sender]
+                    > maxPurchaseAmount
+            ) {
+                revert CumulativePurchaseExceeded();
+            }
+        }
+    }
+
+    /**
+     * @notice Transfer counter-asset in with fee-on-transfer handling
+     * @dev M-01: Uses balance-before/after pattern to measure actual
+     *      received tokens. If a fee-on-transfer deficit is detected,
+     *      adjusts counterAssetReserve and totalRaised accordingly.
+     * @param counterAssetIn Nominal amount to transfer
+     * @return actualReceived Amount actually received after any FoT fee
+     */
+    function _transferCounterAssetIn(
+        uint256 counterAssetIn
+    ) internal returns (uint256 actualReceived) {
+        uint256 balBefore =
+            COUNTER_ASSET_TOKEN.balanceOf(address(this));
+        COUNTER_ASSET_TOKEN.safeTransferFrom(
+            msg.sender, address(this), counterAssetIn
+        );
+        actualReceived =
+            COUNTER_ASSET_TOKEN.balanceOf(address(this))
+                - balBefore;
+        // If fee-on-transfer, adjust the reserve delta
+        if (actualReceived < counterAssetIn) {
+            uint256 deficit =
+                counterAssetIn - actualReceived;
+            counterAssetReserve -= deficit;
+            totalRaised -= deficit;
+        }
+    }
+
+    /**
+     * @notice Validate swap input parameters
+     * @dev Checks LBP is active, amount is non-zero, and
+     *      per-transaction max purchase limit is respected.
+     * @param counterAssetIn Amount of counter-asset to swap
+     */
+    function _validateSwapInput(
+        uint256 counterAssetIn
+    ) internal view {
+        if (!isActive()) revert LBPNotActive();
+        if (counterAssetIn == 0) revert InvalidParameters();
+        if (
+            maxPurchaseAmount > 0
+                && counterAssetIn > maxPurchaseAmount
+        ) {
+            revert ExceedsMaxPurchase();
+        }
+    }
+
+    /**
+     * @notice Compute XOM output for a given counter-asset input
+     * @dev Fetches current weights and delegates to
+     *      _calculateSwapOutput for Balancer math.
+     * @param counterAssetIn Amount of counter-asset input
+     * @return xomOut Calculated XOM output amount
+     */
+    function _computeSwapOutput(
+        uint256 counterAssetIn
+    ) internal view returns (uint256 xomOut) {
+        (
+            uint256 weightXOM,
+            uint256 weightCounterAsset
+        ) = getCurrentWeights();
+
+        xomOut = _calculateSwapOutput(
+            counterAssetReserve,
+            weightCounterAsset,
+            xomReserve,
+            weightXOM,
+            counterAssetIn
+        );
+    }
+
+    /**
      * @notice Calculate swap output using Balancer weighted math
-     * @dev Uses simplified weighted constant product formula with fee
-     * @param balanceIn Input token balance (counter-asset)
-     * @param weightIn Input token weight
-     * @param balanceOut Output token balance (XOM)
-     * @param weightOut Output token weight
+     * @dev Correct Balancer weighted constant product formula:
+     *      amountOut = Bo * (1 - (Bi / (Bi + Ai))^(Wi / Wo))
+     *      The exponent is computed via exp(y * ln(x)) identity using
+     *      fixed-point arithmetic at 1e18 precision. Swap fee is applied
+     *      to amountIn before the formula.
+     * @param balanceIn Input token balance (counter-asset reserve)
+     * @param weightIn Input token weight (in basis points)
+     * @param balanceOut Output token balance (XOM reserve)
+     * @param weightOut Output token weight (in basis points)
      * @param amountIn Amount of input token
      * @return amountOut Amount of output token
      */
@@ -496,19 +676,128 @@ contract LiquidityBootstrappingPool is ReentrancyGuard, Ownable, Pausable {
         uint256 weightOut,
         uint256 amountIn
     ) internal pure returns (uint256 amountOut) {
+        if (balanceIn == 0 || balanceOut == 0 || weightOut == 0) {
+            return 0;
+        }
+
         // Apply swap fee
-        uint256 amountInAfterFee = (amountIn * (BASIS_POINTS - SWAP_FEE_BPS)) /
-            BASIS_POINTS;
+        uint256 amountInAfterFee =
+            (amountIn * (BASIS_POINTS - SWAP_FEE_BPS)) / BASIS_POINTS;
 
-        // Balancer weighted math (simplified approximation):
-        // amountOut = balanceOut * (1 - (balanceIn / (balanceIn + amountIn))^(weightIn/weightOut))
-        //
-        // For simplicity, we use a first-order approximation that works well for typical swap sizes:
-        // amountOut ≈ balanceOut * amountIn * weightOut / (balanceIn * weightIn + amountIn * weightOut)
+        // ratio = balanceIn / (balanceIn + amountInAfterFee)
+        // Always < 1.0 (represented in PRECISION)
+        uint256 ratio =
+            (balanceIn * PRECISION) / (balanceIn + amountInAfterFee);
 
-        uint256 numerator = balanceOut * amountInAfterFee * weightOut;
-        uint256 denominator = balanceIn * weightIn + amountInAfterFee * weightOut;
+        // exponent = weightIn / weightOut (in PRECISION)
+        uint256 exponent = (weightIn * PRECISION) / weightOut;
 
-        amountOut = numerator / denominator;
+        // power = ratio ^ exponent via exp(exponent * ln(ratio))
+        uint256 power = _powFixed(ratio, exponent);
+
+        // amountOut = balanceOut * (1 - power / PRECISION)
+        if (power > PRECISION - 1) return 0;
+        amountOut = (balanceOut * (PRECISION - power)) / PRECISION;
+    }
+
+    /**
+     * @notice Fixed-point power: base^exp where both are scaled by 1e18
+     * @dev Uses the identity x^y = exp(y * ln(x)). Base must be in the
+     *      range (0, PRECISION]. For LBP swaps, base is always the
+     *      ratio balanceIn/(balanceIn+amountIn) which is in (0, 1).
+     * @param base Base value scaled by PRECISION (0 < base <= PRECISION)
+     * @param exp Exponent scaled by PRECISION
+     * @return result base^exp scaled by PRECISION
+     */
+    function _powFixed(
+        uint256 base,
+        uint256 exp
+    ) internal pure returns (uint256 result) {
+        if (base == 0) return 0;
+        if (exp == 0) return PRECISION;
+        if (base == PRECISION) return PRECISION;
+
+        // ln(base) is negative since 0 < base < PRECISION (i.e., < 1.0)
+        int256 lnBase = _lnFixed(int256(base));
+        int256 product =
+            (lnBase * int256(exp)) / int256(PRECISION);
+
+        result = uint256(_expFixed(product));
+    }
+
+    /**
+     * @notice Natural logarithm for fixed-point values in (0, PRECISION]
+     * @dev Uses the identity ln(x) = 2 * arctanh((x-1)/(x+1)) where
+     *      arctanh(y) = y + y^3/3 + y^5/5 + ... Converges well for
+     *      |y| < 1. For LBP ratios (typically 0.5-0.999), this gives
+     *      accuracy within ~0.01%.
+     * @param x Value scaled by PRECISION (must be > 0, <= PRECISION)
+     * @return ln Natural log result scaled by PRECISION (negative for
+     *         x < PRECISION)
+     */
+    function _lnFixed(int256 x) internal pure returns (int256 ln) {
+        if (x < 1) revert LogInputOutOfRange();
+
+        int256 one = int256(PRECISION);
+
+        // y = (x - 1) / (x + 1), always in (-1, 0] for x in (0, 1]
+        int256 y = ((x - one) * one) / (x + one);
+        int256 ySquared = (y * y) / one;
+
+        // arctanh(y) = y + y^3/3 + y^5/5 + y^7/7 + ...
+        // 7 terms give sufficient precision for LBP operating range
+        int256 term = y;
+        ln = term;
+
+        term = (term * ySquared) / one;
+        ln += term / 3;
+
+        term = (term * ySquared) / one;
+        ln += term / 5;
+
+        term = (term * ySquared) / one;
+        ln += term / 7;
+
+        term = (term * ySquared) / one;
+        ln += term / 9;
+
+        term = (term * ySquared) / one;
+        ln += term / 11;
+
+        term = (term * ySquared) / one;
+        ln += term / 13;
+
+        // ln(x) = 2 * arctanh((x-1)/(x+1))
+        ln *= 2;
+    }
+
+    /**
+     * @notice Exponential function for fixed-point values
+     * @dev Taylor series: e^x = 1 + x + x^2/2! + x^3/3! + ...
+     *      For LBP usage, x is typically in [-4, 0] which converges
+     *      quickly. 20 terms ensure convergence for the full range.
+     * @param x Exponent scaled by PRECISION (can be negative)
+     * @return result e^x scaled by PRECISION
+     */
+    function _expFixed(
+        int256 x
+    ) internal pure returns (int256 result) {
+        int256 one = int256(PRECISION);
+
+        // For very negative values, result approaches 0
+        if (x < -42 * one) return 0;
+        // Guard against overflow for large positive exponents
+        if (x > 42 * one - 1) revert ExpInputOverflow();
+
+        // Taylor series: e^x = sum(x^n / n!) for n = 0..20
+        int256 term = one;
+        result = one;
+
+        for (uint256 i = 1; i < 21;) {
+            term = (term * x) / (int256(i) * one);
+            result += term;
+            if (term == 0) break;
+            unchecked { ++i; }
+        }
     }
 }

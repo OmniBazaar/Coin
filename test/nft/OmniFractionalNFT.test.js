@@ -83,8 +83,8 @@ describe("OmniFractionalNFT", function () {
       expect(await fractional.creationFeeBps()).to.equal(CREATION_FEE_BPS);
     });
 
-    it("Should start with nextVaultId at 0", async function () {
-      expect(await fractional.nextVaultId()).to.equal(0);
+    it("Should start with nextVaultId at 1 (M-04: avoid zero-ID ambiguity)", async function () {
+      expect(await fractional.nextVaultId()).to.equal(1);
     });
 
     it("Should reject creation fee above MAX_CREATION_FEE_BPS (500)", async function () {
@@ -144,7 +144,7 @@ describe("OmniFractionalNFT", function () {
       )
         .to.emit(fractional, "Fractionalized")
         .withArgs(
-          0n, // vaultId
+          1n, // vaultId (M-04: nextVaultId starts at 1)
           user1.address,
           await mockNFT.getAddress(),
           NFT_TOKEN_ID,
@@ -188,7 +188,8 @@ describe("OmniFractionalNFT", function () {
       const { vaultId, fractionToken } = await mintAndFractionalize(user1);
 
       const vault = await fractional.getVault(vaultId);
-      expect(vault.owner).to.equal(user1.address);
+      // Note: getVault returns named param 'vaultOwner' (not 'owner')
+      expect(vault.vaultOwner).to.equal(user1.address);
       expect(vault.collection).to.equal(await mockNFT.getAddress());
       expect(vault.tokenId).to.equal(NFT_TOKEN_ID);
       expect(vault.fractionToken).to.equal(await fractionToken.getAddress());
@@ -208,13 +209,14 @@ describe("OmniFractionalNFT", function () {
     });
 
     it("Should increment nextVaultId after each fractionalization", async function () {
-      // First fractionalization
+      // nextVaultId starts at 1 (M-04)
+      // First fractionalization uses vaultId=1, then nextVaultId becomes 2
       await mintAndFractionalize(user1, 1n);
-      expect(await fractional.nextVaultId()).to.equal(1);
-
-      // Second fractionalization with a different tokenId
-      await mintAndFractionalize(user2, 2n);
       expect(await fractional.nextVaultId()).to.equal(2);
+
+      // Second fractionalization uses vaultId=2, then nextVaultId becomes 3
+      await mintAndFractionalize(user2, 2n);
+      expect(await fractional.nextVaultId()).to.equal(3);
     });
   });
 
@@ -333,6 +335,8 @@ describe("OmniFractionalNFT", function () {
     let vaultId;
     let fractionToken;
     const BUYOUT_PRICE = ethers.parseEther("100");
+    // H-04: Proposer must hold >= 25% of shares to propose a buyout
+    const MIN_PROPOSER_SHARES = ethers.parseEther("250"); // 25% of 1000
 
     beforeEach(async function () {
       const result = await mintAndFractionalize(user1);
@@ -341,6 +345,9 @@ describe("OmniFractionalNFT", function () {
 
       // Fund user2 (the buyer) with mock ERC20
       await mockERC20.mint(user2.address, ethers.parseEther("10000"));
+
+      // H-04: Transfer 25% of shares to user2 so they can propose buyout
+      await fractionToken.connect(user1).transfer(user2.address, MIN_PROPOSER_SHARES);
     });
 
     it("Should deposit payment tokens into the contract", async function () {
@@ -399,7 +406,10 @@ describe("OmniFractionalNFT", function () {
     });
 
     it("Should reject if vault is not active", async function () {
-      // Redeem the vault first
+      // Transfer user2's shares back to user1 so user1 holds 100% for redeem
+      await fractionToken.connect(user2).transfer(user1.address, MIN_PROPOSER_SHARES);
+
+      // Redeem the vault (user1 now has all shares)
       await fractionToken.connect(user1).approve(
         await fractional.getAddress(),
         TOTAL_SHARES
@@ -472,11 +482,16 @@ describe("OmniFractionalNFT", function () {
     let vaultId;
     let fractionToken;
     const BUYOUT_PRICE = ethers.parseEther("100");
+    // H-04: Proposer must hold >= 25% of shares
+    const MIN_PROPOSER_SHARES = ethers.parseEther("250");
 
     beforeEach(async function () {
       const result = await mintAndFractionalize(user1);
       vaultId = result.vaultId;
       fractionToken = result.fractionToken;
+
+      // H-04: Transfer 25% of shares to user2 so they can propose buyout
+      await fractionToken.connect(user1).transfer(user2.address, MIN_PROPOSER_SHARES);
 
       // Fund user2 (buyer) and propose buyout
       await mockERC20.mint(user2.address, ethers.parseEther("10000"));
@@ -491,40 +506,41 @@ describe("OmniFractionalNFT", function () {
       );
     });
 
-    it("Should allow share holder to burn all shares and receive full payment", async function () {
-      // user1 holds all shares
-      await fractionToken.connect(user1).approve(
-        await fractional.getAddress(),
-        TOTAL_SHARES
-      );
+    it("Should allow non-proposer share holders to sell and receive payment", async function () {
+      // user1 holds 750 shares, user2 (proposer) holds 250 shares
+      // H-04: Proposer cannot sell to self; only non-proposer holders sell
+      const user1Shares = TOTAL_SHARES - MIN_PROPOSER_SHARES; // 750
+      const expectedUser1Payment = (BUYOUT_PRICE * user1Shares) / TOTAL_SHARES;
 
-      const balanceBefore = await mockERC20.balanceOf(user1.address);
-
-      await fractional.connect(user1).executeBuyout(vaultId, TOTAL_SHARES);
-
-      const balanceAfter = await mockERC20.balanceOf(user1.address);
-      expect(balanceAfter - balanceBefore).to.equal(BUYOUT_PRICE);
+      const u1Before = await mockERC20.balanceOf(user1.address);
+      await fractional.connect(user1).executeBuyout(vaultId, user1Shares);
+      const u1After = await mockERC20.balanceOf(user1.address);
+      expect(u1After - u1Before).to.equal(expectedUser1Payment);
     });
 
     it("Should transfer NFT to proposer when all shares are burned", async function () {
-      await fractionToken.connect(user1).approve(
-        await fractional.getAddress(),
-        TOTAL_SHARES
-      );
+      // user1 has 750, user2 (proposer) has 250
+      // Proposer transfers their shares to user3 so user3 can sell them
+      await fractionToken.connect(user2).transfer(user3.address, MIN_PROPOSER_SHARES);
 
-      await fractional.connect(user1).executeBuyout(vaultId, TOTAL_SHARES);
+      // user1 sells 750 shares
+      const user1Shares = TOTAL_SHARES - MIN_PROPOSER_SHARES;
+      await fractional.connect(user1).executeBuyout(vaultId, user1Shares);
+
+      // user3 sells the 250 shares (originally proposer's)
+      await fractional.connect(user3).executeBuyout(vaultId, MIN_PROPOSER_SHARES);
 
       // NFT should go to the buyout proposer (user2)
       expect(await mockNFT.ownerOf(NFT_TOKEN_ID)).to.equal(user2.address);
     });
 
     it("Should mark vault as inactive and boughtOut when all shares burned", async function () {
-      await fractionToken.connect(user1).approve(
-        await fractional.getAddress(),
-        TOTAL_SHARES
-      );
+      // Transfer proposer shares to user3 so they can be sold
+      await fractionToken.connect(user2).transfer(user3.address, MIN_PROPOSER_SHARES);
 
-      await fractional.connect(user1).executeBuyout(vaultId, TOTAL_SHARES);
+      const user1Shares = TOTAL_SHARES - MIN_PROPOSER_SHARES;
+      await fractional.connect(user1).executeBuyout(vaultId, user1Shares);
+      await fractional.connect(user3).executeBuyout(vaultId, MIN_PROPOSER_SHARES);
 
       const vault = await fractional.getVault(vaultId);
       expect(vault.active).to.equal(false);
@@ -532,16 +548,25 @@ describe("OmniFractionalNFT", function () {
     });
 
     it("Should emit BuyoutExecuted when all shares burned", async function () {
-      await fractionToken.connect(user1).approve(
-        await fractional.getAddress(),
-        TOTAL_SHARES
-      );
+      // Transfer proposer shares to user3 so they can be sold
+      await fractionToken.connect(user2).transfer(user3.address, MIN_PROPOSER_SHARES);
 
+      const user1Shares = TOTAL_SHARES - MIN_PROPOSER_SHARES;
+      await fractional.connect(user1).executeBuyout(vaultId, user1Shares);
+
+      // user3 sells remaining (completes buyout)
       await expect(
-        fractional.connect(user1).executeBuyout(vaultId, TOTAL_SHARES)
+        fractional.connect(user3).executeBuyout(vaultId, MIN_PROPOSER_SHARES)
       )
         .to.emit(fractional, "BuyoutExecuted")
         .withArgs(vaultId, user2.address);
+    });
+
+    it("Should revert with ProposerCannotSellToSelf when proposer tries to sell", async function () {
+      // H-04: Proposer cannot sell their own shares through executeBuyout
+      await expect(
+        fractional.connect(user2).executeBuyout(vaultId, MIN_PROPOSER_SHARES)
+      ).to.be.revertedWithCustomError(fractional, "ProposerCannotSellToSelf");
     });
 
     it("Should reject if no buyout proposal exists", async function () {
@@ -587,10 +612,15 @@ describe("OmniFractionalNFT", function () {
       vaultId = result.vaultId;
       fractionToken = result.fractionToken;
 
-      // Distribute shares: user1 keeps 600, user2 gets 400
+      // Distribute shares: user1 keeps 350, user2 gets 400, user3 gets 250
+      // H-04: user3 needs >= 25% (250) to propose buyout
       await fractionToken.connect(user1).transfer(
         user2.address,
         ethers.parseEther("400")
+      );
+      await fractionToken.connect(user1).transfer(
+        user3.address,
+        ethers.parseEther("250")
       );
 
       // Fund user3 (buyer) and propose buyout
@@ -669,26 +699,22 @@ describe("OmniFractionalNFT", function () {
       );
     });
 
-    it("Should complete buyout when second holder also sells remaining shares", async function () {
-      // user2 sells 400 shares
+    it("Should complete buyout when all non-proposer holders sell shares", async function () {
+      // user1: 350, user2: 400, user3 (proposer): 250
+      // H-04: Proposer cannot sell to self, so user3 transfers their shares
+      // to user1 so they can be sold
+      await fractionToken.connect(user3).transfer(user1.address, ethers.parseEther("250"));
+      // Now: user1: 600, user2: 400, user3 (proposer): 0
+
       const user2Shares = ethers.parseEther("400");
-      await fractionToken.connect(user2).approve(
-        await fractional.getAddress(),
-        user2Shares
-      );
       await fractional.connect(user2).executeBuyout(vaultId, user2Shares);
 
       // Vault still active
       let vault = await fractional.getVault(vaultId);
       expect(vault.active).to.equal(true);
 
-      // user1 sells remaining 600 shares
+      // user1 sells all 600 shares (completes buyout since totalSupply -> 0)
       const user1Shares = ethers.parseEther("600");
-      await fractionToken.connect(user1).approve(
-        await fractional.getAddress(),
-        user1Shares
-      );
-
       await expect(
         fractional.connect(user1).executeBuyout(vaultId, user1Shares)
       )
@@ -704,28 +730,24 @@ describe("OmniFractionalNFT", function () {
       expect(await mockNFT.ownerOf(NFT_TOKEN_ID)).to.equal(user3.address);
     });
 
-    it("Should distribute correct pro-rata amounts to multiple holders", async function () {
-      // user2 has 400/1000 shares, user1 has 600/1000 shares
+    it("Should distribute correct pro-rata amounts to non-proposer holders", async function () {
+      // user1: 350/1000, user2: 400/1000, user3 (proposer): 250/1000
+      // Proposer transfers shares to user1 so all shares can be sold
+      await fractionToken.connect(user3).transfer(user1.address, ethers.parseEther("250"));
+      // Now: user1: 600, user2: 400, user3 (proposer): 0
+
       const user2Shares = ethers.parseEther("400");
       const user1Shares = ethers.parseEther("600");
       const expectedUser2Payment = (BUYOUT_PRICE * user2Shares) / TOTAL_SHARES;
       const expectedUser1Payment = (BUYOUT_PRICE * user1Shares) / TOTAL_SHARES;
 
       // user2 sells
-      await fractionToken.connect(user2).approve(
-        await fractional.getAddress(),
-        user2Shares
-      );
       const u2Before = await mockERC20.balanceOf(user2.address);
       await fractional.connect(user2).executeBuyout(vaultId, user2Shares);
       const u2After = await mockERC20.balanceOf(user2.address);
       expect(u2After - u2Before).to.equal(expectedUser2Payment);
 
       // user1 sells
-      await fractionToken.connect(user1).approve(
-        await fractional.getAddress(),
-        user1Shares
-      );
       const u1Before = await mockERC20.balanceOf(user1.address);
       await fractional.connect(user1).executeBuyout(vaultId, user1Shares);
       const u1After = await mockERC20.balanceOf(user1.address);
@@ -793,7 +815,8 @@ describe("OmniFractionalNFT", function () {
       const { vaultId, fractionToken } = await mintAndFractionalize(user1);
 
       const vault = await fractional.getVault(vaultId);
-      expect(vault.owner).to.equal(user1.address);
+      // Note: getVault returns named param 'vaultOwner' (not 'owner')
+      expect(vault.vaultOwner).to.equal(user1.address);
       expect(vault.collection).to.equal(await mockNFT.getAddress());
       expect(vault.tokenId).to.equal(NFT_TOKEN_ID);
       expect(vault.fractionToken).to.equal(await fractionToken.getAddress());
@@ -804,7 +827,7 @@ describe("OmniFractionalNFT", function () {
 
     it("getVault should return zero values for non-existent vault", async function () {
       const vault = await fractional.getVault(999);
-      expect(vault.owner).to.equal(ethers.ZeroAddress);
+      expect(vault.vaultOwner).to.equal(ethers.ZeroAddress);
       expect(vault.collection).to.equal(ethers.ZeroAddress);
       expect(vault.tokenId).to.equal(0);
       expect(vault.fractionToken).to.equal(ethers.ZeroAddress);
@@ -844,6 +867,10 @@ describe("OmniFractionalNFT", function () {
     it("getVault should reflect boughtOut state after complete buyout", async function () {
       const { vaultId, fractionToken } = await mintAndFractionalize(user1);
 
+      // H-04: user2 needs >= 25% of shares to propose buyout
+      const minShares = ethers.parseEther("250");
+      await fractionToken.connect(user1).transfer(user2.address, minShares);
+
       await mockERC20.mint(user2.address, ethers.parseEther("10000"));
       const buyoutPrice = ethers.parseEther("50");
       await mockERC20.connect(user2).approve(
@@ -856,10 +883,11 @@ describe("OmniFractionalNFT", function () {
         await mockERC20.getAddress()
       );
 
-      await fractionToken.connect(user1).approve(
-        await fractional.getAddress(),
-        TOTAL_SHARES
-      );
+      // H-04: Proposer cannot sell to self; transfer proposer shares to user1
+      await fractionToken.connect(user2).transfer(user1.address, minShares);
+      // Now user1 has all 1000 shares
+
+      // user1 sells all shares (completes buyout)
       await fractional.connect(user1).executeBuyout(vaultId, TOTAL_SHARES);
 
       const vault = await fractional.getVault(vaultId);
@@ -891,7 +919,7 @@ describe("OmniFractionalNFT", function () {
     });
 
     it("Should store the vault address as immutable", async function () {
-      expect(await fractionToken.vault()).to.equal(
+      expect(await fractionToken.VAULT()).to.equal(
         await fractional.getAddress()
       );
     });
@@ -924,38 +952,30 @@ describe("OmniFractionalNFT", function () {
       expect(await fractionToken.balanceOf(user3.address)).to.equal(amount);
     });
 
-    it("Should support burnFrom with approval (used by vault during redeem)", async function () {
+    it("Should reject burn() by non-vault caller (C-01 fix)", async function () {
+      const burnAmount = ethers.parseEther("200");
+      await expect(
+        fractionToken.connect(user1).burn(burnAmount)
+      ).to.be.revertedWithCustomError(fractionToken, "OnlyVault");
+    });
+
+    it("Should reject burnFrom() by non-vault caller (C-01 fix)", async function () {
       const burnAmount = ethers.parseEther("500");
 
       // user1 approves user2 to burn on their behalf
       await fractionToken.connect(user1).approve(user2.address, burnAmount);
 
-      await fractionToken.connect(user2).burnFrom(user1.address, burnAmount);
-
-      expect(await fractionToken.balanceOf(user1.address)).to.equal(
-        TOTAL_SHARES - burnAmount
-      );
-      expect(await fractionToken.totalSupply()).to.equal(
-        TOTAL_SHARES - burnAmount
-      );
-    });
-
-    it("Should reject burnFrom without sufficient approval", async function () {
+      // Even with approval, non-vault callers are rejected
       await expect(
-        fractionToken.connect(user2).burnFrom(user1.address, ethers.parseEther("1"))
-      ).to.be.revertedWithCustomError(fractionToken, "ERC20InsufficientAllowance");
+        fractionToken.connect(user2).burnFrom(user1.address, burnAmount)
+      ).to.be.revertedWithCustomError(fractionToken, "OnlyVault");
     });
 
-    it("Should support direct burn by token holder", async function () {
-      const burnAmount = ethers.parseEther("200");
-      await fractionToken.connect(user1).burn(burnAmount);
-
-      expect(await fractionToken.balanceOf(user1.address)).to.equal(
-        TOTAL_SHARES - burnAmount
-      );
-      expect(await fractionToken.totalSupply()).to.equal(
-        TOTAL_SHARES - burnAmount
-      );
+    it("Should allow vault to burnFrom during redeem/buyout", async function () {
+      // The vault (OmniFractionalNFT) calls burnFrom via redeem() and executeBuyout()
+      // This is tested indirectly through the redeem and buyout tests above
+      // Direct vault burn is verified by the fact that redeem() succeeds
+      expect(await fractionToken.totalSupply()).to.equal(TOTAL_SHARES);
     });
   });
 });

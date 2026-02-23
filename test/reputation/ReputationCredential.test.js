@@ -54,8 +54,10 @@ describe("ReputationCredential", function () {
   // ---------------------------------------------------------------------------
 
   describe("Constructor", function () {
-    it("should set the AUTHORIZED_UPDATER correctly", async function () {
-      expect(await credential.AUTHORIZED_UPDATER()).to.equal(updater.address);
+    it("should set the authorizedUpdater correctly", async function () {
+      // M-02: authorizedUpdater is now a mutable state variable
+      // (supports two-step transfer), not an immutable constant.
+      expect(await credential.authorizedUpdater()).to.equal(updater.address);
     });
 
     it("should set the ERC-721 name to 'OmniBazaar Reputation'", async function () {

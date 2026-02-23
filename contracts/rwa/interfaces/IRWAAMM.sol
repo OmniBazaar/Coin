@@ -25,8 +25,11 @@ interface IRWAAMM {
 
     /**
      * @notice Pool information structure
-     * @dev Contains all pool metadata and reserves
+     * @dev Contains all pool metadata and reserves.
+     *      Struct packing: addresses and small types grouped together
+     *      for efficient slot usage.
      */
+    // solhint-disable-next-line gas-struct-packing
     struct PoolInfo {
         address token0;
         address token1;
@@ -70,6 +73,7 @@ interface IRWAAMM {
         uint256 protocolFee
     );
 
+    /* solhint-disable gas-indexed-events */
     /// @notice Emitted when liquidity is added
     /// @param provider Address providing liquidity
     /// @param poolId Pool identifier
@@ -79,7 +83,7 @@ interface IRWAAMM {
     event LiquidityAdded(
         address indexed provider,
         bytes32 indexed poolId,
-        uint256 amount0,
+        uint256 indexed amount0,
         uint256 amount1,
         uint256 liquidity
     );
@@ -93,10 +97,11 @@ interface IRWAAMM {
     event LiquidityRemoved(
         address indexed provider,
         bytes32 indexed poolId,
-        uint256 amount0,
+        uint256 indexed amount0,
         uint256 amount1,
         uint256 liquidity
     );
+    /* solhint-enable gas-indexed-events */
 
     /// @notice Emitted when a new pool is created
     /// @param poolId Pool identifier
@@ -118,6 +123,14 @@ interface IRWAAMM {
         bytes32 indexed poolId,
         address indexed pauser,
         string reason
+    );
+
+    /// @notice Emitted when emergency pause is lifted
+    /// @param poolId Pool identifier (bytes32(0) for all)
+    /// @param unpauser Address that triggered unpause
+    event EmergencyUnpaused(
+        bytes32 indexed poolId,
+        address indexed unpauser
     );
 
     // ========================================================================
@@ -171,12 +184,14 @@ interface IRWAAMM {
      */
     function protocolFeeBps() external pure returns (uint256);
 
+    /* solhint-disable ordering */
     /**
      * @notice Get pool information
      * @param poolId Pool identifier
      * @return info Pool information struct
      */
     function getPool(bytes32 poolId) external view returns (PoolInfo memory info);
+    /* solhint-enable ordering */
 
     /**
      * @notice Calculate pool ID from token pair

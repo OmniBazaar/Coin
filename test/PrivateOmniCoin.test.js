@@ -1,5 +1,5 @@
 const { expect } = require("chai");
-const { ethers } = require("hardhat");
+const { ethers, upgrades } = require("hardhat");
 const { loadFixture } = require("@nomicfoundation/hardhat-network-helpers");
 
 /**
@@ -13,13 +13,14 @@ describe("PrivateOmniCoin", function () {
         // Get signers
         const [owner, user1, user2, feeRecipient, bridge] = await ethers.getSigners();
 
-        // Deploy contract
+        // Deploy contract via UUPS proxy (constructor calls _disableInitializers)
         const PrivateOmniCoin = await ethers.getContractFactory("PrivateOmniCoin");
-        const token = await PrivateOmniCoin.deploy();
+        const token = await upgrades.deployProxy(
+            PrivateOmniCoin,
+            [],
+            { initializer: "initialize", kind: "uups" }
+        );
         await token.waitForDeployment();
-
-        // Initialize contract
-        await token.initialize();
 
         // Grant bridge role to bridge account
         const BRIDGE_ROLE = await token.BRIDGE_ROLE();
@@ -55,7 +56,6 @@ describe("PrivateOmniCoin", function () {
         it("Should mint initial supply to deployer", async function () {
             const { token, owner } = await loadFixture(deployPrivateOmniCoinFixture);
 
-            const expectedSupply = ethers.parseEther("1000000000");
             const ownerBalance = await token.balanceOf(owner.address);
 
             // Owner should have initial supply minus what was transferred
@@ -81,7 +81,7 @@ describe("PrivateOmniCoin", function () {
 
             await expect(token.initialize()).to.be.revertedWithCustomError(
                 token,
-                "AlreadyInitialized"
+                "InvalidInitialization"
             );
         });
 
@@ -110,7 +110,7 @@ describe("PrivateOmniCoin", function () {
         });
 
         it("Should allow admin to enable/disable privacy", async function () {
-            const { token, owner } = await loadFixture(deployPrivateOmniCoinFixture);
+            const { token } = await loadFixture(deployPrivateOmniCoinFixture);
 
             // Disable privacy
             await token.setPrivacyEnabled(false);
@@ -142,13 +142,9 @@ describe("PrivateOmniCoin", function () {
     // PUBLIC TO PRIVATE CONVERSION TESTS
     // ========================================================================
 
-    describe("Convert to Private (XOM → pXOM)", function () {
+    describe("Convert to Private (XOM to pXOM)", function () {
         it("Should have convertToPrivate function with correct signature", async function () {
             const { token } = await loadFixture(deployPrivateOmniCoinFixture);
-
-            // NOTE: Full MPC testing requires COTI testnet deployment
-            // MPC precompiles are not available in Hardhat environment
-            // These tests verify contract structure and will pass on COTI network
 
             // Verify function exists
             expect(typeof token.convertToPrivate).to.equal("function");
@@ -201,9 +197,12 @@ describe("PrivateOmniCoin", function () {
             // Enable privacy for this test
             await token.setPrivacyEnabled(true);
 
-            // uint64 max is 2^64 - 1 = 18,446,744,073,709,551,615
-            // This is about 18.4 ether (with 18 decimals)
-            const tooLarge = ethers.parseEther("20"); // 20 ether > uint64 max with decimals
+            // After scaling by 1e12, amount must fit in uint64
+            // uint64 max = 18,446,744,073,709,551,615
+            // So max public amount = ~18,446,744,073,709,551,615 * 1e12 = huge
+            // But we need to exceed uint64 after scaling:
+            // amount / 1e12 > uint64.max means amount > ~18.4e18 * 1e12 = ~1.84e31
+            const tooLarge = ethers.parseEther("18446744073710"); // Exceeds uint64 after scaling
 
             await expect(
                 token.connect(user1).convertToPrivate(tooLarge)
@@ -230,21 +229,11 @@ describe("PrivateOmniCoin", function () {
             ).to.be.reverted; // Pausable revert
         });
 
-        it("Should validate amount constraints", async function () {
+        it("Should validate scaling factor", async function () {
             const { token } = await loadFixture(deployPrivateOmniCoinFixture);
 
-            // uint64 max verification
-            const maxUint64 = 18446744073709551615n;
-
-            // Test that amounts fitting in uint64 are acceptable
-            const validAmount = ethers.parseEther("10"); // 10 ether
-            const validAmountNumber = Number(validAmount);
-            expect(validAmountNumber).to.be.lessThan(Number(maxUint64));
-
-            // Test that large amounts would fail
-            const largeAmount = ethers.parseEther("20"); // 20 ether
-            const largeAmountNumber = Number(largeAmount);
-            expect(largeAmountNumber).to.be.greaterThan(Number(maxUint64));
+            const scalingFactor = await token.PRIVACY_SCALING_FACTOR();
+            expect(scalingFactor).to.equal(1000000000000n); // 1e12
         });
     });
 
@@ -252,7 +241,7 @@ describe("PrivateOmniCoin", function () {
     // PRIVATE TO PUBLIC CONVERSION TESTS
     // ========================================================================
 
-    describe("Convert to Public (pXOM → XOM)", function () {
+    describe("Convert to Public (pXOM to XOM)", function () {
         it("Should have convertToPublic function available", async function () {
             const { token, user1 } = await loadFixture(deployPrivateOmniCoinFixture);
 
@@ -262,25 +251,13 @@ describe("PrivateOmniCoin", function () {
         });
 
         it("Should revert convertToPublic when privacy disabled", async function () {
-            const { token, user1 } = await loadFixture(deployPrivateOmniCoinFixture);
+            const { token } = await loadFixture(deployPrivateOmniCoinFixture);
 
             // Privacy should be disabled in Hardhat
             expect(await token.privacyAvailable()).to.be.false;
 
-            // Note: Can't create gtUint64 without MPC, so this test is limited
+            // Note: Cannot create gtUint64 without MPC, so this test is limited
             // Full test requires COTI network
-        });
-
-        it("Should revert when privacy is disabled", async function () {
-            const { token, user1 } = await loadFixture(deployPrivateOmniCoinFixture);
-
-            await token.setPrivacyEnabled(false);
-
-            // Create a dummy gtUint64 (in reality, this comes from MPC operations)
-            const dummyEncryptedAmount = 0; // Placeholder
-
-            // Note: This test is limited without full COTI MPC support
-            // The function exists and will revert when privacy disabled
         });
     });
 
@@ -302,8 +279,8 @@ describe("PrivateOmniCoin", function () {
         it("Should allow owner to decrypt their balance", async function () {
             const { token, user1 } = await loadFixture(deployPrivateOmniCoinFixture);
 
-            // Note: decryptedPrivateBalanceOf is not a view function (MPC operations modify state)
-            // When privacy is disabled, should return 0
+            // When privacy is disabled, decryptedPrivateBalanceOf returns 0
+            // It is a non-view function due to MPC decrypt operations
             const tx = await token.connect(user1).decryptedPrivateBalanceOf(user1.address);
             const receipt = await tx.wait();
 
@@ -350,10 +327,9 @@ describe("PrivateOmniCoin", function () {
 
     describe("Private Transfers", function () {
         it("Should emit PrivateTransfer event", async function () {
-            const { token, user1, user2 } = await loadFixture(deployPrivateOmniCoinFixture);
+            const { token } = await loadFixture(deployPrivateOmniCoinFixture);
 
-            // Note: Full testing requires COTI MPC network
-            // We verify the function signature and event structure
+            // Verify the function signature and event structure
             const iface = token.interface;
             const event = iface.getEvent("PrivateTransfer");
 
@@ -361,7 +337,7 @@ describe("PrivateOmniCoin", function () {
         });
 
         it("Should revert when privacy is disabled", async function () {
-            const { token, user1, user2 } = await loadFixture(deployPrivateOmniCoinFixture);
+            const { token, user1 } = await loadFixture(deployPrivateOmniCoinFixture);
 
             await token.setPrivacyEnabled(false);
 
@@ -369,11 +345,13 @@ describe("PrivateOmniCoin", function () {
             expect(typeof token.connect(user1).privateTransfer).to.equal("function");
         });
 
-        it("Should revert on zero address recipient", async function () {
-            const { token, user1 } = await loadFixture(deployPrivateOmniCoinFixture);
+        it("Should have self-transfer check (M-01)", async function () {
+            const { token } = await loadFixture(deployPrivateOmniCoinFixture);
 
-            // Function should reject zero address
-            // Note: Full test requires COTI MPC network for encrypted amount
+            // Verify the SelfTransfer error exists in the contract interface
+            const iface = token.interface;
+            const errorFragment = iface.getError("SelfTransfer");
+            expect(errorFragment).to.not.be.null;
         });
     });
 
@@ -434,6 +412,18 @@ describe("PrivateOmniCoin", function () {
             ).to.be.reverted;
         });
 
+        it("Should enforce MAX_SUPPLY cap on mint (M-03)", async function () {
+            const { token, owner } = await loadFixture(deployPrivateOmniCoinFixture);
+
+            const maxSupply = await token.MAX_SUPPLY();
+            const currentSupply = await token.totalSupply();
+            const tooMuch = maxSupply - currentSupply + 1n;
+
+            await expect(
+                token.connect(owner).mint(owner.address, tooMuch)
+            ).to.be.revertedWithCustomError(token, "ExceedsMaxSupply");
+        });
+
         it("Should allow admin to burn tokens", async function () {
             const { token, owner, user1 } = await loadFixture(deployPrivateOmniCoinFixture);
 
@@ -451,6 +441,52 @@ describe("PrivateOmniCoin", function () {
 
             await expect(
                 token.connect(user1).burnFrom(user2.address, ethers.parseEther("100"))
+            ).to.be.reverted;
+        });
+    });
+
+    // ========================================================================
+    // EMERGENCY RECOVERY TESTS
+    // ========================================================================
+
+    describe("Emergency Recovery", function () {
+        it("Should revert recovery when privacy is enabled", async function () {
+            const { token, owner, user1 } = await loadFixture(deployPrivateOmniCoinFixture);
+
+            await token.setPrivacyEnabled(true);
+
+            await expect(
+                token.connect(owner).emergencyRecoverPrivateBalance(user1.address)
+            ).to.be.revertedWithCustomError(token, "PrivacyMustBeDisabled");
+        });
+
+        it("Should revert recovery for zero address", async function () {
+            const { token, owner } = await loadFixture(deployPrivateOmniCoinFixture);
+
+            await token.setPrivacyEnabled(false);
+
+            await expect(
+                token.connect(owner).emergencyRecoverPrivateBalance(ethers.ZeroAddress)
+            ).to.be.revertedWithCustomError(token, "ZeroAddress");
+        });
+
+        it("Should revert recovery when no balance to recover", async function () {
+            const { token, owner, user1 } = await loadFixture(deployPrivateOmniCoinFixture);
+
+            await token.setPrivacyEnabled(false);
+
+            await expect(
+                token.connect(owner).emergencyRecoverPrivateBalance(user1.address)
+            ).to.be.revertedWithCustomError(token, "NoBalanceToRecover");
+        });
+
+        it("Should not allow non-admin to recover", async function () {
+            const { token, user1 } = await loadFixture(deployPrivateOmniCoinFixture);
+
+            await token.setPrivacyEnabled(false);
+
+            await expect(
+                token.connect(user1).emergencyRecoverPrivateBalance(user1.address)
             ).to.be.reverted;
         });
     });
@@ -578,6 +614,13 @@ describe("PrivateOmniCoin", function () {
             const { token } = await loadFixture(deployPrivateOmniCoinFixture);
 
             expect(await token.BPS_DENOMINATOR()).to.equal(10000);
+        });
+
+        it("Should have correct MAX_SUPPLY", async function () {
+            const { token } = await loadFixture(deployPrivateOmniCoinFixture);
+
+            const expectedMax = ethers.parseEther("16600000000"); // 16.6 billion
+            expect(await token.MAX_SUPPLY()).to.equal(expectedMax);
         });
     });
 });

@@ -11,54 +11,40 @@ import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
  * @title OmniBonding
  * @author OmniCoin Development Team
  * @notice Protocol Owned Liquidity via discounted XOM bond offerings
- * @dev Allows users to exchange assets (USDC, ETH, LP tokens) for discounted XOM
- *      with linear vesting. Protocol permanently owns the bonded assets.
+ * @dev Allows users to exchange assets (USDC, ETH, LP tokens) for
+ *      discounted XOM with linear vesting. Protocol permanently owns
+ *      the bonded assets. Tracks outstanding obligations to prevent
+ *      insolvency and restrict owner withdrawals to excess funds.
  *
  * Key features:
- * - Multi-asset bonding (USDC, ETH, LP tokens, AVAX)
+ * - Multi-asset bonding (stablecoins: USDC, USDT, DAI)
  * - Configurable discount rates (5-15%)
  * - Linear vesting over configurable periods
  * - Daily capacity limits to prevent manipulation
  * - Dynamic discount adjustment based on demand
+ * - Solvency guarantees via totalXomOutstanding tracking
+ * - Price change bounds (MAX_PRICE_CHANGE_BPS, MIN/MAX bounds)
+ *
+ * IMPORTANT: The current implementation assumes all bonded assets are
+ * worth $1 per unit (stablecoins). Do NOT add non-stablecoin assets
+ * (ETH, AVAX, LP tokens) without first integrating per-asset price
+ * feeds. See _normalizeToPrice() documentation and audit H-03.
  *
  * Inspired by Olympus DAO bonding mechanism.
  */
 contract OmniBonding is ReentrancyGuard, Ownable, Pausable {
     using SafeERC20 for IERC20;
 
-    // ============ Constants ============
-
-    /// @notice Basis points for percentage calculations (100% = 10000)
-    uint256 public constant BASIS_POINTS = 10_000;
-
-    /// @notice Minimum discount allowed (5%)
-    uint256 public constant MIN_DISCOUNT_BPS = 500;
-
-    /// @notice Maximum discount allowed (15%)
-    uint256 public constant MAX_DISCOUNT_BPS = 1_500;
-
-    /// @notice Minimum vesting period (1 day)
-    uint256 public constant MIN_VESTING_PERIOD = 1 days;
-
-    /// @notice Maximum vesting period (30 days)
-    uint256 public constant MAX_VESTING_PERIOD = 30 days;
-
-    /// @notice Price precision for calculations
-    uint256 private constant PRICE_PRECISION = 1e18;
-
-    // ============ Immutables ============
-
-    /// @notice XOM token contract
-    IERC20 public immutable xom;
-
     // ============ Structs ============
 
     /// @notice Configuration for each bondable asset
+    /// @dev Packed for gas efficiency: asset (20) + enabled (1) + decimals (1)
+    ///      fit in a single 32-byte slot
     struct BondTerms {
-        /// @notice Whether this asset is enabled for bonding
-        bool enabled;
         /// @notice Asset contract (ERC20)
         IERC20 asset;
+        /// @notice Whether this asset is enabled for bonding
+        bool enabled;
         /// @notice Asset decimals for normalization
         uint8 decimals;
         /// @notice Discount in basis points (e.g., 1000 = 10%)
@@ -89,6 +75,45 @@ contract OmniBonding is ReentrancyGuard, Ownable, Pausable {
         uint256 claimed;
     }
 
+    // ============ Constants ============
+
+    /// @notice Basis points for percentage calculations (100% = 10000)
+    uint256 public constant BASIS_POINTS = 10_000;
+
+    /// @notice Minimum discount allowed (5%)
+    uint256 public constant MIN_DISCOUNT_BPS = 500;
+
+    /// @notice Maximum discount allowed (15%)
+    uint256 public constant MAX_DISCOUNT_BPS = 1_500;
+
+    /// @notice Minimum vesting period (1 day)
+    uint256 public constant MIN_VESTING_PERIOD = 1 days;
+
+    /// @notice Maximum vesting period (30 days)
+    uint256 public constant MAX_VESTING_PERIOD = 30 days;
+
+    /// @notice Maximum number of bond assets (M-01: bounds claimAll loop)
+    uint256 public constant MAX_BOND_ASSETS = 50;
+
+    /// @notice Price precision for calculations
+    uint256 private constant PRICE_PRECISION = 1e18;
+
+    /// @notice Maximum price change per update (10% = 1000 bps)
+    /// @dev Limits owner's ability to manipulate XOM price drastically
+    ///      in a single transaction (H-02 fix)
+    uint256 public constant MAX_PRICE_CHANGE_BPS = 1_000;
+
+    /// @notice Minimum allowed XOM price ($0.0001 in 18 decimals)
+    uint256 public constant MIN_XOM_PRICE = 1e14;
+
+    /// @notice Maximum allowed XOM price ($100 in 18 decimals)
+    uint256 public constant MAX_XOM_PRICE = 100e18;
+
+    // ============ Immutables ============
+
+    /// @notice XOM token contract
+    IERC20 public immutable XOM;
+
     // ============ State Variables ============
 
     /// @notice Treasury address receiving bonded assets
@@ -115,6 +140,11 @@ contract OmniBonding is ReentrancyGuard, Ownable, Pausable {
     /// @notice Total value received across all bonds (normalized to 18 decimals)
     uint256 public totalValueReceived;
 
+    /// @notice Total XOM committed but not yet claimed across all bonds
+    /// @dev Tracks outstanding obligations to ensure solvency. Incremented
+    ///      on bond creation, decremented on claims.
+    uint256 public totalXomOutstanding;
+
     // ============ Events ============
 
     /// @notice Emitted when a new bond is created
@@ -138,7 +168,7 @@ contract OmniBonding is ReentrancyGuard, Ownable, Pausable {
     event BondClaimed(
         address indexed user,
         address indexed asset,
-        uint256 amount
+        uint256 indexed amount
     );
 
     /// @notice Emitted when bond terms are updated
@@ -148,19 +178,30 @@ contract OmniBonding is ReentrancyGuard, Ownable, Pausable {
     /// @param dailyCapacity New daily capacity
     event BondTermsUpdated(
         address indexed asset,
-        uint256 discountBps,
-        uint256 vestingPeriod,
+        uint256 indexed discountBps,
+        uint256 indexed vestingPeriod,
         uint256 dailyCapacity
     );
 
     /// @notice Emitted when a new bond asset is added
     /// @param asset Asset address
     /// @param decimals Asset decimals
-    event BondAssetAdded(address indexed asset, uint8 decimals);
+    event BondAssetAdded(
+        address indexed asset,
+        uint8 indexed decimals
+    );
 
     /// @notice Emitted when XOM price is updated
     /// @param newPrice New fixed XOM price
-    event XomPriceUpdated(uint256 newPrice);
+    event XomPriceUpdated(uint256 indexed newPrice);
+
+    /// @notice Emitted when excess XOM is withdrawn to treasury
+    /// @param amount Amount of XOM withdrawn
+    /// @param treasuryAddr Treasury address receiving the XOM
+    event XomWithdrawn(
+        uint256 indexed amount,
+        address indexed treasuryAddr
+    );
 
     // ============ Errors ============
 
@@ -194,8 +235,20 @@ contract OmniBonding is ReentrancyGuard, Ownable, Pausable {
     /// @notice Thrown when asset is already added
     error AssetAlreadyAdded();
 
-    /// @notice Thrown when XOM balance is insufficient
+    /// @notice Thrown when XOM balance is insufficient for obligations
     error InsufficientXomBalance();
+
+    /// @notice Thrown when price change exceeds MAX_PRICE_CHANGE_BPS
+    /// @param oldPrice The current price
+    /// @param newPrice The proposed new price
+    error PriceChangeExceedsLimit(uint256 oldPrice, uint256 newPrice);
+
+    /// @notice Thrown when price is outside the allowed bounds
+    /// @param price The proposed price
+    error PriceOutOfBounds(uint256 price);
+
+    /// @notice Thrown when MAX_BOND_ASSETS limit is reached
+    error TooManyAssets();
 
     // ============ Constructor ============
 
@@ -203,7 +256,8 @@ contract OmniBonding is ReentrancyGuard, Ownable, Pausable {
      * @notice Initialize the bonding contract
      * @param _xom XOM token address
      * @param _treasury Treasury address to receive bonded assets
-     * @param _initialXomPrice Initial fixed XOM price (18 decimals, e.g., 5e15 = $0.005)
+     * @param _initialXomPrice Initial fixed XOM price
+     *        (18 decimals, e.g., 5e15 = $0.005)
      */
     constructor(
         address _xom,
@@ -215,7 +269,7 @@ contract OmniBonding is ReentrancyGuard, Ownable, Pausable {
         }
         if (_initialXomPrice == 0) revert InvalidParameters();
 
-        xom = IERC20(_xom);
+        XOM = IERC20(_xom);
         treasury = _treasury;
         fixedXomPrice = _initialXomPrice;
     }
@@ -228,7 +282,8 @@ contract OmniBonding is ReentrancyGuard, Ownable, Pausable {
      * @param decimals Asset decimals
      * @param discountBps Initial discount in basis points
      * @param vestingPeriod Vesting period in seconds
-     * @param dailyCapacity Maximum daily bonding capacity (in asset terms)
+     * @param dailyCapacity Maximum daily bonding capacity
+     *        (in asset terms)
      */
     function addBondAsset(
         address asset,
@@ -238,23 +293,40 @@ contract OmniBonding is ReentrancyGuard, Ownable, Pausable {
         uint256 dailyCapacity
     ) external onlyOwner {
         if (asset == address(0)) revert InvalidParameters();
-        if (bondTerms[asset].asset != IERC20(address(0))) revert AssetAlreadyAdded();
-        if (discountBps < MIN_DISCOUNT_BPS || discountBps > MAX_DISCOUNT_BPS) {
+        // solhint-disable-next-line gas-strict-inequalities
+        if (bondAssets.length >= MAX_BOND_ASSETS) {
+            revert TooManyAssets();
+        }
+        if (
+            bondTerms[asset].asset != IERC20(address(0))
+        ) revert AssetAlreadyAdded();
+        if (
+            discountBps < MIN_DISCOUNT_BPS
+                || discountBps > MAX_DISCOUNT_BPS
+        ) {
             revert InvalidDiscount();
         }
-        if (vestingPeriod < MIN_VESTING_PERIOD || vestingPeriod > MAX_VESTING_PERIOD) {
+        if (
+            vestingPeriod < MIN_VESTING_PERIOD
+                || vestingPeriod > MAX_VESTING_PERIOD
+        ) {
             revert InvalidVestingPeriod();
         }
+        // L-03: Validate decimals (no real token exceeds 24)
+        if (decimals > 24) revert InvalidParameters();
+
+        // solhint-disable-next-line not-rely-on-time
+        uint256 resetDay = block.timestamp / 1 days;
 
         bondTerms[asset] = BondTerms({
-            enabled: true,
             asset: IERC20(asset),
+            enabled: true,
             decimals: decimals,
             discountBps: discountBps,
             vestingPeriod: vestingPeriod,
             dailyCapacity: dailyCapacity,
             dailyBonded: 0,
-            lastResetDay: block.timestamp / 1 days,
+            lastResetDay: resetDay,
             totalXomDistributed: 0,
             totalAssetReceived: 0
         });
@@ -262,7 +334,9 @@ contract OmniBonding is ReentrancyGuard, Ownable, Pausable {
         bondAssets.push(asset);
 
         emit BondAssetAdded(asset, decimals);
-        emit BondTermsUpdated(asset, discountBps, vestingPeriod, dailyCapacity);
+        emit BondTermsUpdated(
+            asset, discountBps, vestingPeriod, dailyCapacity
+        );
     }
 
     /**
@@ -279,11 +353,19 @@ contract OmniBonding is ReentrancyGuard, Ownable, Pausable {
         uint256 dailyCapacity
     ) external onlyOwner {
         BondTerms storage terms = bondTerms[asset];
-        if (address(terms.asset) == address(0)) revert AssetNotSupported();
-        if (discountBps < MIN_DISCOUNT_BPS || discountBps > MAX_DISCOUNT_BPS) {
+        if (address(terms.asset) == address(0)) {
+            revert AssetNotSupported();
+        }
+        if (
+            discountBps < MIN_DISCOUNT_BPS
+                || discountBps > MAX_DISCOUNT_BPS
+        ) {
             revert InvalidDiscount();
         }
-        if (vestingPeriod < MIN_VESTING_PERIOD || vestingPeriod > MAX_VESTING_PERIOD) {
+        if (
+            vestingPeriod < MIN_VESTING_PERIOD
+                || vestingPeriod > MAX_VESTING_PERIOD
+        ) {
             revert InvalidVestingPeriod();
         }
 
@@ -291,7 +373,9 @@ contract OmniBonding is ReentrancyGuard, Ownable, Pausable {
         terms.vestingPeriod = vestingPeriod;
         terms.dailyCapacity = dailyCapacity;
 
-        emit BondTermsUpdated(asset, discountBps, vestingPeriod, dailyCapacity);
+        emit BondTermsUpdated(
+            asset, discountBps, vestingPeriod, dailyCapacity
+        );
     }
 
     /**
@@ -299,14 +383,21 @@ contract OmniBonding is ReentrancyGuard, Ownable, Pausable {
      * @param asset Asset address
      * @param enabled Whether to enable
      */
-    function setBondAssetEnabled(address asset, bool enabled) external onlyOwner {
+    function setBondAssetEnabled(
+        address asset,
+        bool enabled
+    ) external onlyOwner {
         BondTerms storage terms = bondTerms[asset];
-        if (address(terms.asset) == address(0)) revert AssetNotSupported();
+        if (address(terms.asset) == address(0)) {
+            revert AssetNotSupported();
+        }
         terms.enabled = enabled;
     }
 
     /**
      * @notice Create a bond by depositing an asset
+     * @dev Checks solvency against all outstanding obligations
+     *      before creating the bond. Increments totalXomOutstanding.
      * @param asset Asset to bond
      * @param amount Amount of asset to bond
      * @return xomOwed Amount of XOM owed to user
@@ -315,41 +406,50 @@ contract OmniBonding is ReentrancyGuard, Ownable, Pausable {
         address asset,
         uint256 amount
     ) external nonReentrant whenNotPaused returns (uint256 xomOwed) {
-        BondTerms storage terms = bondTerms[asset];
-        if (address(terms.asset) == address(0)) revert AssetNotSupported();
-        if (!terms.enabled) revert AssetDisabled();
+        // L-02: Reject zero-amount bonds
+        if (amount == 0) revert InvalidParameters();
+
+        BondTerms storage terms = _validateBondAsset(
+            asset, amount
+        );
 
         // Check for existing active bond
-        UserBond storage existingBond = userBonds[msg.sender][asset];
-        // solhint-disable-next-line not-rely-on-time
-        if (existingBond.xomOwed > 0 && existingBond.claimed < existingBond.xomOwed) {
+        UserBond storage existingBond =
+            userBonds[msg.sender][asset];
+        if (
+            existingBond.xomOwed > 0
+                && existingBond.claimed < existingBond.xomOwed
+        ) {
             revert ActiveBondExists();
         }
 
-        // Reset daily capacity if new day
-        uint256 currentDay = block.timestamp / 1 days;
-        if (currentDay > terms.lastResetDay) {
-            terms.dailyBonded = 0;
-            terms.lastResetDay = currentDay;
-        }
-
-        // Check daily capacity
-        if (terms.dailyBonded + amount > terms.dailyCapacity) {
-            revert DailyCapacityExceeded();
-        }
-
         // Calculate XOM owed with discount
-        uint256 assetValue = _normalizeToPrice(amount, terms.decimals);
+        uint256 assetValue = _normalizeToPrice(
+            amount, terms.decimals
+        );
         uint256 xomPrice = getXomPrice();
-        uint256 discountedPrice = (xomPrice * (BASIS_POINTS - terms.discountBps)) /
-            BASIS_POINTS;
-        xomOwed = (assetValue * PRICE_PRECISION) / discountedPrice;
+        uint256 discountedPrice =
+            (xomPrice * (BASIS_POINTS - terms.discountBps))
+                / BASIS_POINTS;
+        xomOwed =
+            (assetValue * PRICE_PRECISION) / discountedPrice;
 
-        // Check contract has enough XOM
-        if (xom.balanceOf(address(this)) < xomOwed) revert InsufficientXomBalance();
+        // L-02: Reject bonds that produce zero XOM (rounding)
+        if (xomOwed == 0) revert InvalidParameters();
+
+        // Check contract has enough XOM for all obligations
+        // including this new bond (C-01 fix)
+        if (
+            XOM.balanceOf(address(this))
+                < totalXomOutstanding + xomOwed
+        ) {
+            revert InsufficientXomBalance();
+        }
 
         // Transfer asset to treasury
-        terms.asset.safeTransferFrom(msg.sender, treasury, amount);
+        terms.asset.safeTransferFrom(
+            msg.sender, treasury, amount
+        );
 
         // Create bond
         // solhint-disable-next-line not-rely-on-time
@@ -368,18 +468,24 @@ contract OmniBonding is ReentrancyGuard, Ownable, Pausable {
         terms.totalAssetReceived += amount;
         totalXomDistributed += xomOwed;
         totalValueReceived += assetValue;
+        totalXomOutstanding += xomOwed;
 
-        emit BondCreated(msg.sender, asset, amount, xomOwed, vestingEnd);
+        emit BondCreated(
+            msg.sender, asset, amount, xomOwed, vestingEnd
+        );
 
         return xomOwed;
     }
 
     /**
      * @notice Claim vested XOM from a bond
+     * @dev Decrements totalXomOutstanding by the claimed amount
      * @param asset Asset the bond was created with
      * @return claimed Amount of XOM claimed
      */
-    function claim(address asset) external nonReentrant returns (uint256 claimed) {
+    function claim(
+        address asset
+    ) external nonReentrant returns (uint256 claimed) {
         UserBond storage userBond = userBonds[msg.sender][asset];
         if (userBond.xomOwed == 0) revert NoBondToClaim();
 
@@ -387,7 +493,15 @@ contract OmniBonding is ReentrancyGuard, Ownable, Pausable {
         if (claimed == 0) revert NothingToClaim();
 
         userBond.claimed += claimed;
-        xom.safeTransfer(msg.sender, claimed);
+        totalXomOutstanding -= claimed;
+
+        // M-03: Clean up fully-claimed bond to free storage
+        // and allow re-bonding without friction
+        if (userBond.claimed == userBond.xomOwed) {
+            delete userBonds[msg.sender][asset];
+        }
+
+        XOM.safeTransfer(msg.sender, claimed);
 
         emit BondClaimed(msg.sender, asset, claimed);
 
@@ -396,35 +510,73 @@ contract OmniBonding is ReentrancyGuard, Ownable, Pausable {
 
     /**
      * @notice Claim vested XOM from all bonds
+     * @dev Decrements totalXomOutstanding by the total claimed
      * @return totalClaimed Total amount of XOM claimed
      */
-    function claimAll() external nonReentrant returns (uint256 totalClaimed) {
-        for (uint256 i = 0; i < bondAssets.length; i++) {
+    function claimAll()
+        external
+        nonReentrant
+        returns (uint256 totalClaimed)
+    {
+        for (uint256 i = 0; i < bondAssets.length; ++i) {
             address asset = bondAssets[i];
-            UserBond storage userBond = userBonds[msg.sender][asset];
+            UserBond storage userBond =
+                userBonds[msg.sender][asset];
 
             if (userBond.xomOwed > 0) {
-                uint256 claimable = _calculateClaimable(userBond);
+                uint256 claimable = _calculateClaimable(
+                    userBond
+                );
                 if (claimable > 0) {
                     userBond.claimed += claimable;
                     totalClaimed += claimable;
-                    emit BondClaimed(msg.sender, asset, claimable);
+
+                    // M-03: Clean up fully-claimed bonds
+                    if (
+                        userBond.claimed == userBond.xomOwed
+                    ) {
+                        delete userBonds[msg.sender][asset];
+                    }
+
+                    emit BondClaimed(
+                        msg.sender, asset, claimable
+                    );
                 }
             }
         }
 
         if (totalClaimed == 0) revert NothingToClaim();
-        xom.safeTransfer(msg.sender, totalClaimed);
+        totalXomOutstanding -= totalClaimed;
+        XOM.safeTransfer(msg.sender, totalClaimed);
 
         return totalClaimed;
     }
 
     /**
-     * @notice Update fixed XOM price
+     * @notice Update fixed XOM price with bounds and rate-of-change limits
+     * @dev Prevents price manipulation by enforcing:
+     *      1. Price must be within [MIN_XOM_PRICE, MAX_XOM_PRICE]
+     *      2. Price change cannot exceed MAX_PRICE_CHANGE_BPS per update
+     *      These constraints limit owner's ability to extract value from
+     *      bonders via front-running or sudden price changes (H-02 fix).
      * @param newPrice New price in 18 decimals
      */
     function setXomPrice(uint256 newPrice) external onlyOwner {
-        if (newPrice == 0) revert InvalidParameters();
+        if (newPrice < MIN_XOM_PRICE || newPrice > MAX_XOM_PRICE) {
+            revert PriceOutOfBounds(newPrice);
+        }
+
+        uint256 oldPrice = fixedXomPrice;
+
+        // Enforce maximum rate of change per update
+        uint256 priceDelta = newPrice > oldPrice
+            ? newPrice - oldPrice
+            : oldPrice - newPrice;
+        uint256 maxDelta = (oldPrice * MAX_PRICE_CHANGE_BPS) / BASIS_POINTS;
+        if (priceDelta > maxDelta) {
+            revert PriceChangeExceedsLimit(oldPrice, newPrice);
+        }
+
         fixedXomPrice = newPrice;
         emit XomPriceUpdated(newPrice);
     }
@@ -433,7 +585,9 @@ contract OmniBonding is ReentrancyGuard, Ownable, Pausable {
      * @notice Update treasury address
      * @param _treasury New treasury address
      */
-    function setTreasury(address _treasury) external onlyOwner {
+    function setTreasury(
+        address _treasury
+    ) external onlyOwner {
         if (_treasury == address(0)) revert InvalidParameters();
         treasury = _treasury;
     }
@@ -442,8 +596,12 @@ contract OmniBonding is ReentrancyGuard, Ownable, Pausable {
      * @notice Update price oracle address
      * @param _priceOracle New oracle address
      */
-    function setPriceOracle(address _priceOracle) external onlyOwner {
-        if (_priceOracle == address(0)) revert InvalidParameters();
+    function setPriceOracle(
+        address _priceOracle
+    ) external onlyOwner {
+        if (_priceOracle == address(0)) {
+            revert InvalidParameters();
+        }
         priceOracle = _priceOracle;
     }
 
@@ -452,15 +610,21 @@ contract OmniBonding is ReentrancyGuard, Ownable, Pausable {
      * @param amount Amount of XOM to deposit
      */
     function depositXom(uint256 amount) external onlyOwner {
-        xom.safeTransferFrom(msg.sender, address(this), amount);
+        XOM.safeTransferFrom(msg.sender, address(this), amount);
     }
 
     /**
-     * @notice Withdraw excess XOM (emergency only)
+     * @notice Withdraw excess XOM above outstanding obligations
+     * @dev Only allows withdrawal of XOM not committed to bond
+     *      holders, preventing rug pulls (H-01 fix)
      * @param amount Amount to withdraw
      */
     function withdrawXom(uint256 amount) external onlyOwner {
-        xom.safeTransfer(treasury, amount);
+        uint256 balance = XOM.balanceOf(address(this));
+        uint256 excess = balance - totalXomOutstanding;
+        if (amount > excess) revert InsufficientXomBalance();
+        XOM.safeTransfer(treasury, amount);
+        emit XomWithdrawn(amount, treasury);
     }
 
     /**
@@ -478,16 +642,6 @@ contract OmniBonding is ReentrancyGuard, Ownable, Pausable {
     }
 
     // ============ View Functions ============
-
-    /**
-     * @notice Get current XOM price
-     * @return price XOM price in 18 decimals
-     */
-    function getXomPrice() public view returns (uint256 price) {
-        // TODO: Integrate with price oracle when available
-        // For now, use fixed price
-        return fixedXomPrice;
-    }
 
     /**
      * @notice Get claimable amount for a user's bond
@@ -557,15 +711,20 @@ contract OmniBonding is ReentrancyGuard, Ownable, Pausable {
         )
     {
         BondTerms storage terms = bondTerms[asset];
+        // solhint-disable-next-line not-rely-on-time
         uint256 currentDay = block.timestamp / 1 days;
-        uint256 bonded = currentDay > terms.lastResetDay ? 0 : terms.dailyBonded;
+        uint256 bonded = currentDay > terms.lastResetDay
+            ? 0
+            : terms.dailyBonded;
 
         return (
             terms.enabled,
             terms.discountBps,
             terms.vestingPeriod,
             terms.dailyCapacity,
-            terms.dailyCapacity > bonded ? terms.dailyCapacity - bonded : 0
+            terms.dailyCapacity > bonded
+                ? terms.dailyCapacity - bonded
+                : 0
         );
     }
 
@@ -579,14 +738,25 @@ contract OmniBonding is ReentrancyGuard, Ownable, Pausable {
     function calculateBondOutput(
         address asset,
         uint256 amount
-    ) external view returns (uint256 xomOut, uint256 effectivePrice) {
+    )
+        external
+        view
+        returns (uint256 xomOut, uint256 effectivePrice)
+    {
         BondTerms storage terms = bondTerms[asset];
-        if (address(terms.asset) == address(0)) return (0, 0);
+        if (address(terms.asset) == address(0)) {
+            return (0, 0);
+        }
 
-        uint256 assetValue = _normalizeToPrice(amount, terms.decimals);
+        uint256 assetValue = _normalizeToPrice(
+            amount, terms.decimals
+        );
         uint256 xomPrice = getXomPrice();
-        effectivePrice = (xomPrice * (BASIS_POINTS - terms.discountBps)) / BASIS_POINTS;
-        xomOut = (assetValue * PRICE_PRECISION) / effectivePrice;
+        effectivePrice =
+            (xomPrice * (BASIS_POINTS - terms.discountBps))
+                / BASIS_POINTS;
+        xomOut =
+            (assetValue * PRICE_PRECISION) / effectivePrice;
 
         return (xomOut, effectivePrice);
     }
@@ -595,7 +765,11 @@ contract OmniBonding is ReentrancyGuard, Ownable, Pausable {
      * @notice Get list of all bond assets
      * @return assets Array of asset addresses
      */
-    function getBondAssets() external view returns (address[] memory assets) {
+    function getBondAssets()
+        external
+        view
+        returns (address[] memory assets)
+    {
         return bondAssets;
     }
 
@@ -603,11 +777,65 @@ contract OmniBonding is ReentrancyGuard, Ownable, Pausable {
      * @notice Get number of bond assets
      * @return count Number of bond assets
      */
-    function getBondAssetCount() external view returns (uint256 count) {
+    function getBondAssetCount()
+        external
+        view
+        returns (uint256 count)
+    {
         return bondAssets.length;
     }
 
+    // ============ Public View Functions ============
+
+    /**
+     * @notice Get current XOM price
+     * @dev Returns the fixed price. When a price oracle is
+     *      integrated, this function will query it instead.
+     * @return price XOM price in 18 decimals
+     */
+    function getXomPrice()
+        public
+        view
+        returns (uint256 price)
+    {
+        return fixedXomPrice;
+    }
+
     // ============ Internal Functions ============
+
+    /**
+     * @notice Validate bond asset and enforce daily capacity limit
+     * @dev Resets daily counter on new day; reverts if asset is
+     *      unsupported, disabled, or capacity exceeded.
+     * @param asset Asset address to validate
+     * @param amount Bond amount in asset terms
+     * @return terms Storage pointer to the validated BondTerms
+     */
+    function _validateBondAsset(
+        address asset,
+        uint256 amount
+    ) internal returns (BondTerms storage terms) {
+        terms = bondTerms[asset];
+        if (address(terms.asset) == address(0)) {
+            revert AssetNotSupported();
+        }
+        if (!terms.enabled) revert AssetDisabled();
+
+        // Reset daily capacity if new day
+        // solhint-disable-next-line not-rely-on-time
+        uint256 currentDay = block.timestamp / 1 days;
+        if (currentDay > terms.lastResetDay) {
+            terms.dailyBonded = 0;
+            terms.lastResetDay = currentDay;
+        }
+
+        // Check daily capacity
+        if (terms.dailyBonded + amount > terms.dailyCapacity) {
+            revert DailyCapacityExceeded();
+        }
+
+        return terms;
+    }
 
     /**
      * @notice Calculate claimable XOM from a bond
@@ -619,26 +847,39 @@ contract OmniBonding is ReentrancyGuard, Ownable, Pausable {
     ) internal view returns (uint256 claimable) {
         if (userBond.xomOwed == 0) return 0;
 
-        // solhint-disable-next-line not-rely-on-time
+        // solhint-disable-next-line not-rely-on-time, gas-strict-inequalities
         if (block.timestamp >= userBond.vestingEnd) {
             // Fully vested
             return userBond.xomOwed - userBond.claimed;
         }
 
-        // Linear vesting
+        // Linear vesting calculation
         // solhint-disable-next-line not-rely-on-time
         uint256 elapsed = block.timestamp - userBond.vestingStart;
-        uint256 vestingDuration = userBond.vestingEnd - userBond.vestingStart;
-        uint256 vested = (userBond.xomOwed * elapsed) / vestingDuration;
+        uint256 vestingDuration =
+            userBond.vestingEnd - userBond.vestingStart;
+        uint256 vested =
+            (userBond.xomOwed * elapsed) / vestingDuration;
 
-        return vested > userBond.claimed ? vested - userBond.claimed : 0;
+        return vested > userBond.claimed
+            ? vested - userBond.claimed
+            : 0;
     }
 
     /**
      * @notice Normalize asset amount to 18 decimal price value
-     * @dev For USDC (6 decimals), $100 USDC = 100e6 → 100e18
-     * @param amount Asset amount
-     * @param decimals Asset decimals
+     * @dev IMPORTANT: This function performs DECIMAL NORMALIZATION ONLY.
+     *      It does NOT apply any exchange rate. The implicit assumption is
+     *      that 1 unit of the bonded asset equals $1 USD. This is correct
+     *      for stablecoins (USDC, USDT, DAI) but NOT for volatile assets
+     *      (ETH, AVAX, LP tokens). Non-stablecoin assets require a per-asset
+     *      price feed in BondTerms to produce correct XOM output. Until
+     *      per-asset oracle integration is implemented, ONLY add stablecoins
+     *      via addBondAsset(). See audit report H-03.
+     *
+     *      Example: USDC (6 decimals), $100 USDC = 100e6 -> 100e18
+     * @param amount Asset amount in native decimals
+     * @param decimals Asset decimals (must be <= 24)
      * @return normalized Amount normalized to 18 decimals
      */
     function _normalizeToPrice(

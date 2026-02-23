@@ -1,5 +1,5 @@
 {
-  "exclude": [
+  "ignore": [
     "test/deprecated/**/*.js",
     "test/deprecated/**/*.test.js"
   ],

@@ -23,6 +23,7 @@ const ACCESS_CONTROL_ABI = [
   "function revokeRole(bytes32 role, address account) external",
   "function hasRole(bytes32 role, address account) external view returns (bool)",
   "function DEFAULT_ADMIN_ROLE() external view returns (bytes32)",
+  "function ADMIN_ROLE() external view returns (bytes32)",
   "function getRoleAdmin(bytes32 role) external view returns (bytes32)",
 ];
 
@@ -124,6 +125,21 @@ async function main() {
           console.log("  [DRY RUN] Timelock does not yet have admin — grant needed");
         }
         console.log("  [DRY RUN] Would revoke DEFAULT_ADMIN_ROLE from deployer");
+
+        // Check ADMIN_ROLE in dry-run too
+        try {
+          const ADMIN_ROLE_DRY = await contract.ADMIN_ROLE();
+          const deployerHasAdminDry = await contract.hasRole(ADMIN_ROLE_DRY, deployer.address);
+          if (deployerHasAdminDry) {
+            console.log("  [DRY RUN] Would grant ADMIN_ROLE to timelock");
+            console.log("  [DRY RUN] Would revoke ADMIN_ROLE from deployer");
+          } else {
+            console.log("  [DRY RUN] Deployer does not have ADMIN_ROLE (N/A)");
+          }
+        } catch {
+          console.log("  [DRY RUN] Contract does not expose ADMIN_ROLE (skipping)");
+        }
+
         successCount++;
         continue;
       }
@@ -159,8 +175,75 @@ async function main() {
         console.error("  WARNING: Deployer still has admin after revoke!");
         errorCount++;
       } else {
-        console.log("  CONFIRMED: Deployer no longer has admin");
+        console.log("  CONFIRMED: Deployer no longer has DEFAULT_ADMIN_ROLE");
         successCount++;
+      }
+
+      // ── ADMIN_ROLE transfer (H-06 audit fix) ──
+      // Some contracts (StakingRewardPool, OmniCore, etc.) have an ADMIN_ROLE
+      // that controls APR changes, contract references, and upgrades.
+      // Without transferring this role, the deployer retains full control
+      // even after DEFAULT_ADMIN_ROLE is moved to the timelock.
+      try {
+        const ADMIN_ROLE = await contract.ADMIN_ROLE();
+        const deployerHasAdminRole = await contract.hasRole(ADMIN_ROLE, deployer.address);
+
+        if (deployerHasAdminRole) {
+          const timelockHasAdminRole = await contract.hasRole(ADMIN_ROLE, timelockAddress);
+
+          if (dryRun) {
+            console.log("  [DRY RUN] Would grant ADMIN_ROLE to timelock");
+            console.log("  [DRY RUN] Would revoke ADMIN_ROLE from deployer");
+          } else {
+            // Grant ADMIN_ROLE to timelock
+            if (!timelockHasAdminRole) {
+              const grantAdminTx = await contract.grantRole(ADMIN_ROLE, timelockAddress);
+              const grantAdminReceipt = await grantAdminTx.wait();
+              console.log("  GRANTED ADMIN_ROLE to timelock  tx:", grantAdminReceipt.hash);
+              txHashes.push({
+                action: "grant ADMIN_ROLE",
+                contract: contractInfo.name,
+                hash: grantAdminReceipt.hash,
+              });
+            } else {
+              console.log("  Timelock already has ADMIN_ROLE — skipping grant");
+            }
+
+            // Verify timelock has ADMIN_ROLE
+            const adminVerified = await contract.hasRole(ADMIN_ROLE, timelockAddress);
+            if (!adminVerified) {
+              console.error("  ERROR: Timelock does not have ADMIN_ROLE after grant");
+              errorCount++;
+            } else {
+              console.log("  VERIFIED: Timelock has ADMIN_ROLE");
+
+              // Revoke ADMIN_ROLE from deployer
+              const revokeAdminTx = await contract.revokeRole(ADMIN_ROLE, deployer.address);
+              const revokeAdminReceipt = await revokeAdminTx.wait();
+              console.log("  REVOKED ADMIN_ROLE from deployer tx:", revokeAdminReceipt.hash);
+              txHashes.push({
+                action: "revoke ADMIN_ROLE",
+                contract: contractInfo.name,
+                hash: revokeAdminReceipt.hash,
+              });
+
+              // Final verification
+              const deployerStillHasAdmin = await contract.hasRole(ADMIN_ROLE, deployer.address);
+              if (deployerStillHasAdmin) {
+                console.error("  WARNING: Deployer still has ADMIN_ROLE after revoke!");
+                errorCount++;
+              } else {
+                console.log("  CONFIRMED: Deployer no longer has ADMIN_ROLE");
+              }
+            }
+          }
+        } else {
+          console.log("  INFO: Deployer does not have ADMIN_ROLE (already transferred or N/A)");
+        }
+      } catch {
+        // Contract does not have ADMIN_ROLE() function — this is expected
+        // for contracts that only use DEFAULT_ADMIN_ROLE
+        console.log("  INFO: Contract does not expose ADMIN_ROLE (skipping)");
       }
     } catch (error) {
       console.error(`  ERROR: ${error.message}`);

@@ -541,20 +541,25 @@ describe("OmniNFTStaking", function () {
     });
 
     it("Should cap at remaining pool reward", async function () {
-      // Create a pool with very small total reward but high rate
+      // M-04 requires totalReward >= rewardPerDay * durationDays.
+      // Use a 1-day pool with 10 tokens/day total, then advance
+      // 2 days so the calculated reward (20) exceeds the pool (10).
       const smallReward = ethers.parseEther("10");
-      const highRate = ethers.parseEther("100");
+      const rate = ethers.parseEther("10");
       const smallPoolId = await createDefaultPool({
         totalReward: smallReward,
-        rewardPerDay: highRate,
+        rewardPerDay: rate,
+        durationDays: 1,
       });
 
       await staking.connect(staker1).stake(smallPoolId, 1);
-      // After 1 day at 100/day rate, pending would be 100 but only 10 in pool
-      await time.increase(ONE_DAY);
+      // After 2 days at 10/day, calculated = 20 but pool only has 10
+      await time.increase(ONE_DAY * 2);
 
       const pending = await staking.pendingRewards(smallPoolId, 1);
-      expect(pending).to.equal(smallReward);
+      // Capped at pool total, but per-second rounding may cause slight shortfall
+      expect(pending).to.be.closeTo(smallReward, ethers.parseEther("0.01"));
+      expect(pending).to.be.lte(smallReward);
     });
 
     it("Should accumulate linearly over multiple days", async function () {
@@ -1136,15 +1141,19 @@ describe("OmniNFTStaking", function () {
       await staking.connect(staker1).stake(tinyPoolId, 1);
       await time.increase(3 * ONE_DAY); // Well past depletion
 
-      // Pending should be capped at total reward
+      // H-02: endTime enforcement caps accrual at pool.endTime. Because
+      // the stake transaction mines at least one second after pool
+      // creation, the effective staking window is slightly less than
+      // durationDays, so the pending reward will be very close to (but
+      // slightly less than) the full tinyReward.
       const pending = await staking.pendingRewards(tinyPoolId, 1);
-      expect(pending).to.equal(tinyReward);
+      expect(pending).to.be.closeTo(tinyReward, ethers.parseEther("0.01"));
 
-      // Unstake should succeed and pay out exactly the remaining reward
+      // Unstake should succeed and pay out approximately the remaining reward
       const balBefore = await rewardToken.balanceOf(staker1.address);
       await staking.connect(staker1).unstake(tinyPoolId, 1);
       const balAfter = await rewardToken.balanceOf(staker1.address);
-      expect(balAfter - balBefore).to.equal(tinyReward);
+      expect(balAfter - balBefore).to.be.closeTo(tinyReward, ethers.parseEther("0.01"));
     });
   });
 });

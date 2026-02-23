@@ -1,7 +1,28 @@
 # OmniCoin Module Current Status
 
-**Last Updated:** 2025-12-07 17:54 UTC
-**Current Focus:** Trustless Welcome Bonus (Phase 4) complete - 77 tests passing
+**Last Updated:** 2026-02-21 16:17 UTC
+**Current Focus:** UpdateRegistry.sol complete - 50 tests passing
+
+## UpdateRegistry.sol - Software Update System (2026-02-21)
+
+**Status:** ✅ Complete — 756-line contract with 50 Hardhat tests passing
+
+**Features:**
+- ODDAO multi-sig release authentication (3-of-5 threshold, EIP-191 signatures)
+- Per-component version tracking (validator, service-node, wallet-extension, mobile-app, webapp)
+- Minimum version enforcement with on-chain revocation
+- Signer rotation with elevated threshold requirement
+- Replay protection via chainId + contract address binding
+- View functions: `computeReleaseHash()`, `computeSignerUpdateHash()` for off-chain signing
+
+**Files:**
+- `contracts/UpdateRegistry.sol` — Non-upgradeable contract
+- `test/UpdateRegistry.test.js` — 50 comprehensive tests
+- `scripts/deploy-update-registry.js` — Deploy script
+
+**Key finding:** Solidity `abi.encodePacked(address[])` pads each array element to 32 bytes (standard ABI encoding), not 20-byte packed. JS must use `ethers.zeroPadValue(addr, 32)` to match.
+
+---
 
 ## 🎉 TRUSTLESS WELCOME BONUS - PHASE 4 COMPLETE (2025-12-07)
 

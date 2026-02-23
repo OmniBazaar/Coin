@@ -1,5 +1,6 @@
 const { expect } = require("chai");
 const { ethers } = require("hardhat");
+const { time } = require("@nomicfoundation/hardhat-network-helpers");
 
 /**
  * @title OmniFeeRouter Test Suite
@@ -14,6 +15,7 @@ describe("OmniFeeRouter", function () {
   let feeRouter;
   let inputToken;
   let outputToken;
+  let dummyRouter; // A deployed contract used as a valid router address (has code)
   let owner, feeCollector, user, other;
 
   /** Default maxFeeBps: 100 = 1.00% */
@@ -32,6 +34,9 @@ describe("OmniFeeRouter", function () {
     const MockERC20 = await ethers.getContractFactory("MockERC20");
     inputToken = await MockERC20.deploy("Input Token", "IN");
     outputToken = await MockERC20.deploy("Output Token", "OUT");
+
+    // Deploy a dummy contract to use as a valid router address (has code, not token or feeRouter)
+    dummyRouter = await MockERC20.deploy("Dummy Router", "DUMMY");
 
     // Deploy OmniFeeRouter with valid parameters
     const OmniFeeRouter = await ethers.getContractFactory("OmniFeeRouter");
@@ -103,6 +108,25 @@ describe("OmniFeeRouter", function () {
   // ---------------------------------------------------------------------------
 
   describe("swapWithFee — revert conditions", function () {
+    // Far-future deadline (M-01: deadline parameter added for MEV protection)
+    const FAR_FUTURE = Math.floor(Date.now() / 1000) + 86400 * 365;
+
+    it("Should revert with DeadlineExpired when deadline is in the past", async function () {
+      // Use a deadline of 1 (already expired)
+      await expect(
+        feeRouter.connect(user).swapWithFee(
+          inputToken.target,
+          outputToken.target,
+          TOTAL_AMOUNT,
+          0,
+          other.address,
+          "0x",
+          0,
+          1                         // expired deadline
+        )
+      ).to.be.revertedWithCustomError(feeRouter, "DeadlineExpired");
+    });
+
     it("Should revert with ZeroAmount when totalAmount is 0", async function () {
       await expect(
         feeRouter.connect(user).swapWithFee(
@@ -110,9 +134,10 @@ describe("OmniFeeRouter", function () {
           outputToken.target,
           0,                        // totalAmount = 0
           0,                        // feeAmount
-          other.address,            // routerAddress (non-zero)
+          dummyRouter.target,       // routerAddress (contract with code)
           "0x",                     // routerCalldata
-          0                         // minOutput
+          0,                        // minOutput
+          FAR_FUTURE                // deadline
         )
       ).to.be.revertedWithCustomError(feeRouter, "ZeroAmount");
     });
@@ -126,7 +151,8 @@ describe("OmniFeeRouter", function () {
           0,
           other.address,
           "0x",
-          0
+          0,
+          FAR_FUTURE
         )
       ).to.be.revertedWithCustomError(feeRouter, "InvalidTokenAddress");
     });
@@ -140,7 +166,8 @@ describe("OmniFeeRouter", function () {
           0,
           other.address,
           "0x",
-          0
+          0,
+          FAR_FUTURE
         )
       ).to.be.revertedWithCustomError(feeRouter, "InvalidTokenAddress");
     });
@@ -154,7 +181,8 @@ describe("OmniFeeRouter", function () {
           0,
           ethers.ZeroAddress,       // routerAddress = zero
           "0x",
-          0
+          0,
+          FAR_FUTURE
         )
       ).to.be.revertedWithCustomError(feeRouter, "InvalidRouterAddress");
     });
@@ -167,9 +195,10 @@ describe("OmniFeeRouter", function () {
           outputToken.target,
           TOTAL_AMOUNT,
           feeAmount,
-          other.address,
+          dummyRouter.target,       // contract with code
           "0x",
-          0
+          0,
+          FAR_FUTURE
         )
       ).to.be.revertedWithCustomError(feeRouter, "FeeExceedsTotal");
     });
@@ -186,9 +215,10 @@ describe("OmniFeeRouter", function () {
           outputToken.target,
           TOTAL_AMOUNT,
           feeAmount,
-          other.address,
+          dummyRouter.target,       // contract with code
           "0x",
-          0
+          0,
+          FAR_FUTURE
         )
       ).to.be.revertedWithCustomError(feeRouter, "FeeExceedsCap");
     });

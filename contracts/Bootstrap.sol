@@ -65,6 +65,9 @@ contract Bootstrap is AccessControl {
     /// @notice Role identifier for bootstrap administrator (emergency actions only)
     bytes32 public constant BOOTSTRAP_ADMIN_ROLE = keccak256("BOOTSTRAP_ADMIN_ROLE");
 
+    /// @notice Maximum number of nodes allowed in the registry (DoS protection)
+    uint256 public constant MAX_NODES = 1000;
+
     /// @notice Address of OmniCore contract on OmniCoin L1 (for reference)
     address public omniCoreAddress;
 
@@ -109,7 +112,7 @@ contract Bootstrap is AccessControl {
         address indexed nodeAddress,
         uint8 indexed nodeType,
         string httpEndpoint,
-        bool isNew
+        bool indexed isNew
     );
 
     /**
@@ -165,6 +168,24 @@ contract Bootstrap is AccessControl {
     error NodeNotFound();
 
     /**
+     * @notice Registry is full (MAX_NODES reached)
+     */
+    error RegistryFull();
+
+    /**
+     * @notice String parameter exceeds maximum allowed length
+     */
+    error StringTooLong();
+
+    /**
+     * @notice String contains forbidden characters (commas, colons, or @ in certain fields)
+     */
+    error ForbiddenCharacter();
+
+    /// @notice Gateway nodes must use registerGatewayNode() with peer-info
+    error GatewayMustUseRegisterGatewayNode();
+
+    /**
      * @notice Initializes the Bootstrap contract
      * @param _omniCoreAddress Address of OmniCore contract on OmniCoin L1
      * @param _omniCoreChainId Chain ID of OmniCoin L1
@@ -198,11 +219,14 @@ contract Bootstrap is AccessControl {
      * @notice Register or update a node (self-registration)
      * @dev Nodes call this when starting up. Pays gas to register on C-Chain.
      *      This is the primary way nodes join the network.
+     *      M-01: Gateway nodes (nodeType=0) MUST use registerGatewayNode() instead,
+     *      which validates required peer discovery information. This prevents
+     *      gateway nodes from bypassing publicIp/nodeId validation.
      * @param multiaddr libp2p multiaddr for P2P connections (required for gateway nodes)
      * @param httpEndpoint HTTP endpoint URL (required)
      * @param wsEndpoint WebSocket endpoint URL (optional)
      * @param region Geographic region code (e.g. "US", "EU", "ASIA")
-     * @param nodeType Type of node: 0=gateway, 1=computation, 2=listing
+     * @param nodeType Type of node: 1=computation, 2=listing (0=gateway not allowed here)
      */
     function registerNode(
         string calldata multiaddr,
@@ -211,6 +235,9 @@ contract Bootstrap is AccessControl {
         string calldata region,
         uint8 nodeType
     ) external {
+        // M-01: Block gateway (nodeType=0) from registering without peer-info validation
+        if (nodeType == 0) revert GatewayMustUseRegisterGatewayNode();
+
         _registerNodeInternal(
             multiaddr,
             httpEndpoint,
@@ -421,13 +448,20 @@ contract Bootstrap is AccessControl {
         return nodes;
     }
 
+    /* solhint-disable code-complexity */
     /**
-     * @notice Get all active nodes with full info
-     * @dev More expensive but provides complete node information
-     * @return addresses Array of node addresses
+     * @notice Get all active nodes with full info (paginated)
+     * @dev Supports pagination to prevent gas exhaustion on large registries.
+     *      Use offset=0, limit=50 for first page, offset=50, limit=50 for next, etc.
+     * @param offset Starting index in the registeredNodes array
+     * @param limit Maximum number of active nodes to return (0 = up to 100)
+     * @return addresses Array of active node addresses
      * @return infos Array of node information
      */
-    function getAllActiveNodes()
+    function getAllActiveNodes(
+        uint256 offset,
+        uint256 limit
+    )
         external
         view
         returns (
@@ -435,10 +469,23 @@ contract Bootstrap is AccessControl {
             NodeInfo[] memory infos
         )
     {
-        uint256 count = 0;
+        uint256 totalLen = registeredNodes.length;
+        // solhint-disable-next-line gas-strict-inequalities
+        if (offset >= totalLen) {
+            return (new address[](0), new NodeInfo[](0));
+        }
 
-        // Count active nodes
-        for (uint256 i = 0; i < registeredNodes.length; ++i) {
+        uint256 maxCount = limit;
+        if (maxCount == 0 || maxCount > 100) {
+            maxCount = 100;
+        }
+
+        uint256 end = offset + totalLen; // scan from offset
+        if (end > totalLen) end = totalLen;
+
+        // Count active nodes in range
+        uint256 count = 0;
+        for (uint256 i = offset; i < totalLen && count < maxCount; ++i) {
             if (nodeRegistry[registeredNodes[i]].active) {
                 ++count;
             }
@@ -450,7 +497,7 @@ contract Bootstrap is AccessControl {
 
         // Populate arrays
         uint256 index = 0;
-        for (uint256 i = 0; i < registeredNodes.length; ++i) {
+        for (uint256 i = offset; i < totalLen && index < count; ++i) {
             address addr = registeredNodes[i];
             if (nodeRegistry[addr].active) {
                 addresses[index] = addr;
@@ -461,6 +508,7 @@ contract Bootstrap is AccessControl {
 
         return (addresses, infos);
     }
+    /* solhint-enable code-complexity */
 
     /**
      * @notice Get node information
@@ -539,6 +587,7 @@ contract Bootstrap is AccessControl {
         // Count matching nodes
         for (uint256 i = 0; i < registeredNodes.length && count < maxCount; ++i) {
             NodeInfo storage info = nodeRegistry[registeredNodes[i]];
+            // solhint-disable-next-line gas-strict-inequalities
             if (info.active && info.nodeType == nodeType && info.lastUpdate >= cutoffTime) {
                 ++count;
             }
@@ -550,6 +599,7 @@ contract Bootstrap is AccessControl {
 
         for (uint256 i = 0; i < registeredNodes.length && index < count; ++i) {
             NodeInfo storage info = nodeRegistry[registeredNodes[i]];
+            // solhint-disable-next-line gas-strict-inequalities
             if (info.active && info.nodeType == nodeType && info.lastUpdate >= cutoffTime) {
                 nodes[index] = registeredNodes[i];
                 ++index;
@@ -593,16 +643,24 @@ contract Bootstrap is AccessControl {
     // ============================================================
 
     /**
-     * @notice Get all active gateway validators with full information
+     * @notice Get active gateway validators with full information (paginated)
      * @dev Used by new validators to discover peers before starting avalanchego.
      *      Returns complete NodeInfo for each active gateway validator.
+     * @param limit Maximum number of gateway validators to return (0 = up to 100)
      * @return infos Array of NodeInfo structs for active gateway validators
      */
-    function getActiveGatewayValidators() external view returns (NodeInfo[] memory infos) {
+    function getActiveGatewayValidators(
+        uint256 limit
+    ) external view returns (NodeInfo[] memory infos) {
+        uint256 maxCount = limit;
+        if (maxCount == 0 || maxCount > 100) {
+            maxCount = 100;
+        }
+
         uint256 count = 0;
 
-        // Count active gateway validators
-        for (uint256 i = 0; i < registeredNodes.length; ++i) {
+        // Count active gateway validators (up to maxCount)
+        for (uint256 i = 0; i < registeredNodes.length && count < maxCount; ++i) {
             NodeInfo storage info = nodeRegistry[registeredNodes[i]];
             if (info.active && info.nodeType == 0) {
                 ++count;
@@ -626,15 +684,20 @@ contract Bootstrap is AccessControl {
         return infos;
     }
 
+    /* solhint-disable code-complexity */
     /**
-     * @notice Get bootstrap peer list in avalanchego format
+     * @notice Get bootstrap peer list in avalanchego format (paginated)
      * @dev Returns formatted strings for direct use in avalanchego CLI flags.
      *      Only includes gateway validators with complete peer discovery info.
+     *      Uses bytes.concat() internally to avoid O(n^2) string.concat() costs.
+     * @param limit Maximum number of peers to include (0 = up to 100)
      * @return ips Comma-separated IP:port list for --bootstrap-ips flag
      * @return ids Comma-separated NodeID list for --bootstrap-ids flag
      * @return count Number of valid peers found
      */
-    function getAvalancheBootstrapPeers()
+    function getAvalancheBootstrapPeers(
+        uint256 limit
+    )
         external
         view
         returns (
@@ -643,8 +706,13 @@ contract Bootstrap is AccessControl {
             uint256 count
         )
     {
-        // First pass: count valid peers (gateway validators with peer discovery info)
-        for (uint256 i = 0; i < registeredNodes.length; ++i) {
+        uint256 maxCount = limit;
+        if (maxCount == 0 || maxCount > 100) {
+            maxCount = 100;
+        }
+
+        // First pass: count valid peers (up to maxCount)
+        for (uint256 i = 0; i < registeredNodes.length && count < maxCount; ++i) {
             NodeInfo storage info = nodeRegistry[registeredNodes[i]];
             if (
                 info.active &&
@@ -661,10 +729,14 @@ contract Bootstrap is AccessControl {
             return ("", "", 0);
         }
 
-        // Second pass: build comma-separated strings
-        // Note: This is gas-intensive but acceptable for view function
+        // Second pass: build comma-separated strings using bytes.concat()
+        // to avoid O(n^2) string.concat() reallocation costs.
+        bytes memory ipBytes;
+        bytes memory idBytes;
         bool first = true;
-        for (uint256 i = 0; i < registeredNodes.length; ++i) {
+        uint256 found = 0;
+
+        for (uint256 i = 0; i < registeredNodes.length && found < count; ++i) {
             NodeInfo storage info = nodeRegistry[registeredNodes[i]];
             if (
                 info.active &&
@@ -673,19 +745,29 @@ contract Bootstrap is AccessControl {
                 bytes(info.nodeId).length > 0 &&
                 info.stakingPort > 0
             ) {
+                bytes memory portStr = bytes(_uint16ToString(info.stakingPort));
                 if (first) {
-                    ips = string.concat(info.publicIp, ":", _uint16ToString(info.stakingPort));
-                    ids = info.nodeId;
+                    ipBytes = bytes.concat(
+                        bytes(info.publicIp), ":", portStr
+                    );
+                    idBytes = bytes(info.nodeId);
                     first = false;
                 } else {
-                    ips = string.concat(ips, ",", info.publicIp, ":", _uint16ToString(info.stakingPort));
-                    ids = string.concat(ids, ",", info.nodeId);
+                    ipBytes = bytes.concat(
+                        ipBytes, ",", bytes(info.publicIp), ":", portStr
+                    );
+                    idBytes = bytes.concat(
+                        idBytes, ",", bytes(info.nodeId)
+                    );
                 }
+                ++found;
             }
         }
 
-        return (ips, ids, count);
+        return (string(ipBytes), string(idBytes), count);
     }
+
+    /* solhint-enable code-complexity */
 
     /**
      * @notice Get extended node information including peer discovery fields
@@ -700,6 +782,7 @@ contract Bootstrap is AccessControl {
     //                    INTERNAL HELPERS
     // ============================================================
 
+    /* solhint-disable code-complexity */
     /**
      * @notice Internal node registration logic
      * @param multiaddr libp2p multiaddr
@@ -728,11 +811,33 @@ contract Bootstrap is AccessControl {
         // multiaddr is required for gateway validators (nodeType 0) for P2P bootstrap
         if (nodeType == 0 && bytes(multiaddr).length == 0) revert InvalidParameter();
 
+        // Enforce string length limits (M-03: prevent storage bloat)
+        if (bytes(multiaddr).length > 256) revert StringTooLong();
+        if (bytes(httpEndpoint).length > 256) revert StringTooLong();
+        if (bytes(wsEndpoint).length > 256) revert StringTooLong();
+        if (bytes(region).length > 64) revert StringTooLong();
+        if (bytes(avalancheRpcEndpoint).length > 256) revert StringTooLong();
+        if (bytes(publicIp).length > 64) revert StringTooLong();
+        if (bytes(nodeId).length > 128) revert StringTooLong();
+
+        // M-04: Validate publicIp and nodeId for comma injection.
+        // These fields are concatenated into comma-separated peer lists
+        // in getAvalancheBootstrapPeers(). Embedded commas or colons
+        // would corrupt the output format.
+        if (bytes(publicIp).length > 0) {
+            _validateNoForbiddenChars(bytes(publicIp));
+        }
+        if (bytes(nodeId).length > 0) {
+            _validateNoForbiddenChars(bytes(nodeId));
+        }
+
         NodeInfo storage info = nodeRegistry[msg.sender];
         bool isNew = bytes(info.httpEndpoint).length == 0;
 
         // If first time registration, add to array
         if (isNew) {
+            // solhint-disable-next-line gas-strict-inequalities
+            if (registeredNodes.length >= MAX_NODES) revert RegistryFull();
             nodeIndex[msg.sender] = registeredNodes.length;
             registeredNodes.push(msg.sender);
         }
@@ -765,13 +870,23 @@ contract Bootstrap is AccessControl {
 
         emit NodeRegistered(msg.sender, nodeType, httpEndpoint, isNew);
     }
+    /* solhint-enable code-complexity */
 
     /**
-     * @notice Convert uint16 to string
-     * @dev Used for building IP:port strings
-     * @param value The uint16 value to convert
-     * @return result String representation
+     * @notice Validate that a string does not contain forbidden delimiter characters
+     * @dev Prevents delimiter injection in peer list outputs. Checks for comma,
+     *      at-sign, and newline characters that could corrupt concatenated strings.
+     * @param data The bytes to validate
      */
+    function _validateNoForbiddenChars(bytes memory data) internal pure {
+        for (uint256 i = 0; i < data.length; ++i) {
+            bytes1 c = data[i];
+            if (c == "," || c == "\n" || c == "\r") {
+                revert ForbiddenCharacter();
+            }
+        }
+    }
+
     function _uint16ToString(uint16 value) internal pure returns (string memory result) {
         if (value == 0) {
             return "0";

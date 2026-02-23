@@ -8,20 +8,48 @@ import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {IRWAPool} from "./interfaces/IRWAPool.sol";
 
 /**
+ * @title IRWAPoolCallee
+ * @author OmniCoin Development Team
+ * @notice Interface for flash swap callbacks
+ * @dev Implement this interface to receive flash swap callbacks
+ *      from RWAPool during swap operations with non-empty data
+ */
+interface IRWAPoolCallee {
+    /**
+     * @notice Called during flash swap
+     * @param sender Original swap initiator
+     * @param amount0 Token0 amount received
+     * @param amount1 Token1 amount received
+     * @param data Arbitrary callback data
+     */
+    function rwaPoolCall(
+        address sender,
+        uint256 amount0,
+        uint256 amount1,
+        bytes calldata data
+    ) external;
+}
+
+/**
  * @title RWAPool
  * @author OmniCoin Development Team
  * @notice Liquidity pool for RWA/XOM token pairs
- * @dev Implements constant-product AMM with LP token minting
+ * @dev Implements constant-product AMM with LP token minting.
+ *      All state-changing functions (mint, burn, swap, skim) are
+ *      restricted to the factory (RWAAMM) contract, which enforces
+ *      compliance checks, fee collection, and pause functionality.
  *
  * Key Features:
  * - Constant-product formula (x * y = k)
  * - LP tokens as ERC20 for composability
  * - Cumulative price oracles (TWAP support)
- * - Reentrancy protection via lock
+ * - Reentrancy protection via lock modifier
  * - Flash swap support via callback
+ * - Factory-only access control on critical functions
  *
  * Security Features:
  * - Reentrancy lock
+ * - Factory-only access for mint, burn, swap, skim
  * - Minimum liquidity lock (1000 wei)
  * - K-value invariant check
  * - Balance synchronization
@@ -37,14 +65,22 @@ contract RWAPool is ERC20, IRWAPool {
     /// @inheritdoc IRWAPool
     uint256 public constant MINIMUM_LIQUIDITY = 1000;
 
-    /// @notice Address to lock minimum liquidity
-    address private constant DEAD_ADDRESS = 0x000000000000000000000000000000000000dEaD;
+    /// @notice Minimum initial deposit to prevent share inflation attacks
+    /// @dev First depositor must provide at least this much liquidity
+    ///      (sqrt(amount0 * amount1) >= MINIMUM_INITIAL_DEPOSIT).
+    ///      For low-decimal tokens (e.g. 6 decimals), MINIMUM_LIQUIDITY
+    ///      alone is insufficient protection.
+    uint256 public constant MINIMUM_INITIAL_DEPOSIT = 10_000;
+
+    /// @notice Address to lock minimum liquidity (dead address)
+    address private constant DEAD_ADDRESS =
+        0x000000000000000000000000000000000000dEaD;
 
     // ========================================================================
     // STATE VARIABLES
     // ========================================================================
 
-    /// @notice Factory/AMM contract address
+    /// @notice Factory/AMM contract that created this pool
     address public factory;
 
     /// @inheritdoc IRWAPool
@@ -71,21 +107,26 @@ contract RWAPool is ERC20, IRWAPool {
     /// @inheritdoc IRWAPool
     uint256 public kLast;
 
-    /// @notice Reentrancy lock
+    /// @notice Reentrancy lock state (1 = unlocked, 0 = locked)
     uint256 private unlocked = 1;
 
     // ========================================================================
     // ERRORS
     // ========================================================================
 
-    /// @notice Thrown when caller is not factory
+    /// @notice Thrown when caller is not the factory contract
     error NotFactory();
 
     /// @notice Thrown when pool is already initialized
     error AlreadyInitialized();
 
-    /// @notice Thrown when recipient is invalid
+    /// @notice Thrown when recipient is invalid (zero or self)
     error InvalidRecipient();
+
+    /// @notice Thrown when initial deposit is too small
+    /// @param provided Amount of liquidity provided (sqrt)
+    /// @param required Minimum required (MINIMUM_INITIAL_DEPOSIT)
+    error InitialDepositTooSmall(uint256 provided, uint256 required);
 
     // ========================================================================
     // MODIFIERS
@@ -93,6 +134,7 @@ contract RWAPool is ERC20, IRWAPool {
 
     /**
      * @notice Reentrancy lock modifier
+     * @dev Prevents reentrant calls by toggling the unlocked flag
      */
     modifier lock() {
         if (unlocked != 1) revert Locked();
@@ -101,59 +143,53 @@ contract RWAPool is ERC20, IRWAPool {
         unlocked = 1;
     }
 
+    /**
+     * @notice Restricts access to the factory contract only
+     * @dev Reverts with NotFactory if msg.sender is not the factory
+     */
+    modifier onlyFactory() {
+        if (msg.sender != factory) revert NotFactory();
+        _;
+    }
+
     // ========================================================================
     // CONSTRUCTOR
     // ========================================================================
 
     /**
      * @notice Create pool contract
-     * @dev Token addresses set via initialize()
+     * @dev Token addresses are set via initialize() after deployment.
+     *      The deployer (factory) address is stored for access control.
      */
     constructor() ERC20("RWA Pool LP Token", "RWA-LP") {
         factory = msg.sender;
     }
 
     // ========================================================================
-    // INITIALIZATION
+    // EXTERNAL FUNCTIONS
     // ========================================================================
 
     /**
      * @inheritdoc IRWAPool
      */
-    function initialize(address _token0, address _token1) external override {
-        if (msg.sender != factory) revert NotFactory();
+    function initialize(
+        address _token0,
+        address _token1
+    ) external override onlyFactory {
         if (token0 != address(0)) revert AlreadyInitialized();
 
         token0 = _token0;
         token1 = _token1;
     }
 
-    // ========================================================================
-    // VIEW FUNCTIONS
-    // ========================================================================
-
     /**
      * @inheritdoc IRWAPool
      */
-    function getReserves() public view override returns (
-        uint256 _reserve0,
-        uint256 _reserve1,
-        uint32 _blockTimestampLast
-    ) {
-        _reserve0 = reserve0;
-        _reserve1 = reserve1;
-        _blockTimestampLast = blockTimestampLast;
-    }
-
-    // ========================================================================
-    // LIQUIDITY FUNCTIONS
-    // ========================================================================
-
-    /**
-     * @inheritdoc IRWAPool
-     */
-    function mint(address to) external override lock returns (uint256 liquidity) {
-        (uint256 _reserve0, uint256 _reserve1,) = getReserves();
+    function mint(
+        address to
+    ) external override lock onlyFactory returns (uint256 liquidity) {
+        uint256 _reserve0 = reserve0;
+        uint256 _reserve1 = reserve1;
         uint256 balance0 = IERC20(token0).balanceOf(address(this));
         uint256 balance1 = IERC20(token1).balanceOf(address(this));
         uint256 amount0 = balance0 - _reserve0;
@@ -162,8 +198,14 @@ contract RWAPool is ERC20, IRWAPool {
         uint256 _totalSupply = totalSupply();
 
         if (_totalSupply == 0) {
-            // First deposit - mint minimum liquidity to dead address
-            liquidity = Math.sqrt(amount0 * amount1) - MINIMUM_LIQUIDITY;
+            // First deposit - enforce minimum to prevent inflation attack
+            uint256 sqrtProduct = Math.sqrt(amount0 * amount1);
+            if (sqrtProduct < MINIMUM_INITIAL_DEPOSIT) {
+                revert InitialDepositTooSmall(
+                    sqrtProduct, MINIMUM_INITIAL_DEPOSIT
+                );
+            }
+            liquidity = sqrtProduct - MINIMUM_LIQUIDITY;
             _mint(DEAD_ADDRESS, MINIMUM_LIQUIDITY);
         } else {
             // Subsequent deposits - proportional to existing reserves
@@ -186,11 +228,15 @@ contract RWAPool is ERC20, IRWAPool {
     /**
      * @inheritdoc IRWAPool
      */
-    function burn(address to) external override lock returns (
+    function burn(
+        address to
+    ) external override lock onlyFactory returns (
         uint256 amount0,
         uint256 amount1
     ) {
-        if (to == address(0) || to == address(this)) revert InvalidRecipient();
+        if (to == address(0) || to == address(this)) {
+            revert InvalidRecipient();
+        }
 
         uint256 balance0 = IERC20(token0).balanceOf(address(this));
         uint256 balance1 = IERC20(token1).balanceOf(address(this));
@@ -202,28 +248,31 @@ contract RWAPool is ERC20, IRWAPool {
         amount0 = (liquidity * balance0) / _totalSupply;
         amount1 = (liquidity * balance1) / _totalSupply;
 
-        if (amount0 == 0 || amount1 == 0) revert InsufficientLiquidityBurned();
+        if (amount0 == 0 || amount1 == 0) {
+            revert InsufficientLiquidityBurned();
+        }
 
         // Burn LP tokens
         _burn(address(this), liquidity);
 
-        // Transfer underlying tokens
+        // CEI pattern: Update reserves BEFORE transfers to prevent
+        // read-only reentrancy. External contracts reading getReserves()
+        // during token transfer callbacks will see accurate post-burn
+        // values, not inflated pre-burn reserves.
+        _update(
+            balance0 - amount0,
+            balance1 - amount1,
+            uint256(reserve0),
+            uint256(reserve1)
+        );
+        kLast = uint256(reserve0) * uint256(reserve1);
+
+        // Transfer underlying tokens (after state updates)
         IERC20(token0).safeTransfer(to, amount0);
         IERC20(token1).safeTransfer(to, amount1);
 
-        // Update reserves
-        balance0 = IERC20(token0).balanceOf(address(this));
-        balance1 = IERC20(token1).balanceOf(address(this));
-
-        _update(balance0, balance1, uint256(reserve0), uint256(reserve1));
-        kLast = uint256(reserve0) * uint256(reserve1);
-
         emit Burn(msg.sender, amount0, amount1, to);
     }
-
-    // ========================================================================
-    // SWAP FUNCTIONS
-    // ========================================================================
 
     /**
      * @inheritdoc IRWAPool
@@ -233,29 +282,113 @@ contract RWAPool is ERC20, IRWAPool {
         uint256 amount1Out,
         address to,
         bytes calldata data
-    ) external override lock {
-        if (amount0Out == 0 && amount1Out == 0) revert InsufficientOutputAmount();
-        if (to == address(0) || to == token0 || to == token1) revert InvalidRecipient();
+    ) external override lock onlyFactory {
+        _validateSwapParams(amount0Out, amount1Out, to);
 
-        (uint256 _reserve0, uint256 _reserve1,) = getReserves();
+        uint256 _reserve0 = reserve0;
+        uint256 _reserve1 = reserve1;
 
-        if (amount0Out >= _reserve0 || amount1Out >= _reserve1) {
-            revert InsufficientLiquidity(
-                amount0Out > amount1Out ? amount0Out : amount1Out,
-                amount0Out > amount1Out ? _reserve0 : _reserve1
-            );
-        }
+        _validateSwapReserves(
+            amount0Out, amount1Out, _reserve0, _reserve1
+        );
 
         // Optimistically transfer output
-        if (amount0Out > 0) IERC20(token0).safeTransfer(to, amount0Out);
-        if (amount1Out > 0) IERC20(token1).safeTransfer(to, amount1Out);
+        if (amount0Out > 0) {
+            IERC20(token0).safeTransfer(to, amount0Out);
+        }
+        if (amount1Out > 0) {
+            IERC20(token1).safeTransfer(to, amount1Out);
+        }
 
         // Flash swap callback (if data provided)
         if (data.length > 0) {
-            IRWAPoolCallee(to).rwaPoolCall(msg.sender, amount0Out, amount1Out, data);
+            IRWAPoolCallee(to).rwaPoolCall(
+                msg.sender, amount0Out, amount1Out, data
+            );
         }
 
-        // Get updated balances
+        // Get updated balances and verify invariants
+        _verifyAndUpdateSwap(
+            _reserve0, _reserve1, amount0Out, amount1Out, to
+        );
+    }
+
+    /**
+     * @inheritdoc IRWAPool
+     */
+    function sync() external override lock {
+        uint256 balance0 = IERC20(token0).balanceOf(address(this));
+        uint256 balance1 = IERC20(token1).balanceOf(address(this));
+        _update(
+            balance0,
+            balance1,
+            uint256(reserve0),
+            uint256(reserve1)
+        );
+    }
+
+    /**
+     * @inheritdoc IRWAPool
+     */
+    function skim(
+        address to
+    ) external override lock onlyFactory {
+        if (to == address(0)) revert InvalidRecipient();
+
+        address _token0 = token0;
+        address _token1 = token1;
+
+        uint256 excess0 = IERC20(_token0).balanceOf(address(this))
+            - reserve0;
+        uint256 excess1 = IERC20(_token1).balanceOf(address(this))
+            - reserve1;
+
+        if (excess0 > 0) {
+            IERC20(_token0).safeTransfer(to, excess0);
+        }
+        if (excess1 > 0) {
+            IERC20(_token1).safeTransfer(to, excess1);
+        }
+    }
+
+    // ========================================================================
+    // PUBLIC VIEW FUNCTIONS
+    // ========================================================================
+
+    /**
+     * @inheritdoc IRWAPool
+     */
+    function getReserves() public view override returns (
+        uint256 _reserve0,
+        uint256 _reserve1,
+        uint32 _blockTimestampLast
+    ) {
+        _reserve0 = reserve0;
+        _reserve1 = reserve1;
+        _blockTimestampLast = blockTimestampLast;
+    }
+
+    // ========================================================================
+    // PRIVATE FUNCTIONS
+    // ========================================================================
+
+    /**
+     * @notice Verify k-invariant and update state after a swap
+     * @dev Calculates input amounts, checks k-value, updates reserves,
+     *      and emits a Swap event for indexers and monitoring.
+     * @param _reserve0 Previous reserve of token0
+     * @param _reserve1 Previous reserve of token1
+     * @param amount0Out Token0 output amount
+     * @param amount1Out Token1 output amount
+     * @param _swapRecipient Swap recipient address for event emission
+     */
+    function _verifyAndUpdateSwap(
+        uint256 _reserve0,
+        uint256 _reserve1,
+        uint256 amount0Out,
+        uint256 amount1Out,
+        address _swapRecipient
+    ) private {
         uint256 balance0 = IERC20(token0).balanceOf(address(this));
         uint256 balance1 = IERC20(token1).balanceOf(address(this));
 
@@ -267,55 +400,31 @@ contract RWAPool is ERC20, IRWAPool {
             ? balance1 - (_reserve1 - amount1Out)
             : 0;
 
-        if (amount0In == 0 && amount1In == 0) revert InsufficientInputAmount();
+        if (amount0In == 0 && amount1In == 0) {
+            revert InsufficientInputAmount();
+        }
 
-        // Verify k invariant (with 0.3% fee already deducted by AMM)
+        // Verify k invariant
         // Note: Fee is handled by RWAAMM, not the pool
-        uint256 balance0Adjusted = balance0;
-        uint256 balance1Adjusted = balance1;
-
-        if (balance0Adjusted * balance1Adjusted < _reserve0 * _reserve1) {
+        if (balance0 * balance1 < _reserve0 * _reserve1) {
             revert KValueDecreased();
         }
 
         _update(balance0, balance1, _reserve0, _reserve1);
+
+        emit Swap(
+            msg.sender,
+            amount0In,
+            amount1In,
+            amount0Out,
+            amount1Out,
+            _swapRecipient
+        );
     }
-
-    // ========================================================================
-    // SYNCHRONIZATION FUNCTIONS
-    // ========================================================================
-
-    /**
-     * @inheritdoc IRWAPool
-     */
-    function sync() external override lock {
-        uint256 balance0 = IERC20(token0).balanceOf(address(this));
-        uint256 balance1 = IERC20(token1).balanceOf(address(this));
-        _update(balance0, balance1, uint256(reserve0), uint256(reserve1));
-    }
-
-    /**
-     * @inheritdoc IRWAPool
-     */
-    function skim(address to) external override lock {
-        if (to == address(0)) revert InvalidRecipient();
-
-        address _token0 = token0;
-        address _token1 = token1;
-
-        uint256 excess0 = IERC20(_token0).balanceOf(address(this)) - reserve0;
-        uint256 excess1 = IERC20(_token1).balanceOf(address(this)) - reserve1;
-
-        if (excess0 > 0) IERC20(_token0).safeTransfer(to, excess0);
-        if (excess1 > 0) IERC20(_token1).safeTransfer(to, excess1);
-    }
-
-    // ========================================================================
-    // INTERNAL FUNCTIONS
-    // ========================================================================
 
     /**
      * @notice Update reserves and cumulative prices
+     * @dev Updates TWAP accumulators and stores new reserves
      * @param balance0 New balance of token0
      * @param balance1 New balance of token1
      * @param _reserve0 Previous reserve of token0
@@ -328,12 +437,15 @@ contract RWAPool is ERC20, IRWAPool {
         uint256 _reserve1
     ) private {
         // Check for overflow
-        if (balance0 > type(uint112).max || balance1 > type(uint112).max) {
+        if (
+            balance0 > type(uint112).max
+            || balance1 > type(uint112).max
+        ) {
             revert Overflow();
         }
 
         // solhint-disable-next-line not-rely-on-time
-        uint32 blockTimestamp = uint32(block.timestamp % 2**32);
+        uint32 blockTimestamp = uint32(block.timestamp % 2 ** 32);
         uint32 timeElapsed;
 
         unchecked {
@@ -341,11 +453,14 @@ contract RWAPool is ERC20, IRWAPool {
         }
 
         // Update cumulative prices (for TWAP oracles)
+        // Uses UQ112x112 fixed-point: multiply by 2^112 before division
+        // to preserve fractional precision, matching Uniswap V2 pattern.
         if (timeElapsed > 0 && _reserve0 != 0 && _reserve1 != 0) {
-            // Accumulate price * time
             unchecked {
-                price0CumulativeLast += (_reserve1 * timeElapsed) / _reserve0;
-                price1CumulativeLast += (_reserve0 * timeElapsed) / _reserve1;
+                price0CumulativeLast +=
+                    ((_reserve1 << 112) / _reserve0) * timeElapsed;
+                price1CumulativeLast +=
+                    ((_reserve0 << 112) / _reserve1) * timeElapsed;
             }
         }
 
@@ -355,25 +470,50 @@ contract RWAPool is ERC20, IRWAPool {
 
         emit Sync(balance0, balance1);
     }
-}
 
-/**
- * @title IRWAPoolCallee
- * @author OmniCoin Development Team
- * @notice Interface for flash swap callbacks
- */
-interface IRWAPoolCallee {
     /**
-     * @notice Called during flash swap
-     * @param sender Original swap initiator
-     * @param amount0 Token0 amount received
-     * @param amount1 Token1 amount received
-     * @param data Arbitrary callback data
+     * @notice Validate basic swap parameters
+     * @dev Checks that output amounts and recipient are valid
+     * @param amount0Out Token0 output amount
+     * @param amount1Out Token1 output amount
+     * @param to Recipient address
      */
-    function rwaPoolCall(
-        address sender,
-        uint256 amount0,
-        uint256 amount1,
-        bytes calldata data
-    ) external;
+    function _validateSwapParams(
+        uint256 amount0Out,
+        uint256 amount1Out,
+        address to
+    ) private view {
+        if (amount0Out == 0 && amount1Out == 0) {
+            revert InsufficientOutputAmount();
+        }
+        if (to == address(0) || to == token0 || to == token1) {
+            revert InvalidRecipient();
+        }
+    }
+
+    /**
+     * @notice Validate that output amounts do not exceed reserves
+     * @dev Uses strict less-than comparison for gas efficiency
+     * @param amount0Out Token0 output amount
+     * @param amount1Out Token1 output amount
+     * @param _reserve0 Current reserve of token0
+     * @param _reserve1 Current reserve of token1
+     */
+    function _validateSwapReserves(
+        uint256 amount0Out,
+        uint256 amount1Out,
+        uint256 _reserve0,
+        uint256 _reserve1
+    ) private pure {
+        bool valid0 = amount0Out < _reserve0;
+        bool valid1 = amount1Out < _reserve1;
+
+        if (!valid0 || !valid1) {
+            uint256 requested = amount0Out > amount1Out
+                ? amount0Out : amount1Out;
+            uint256 available = amount0Out > amount1Out
+                ? _reserve0 : _reserve1;
+            revert InsufficientLiquidity(requested, available);
+        }
+    }
 }

@@ -163,70 +163,97 @@ describe("OmniNFTFactory", function () {
 describe("OmniNFTRoyalty", function () {
   let royaltyRegistry;
   let owner, collOwner, user1;
-  const COLLECTION_ADDR = "0x000000000000000000000000000000000000dEaD";
+
+  /**
+   * @notice Ownable contract deployed by collOwner to use as collection address.
+   * @dev After H-01 audit fix, first-time registration by non-admin callers
+   *      requires ownership verification via IOwnable(collection).owner().
+   *      EOA addresses cannot be used as collection parameters.
+   */
+  let collOwnerCollection;
+
+  /**
+   * @notice Deploys an OmniNFTRoyalty from a given signer.
+   *         The deployer becomes the Ownable owner, satisfying H-01 checks.
+   */
+  async function deployOwnableCollection(signer) {
+    const Factory = await ethers.getContractFactory("OmniNFTRoyalty", signer);
+    const c = await Factory.deploy();
+    await c.waitForDeployment();
+    return c;
+  }
 
   beforeEach(async function () {
     [owner, collOwner, user1] = await ethers.getSigners();
 
     const Royalty = await ethers.getContractFactory("OmniNFTRoyalty");
     royaltyRegistry = await Royalty.deploy();
+
+    // Deploy Ownable contract so collOwner "owns" a collection address
+    collOwnerCollection = await deployOwnableCollection(collOwner);
   });
 
   describe("Registration", function () {
     it("Should register royalty info", async function () {
+      const collAddr = await collOwnerCollection.getAddress();
       await royaltyRegistry.connect(collOwner).setRoyalty(
-        COLLECTION_ADDR, collOwner.address, 500
+        collAddr, collOwner.address, 500
       );
-      const info = await royaltyRegistry.royalties(COLLECTION_ADDR);
+      const info = await royaltyRegistry.royalties(collAddr);
       expect(info.recipient).to.equal(collOwner.address);
       expect(info.royaltyBps).to.equal(500);
       expect(info.registeredOwner).to.equal(collOwner.address);
     });
 
     it("Should track registered collections", async function () {
+      const collAddr = await collOwnerCollection.getAddress();
       await royaltyRegistry.connect(collOwner).setRoyalty(
-        COLLECTION_ADDR, collOwner.address, 500
+        collAddr, collOwner.address, 500
       );
       expect(await royaltyRegistry.totalRegistered()).to.equal(1);
-      expect(await royaltyRegistry.isRegistered(COLLECTION_ADDR)).to.equal(true);
+      expect(await royaltyRegistry.isRegistered(collAddr)).to.equal(true);
     });
 
     it("Should reject royalty above 25%", async function () {
+      const collAddr = await collOwnerCollection.getAddress();
       await expect(
         royaltyRegistry.connect(collOwner).setRoyalty(
-          COLLECTION_ADDR, collOwner.address, 2501
+          collAddr, collOwner.address, 2501
         )
       ).to.be.revertedWithCustomError(royaltyRegistry, "RoyaltyTooHigh");
     });
 
     it("Should reject zero recipient", async function () {
+      const collAddr = await collOwnerCollection.getAddress();
       await expect(
         royaltyRegistry.connect(collOwner).setRoyalty(
-          COLLECTION_ADDR, ethers.ZeroAddress, 500
+          collAddr, ethers.ZeroAddress, 500
         )
       ).to.be.revertedWithCustomError(royaltyRegistry, "InvalidRecipient");
     });
 
     it("Should only allow registered owner to update", async function () {
+      const collAddr = await collOwnerCollection.getAddress();
       await royaltyRegistry.connect(collOwner).setRoyalty(
-        COLLECTION_ADDR, collOwner.address, 500
+        collAddr, collOwner.address, 500
       );
       await expect(
         royaltyRegistry.connect(user1).setRoyalty(
-          COLLECTION_ADDR, user1.address, 1000
+          collAddr, user1.address, 1000
         )
       ).to.be.revertedWithCustomError(royaltyRegistry, "NotCollectionOwner");
     });
 
     it("Should allow contract admin to override", async function () {
+      const collAddr = await collOwnerCollection.getAddress();
       await royaltyRegistry.connect(collOwner).setRoyalty(
-        COLLECTION_ADDR, collOwner.address, 500
+        collAddr, collOwner.address, 500
       );
       // Admin (deployer) can update
       await royaltyRegistry.connect(owner).setRoyalty(
-        COLLECTION_ADDR, owner.address, 1000
+        collAddr, owner.address, 1000
       );
-      const info = await royaltyRegistry.royalties(COLLECTION_ADDR);
+      const info = await royaltyRegistry.royalties(collAddr);
       expect(info.recipient).to.equal(owner.address);
       expect(info.royaltyBps).to.equal(1000);
     });
@@ -234,21 +261,23 @@ describe("OmniNFTRoyalty", function () {
 
   describe("Royalty Query", function () {
     it("Should calculate royalty from registry", async function () {
+      const collAddr = await collOwnerCollection.getAddress();
       await royaltyRegistry.connect(collOwner).setRoyalty(
-        COLLECTION_ADDR, collOwner.address, 1000 // 10%
+        collAddr, collOwner.address, 1000 // 10%
       );
       const salePrice = ethers.parseEther("1");
       const [receiver, amount] = await royaltyRegistry.royaltyInfo(
-        COLLECTION_ADDR, 0, salePrice
+        collAddr, 0, salePrice
       );
       expect(receiver).to.equal(collOwner.address);
       expect(amount).to.equal(ethers.parseEther("0.1"));
     });
 
     it("Should return zero for unregistered collection", async function () {
+      const collAddr = await collOwnerCollection.getAddress();
       const salePrice = ethers.parseEther("1");
       const [receiver, amount] = await royaltyRegistry.royaltyInfo(
-        COLLECTION_ADDR, 0, salePrice
+        collAddr, 0, salePrice
       );
       expect(receiver).to.equal(ethers.ZeroAddress);
       expect(amount).to.equal(0);
@@ -257,23 +286,25 @@ describe("OmniNFTRoyalty", function () {
 
   describe("Ownership Transfer", function () {
     it("Should transfer collection registry ownership", async function () {
+      const collAddr = await collOwnerCollection.getAddress();
       await royaltyRegistry.connect(collOwner).setRoyalty(
-        COLLECTION_ADDR, collOwner.address, 500
+        collAddr, collOwner.address, 500
       );
       await royaltyRegistry.connect(collOwner).transferCollectionOwnership(
-        COLLECTION_ADDR, user1.address
+        collAddr, user1.address
       );
-      const info = await royaltyRegistry.royalties(COLLECTION_ADDR);
+      const info = await royaltyRegistry.royalties(collAddr);
       expect(info.registeredOwner).to.equal(user1.address);
     });
 
     it("Should reject unauthorized transfer", async function () {
+      const collAddr = await collOwnerCollection.getAddress();
       await royaltyRegistry.connect(collOwner).setRoyalty(
-        COLLECTION_ADDR, collOwner.address, 500
+        collAddr, collOwner.address, 500
       );
       await expect(
         royaltyRegistry.connect(user1).transferCollectionOwnership(
-          COLLECTION_ADDR, user1.address
+          collAddr, user1.address
         )
       ).to.be.revertedWithCustomError(royaltyRegistry, "NotCollectionOwner");
     });

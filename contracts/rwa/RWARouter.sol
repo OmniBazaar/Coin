@@ -11,23 +11,35 @@ import {IRWAPool} from "./interfaces/IRWAPool.sol";
  * @title RWARouter
  * @author OmniCoin Development Team
  * @notice User-facing router for RWA token swaps
- * @dev Provides convenience functions for interacting with RWA AMM
+ * @dev Routes ALL operations through RWAAMM to ensure compliance checks,
+ *      fee collection, and pause controls are never bypassed.
  *
  * Key Features:
- * - Single-hop and multi-hop swaps
+ * - Single-hop and multi-hop swaps via RWAAMM
  * - Slippage protection
  * - Deadline enforcement
- * - Liquidity management helpers
- * - Quote functions for UI
+ * - Liquidity management via RWAAMM delegation
+ * - Quote functions matching RWAAMM fee model
  *
  * Security Features:
  * - Reentrancy protection
  * - Deadline validation
  * - Minimum output validation
  * - Path validation
+ * - All swaps routed through RWAAMM (compliance, fees, pause)
  */
 contract RWARouter is ReentrancyGuard {
     using SafeERC20 for IERC20;
+
+    // ========================================================================
+    // CONSTANTS
+    // ========================================================================
+
+    /// @notice Protocol fee in basis points (must match RWAAMM)
+    uint256 private constant PROTOCOL_FEE_BPS = 30;
+
+    /// @notice Basis points denominator
+    uint256 private constant BPS_DENOMINATOR = 10000;
 
     // ========================================================================
     // IMMUTABLE STATE
@@ -36,10 +48,6 @@ contract RWARouter is ReentrancyGuard {
     // solhint-disable-next-line var-name-mixedcase
     /// @notice Reference to the core AMM contract
     IRWAAMM public immutable AMM;
-
-    // solhint-disable-next-line var-name-mixedcase
-    /// @notice WETH/WAVAX address for native token wrapping
-    address public immutable WRAPPED_NATIVE;
 
     // ========================================================================
     // ERRORS
@@ -53,7 +61,15 @@ contract RWARouter is ReentrancyGuard {
     /// @notice Thrown when output amount is insufficient
     /// @param amountOut Actual output amount
     /// @param amountOutMin Minimum required output
-    error InsufficientOutputAmount(uint256 amountOut, uint256 amountOutMin);
+    error InsufficientOutputAmount(
+        uint256 amountOut,
+        uint256 amountOutMin
+    );
+
+    /// @notice Thrown when input amount exceeds maximum
+    /// @param amountIn Required input amount
+    /// @param amountInMax Maximum allowed input
+    error ExcessiveInputAmount(uint256 amountIn, uint256 amountInMax);
 
     /// @notice Thrown when path is invalid
     error InvalidPath();
@@ -69,19 +85,20 @@ contract RWARouter is ReentrancyGuard {
     /// @notice Thrown when amount is zero
     error ZeroAmount();
 
+    /// @notice Thrown when minimum output amount is zero (no slippage protection)
+    error ZeroMinimumOutput();
+
     /// @notice Thrown when pool does not exist
     /// @param tokenA First token address
     /// @param tokenB Second token address
     error PoolDoesNotExist(address tokenA, address tokenB);
 
-    /// @notice Thrown when native transfer fails
-    error NativeTransferFailed();
-
+    /* solhint-disable ordering */
     // ========================================================================
     // EVENTS
     // ========================================================================
 
-    /// @notice Emitted when swap is executed
+    /// @notice Emitted when multi-hop swap is executed
     /// @param sender Transaction sender
     /// @param path Swap path (token addresses)
     /// @param amountIn Input amount
@@ -93,7 +110,7 @@ contract RWARouter is ReentrancyGuard {
         uint256 amountOut
     );
 
-    /// @notice Emitted when liquidity is added
+    /// @notice Emitted when liquidity is added via router
     /// @param sender Transaction sender
     /// @param tokenA First token
     /// @param tokenB Second token
@@ -109,7 +126,7 @@ contract RWARouter is ReentrancyGuard {
         uint256 liquidity
     );
 
-    /// @notice Emitted when liquidity is removed
+    /// @notice Emitted when liquidity is removed via router
     /// @param sender Transaction sender
     /// @param tokenA First token
     /// @param tokenB Second token
@@ -124,6 +141,7 @@ contract RWARouter is ReentrancyGuard {
         uint256 amountB,
         uint256 liquidity
     );
+    /* solhint-enable ordering */
 
     // ========================================================================
     // MODIFIERS
@@ -136,6 +154,7 @@ contract RWARouter is ReentrancyGuard {
     modifier ensure(uint256 deadline) {
         // solhint-disable-next-line not-rely-on-time
         if (block.timestamp > deadline) {
+            // solhint-disable-next-line not-rely-on-time
             revert DeadlineExpired(deadline, block.timestamp);
         }
         _;
@@ -148,22 +167,22 @@ contract RWARouter is ReentrancyGuard {
     /**
      * @notice Deploy the router
      * @param _amm Core AMM contract address
-     * @param _wrappedNative Wrapped native token address (WAVAX)
      */
-    constructor(address _amm, address _wrappedNative) {
+    constructor(address _amm) {
         if (_amm == address(0)) revert ZeroAddress();
-        if (_wrappedNative == address(0)) revert ZeroAddress();
 
         AMM = IRWAAMM(_amm);
-        WRAPPED_NATIVE = _wrappedNative;
     }
 
     // ========================================================================
     // SWAP FUNCTIONS
     // ========================================================================
 
+    /* solhint-disable code-complexity */
     /**
      * @notice Swap exact input tokens for output tokens
+     * @dev Routes each hop through AMM.swap() to enforce compliance,
+     *      fee collection, and pause controls at every step.
      * @param amountIn Exact input amount
      * @param amountOutMin Minimum output amount (slippage protection)
      * @param path Array of token addresses (swap route)
@@ -177,31 +196,84 @@ contract RWARouter is ReentrancyGuard {
         address[] calldata path,
         address to,
         uint256 deadline
-    ) external nonReentrant ensure(deadline) returns (uint256[] memory amounts) {
+    ) external nonReentrant ensure(deadline) returns (
+        uint256[] memory amounts
+    ) {
         if (path.length < 2) revert InvalidPath();
         if (amountIn == 0) revert ZeroAmount();
+        if (amountOutMin == 0) revert ZeroMinimumOutput();
         if (to == address(0)) revert ZeroAddress();
 
-        // Calculate amounts for each hop
-        amounts = getAmountsOut(amountIn, path);
+        amounts = new uint256[](path.length);
+        amounts[0] = amountIn;
+
+        // Execute each hop through RWAAMM
+        for (uint256 i = 0; i < path.length - 1; ++i) {
+            // Determine recipient: next hop goes to router,
+            // last hop goes to final recipient
+            address recipient = i < path.length - 2
+                ? address(this)
+                : to;
+
+            // Transfer input tokens with fee-on-transfer protection:
+            // measure actual received amount via balance delta
+            uint256 balBefore = IERC20(path[i]).balanceOf(address(this));
+            IERC20(path[i]).safeTransferFrom(
+                i == 0 ? msg.sender : address(this),
+                address(this),
+                amounts[i]
+            );
+            uint256 actualReceived = IERC20(path[i]).balanceOf(
+                address(this)
+            ) - balBefore;
+
+            // Use actual received amount (may be less for
+            // fee-on-transfer tokens)
+            if (i == 0 && actualReceived < amounts[i]) {
+                amounts[i] = actualReceived;
+            }
+            IERC20(path[i]).forceApprove(address(AMM), amounts[i]);
+
+            // Route through AMM (compliance + fees + pause enforced)
+            IRWAAMM.SwapResult memory result = AMM.swap(
+                path[i],
+                path[i + 1],
+                amounts[i],
+                0, // Min checked at end for full path
+                deadline
+            );
+
+            amounts[i + 1] = result.amountOut;
+
+            // Transfer output to recipient if not last hop
+            // (AMM sends to msg.sender which is this contract)
+            if (recipient != address(this)) {
+                IERC20(path[i + 1]).safeTransfer(
+                    recipient, result.amountOut
+                );
+            }
+        }
 
         // Verify minimum output
         if (amounts[amounts.length - 1] < amountOutMin) {
-            revert InsufficientOutputAmount(amounts[amounts.length - 1], amountOutMin);
+            revert InsufficientOutputAmount(
+                amounts[amounts.length - 1], amountOutMin
+            );
         }
 
-        // Transfer input tokens from sender to first pool
-        address firstPool = _getPool(path[0], path[1]);
-        IERC20(path[0]).safeTransferFrom(msg.sender, firstPool, amountIn);
-
-        // Execute swaps along the path
-        _swap(amounts, path, to);
-
-        emit SwapExecuted(msg.sender, path, amountIn, amounts[amounts.length - 1]);
+        emit SwapExecuted(
+            msg.sender,
+            path,
+            amountIn,
+            amounts[amounts.length - 1]
+        );
     }
+    /* solhint-enable code-complexity */
 
     /**
      * @notice Swap tokens for exact output amount
+     * @dev Routes through AMM.swap(). For multi-hop, calculates required
+     *      inputs then executes forward through AMM at each hop.
      * @param amountOut Exact output amount desired
      * @param amountInMax Maximum input amount (slippage protection)
      * @param path Array of token addresses (swap route)
@@ -215,25 +287,51 @@ contract RWARouter is ReentrancyGuard {
         address[] calldata path,
         address to,
         uint256 deadline
-    ) external nonReentrant ensure(deadline) returns (uint256[] memory amounts) {
+    ) external nonReentrant ensure(deadline) returns (
+        uint256[] memory amounts
+    ) {
         if (path.length < 2) revert InvalidPath();
         if (amountOut == 0) revert ZeroAmount();
         if (to == address(0)) revert ZeroAddress();
 
-        // Calculate required input amounts
+        // Calculate required input amounts (reverse)
         amounts = getAmountsIn(amountOut, path);
 
         // Verify maximum input
         if (amounts[0] > amountInMax) {
-            revert InsufficientOutputAmount(amountInMax, amounts[0]);
+            revert ExcessiveInputAmount(amounts[0], amountInMax);
         }
 
-        // Transfer input tokens from sender to first pool
-        address firstPool = _getPool(path[0], path[1]);
-        IERC20(path[0]).safeTransferFrom(msg.sender, firstPool, amounts[0]);
+        // Execute forward through AMM (same as swapExact)
+        for (uint256 i = 0; i < path.length - 1; ++i) {
+            address recipient = i < path.length - 2
+                ? address(this)
+                : to;
 
-        // Execute swaps along the path
-        _swap(amounts, path, to);
+            IERC20(path[i]).safeTransferFrom(
+                i == 0 ? msg.sender : address(this),
+                address(this),
+                amounts[i]
+            );
+            IERC20(path[i]).forceApprove(address(AMM), amounts[i]);
+
+            IRWAAMM.SwapResult memory result = AMM.swap(
+                path[i],
+                path[i + 1],
+                amounts[i],
+                0,
+                deadline
+            );
+
+            // Update actual output (may differ slightly from quote)
+            amounts[i + 1] = result.amountOut;
+
+            if (recipient != address(this)) {
+                IERC20(path[i + 1]).safeTransfer(
+                    recipient, result.amountOut
+                );
+            }
+        }
 
         emit SwapExecuted(msg.sender, path, amounts[0], amountOut);
     }
@@ -243,7 +341,10 @@ contract RWARouter is ReentrancyGuard {
     // ========================================================================
 
     /**
-     * @notice Add liquidity to a pool
+     * @notice Add liquidity to a pool via RWAAMM
+     * @dev Delegates to AMM.addLiquidity() for compliance and pause checks.
+     *      Reverts with PoolDoesNotExist if no pool exists for the pair
+     *      (unlike AMM which auto-creates pools).
      * @param tokenA First token address
      * @param tokenB Second token address
      * @param amountADesired Desired amount of token A
@@ -270,34 +371,64 @@ contract RWARouter is ReentrancyGuard {
         uint256 amountB,
         uint256 liquidity
     ) {
-        if (tokenA == address(0) || tokenB == address(0)) revert ZeroAddress();
+        if (tokenA == address(0) || tokenB == address(0)) {
+            revert ZeroAddress();
+        }
         if (to == address(0)) revert ZeroAddress();
 
-        // Calculate optimal amounts
-        (amountA, amountB) = _calculateLiquidityAmounts(
+        // Verify pool exists (router does not auto-create pools)
+        address pool = AMM.getPool(tokenA, tokenB);
+        if (pool == address(0)) {
+            revert PoolDoesNotExist(tokenA, tokenB);
+        }
+
+        // Transfer tokens from user to this contract, then approve AMM
+        IERC20(tokenA).safeTransferFrom(
+            msg.sender, address(this), amountADesired
+        );
+        IERC20(tokenB).safeTransferFrom(
+            msg.sender, address(this), amountBDesired
+        );
+        IERC20(tokenA).forceApprove(address(AMM), amountADesired);
+        IERC20(tokenB).forceApprove(address(AMM), amountBDesired);
+
+        // Delegate to AMM (compliance + pause enforced)
+        (amountA, amountB, liquidity) = AMM.addLiquidity(
             tokenA,
             tokenB,
             amountADesired,
             amountBDesired,
             amountAMin,
-            amountBMin
+            amountBMin,
+            deadline
         );
 
-        // Get or create pool
-        address pool = _getPool(tokenA, tokenB);
+        // Transfer LP tokens to recipient (AMM mints to msg.sender
+        // which is this contract)
+        if (to != address(this)) {
+            IERC20(pool).safeTransfer(to, liquidity);
+        }
 
-        // Transfer tokens to pool
-        IERC20(tokenA).safeTransferFrom(msg.sender, pool, amountA);
-        IERC20(tokenB).safeTransferFrom(msg.sender, pool, amountB);
+        // Refund unused tokens
+        uint256 remainingA = amountADesired - amountA;
+        uint256 remainingB = amountBDesired - amountB;
+        if (remainingA > 0) {
+            IERC20(tokenA).safeTransfer(msg.sender, remainingA);
+        }
+        if (remainingB > 0) {
+            IERC20(tokenB).safeTransfer(msg.sender, remainingB);
+        }
 
-        // Mint LP tokens
-        liquidity = IRWAPool(pool).mint(to);
-
-        emit LiquidityAdded(msg.sender, tokenA, tokenB, amountA, amountB, liquidity);
+        emit LiquidityAdded(
+            msg.sender, tokenA, tokenB,
+            amountA, amountB, liquidity
+        );
     }
 
+    /* solhint-disable code-complexity */
     /**
-     * @notice Remove liquidity from a pool
+     * @notice Remove liquidity from a pool via RWAAMM
+     * @dev Delegates to AMM.removeLiquidity() for compliance checks.
      * @param tokenA First token address
      * @param tokenB Second token address
      * @param liquidity LP tokens to burn
@@ -320,31 +451,50 @@ contract RWARouter is ReentrancyGuard {
         uint256 amountA,
         uint256 amountB
     ) {
-        if (tokenA == address(0) || tokenB == address(0)) revert ZeroAddress();
+        if (tokenA == address(0) || tokenB == address(0)) {
+            revert ZeroAddress();
+        }
         if (to == address(0)) revert ZeroAddress();
         if (liquidity == 0) revert ZeroAmount();
 
-        address pool = _getPool(tokenA, tokenB);
-
-        // Transfer LP tokens to pool
-        IERC20(pool).safeTransferFrom(msg.sender, pool, liquidity);
-
-        // Burn LP tokens and receive underlying
-        (uint256 amount0, uint256 amount1) = IRWAPool(pool).burn(to);
-
-        // Sort amounts to match token order
-        (address token0,) = _sortTokens(tokenA, tokenB);
-        (amountA, amountB) = tokenA == token0
-            ? (amount0, amount1)
-            : (amount1, amount0);
-
-        // Verify minimum amounts
-        if (amountA < amountAMin || amountB < amountBMin) {
-            revert InsufficientLiquidity(amountA, amountB);
+        address pool = AMM.getPool(tokenA, tokenB);
+        if (pool == address(0)) {
+            revert PoolDoesNotExist(tokenA, tokenB);
         }
 
-        emit LiquidityRemoved(msg.sender, tokenA, tokenB, amountA, amountB, liquidity);
+        // Transfer LP tokens from user and approve AMM
+        IERC20(pool).safeTransferFrom(
+            msg.sender, address(this), liquidity
+        );
+        IERC20(pool).forceApprove(address(AMM), liquidity);
+
+        // Delegate to AMM (compliance enforced)
+        (amountA, amountB) = AMM.removeLiquidity(
+            tokenA,
+            tokenB,
+            liquidity,
+            amountAMin,
+            amountBMin,
+            deadline
+        );
+
+        // Transfer underlying to final recipient (AMM sends to
+        // msg.sender which is this contract)
+        if (to != address(this)) {
+            if (amountA > 0) {
+                IERC20(tokenA).safeTransfer(to, amountA);
+            }
+            if (amountB > 0) {
+                IERC20(tokenB).safeTransfer(to, amountB);
+            }
+        }
+
+        emit LiquidityRemoved(
+            msg.sender, tokenA, tokenB,
+            amountA, amountB, liquidity
+        );
     }
+    /* solhint-enable code-complexity */
 
     // ========================================================================
     // QUOTE FUNCTIONS
@@ -352,6 +502,8 @@ contract RWARouter is ReentrancyGuard {
 
     /**
      * @notice Get output amounts for a given input along path
+     * @dev Uses the same fee model as RWAAMM (upfront fee deduction)
+     *      to produce accurate quotes matching actual swap results.
      * @param amountIn Input amount
      * @param path Array of token addresses
      * @return amounts Array of output amounts for each hop
@@ -366,14 +518,19 @@ contract RWARouter is ReentrancyGuard {
         amounts[0] = amountIn;
 
         for (uint256 i = 0; i < path.length - 1; ++i) {
-            address pool = _getPool(path[i], path[i + 1]);
-            (uint256 reserveIn, uint256 reserveOut) = _getReserves(pool, path[i], path[i + 1]);
-            amounts[i + 1] = _getAmountOut(amounts[i], reserveIn, reserveOut);
+            // Use AMM.getQuote() for accurate fee-adjusted output
+            (uint256 amountOut,,) = AMM.getQuote(
+                path[i], path[i + 1], amounts[i]
+            );
+            amounts[i + 1] = amountOut;
         }
     }
 
     /**
      * @notice Get input amounts required for a given output along path
+     * @dev Calculates reverse path using RWAAMM fee model.
+     *      Output may differ slightly from forward execution due to
+     *      rounding in the constant-product formula.
      * @param amountOut Desired output amount
      * @param path Array of token addresses
      * @return amounts Array of input amounts for each hop
@@ -388,9 +545,31 @@ contract RWARouter is ReentrancyGuard {
         amounts[amounts.length - 1] = amountOut;
 
         for (uint256 i = path.length - 1; i > 0; --i) {
-            address pool = _getPool(path[i - 1], path[i]);
-            (uint256 reserveIn, uint256 reserveOut) = _getReserves(pool, path[i - 1], path[i]);
-            amounts[i - 1] = _getAmountIn(amounts[i], reserveIn, reserveOut);
+            address pool = AMM.getPool(path[i - 1], path[i]);
+            if (pool == address(0)) {
+                revert PoolDoesNotExist(path[i - 1], path[i]);
+            }
+
+            (uint256 reserveIn, uint256 reserveOut) = _getReserves(
+                pool, path[i - 1], path[i]
+            );
+
+            // Reverse the RWAAMM formula:
+            // amountOut = reserveOut * amountAfterFee /
+            //             (reserveIn + amountAfterFee)
+            // Solve for amountIn:
+            // amountAfterFee = reserveIn * amountOut /
+            //                  (reserveOut - amountOut)
+            // amountIn = amountAfterFee * BPS / (BPS - FEE)
+            // solhint-disable-next-line gas-strict-inequalities
+            if (amounts[i] >= reserveOut) {
+                revert InsufficientLiquidity(reserveIn, reserveOut);
+            }
+
+            uint256 amountAfterFee = (reserveIn * amounts[i])
+                / (reserveOut - amounts[i]) + 1;
+            amounts[i - 1] = (amountAfterFee * BPS_DENOMINATOR)
+                / (BPS_DENOMINATOR - PROTOCOL_FEE_BPS) + 1;
         }
     }
 
@@ -412,24 +591,28 @@ contract RWARouter is ReentrancyGuard {
         address pool = AMM.getPool(tokenA, tokenB);
 
         if (pool == address(0)) {
-            // New pool - use desired amounts
             return (amountADesired, amountBDesired);
         }
 
-        (uint256 reserveA, uint256 reserveB) = _getReserves(pool, tokenA, tokenB);
+        (uint256 reserveA, uint256 reserveB) = _getReserves(
+            pool, tokenA, tokenB
+        );
 
         if (reserveA == 0 && reserveB == 0) {
             return (amountADesired, amountBDesired);
         }
 
-        // Calculate optimal amount B for desired amount A
-        uint256 amountBOptimal = _quote(amountADesired, reserveA, reserveB);
+        uint256 amountBOptimal = _quote(
+            amountADesired, reserveA, reserveB
+        );
 
+        // solhint-disable-next-line gas-strict-inequalities
         if (amountBOptimal <= amountBDesired) {
             return (amountADesired, amountBOptimal);
         } else {
-            // Calculate optimal amount A for desired amount B
-            uint256 amountAOptimal = _quote(amountBDesired, reserveB, reserveA);
+            uint256 amountAOptimal = _quote(
+                amountBDesired, reserveB, reserveA
+            );
             return (amountAOptimal, amountBDesired);
         }
     }
@@ -452,108 +635,6 @@ contract RWARouter is ReentrancyGuard {
     // ========================================================================
 
     /**
-     * @notice Execute swaps along a path
-     * @param amounts Pre-calculated amounts for each hop
-     * @param path Token addresses in the path
-     * @param _to Final recipient
-     */
-    function _swap(
-        uint256[] memory amounts,
-        address[] memory path,
-        address _to
-    ) internal {
-        for (uint256 i = 0; i < path.length - 1; ++i) {
-            (address input, address output) = (path[i], path[i + 1]);
-            (address token0,) = _sortTokens(input, output);
-
-            uint256 amountOut = amounts[i + 1];
-
-            (uint256 amount0Out, uint256 amount1Out) = input == token0
-                ? (uint256(0), amountOut)
-                : (amountOut, uint256(0));
-
-            // Determine recipient (next pool or final recipient)
-            address to = i < path.length - 2
-                ? _getPool(output, path[i + 2])
-                : _to;
-
-            IRWAPool(_getPool(input, output)).swap(
-                amount0Out,
-                amount1Out,
-                to,
-                new bytes(0)
-            );
-        }
-    }
-
-    /**
-     * @notice Calculate optimal liquidity amounts
-     * @param tokenA First token
-     * @param tokenB Second token
-     * @param amountADesired Desired amount A
-     * @param amountBDesired Desired amount B
-     * @param amountAMin Minimum amount A
-     * @param amountBMin Minimum amount B
-     * @return amountA Optimal amount A
-     * @return amountB Optimal amount B
-     */
-    function _calculateLiquidityAmounts(
-        address tokenA,
-        address tokenB,
-        uint256 amountADesired,
-        uint256 amountBDesired,
-        uint256 amountAMin,
-        uint256 amountBMin
-    ) internal view returns (uint256 amountA, uint256 amountB) {
-        address pool = AMM.getPool(tokenA, tokenB);
-
-        if (pool == address(0)) {
-            // New pool - use desired amounts
-            return (amountADesired, amountBDesired);
-        }
-
-        (uint256 reserveA, uint256 reserveB) = _getReserves(pool, tokenA, tokenB);
-
-        if (reserveA == 0 && reserveB == 0) {
-            return (amountADesired, amountBDesired);
-        }
-
-        uint256 amountBOptimal = _quote(amountADesired, reserveA, reserveB);
-
-        if (amountBOptimal <= amountBDesired) {
-            if (amountBOptimal < amountBMin) {
-                revert InsufficientLiquidity(amountADesired, amountBOptimal);
-            }
-            return (amountADesired, amountBOptimal);
-        } else {
-            uint256 amountAOptimal = _quote(amountBDesired, reserveB, reserveA);
-            if (amountAOptimal > amountADesired) {
-                revert InsufficientLiquidity(amountAOptimal, amountBDesired);
-            }
-            if (amountAOptimal < amountAMin) {
-                revert InsufficientLiquidity(amountAOptimal, amountBDesired);
-            }
-            return (amountAOptimal, amountBDesired);
-        }
-    }
-
-    /**
-     * @notice Get pool address (reverts if doesn't exist)
-     * @param tokenA First token
-     * @param tokenB Second token
-     * @return pool Pool address
-     */
-    function _getPool(
-        address tokenA,
-        address tokenB
-    ) internal view returns (address pool) {
-        pool = AMM.getPool(tokenA, tokenB);
-        if (pool == address(0)) {
-            revert PoolDoesNotExist(tokenA, tokenB);
-        }
-    }
-
-    /**
      * @notice Get reserves for a pool in specified token order
      * @param pool Pool address
      * @param tokenA First token
@@ -567,7 +648,8 @@ contract RWARouter is ReentrancyGuard {
         address tokenB
     ) internal view returns (uint256 reserveA, uint256 reserveB) {
         (address token0,) = _sortTokens(tokenA, tokenB);
-        (uint256 reserve0, uint256 reserve1,) = IRWAPool(pool).getReserves();
+        (uint256 reserve0, uint256 reserve1,) =
+            IRWAPool(pool).getReserves();
         (reserveA, reserveB) = tokenA == token0
             ? (reserve0, reserve1)
             : (reserve1, reserve0);
@@ -590,7 +672,7 @@ contract RWARouter is ReentrancyGuard {
     }
 
     /**
-     * @notice Quote amount of tokenB for given amount of tokenA
+     * @notice Quote proportional amount based on reserves
      * @param amountA Amount of token A
      * @param reserveA Reserve of token A
      * @param reserveB Reserve of token B
@@ -602,59 +684,9 @@ contract RWARouter is ReentrancyGuard {
         uint256 reserveB
     ) internal pure returns (uint256 amountB) {
         if (amountA == 0) revert ZeroAmount();
-        if (reserveA == 0 || reserveB == 0) revert InsufficientLiquidity(reserveA, reserveB);
+        if (reserveA == 0 || reserveB == 0) {
+            revert InsufficientLiquidity(reserveA, reserveB);
+        }
         amountB = (amountA * reserveB) / reserveA;
-    }
-
-    /**
-     * @notice Calculate output amount for given input
-     * @dev Uses constant-product formula with 0.3% fee
-     * @param amountIn Input amount
-     * @param reserveIn Input token reserve
-     * @param reserveOut Output token reserve
-     * @return amountOut Output amount
-     */
-    function _getAmountOut(
-        uint256 amountIn,
-        uint256 reserveIn,
-        uint256 reserveOut
-    ) internal pure returns (uint256 amountOut) {
-        if (amountIn == 0) revert ZeroAmount();
-        if (reserveIn == 0 || reserveOut == 0) {
-            revert InsufficientLiquidity(reserveIn, reserveOut);
-        }
-
-        // Apply 0.3% fee (997/1000)
-        uint256 amountInWithFee = amountIn * 997;
-        uint256 numerator = amountInWithFee * reserveOut;
-        uint256 denominator = (reserveIn * 1000) + amountInWithFee;
-        amountOut = numerator / denominator;
-    }
-
-    /**
-     * @notice Calculate input amount required for given output
-     * @dev Uses constant-product formula with 0.3% fee
-     * @param amountOut Desired output amount
-     * @param reserveIn Input token reserve
-     * @param reserveOut Output token reserve
-     * @return amountIn Required input amount
-     */
-    function _getAmountIn(
-        uint256 amountOut,
-        uint256 reserveIn,
-        uint256 reserveOut
-    ) internal pure returns (uint256 amountIn) {
-        if (amountOut == 0) revert ZeroAmount();
-        if (reserveIn == 0 || reserveOut == 0) {
-            revert InsufficientLiquidity(reserveIn, reserveOut);
-        }
-        if (amountOut >= reserveOut) {
-            revert InsufficientLiquidity(reserveIn, reserveOut);
-        }
-
-        // Apply 0.3% fee (1000/997)
-        uint256 numerator = reserveIn * amountOut * 1000;
-        uint256 denominator = (reserveOut - amountOut) * 997;
-        amountIn = (numerator / denominator) + 1;
     }
 }

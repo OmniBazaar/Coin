@@ -1,0 +1,56 @@
+{
+  "timestamp": "2026-02-22T18:53:35.842Z",
+  "duration": "35.02s",
+  "summary": {
+    "total": 6,
+    "passed": 0,
+    "failed": 6,
+    "skipped": 0
+  },
+  "categories": {
+    "Core Contracts": [
+      {
+        "status": "failed",
+        "file": "test/OmniCoin.test.js",
+        "error": ""
+      },
+      {
+        "status": "failed",
+        "file": "test/PrivateOmniCoin.test.js",
+        "error": "DeclarationError: Undeclared identifier.\n   --> contracts/OmniCore.sol:407:9:\n    |\n407 |         _validateStakingTier(amount, tier);\n    |         ^^^^^^^^^^^^^^^^^^^^\n\n\nDeclarationError: Undeclared identifier.\n   --> contracts/OmniCore.sol:410:9:\n    |\n410 |         _validateDuration(duration);\n    |         ^^^^^^^^^^^^^^^^^\n\n\nError HH600: Compilation failed\nHardhatError: HH600: Compilation failed\n    at SimpleTaskDefinition.action (/home/rickc/OmniBazaar/Coin/node_modules/hardhat/src/builtin-tasks/compile.ts:504:15)\n    at Environment._runTaskDefinition (/home/rickc/OmniBazaar/Coin/node_modules/hardhat/src/internal/core/runtime-environment.ts:351:14)\n    at OverriddenTaskDefinition._action (/home/rickc/OmniBazaar/Coin/node_modules/@typechain/hardhat/src/index.ts:28:30)\n    at Environment._runTaskDefinition (/home/rickc/OmniBazaar/Coin/node_modules/hardhat/src/internal/core/runtime-environment.ts:351:14)\n    at Environment.run (/home/rickc/OmniBazaar/Coin/node_modules/hardhat/src/internal/core/runtime-environment.ts:184:14)\n    at SimpleTaskDefinition.action (/home/rickc/OmniBazaar/Coin/node_modules/hardhat/src/builtin-tasks/compile.ts:1433:63)\n    at Environment._runTaskDefinition (/home/rickc/OmniBazaar/Coin/node_modules/hardhat/src/internal/core/runtime-environment.ts:351:14)\n    at Environment._runTaskDefinition (/home/rickc/OmniBazaar/Coin/node_modules/hardhat/src/internal/core/runtime-environment.ts:351:14)\n    at Environment.run (/home/rickc/OmniBazaar/Coin/node_modules/hardhat/src/internal/core/runtime-environment.ts:184:14)\n    at SimpleTaskDefinition.action (/home/rickc/OmniBazaar/Coin/node_modules/hardhat/src/builtin-tasks/compile.ts:1513:7)\n"
+      },
+      {
+        "status": "failed",
+        "file": "test/OmniCore.test.js",
+        "error": "DeclarationError: Undeclared identifier.\n   --> contracts/OmniCore.sol:407:9:\n    |\n407 |         _validateStakingTier(amount, tier);\n    |         ^^^^^^^^^^^^^^^^^^^^\n\n\nDeclarationError: Undeclared identifier.\n   --> contracts/OmniCore.sol:410:9:\n    |\n410 |         _validateDuration(duration);\n    |         ^^^^^^^^^^^^^^^^^\n\n\nError HH600: Compilation failed\nHardhatError: HH600: Compilation failed\n    at SimpleTaskDefinition.action (/home/rickc/OmniBazaar/Coin/node_modules/hardhat/src/builtin-tasks/compile.ts:504:15)\n    at processTicksAndRejections (node:internal/process/task_queues:105:5)\n    at Environment._runTaskDefinition (/home/rickc/OmniBazaar/Coin/node_modules/hardhat/src/internal/core/runtime-environment.ts:351:14)\n    at OverriddenTaskDefinition._action (/home/rickc/OmniBazaar/Coin/node_modules/@typechain/hardhat/src/index.ts:28:30)\n    at Environment._runTaskDefinition (/home/rickc/OmniBazaar/Coin/node_modules/hardhat/src/internal/core/runtime-environment.ts:351:14)\n    at Environment.run (/home/rickc/OmniBazaar/Coin/node_modules/hardhat/src/internal/core/runtime-environment.ts:184:14)\n    at SimpleTaskDefinition.action (/home/rickc/OmniBazaar/Coin/node_modules/hardhat/src/builtin-tasks/compile.ts:1433:63)\n    at Environment._runTaskDefinition (/home/rickc/OmniBazaar/Coin/node_modules/hardhat/src/internal/core/runtime-environment.ts:351:14)\n    at Environment._runTaskDefinition (/home/rickc/OmniBazaar/Coin/node_modules/hardhat/src/internal/core/runtime-environment.ts:351:14)\n    at Environment.run (/home/rickc/OmniBazaar/Coin/node_modules/hardhat/src/internal/core/runtime-environment.ts:184:14)\n"
+      }
+    ],
+    "Business Logic": [
+      {
+        "status": "failed",
+        "file": "test/MinimalEscrow.test.js",
+        "error": "TypeError: Type uint96[5] memory is not implicitly convertible to expected type uint256[5] memory.\n   --> contracts/OmniCore.sol:877:9:\n    |\n877 |         uint256[5] memory tierMinimums = [\n    |         ^ (Relevant source part starts here and spans across multiple lines).\n\n\nError HH600: Compilation failed\nHardhatError: HH600: Compilation failed\n    at SimpleTaskDefinition.action (/home/rickc/OmniBazaar/Coin/node_modules/hardhat/src/builtin-tasks/compile.ts:504:15)\n    at processTicksAndRejections (node:internal/process/task_queues:105:5)\n    at Environment._runTaskDefinition (/home/rickc/OmniBazaar/Coin/node_modules/hardhat/src/internal/core/runtime-environment.ts:351:14)\n    at OverriddenTaskDefinition._action (/home/rickc/OmniBazaar/Coin/node_modules/@typechain/hardhat/src/index.ts:28:30)\n    at Environment._runTaskDefinition (/home/rickc/OmniBazaar/Coin/node_modules/hardhat/src/internal/core/runtime-environment.ts:351:14)\n    at Environment.run (/home/rickc/OmniBazaar/Coin/node_modules/hardhat/src/internal/core/runtime-environment.ts:184:14)\n    at SimpleTaskDefinition.action (/home/rickc/OmniBazaar/Coin/node_modules/hardhat/src/builtin-tasks/compile.ts:1433:63)\n    at Environment._runTaskDefinition (/home/rickc/OmniBazaar/Coin/node_modules/hardhat/src/internal/core/runtime-environment.ts:351:14)\n    at Environment._runTaskDefinition (/home/rickc/OmniBazaar/Coin/node_modules/hardhat/src/internal/core/runtime-environment.ts:351:14)\n    at Environment.run (/home/rickc/OmniBazaar/Coin/node_modules/hardhat/src/internal/core/runtime-environment.ts:184:14)\n"
+      },
+      {
+        "status": "failed",
+        "file": "test/OmniGovernance.test.js",
+        "error": "DeclarationError: Undeclared identifier.\n   --> contracts/nft/OmniNFTRoyalty.sol:120:17:\n    |\n120 |                 _verifyCollectionOwnership(collection);\n    |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^\n\n\nError HH600: Compilation failed\nHardhatError: HH600: Compilation failed\n    at SimpleTaskDefinition.action (/home/rickc/OmniBazaar/Coin/node_modules/hardhat/src/builtin-tasks/compile.ts:504:15)\n    at processTicksAndRejections (node:internal/process/task_queues:105:5)\n    at Environment._runTaskDefinition (/home/rickc/OmniBazaar/Coin/node_modules/hardhat/src/internal/core/runtime-environment.ts:351:14)\n    at OverriddenTaskDefinition._action (/home/rickc/OmniBazaar/Coin/node_modules/@typechain/hardhat/src/index.ts:28:30)\n    at Environment._runTaskDefinition (/home/rickc/OmniBazaar/Coin/node_modules/hardhat/src/internal/core/runtime-environment.ts:351:14)\n    at Environment.run (/home/rickc/OmniBazaar/Coin/node_modules/hardhat/src/internal/core/runtime-environment.ts:184:14)\n    at SimpleTaskDefinition.action (/home/rickc/OmniBazaar/Coin/node_modules/hardhat/src/builtin-tasks/compile.ts:1433:63)\n    at Environment._runTaskDefinition (/home/rickc/OmniBazaar/Coin/node_modules/hardhat/src/internal/core/runtime-environment.ts:351:14)\n    at Environment._runTaskDefinition (/home/rickc/OmniBazaar/Coin/node_modules/hardhat/src/internal/core/runtime-environment.ts:351:14)\n    at Environment.run (/home/rickc/OmniBazaar/Coin/node_modules/hardhat/src/internal/core/runtime-environment.ts:184:14)\n"
+      }
+    ],
+    "Cross-Chain": [
+      {
+        "status": "failed",
+        "file": "test/OmniBridge.test.js",
+        "error": "DeclarationError: Undeclared identifier.\n   --> contracts/nft/OmniNFTRoyalty.sol:120:17:\n    |\n120 |                 _verifyCollectionOwnership(collection);\n    |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^\n\n\nError HH600: Compilation failed\nHardhatError: HH600: Compilation failed\n    at SimpleTaskDefinition.action (/home/rickc/OmniBazaar/Coin/node_modules/hardhat/src/builtin-tasks/compile.ts:504:15)\n    at processTicksAndRejections (node:internal/process/task_queues:105:5)\n    at Environment._runTaskDefinition (/home/rickc/OmniBazaar/Coin/node_modules/hardhat/src/internal/core/runtime-environment.ts:351:14)\n    at OverriddenTaskDefinition._action (/home/rickc/OmniBazaar/Coin/node_modules/@typechain/hardhat/src/index.ts:28:30)\n    at Environment._runTaskDefinition (/home/rickc/OmniBazaar/Coin/node_modules/hardhat/src/internal/core/runtime-environment.ts:351:14)\n    at Environment.run (/home/rickc/OmniBazaar/Coin/node_modules/hardhat/src/internal/core/runtime-environment.ts:184:14)\n    at SimpleTaskDefinition.action (/home/rickc/OmniBazaar/Coin/node_modules/hardhat/src/builtin-tasks/compile.ts:1433:63)\n    at Environment._runTaskDefinition (/home/rickc/OmniBazaar/Coin/node_modules/hardhat/src/internal/core/runtime-environment.ts:351:14)\n    at Environment._runTaskDefinition (/home/rickc/OmniBazaar/Coin/node_modules/hardhat/src/internal/core/runtime-environment.ts:351:14)\n    at Environment.run (/home/rickc/OmniBazaar/Coin/node_modules/hardhat/src/internal/core/runtime-environment.ts:184:14)\n"
+      }
+    ]
+  },
+  "failedFiles": [
+    "test/OmniCoin.test.js",
+    "test/PrivateOmniCoin.test.js",
+    "test/OmniCore.test.js",
+    "test/MinimalEscrow.test.js",
+    "test/OmniGovernance.test.js",
+    "test/OmniBridge.test.js"
+  ]
+}

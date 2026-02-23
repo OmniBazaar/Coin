@@ -61,12 +61,16 @@ describe("OmniCore", function () {
       const ADMIN_ROLE = await core.ADMIN_ROLE();
       expect(await core.hasRole(ADMIN_ROLE, owner.address)).to.be.true;
     });
+
+    it("Should set requiredSignatures to 1", async function () {
+      expect(await core.requiredSignatures()).to.equal(1);
+    });
   });
 
   describe("Upgradeability", function () {
     it("Should prevent non-admin from upgrading", async function () {
-      // Try to upgrade as non-admin (validator1)
-      const OmniCoreV2 = await ethers.getContractFactory("OmniCoreUpgradeable", validator1);
+      // Try to upgrade as non-admin (validator1) - use OmniCore itself
+      const OmniCoreV2 = await ethers.getContractFactory("OmniCore", validator1);
 
       await expect(
         upgrades.upgradeProxy(core.target, OmniCoreV2)
@@ -82,17 +86,13 @@ describe("OmniCore", function () {
       // Register a validator
       await core.connect(owner).setValidator(validator1.address, true);
 
-      // Stake some tokens
+      // Stake some tokens (tier 1 requires >= 1 XOM, duration 30 days is valid)
       await core.connect(staker1).stake(STAKE_AMOUNT, 1, 30 * 24 * 60 * 60);
 
       // Verify state before
       const serviceBefore = await core.services(serviceId);
       const isValidatorBefore = await core.validators(validator1.address);
       const stakeBefore = await core.stakes(staker1.address);
-
-      // In a real upgrade scenario, we'd deploy a V2 contract
-      // For now, just verify we can call the upgrade function
-      // (it will revert if not authorized properly)
 
       // Verify state remains intact
       expect(await core.services(serviceId)).to.equal(serviceBefore);
@@ -174,53 +174,84 @@ describe("OmniCore", function () {
         .to.emit(core, "ValidatorUpdated")
         .withArgs(validator1.address, false, block2.timestamp);
     });
-  });
 
-  describe("Master Merkle Root", function () {
-    it("Should update merkle root", async function () {
-      const newRoot = ethers.randomBytes(32);
-
-      // Register validator first
+    it("Should grant AVALANCHE_VALIDATOR_ROLE when adding validator", async function () {
       await core.connect(owner).setValidator(validator1.address, true);
 
-      // Grant AVALANCHE_VALIDATOR_ROLE to validator1
       const AVALANCHE_VALIDATOR_ROLE = await core.AVALANCHE_VALIDATOR_ROLE();
-      await core.connect(owner).grantRole(AVALANCHE_VALIDATOR_ROLE, validator1.address);
-
-      await core.connect(validator1).updateMasterRoot(newRoot, 1);
-
-      expect(await core.masterRoot()).to.equal(ethers.hexlify(newRoot));
-      expect(await core.lastRootUpdate()).to.equal(1);
+      expect(await core.hasRole(AVALANCHE_VALIDATOR_ROLE, validator1.address)).to.be.true;
     });
 
-    it("Should only allow validators to update root", async function () {
-      const newRoot = ethers.randomBytes(32);
+    it("Should revoke AVALANCHE_VALIDATOR_ROLE when removing validator", async function () {
+      await core.connect(owner).setValidator(validator1.address, true);
+      await core.connect(owner).setValidator(validator1.address, false);
 
+      const AVALANCHE_VALIDATOR_ROLE = await core.AVALANCHE_VALIDATOR_ROLE();
+      expect(await core.hasRole(AVALANCHE_VALIDATOR_ROLE, validator1.address)).to.be.false;
+    });
+  });
+
+  describe("Pausable (M-04)", function () {
+    it("Should allow admin to pause", async function () {
+      await core.connect(owner).pause();
+      expect(await core.paused()).to.be.true;
+    });
+
+    it("Should allow admin to unpause", async function () {
+      await core.connect(owner).pause();
+      await core.connect(owner).unpause();
+      expect(await core.paused()).to.be.false;
+    });
+
+    it("Should prevent non-admin from pausing", async function () {
       await expect(
-        core.connect(staker1).updateMasterRoot(newRoot, 1)
+        core.connect(staker1).pause()
       ).to.be.reverted;
     });
 
-    it("Should emit MasterRootUpdated event", async function () {
-      const newRoot = ethers.randomBytes(32);
-      await core.connect(owner).setValidator(validator1.address, true);
+    it("Should prevent staking when paused", async function () {
+      await core.connect(owner).pause();
 
-      // Grant AVALANCHE_VALIDATOR_ROLE
-      const AVALANCHE_VALIDATOR_ROLE = await core.AVALANCHE_VALIDATOR_ROLE();
-      await core.connect(owner).grantRole(AVALANCHE_VALIDATOR_ROLE, validator1.address);
+      await expect(
+        core.connect(staker1).stake(STAKE_AMOUNT, 1, 30 * 24 * 60 * 60)
+      ).to.be.revertedWithCustomError(core, "EnforcedPause");
+    });
 
-      const tx = await core.connect(validator1).updateMasterRoot(newRoot, 1);
-      const block = await ethers.provider.getBlock(tx.blockNumber);
+    it("Should prevent unlock when paused", async function () {
+      // Stake first while not paused
+      await core.connect(staker1).stake(STAKE_AMOUNT, 1, 0); // No lock duration
 
-      await expect(tx)
-        .to.emit(core, "MasterRootUpdated")
-        .withArgs(ethers.hexlify(newRoot), 1, block.timestamp);
+      // Pause
+      await core.connect(owner).pause();
+
+      await expect(
+        core.connect(staker1).unlock()
+      ).to.be.revertedWithCustomError(core, "EnforcedPause");
+    });
+
+    it("Should prevent DEX deposit when paused", async function () {
+      await core.connect(owner).pause();
+
+      await expect(
+        core.connect(staker1).depositToDEX(token.target, ethers.parseEther("100"))
+      ).to.be.revertedWithCustomError(core, "EnforcedPause");
+    });
+
+    it("Should prevent DEX withdrawal when paused", async function () {
+      // Deposit first while not paused
+      await core.connect(staker1).depositToDEX(token.target, ethers.parseEther("100"));
+
+      await core.connect(owner).pause();
+
+      await expect(
+        core.connect(staker1).withdrawFromDEX(token.target, ethers.parseEther("100"))
+      ).to.be.revertedWithCustomError(core, "EnforcedPause");
     });
   });
 
   describe("Minimal Staking", function () {
     it("Should allow staking", async function () {
-      const tier = 1; // Silver tier
+      const tier = 1;
       const duration = 30 * 24 * 60 * 60; // 30 days
 
       await core.connect(staker1).stake(STAKE_AMOUNT, tier, duration);
@@ -258,39 +289,56 @@ describe("OmniCore", function () {
         core.connect(staker1).stake(STAKE_AMOUNT, 1, 30 * 24 * 60 * 60)
       ).to.be.revertedWithCustomError(core, "InvalidAmount");
     });
-  });
 
-  describe("Merkle Proof Unlocking", function () {
-    beforeEach(async function () {
-      // Stake first
-      await core.connect(staker1).stake(STAKE_AMOUNT, 1, 30 * 24 * 60 * 60);
-
-      // Register validator and grant role
-      await core.connect(owner).setValidator(validator1.address, true);
-      const AVALANCHE_VALIDATOR_ROLE = await core.AVALANCHE_VALIDATOR_ROLE();
-      await core.connect(owner).grantRole(AVALANCHE_VALIDATOR_ROLE, validator1.address);
+    it("Should reject invalid staking tier (tier 0)", async function () {
+      await expect(
+        core.connect(staker1).stake(STAKE_AMOUNT, 0, 30 * 24 * 60 * 60)
+      ).to.be.revertedWithCustomError(core, "InvalidStakingTier");
     });
 
-    it("Should unlock with valid merkle proof", async function () {
-      const baseAmount = STAKE_AMOUNT;
-      const rewards = ethers.parseEther("100");
-      const totalAmount = baseAmount + rewards;
+    it("Should reject invalid staking tier (tier 6)", async function () {
+      await expect(
+        core.connect(staker1).stake(STAKE_AMOUNT, 6, 30 * 24 * 60 * 60)
+      ).to.be.revertedWithCustomError(core, "InvalidStakingTier");
+    });
 
-      const leaf = ethers.solidityPackedKeccak256(
-        ["address", "uint256"],
-        [staker1.address, totalAmount]
-      );
+    it("Should reject tier/amount mismatch (tier 2 with insufficient amount)", async function () {
+      // Tier 2 requires >= 1,000,000 XOM
+      await expect(
+        core.connect(staker1).stake(ethers.parseEther("999"), 2, 30 * 24 * 60 * 60)
+      ).to.be.revertedWithCustomError(core, "InvalidStakingTier");
+    });
 
-      // Simple single-leaf merkle tree for testing
-      const merkleRoot = leaf;
-      await core.connect(validator1).updateMasterRoot(merkleRoot, 1);
+    it("Should reject invalid duration", async function () {
+      // 60 days is not a valid duration (valid: 0, 30d, 180d, 730d)
+      await expect(
+        core.connect(staker1).stake(STAKE_AMOUNT, 1, 60 * 24 * 60 * 60)
+      ).to.be.revertedWithCustomError(core, "InvalidDuration");
+    });
 
-      // Unlock with empty proof (single leaf tree)
+    it("Should allow staking with no lock duration (0)", async function () {
+      await core.connect(staker1).stake(STAKE_AMOUNT, 1, 0);
+
+      const position = await core.stakes(staker1.address);
+      expect(position.amount).to.equal(STAKE_AMOUNT);
+      expect(position.duration).to.equal(0);
+      expect(position.active).to.be.true;
+    });
+  });
+
+  describe("Unlock Staking", function () {
+    it("Should allow unlock after lock period expires", async function () {
+      const duration = 30 * 24 * 60 * 60; // 30 days
+      await core.connect(staker1).stake(STAKE_AMOUNT, 1, duration);
+
+      // Fast forward past the lock period
+      await time.increase(duration + 1);
+
       const balanceBefore = await token.balanceOf(staker1.address);
-      await core.connect(validator1).unlockWithRewards(staker1.address, totalAmount, []);
+      await core.connect(staker1).unlock();
       const balanceAfter = await token.balanceOf(staker1.address);
 
-      expect(balanceAfter - balanceBefore).to.equal(totalAmount);
+      expect(balanceAfter - balanceBefore).to.equal(STAKE_AMOUNT);
 
       // Check stake position cleared
       const position = await core.stakes(staker1.address);
@@ -298,29 +346,50 @@ describe("OmniCore", function () {
       expect(position.active).to.be.false;
     });
 
-    it("Should reject invalid merkle proof", async function () {
-      const totalAmount = STAKE_AMOUNT + ethers.parseEther("100");
-      const wrongRoot = ethers.randomBytes(32);
-
-      await core.connect(validator1).updateMasterRoot(wrongRoot, 1);
+    it("Should prevent unlock before lock period", async function () {
+      const duration = 30 * 24 * 60 * 60; // 30 days
+      await core.connect(staker1).stake(STAKE_AMOUNT, 1, duration);
 
       await expect(
-        core.connect(validator1).unlockWithRewards(staker1.address, totalAmount, [])
-      ).to.be.revertedWithCustomError(core, "InvalidProof");
+        core.connect(staker1).unlock()
+      ).to.be.revertedWithCustomError(core, "StakeLocked");
     });
 
-    it("Should prevent unlocking less than staked", async function () {
-      const unlockAmount = ethers.parseEther("500"); // Less than staked (1000)
-      const leaf = ethers.solidityPackedKeccak256(
-        ["address", "uint256"],
-        [staker1.address, unlockAmount]
-      );
+    it("Should allow immediate unlock with zero duration", async function () {
+      await core.connect(staker1).stake(STAKE_AMOUNT, 1, 0);
 
-      await core.connect(validator1).updateMasterRoot(leaf, 1);
+      const balanceBefore = await token.balanceOf(staker1.address);
+      await core.connect(staker1).unlock();
+      const balanceAfter = await token.balanceOf(staker1.address);
 
+      expect(balanceAfter - balanceBefore).to.equal(STAKE_AMOUNT);
+    });
+
+    it("Should revert unlock with no active stake", async function () {
       await expect(
-        core.connect(validator1).unlockWithRewards(staker1.address, unlockAmount, [])
-      ).to.be.revertedWithCustomError(core, "InvalidAmount");
+        core.connect(staker1).unlock()
+      ).to.be.revertedWithCustomError(core, "StakeNotFound");
+    });
+
+    it("Should update totalStaked on unlock", async function () {
+      await core.connect(staker1).stake(STAKE_AMOUNT, 1, 0);
+
+      const totalStakedBefore = await core.totalStaked();
+      await core.connect(staker1).unlock();
+      const totalStakedAfter = await core.totalStaked();
+
+      expect(totalStakedBefore - totalStakedAfter).to.equal(STAKE_AMOUNT);
+    });
+
+    it("Should emit TokensUnlocked event", async function () {
+      await core.connect(staker1).stake(STAKE_AMOUNT, 1, 0);
+
+      const tx = await core.connect(staker1).unlock();
+      const block = await ethers.provider.getBlock(tx.blockNumber);
+
+      await expect(tx)
+        .to.emit(core, "TokensUnlocked")
+        .withArgs(staker1.address, STAKE_AMOUNT, block.timestamp);
     });
   });
 
@@ -333,7 +402,7 @@ describe("OmniCore", function () {
         ethers.parseEther("3000")
       ];
       const publicKeys = [
-        ethers.hexlify(ethers.randomBytes(64)), // Simulate public key
+        ethers.hexlify(ethers.randomBytes(64)),
         ethers.hexlify(ethers.randomBytes(64)),
         ethers.hexlify(ethers.randomBytes(64))
       ];
@@ -384,11 +453,105 @@ describe("OmniCore", function () {
     });
   });
 
+  describe("Legacy Claim with Multi-Sig Signatures", function () {
+    const username = "legacyUser";
+    const balance = ethers.parseEther("5000");
+
+    beforeEach(async function () {
+      const publicKey = ethers.hexlify(ethers.randomBytes(64));
+      await core.connect(owner).registerLegacyUsers([username], [balance], [publicKey]);
+
+      // Register validator1 as a validator
+      await core.connect(owner).setValidator(validator1.address, true);
+    });
+
+    it("Should claim legacy balance with valid signature", async function () {
+      const nonce = ethers.randomBytes(32);
+      const chainId = (await ethers.provider.getNetwork()).chainId;
+
+      // Compute message hash using abi.encode (M-02 fix)
+      const messageHash = ethers.keccak256(
+        ethers.AbiCoder.defaultAbiCoder().encode(
+          ["string", "address", "bytes32", "address", "uint256"],
+          [username, staker1.address, nonce, core.target, chainId]
+        )
+      );
+
+      const ethSignedMessageHash = ethers.solidityPackedKeccak256(
+        ["string", "bytes32"],
+        ["\x19Ethereum Signed Message:\n32", messageHash]
+      );
+
+      // Sign with validator1
+      const signature = await validator1.signMessage(ethers.getBytes(messageHash));
+
+      const balanceBefore = await token.balanceOf(staker1.address);
+      await core.connect(staker1).claimLegacyBalance(
+        username, staker1.address, nonce, [signature]
+      );
+      const balanceAfter = await token.balanceOf(staker1.address);
+
+      expect(balanceAfter - balanceBefore).to.equal(balance);
+    });
+
+    it("Should prevent double claim", async function () {
+      const nonce = ethers.randomBytes(32);
+      const chainId = (await ethers.provider.getNetwork()).chainId;
+
+      const messageHash = ethers.keccak256(
+        ethers.AbiCoder.defaultAbiCoder().encode(
+          ["string", "address", "bytes32", "address", "uint256"],
+          [username, staker1.address, nonce, core.target, chainId]
+        )
+      );
+
+      const signature = await validator1.signMessage(ethers.getBytes(messageHash));
+
+      await core.connect(staker1).claimLegacyBalance(
+        username, staker1.address, nonce, [signature]
+      );
+
+      // Try to claim again
+      await expect(
+        core.connect(staker1).claimLegacyBalance(
+          username, staker1.address, nonce, [signature]
+        )
+      ).to.be.revertedWithCustomError(core, "InvalidAmount");
+    });
+  });
+
+  describe("initializeV2 (M-05)", function () {
+    it("Should restrict initializeV2 to ADMIN_ROLE", async function () {
+      await expect(
+        core.connect(staker1).initializeV2()
+      ).to.be.reverted;
+    });
+  });
+
+  describe("Required Signatures Management", function () {
+    it("Should allow admin to set required signatures", async function () {
+      await core.connect(owner).setRequiredSignatures(3);
+      expect(await core.requiredSignatures()).to.equal(3);
+    });
+
+    it("Should reject zero required signatures", async function () {
+      await expect(
+        core.connect(owner).setRequiredSignatures(0)
+      ).to.be.revertedWithCustomError(core, "InvalidAmount");
+    });
+
+    it("Should reject required signatures above MAX_REQUIRED_SIGNATURES", async function () {
+      await expect(
+        core.connect(owner).setRequiredSignatures(6)
+      ).to.be.revertedWithCustomError(core, "InvalidAmount");
+    });
+  });
+
   describe("Integration", function () {
     it("Should work with multiple stakers", async function () {
-      // Multiple users stake
+      // Both stakers use tier 1 (>= 1 XOM) with valid durations
       await core.connect(staker1).stake(ethers.parseEther("1000"), 1, 30 * 24 * 60 * 60);
-      await core.connect(staker2).stake(ethers.parseEther("2000"), 2, 60 * 24 * 60 * 60);
+      await core.connect(staker2).stake(ethers.parseEther("2000"), 1, 180 * 24 * 60 * 60);
 
       // Check positions
       const position1 = await core.stakes(staker1.address);
@@ -398,7 +561,7 @@ describe("OmniCore", function () {
       expect(position1.tier).to.equal(1);
 
       expect(position2.amount).to.equal(ethers.parseEther("2000"));
-      expect(position2.tier).to.equal(2);
+      expect(position2.tier).to.equal(1);
     });
 
     it("Should handle service lookups", async function () {
@@ -410,6 +573,18 @@ describe("OmniCore", function () {
       // Verify lookups
       expect(await core.services(ethers.id("token"))).to.equal(token.target);
       expect(await core.services(ethers.id("nonexistent"))).to.equal(ethers.ZeroAddress);
+    });
+
+    it("Should track totalStaked correctly with multiple stakers", async function () {
+      await core.connect(staker1).stake(ethers.parseEther("1000"), 1, 0);
+      await core.connect(staker2).stake(ethers.parseEther("2000"), 1, 0);
+
+      expect(await core.totalStaked()).to.equal(ethers.parseEther("3000"));
+
+      // Unlock staker1
+      await core.connect(staker1).unlock();
+
+      expect(await core.totalStaked()).to.equal(ethers.parseEther("2000"));
     });
   });
 });

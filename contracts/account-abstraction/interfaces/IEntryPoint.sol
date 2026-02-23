@@ -49,7 +49,7 @@ interface IEntryPoint {
     event UserOperationRevertReason(
         bytes32 indexed userOpHash,
         address indexed sender,
-        uint256 nonce,
+        uint256 indexed nonce,
         bytes revertReason
     );
 

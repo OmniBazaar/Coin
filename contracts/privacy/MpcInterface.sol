@@ -34,8 +34,8 @@ interface ExtendedOperations {
     function Decrypt(bytes1 metaData, uint256 a) external returns (uint256 result);
     function Mux(bytes3 metaData, uint256 bit, uint256 a,uint256 b) external returns (uint256 result);
     function Not(bytes1 metaData, uint256 a) external returns (uint256 result);
-    function Transfer(bytes4 metaData, uint256 a, uint256 b, uint256 amount) external returns (uint256 new_a, uint256 new_b, uint256 res);
-    function TransferWithAllowance(bytes5 metaData, uint256 a, uint256 b, uint256 amount, uint256 allowance) external returns (uint256 new_a, uint256 new_b, uint256 res, uint256 new_allowance);
+    function Transfer(bytes4 metaData, uint256 a, uint256 b, uint256 amount) external returns (uint256 newA, uint256 newB, uint256 res);
+    function TransferWithAllowance(bytes5 metaData, uint256 a, uint256 b, uint256 amount, uint256 allowance) external returns (uint256 newA, uint256 newB, uint256 res, uint256 newAllowance);
     function ValidateCiphertext(bytes1 metaData, uint256 ciphertext, bytes calldata signature) external returns (uint256 result);
     function GetUserKey(bytes calldata signedEK) external returns (bytes memory encryptedKey);
     function SHA256Fixed432BitInput(uint256 amount, uint256 seed1, uint256 seed2, uint256 padding1, uint256 padding2, bytes calldata addr) external returns (bytes memory result);

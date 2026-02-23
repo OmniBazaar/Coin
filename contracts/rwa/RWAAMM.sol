@@ -8,6 +8,7 @@ import {ECDSA} from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 import {MessageHashUtils} from "@openzeppelin/contracts/utils/cryptography/MessageHashUtils.sol";
 import {IRWAAMM} from "./interfaces/IRWAAMM.sol";
 import {IRWAComplianceOracle} from "./interfaces/IRWAComplianceOracle.sol";
+import {IRWAFeeCollector} from "./interfaces/IRWAFeeCollector.sol";
 import {RWAPool} from "./RWAPool.sol";
 
 /**
@@ -89,6 +90,10 @@ contract RWAAMM is IRWAAMM, ReentrancyGuard {
     /// @notice Compliance oracle contract
     IRWAComplianceOracle public immutable COMPLIANCE_ORACLE;
 
+    /// @notice Deployer address (initial pool creator)
+    // solhint-disable-next-line var-name-mixedcase
+    address private immutable DEPLOYER;
+
     // ========================================================================
     // STATE VARIABLES
     // ========================================================================
@@ -107,6 +112,9 @@ contract RWAAMM is IRWAAMM, ReentrancyGuard {
 
     /// @notice Array of all pool IDs
     bytes32[] private _allPoolIds;
+
+    /// @notice Authorized pool creators (prevents uncontrolled pool creation)
+    mapping(address => bool) private _poolCreators;
 
     // ========================================================================
     // ERRORS
@@ -133,8 +141,17 @@ contract RWAAMM is IRWAAMM, ReentrancyGuard {
     /// @notice Thrown when duplicate signature detected
     error DuplicateSignature(address signer);
 
+    /// @notice Thrown when duplicate emergency signer provided at deployment
+    error DuplicateSigner(address signer);
+
     /// @notice Thrown when nonce is invalid
     error InvalidNonce(uint256 expected, uint256 provided);
+
+    /// @notice Thrown when caller lacks the pool creator role
+    error NotPoolCreator();
+
+    /// @notice Thrown when invalid signer address
+    error InvalidSigner();
 
     // ========================================================================
     // CONSTRUCTOR (IMMUTABLE PARAMETERS SET HERE)
@@ -148,6 +165,7 @@ contract RWAAMM is IRWAAMM, ReentrancyGuard {
      * @param _xomToken XOM token address
      * @param _complianceOracle Compliance oracle contract
      */
+    // solhint-disable-next-line code-complexity
     constructor(
         address[5] memory _emergencyMultisig,
         address _feeCollector,
@@ -157,6 +175,15 @@ contract RWAAMM is IRWAAMM, ReentrancyGuard {
         // Validate all emergency signer addresses
         for (uint256 i = 0; i < MULTISIG_COUNT; ++i) {
             if (_emergencyMultisig[i] == address(0)) revert ZeroAddress();
+        }
+
+        // Check for duplicate signers (immutable, cannot fix after deploy)
+        for (uint256 i = 0; i < MULTISIG_COUNT; ++i) {
+            for (uint256 j = i + 1; j < MULTISIG_COUNT; ++j) {
+                if (_emergencyMultisig[i] == _emergencyMultisig[j]) {
+                    revert DuplicateSigner(_emergencyMultisig[i]);
+                }
+            }
         }
 
         // Set emergency signers individually (immutable)
@@ -173,6 +200,10 @@ contract RWAAMM is IRWAAMM, ReentrancyGuard {
         FEE_COLLECTOR = _feeCollector;
         XOM_TOKEN = _xomToken;
         COMPLIANCE_ORACLE = IRWAComplianceOracle(_complianceOracle);
+
+        // Deployer is the initial pool creator
+        DEPLOYER = msg.sender;
+        _poolCreators[msg.sender] = true;
     }
 
     // ========================================================================
@@ -183,9 +214,11 @@ contract RWAAMM is IRWAAMM, ReentrancyGuard {
      * @notice Ensure deadline has not passed
      * @param deadline Transaction deadline timestamp
      */
+    // solhint-disable-next-line ordering
     modifier checkDeadline(uint256 deadline) {
         // solhint-disable-next-line not-rely-on-time
         if (block.timestamp > deadline) {
+            // solhint-disable-next-line not-rely-on-time
             revert DeadlineExpired(deadline, block.timestamp);
         }
         _;
@@ -364,35 +397,25 @@ contract RWAAMM is IRWAAMM, ReentrancyGuard {
         address token0,
         address token1
     ) external whenNotPaused returns (bytes32 poolId, address poolAddress) {
-        if (token0 == token1) revert IdenticalTokens();
-        if (token0 == address(0) || token1 == address(0)) revert ZeroAddress();
-
-        // Sort tokens for consistent ordering
-        (address tokenA, address tokenB) = token0 < token1
-            ? (token0, token1)
-            : (token1, token0);
-
-        poolId = getPoolId(tokenA, tokenB);
-        if (_pools[poolId] != address(0)) revert PoolAlreadyExists(poolId);
-
-        // Deploy new pool contract
-        RWAPool pool = new RWAPool();
-        pool.initialize(tokenA, tokenB);
-
-        _pools[poolId] = address(pool);
-        _allPoolIds.push(poolId);
-
-        emit PoolCreated(poolId, tokenA, tokenB, msg.sender);
-
-        poolAddress = address(pool);
+        if (!_poolCreators[msg.sender]) revert NotPoolCreator();
+        return _createPool(token0, token1);
     }
 
     // ========================================================================
     // SWAP FUNCTIONS
     // ========================================================================
 
+    /* solhint-disable code-complexity */
     /**
-     * @inheritdoc IRWAAMM
+     * @notice Execute token swap with fee splitting
+     * @dev Routes through compliance checks, calculates 70/20/10 fee split,
+     *      and executes the constant-product swap on the pool.
+     * @param tokenIn Input token address
+     * @param tokenOut Output token address
+     * @param amountIn Input amount
+     * @param amountOutMin Minimum output amount (slippage protection)
+     * @param deadline Transaction deadline
+     * @return result Swap result information
      */
     function swap(
         address tokenIn,
@@ -428,24 +451,40 @@ contract RWAAMM is IRWAAMM, ReentrancyGuard {
             ? (reserve0, reserve1)
             : (reserve1, reserve0);
 
-        // Calculate protocol fee
+        // Calculate protocol fee (0.30% of amountIn)
         uint256 protocolFee = (amountIn * PROTOCOL_FEE_BPS) / BPS_DENOMINATOR;
         uint256 amountInAfterFee = amountIn - protocolFee;
 
-        // Calculate output amount
-        uint256 amountOut = (reserveOut * amountInAfterFee) / (reserveIn + amountInAfterFee);
+        // Split protocol fee: 70% stays in pool (LP revenue),
+        // 30% goes to FeeCollector (20% staking + 10% liquidity)
+        uint256 lpFee = (protocolFee * FEE_LP_BPS) / BPS_DENOMINATOR;
+        uint256 collectorFee = protocolFee - lpFee;
+
+        // Calculate output amount (LP fee portion stays in pool
+        // to increase reserves and benefit liquidity providers)
+        uint256 amountToPool = amountInAfterFee + lpFee;
+        uint256 amountOut = (reserveOut * amountInAfterFee)
+            / (reserveIn + amountInAfterFee);
 
         // Check slippage
         if (amountOut < amountOutMin) {
             revert SlippageExceeded(amountOutMin, amountOut);
         }
 
-        // Transfer input tokens from user to pool
-        IERC20(tokenIn).safeTransferFrom(msg.sender, poolAddr, amountInAfterFee);
+        // Transfer input tokens to pool (trade amount + LP fee)
+        IERC20(tokenIn).safeTransferFrom(
+            msg.sender, poolAddr, amountToPool
+        );
 
-        // Transfer protocol fee to fee collector
-        if (protocolFee > 0) {
-            IERC20(tokenIn).safeTransferFrom(msg.sender, FEE_COLLECTOR, protocolFee);
+        // Transfer collector fee (20% staking + 10% liquidity)
+        // and notify FeeCollector for internal accounting
+        if (collectorFee > 0) {
+            IERC20(tokenIn).safeTransferFrom(
+                msg.sender, FEE_COLLECTOR, collectorFee
+            );
+            IRWAFeeCollector(FEE_COLLECTOR).notifyFeeReceived(
+                tokenIn, collectorFee
+            );
         }
 
         // Execute swap on pool
@@ -479,13 +518,27 @@ contract RWAAMM is IRWAAMM, ReentrancyGuard {
 
         emit Swap(msg.sender, tokenIn, tokenOut, amountIn, amountOut, protocolFee);
     }
+    /* solhint-enable code-complexity */
 
     // ========================================================================
     // LIQUIDITY FUNCTIONS
     // ========================================================================
 
+    /* solhint-disable code-complexity */
     /**
-     * @inheritdoc IRWAAMM
+     * @notice Add liquidity to a token pair pool
+     * @dev Creates pool if it doesn't exist. Calculates optimal amounts
+     *      based on current reserves. Enforces compliance checks.
+     * @param token0 First token address
+     * @param token1 Second token address
+     * @param amount0Desired Desired amount of token0
+     * @param amount1Desired Desired amount of token1
+     * @param amount0Min Minimum amount of token0
+     * @param amount1Min Minimum amount of token1
+     * @param deadline Transaction deadline
+     * @return amount0 Actual token0 deposited
+     * @return amount1 Actual token1 deposited
+     * @return liquidity LP tokens minted
      */
     function addLiquidity(
         address token0,
@@ -508,23 +561,30 @@ contract RWAAMM is IRWAAMM, ReentrancyGuard {
         bytes32 poolId = getPoolId(token0, token1);
         address poolAddr = _pools[poolId];
 
-        // Create pool if it doesn't exist
+        // Create pool if it doesn't exist (requires pool creator role)
         if (poolAddr == address(0)) {
-            (, poolAddr) = this.createPool(token0, token1);
+            if (!_poolCreators[msg.sender]) revert NotPoolCreator();
+            (, poolAddr) = _createPool(token0, token1);
         }
 
         if (_poolPaused[poolId]) revert PoolPaused(poolId);
 
+        // Check compliance for both tokens (RWA tokens require
+        // KYC/accreditation for all interactions, including liquidity)
+        if (_isComplianceRequired(token0, token1)) {
+            _checkLiquidityCompliance(msg.sender, token0, token1);
+        }
+
         RWAPool pool = RWAPool(poolAddr);
         (uint256 reserve0, uint256 reserve1, ) = pool.getReserves();
 
-        // Determine token order
+        // Determine token order — swap user amounts to match pool's
+        // canonical token0/token1 ordering. Do NOT swap reserves;
+        // they are already in pool order from getReserves().
         bool isToken0First = pool.token0() == token0;
         if (!isToken0First) {
-            // Swap amounts to match pool order
             (amount0Desired, amount1Desired) = (amount1Desired, amount0Desired);
             (amount0Min, amount1Min) = (amount1Min, amount0Min);
-            (reserve0, reserve1) = (reserve1, reserve0);
         }
 
         // Calculate optimal amounts
@@ -532,6 +592,7 @@ contract RWAAMM is IRWAAMM, ReentrancyGuard {
             (amount0, amount1) = (amount0Desired, amount1Desired);
         } else {
             uint256 amount1Optimal = (amount0Desired * reserve1) / reserve0;
+            // solhint-disable-next-line gas-strict-inequalities
             if (amount1Optimal <= amount1Desired) {
                 if (amount1Optimal < amount1Min) {
                     revert SlippageExceeded(amount1Min, amount1Optimal);
@@ -563,6 +624,7 @@ contract RWAAMM is IRWAAMM, ReentrancyGuard {
 
         emit LiquidityAdded(msg.sender, poolId, amount0, amount1, liquidity);
     }
+    /* solhint-enable code-complexity */
 
     /**
      * @inheritdoc IRWAAMM
@@ -576,6 +638,7 @@ contract RWAAMM is IRWAAMM, ReentrancyGuard {
         uint256 deadline
     ) external override
         nonReentrant
+        whenNotPaused
         checkDeadline(deadline)
         returns (
             uint256 amount0,
@@ -585,6 +648,11 @@ contract RWAAMM is IRWAAMM, ReentrancyGuard {
         bytes32 poolId = getPoolId(token0, token1);
         address poolAddr = _pools[poolId];
         if (poolAddr == address(0)) revert PoolNotFound(poolId);
+
+        // Check compliance for both tokens before withdrawal
+        if (_isComplianceRequired(token0, token1)) {
+            _checkLiquidityCompliance(msg.sender, token0, token1);
+        }
 
         RWAPool pool = RWAPool(poolAddr);
 
@@ -604,6 +672,64 @@ contract RWAAMM is IRWAAMM, ReentrancyGuard {
         if (amount1 < amount1Min) revert SlippageExceeded(amount1Min, amount1);
 
         emit LiquidityRemoved(msg.sender, poolId, amount0, amount1, liquidity);
+    }
+
+    // ========================================================================
+    // POOL CREATOR MANAGEMENT
+    // ========================================================================
+
+    /**
+     * @notice Emitted when a pool creator is added or removed
+     * @param creator Creator address
+     * @param authorized True if added, false if removed
+     */
+    event PoolCreatorUpdated(
+        address indexed creator,
+        bool indexed authorized
+    );
+
+    /**
+     * @notice Add or remove an authorized pool creator
+     * @dev Only callable via multi-sig (3-of-5) for security.
+     *      Pool creation must be controlled to prevent creation of
+     *      pools for unregistered wrapper tokens that bypass compliance.
+     * @param creator Address to authorize or deauthorize
+     * @param authorized True to add, false to remove
+     * @param signatures Multi-sig signatures
+     */
+    function setPoolCreator(
+        address creator,
+        bool authorized,
+        bytes[] calldata signatures
+    ) external {
+        if (creator == address(0)) revert ZeroAddress();
+
+        bytes32 messageHash = keccak256(abi.encodePacked(
+            "SET_POOL_CREATOR",
+            creator,
+            authorized,
+            _emergencyNonce,
+            block.chainid,
+            address(this)
+        ));
+
+        _verifyMultiSig(messageHash, signatures);
+        ++_emergencyNonce;
+
+        _poolCreators[creator] = authorized;
+
+        emit PoolCreatorUpdated(creator, authorized);
+    }
+
+    /**
+     * @notice Check if an address is an authorized pool creator
+     * @param creator Address to check
+     * @return True if authorized
+     */
+    function isPoolCreator(
+        address creator
+    ) external view returns (bool) {
+        return _poolCreators[creator];
     }
 
     // ========================================================================
@@ -671,7 +797,7 @@ contract RWAAMM is IRWAAMM, ReentrancyGuard {
             _poolPaused[poolId] = false;
         }
 
-        emit EmergencyPaused(poolId, msg.sender, "UNPAUSED");
+        emit EmergencyUnpaused(poolId, msg.sender);
     }
 
     // ========================================================================
@@ -724,6 +850,46 @@ contract RWAAMM is IRWAAMM, ReentrancyGuard {
     }
 
     /**
+     * @notice Internal pool creation logic
+     * @dev Deploys a new RWAPool and registers it. Shared by createPool()
+     *      and addLiquidity() (auto-creation path).
+     * @param token0 First token address
+     * @param token1 Second token address
+     * @return poolId The pool identifier
+     * @return poolAddress The deployed pool contract address
+     */
+    function _createPool(
+        address token0,
+        address token1
+    ) internal returns (bytes32 poolId, address poolAddress) {
+        if (token0 == token1) revert IdenticalTokens();
+        if (token0 == address(0) || token1 == address(0)) {
+            revert ZeroAddress();
+        }
+
+        // Sort tokens for consistent ordering
+        (address tokenA, address tokenB) = token0 < token1
+            ? (token0, token1)
+            : (token1, token0);
+
+        poolId = getPoolId(tokenA, tokenB);
+        if (_pools[poolId] != address(0)) {
+            revert PoolAlreadyExists(poolId);
+        }
+
+        // Deploy new pool contract
+        RWAPool pool = new RWAPool();
+        pool.initialize(tokenA, tokenB);
+
+        _pools[poolId] = address(pool);
+        _allPoolIds.push(poolId);
+
+        emit PoolCreated(poolId, tokenA, tokenB, msg.sender);
+
+        poolAddress = address(pool);
+    }
+
+    /**
      * @notice Check if compliance is required for token pair
      * @param tokenA First token address
      * @param tokenB Second token address
@@ -752,13 +918,55 @@ contract RWAAMM is IRWAAMM, ReentrancyGuard {
         uint256 amountIn
     ) internal view {
         (bool inputCompliant, bool outputCompliant, string memory reason) =
-            COMPLIANCE_ORACLE.checkSwapCompliance(user, tokenIn, tokenOut, amountIn);
+            COMPLIANCE_ORACLE.checkSwapCompliance(
+                user, tokenIn, tokenOut, amountIn
+            );
 
         if (!inputCompliant) {
             revert ComplianceCheckFailed(user, tokenIn, reason);
         }
         if (!outputCompliant) {
             revert ComplianceCheckFailed(user, tokenOut, reason);
+        }
+    }
+
+    /**
+     * @notice Check liquidity compliance for both tokens
+     * @dev Verifies that the user passes compliance for each registered
+     *      token individually. LP positions grant exposure to underlying
+     *      assets, so compliance must be checked before add/remove.
+     * @param user User address to check
+     * @param tokenA First token in the pair
+     * @param tokenB Second token in the pair
+     */
+    function _checkLiquidityCompliance(
+        address user,
+        address tokenA,
+        address tokenB
+    ) internal view {
+        if (COMPLIANCE_ORACLE.isTokenRegistered(tokenA)) {
+            IRWAComplianceOracle.ComplianceResult memory resultA =
+                COMPLIANCE_ORACLE.checkCompliance(user, tokenA);
+            if (
+                resultA.status
+                    != IRWAComplianceOracle.ComplianceStatus.COMPLIANT
+            ) {
+                revert ComplianceCheckFailed(
+                    user, tokenA, resultA.reason
+                );
+            }
+        }
+        if (COMPLIANCE_ORACLE.isTokenRegistered(tokenB)) {
+            IRWAComplianceOracle.ComplianceResult memory resultB =
+                COMPLIANCE_ORACLE.checkCompliance(user, tokenB);
+            if (
+                resultB.status
+                    != IRWAComplianceOracle.ComplianceStatus.COMPLIANT
+            ) {
+                revert ComplianceCheckFailed(
+                    user, tokenB, resultB.reason
+                );
+            }
         }
     }
 }

@@ -214,22 +214,39 @@ describe("OmniNFTCollection", function () {
     let merkleTree;
     let merkleRoot;
 
+    /**
+     * M-03 audit fix: Merkle leaf now includes block.chainid, contract
+     * address, and activePhase to prevent cross-chain / cross-collection /
+     * cross-phase proof reuse.
+     */
+    function buildLeaf(collectionAddr, phaseId, userAddr) {
+      return ethers.keccak256(
+        ethers.solidityPacked(
+          ["uint256", "address", "uint8", "address"],
+          [1337, collectionAddr, phaseId, userAddr]  // hardhat chainId = 1337
+        )
+      );
+    }
+
     beforeEach(async function () {
       coll = await deployInitializedCollection();
+      const collAddr = await coll.getAddress();
+      const phaseId = 1;
 
-      // Build Merkle tree with user1 and user2
+      // Build Merkle tree with user1 and user2 using the M-03 leaf format
       const leaves = [user1.address, user2.address].map((addr) =>
-        ethers.keccak256(ethers.solidityPacked(["address"], [addr]))
+        buildLeaf(collAddr, phaseId, addr)
       );
       merkleTree = new MerkleTree(leaves, keccak256, { sortPairs: true });
       merkleRoot = merkleTree.getHexRoot();
 
-      await coll.connect(creator).setPhase(1, 0, 3, merkleRoot);
-      await coll.connect(creator).setActivePhase(1);
+      await coll.connect(creator).setPhase(phaseId, 0, 3, merkleRoot);
+      await coll.connect(creator).setActivePhase(phaseId);
     });
 
     it("Should allow whitelisted user to mint", async function () {
-      const leaf = ethers.keccak256(ethers.solidityPacked(["address"], [user1.address]));
+      const collAddr = await coll.getAddress();
+      const leaf = buildLeaf(collAddr, 1, user1.address);
       const proof = merkleTree.getHexProof(leaf);
 
       await coll.connect(user1).mint(1, proof);
@@ -237,7 +254,8 @@ describe("OmniNFTCollection", function () {
     });
 
     it("Should reject non-whitelisted user", async function () {
-      const leaf = ethers.keccak256(ethers.solidityPacked(["address"], [user3.address]));
+      const collAddr = await coll.getAddress();
+      const leaf = buildLeaf(collAddr, 1, user3.address);
       const proof = merkleTree.getHexProof(leaf);
 
       await expect(
@@ -267,8 +285,12 @@ describe("OmniNFTCollection", function () {
     });
 
     it("Should enforce max supply on batch mint", async function () {
+      // H-01 added MAX_BATCH_SIZE = 100, which equals MAX_SUPPLY here.
+      // First batch mint 50, then try to mint 51 more (within batch limit
+      // but exceeding total supply).
+      await coll.connect(creator).batchMint(creator.address, 50);
       await expect(
-        coll.connect(creator).batchMint(creator.address, MAX_SUPPLY + 1)
+        coll.connect(creator).batchMint(creator.address, 51)
       ).to.be.revertedWithCustomError(coll, "MaxSupplyExceeded");
     });
   });

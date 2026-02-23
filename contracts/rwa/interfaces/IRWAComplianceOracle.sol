@@ -94,7 +94,7 @@ interface IRWAComplianceOracle {
     event ComplianceCached(
         address indexed user,
         address indexed token,
-        uint256 validUntil
+        uint256 indexed validUntil
     );
 
     // ========================================================================
@@ -189,6 +189,7 @@ interface IRWAComplianceOracle {
     // STATE-CHANGING FUNCTIONS
     // ========================================================================
 
+    /* solhint-disable ordering */
     /**
      * @notice Register token for compliance checking
      * @param token Token address
@@ -216,4 +217,5 @@ interface IRWAComplianceOracle {
         address[] calldata users,
         address[] calldata tokens
     ) external view returns (ComplianceResult[] memory results);
+    /* solhint-enable ordering */
 }

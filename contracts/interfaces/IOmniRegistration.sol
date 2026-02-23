@@ -224,6 +224,13 @@ interface IOmniRegistration {
     function totalRegistrations() external view returns (uint256);
 
     /**
+     * @notice Check if user has completed their first marketplace sale
+     * @param user The user address
+     * @return True if the user has completed at least one sale
+     */
+    function hasCompletedFirstSale(address user) external view returns (bool);
+
+    /**
      * @notice Get registration deposit amount
      * @return Deposit in wei
      */

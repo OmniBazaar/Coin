@@ -5,6 +5,7 @@ import {IAccount, UserOperation} from "./interfaces/IAccount.sol";
 import {ECDSA} from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 import {MessageHashUtils} from "@openzeppelin/contracts/utils/cryptography/MessageHashUtils.sol";
 import {Initializable} from "@openzeppelin/contracts/proxy/utils/Initializable.sol";
+import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
 /**
  * @title OmniAccount
@@ -19,7 +20,7 @@ import {Initializable} from "@openzeppelin/contracts/proxy/utils/Initializable.s
  *      - Session keys with time-limited permissions
  *      - Daily spending limits per token
  */
-contract OmniAccount is IAccount, Initializable {
+contract OmniAccount is IAccount, Initializable, ReentrancyGuard {
     using ECDSA for bytes32;
     using MessageHashUtils for bytes32;
 
@@ -52,13 +53,14 @@ contract OmniAccount is IAccount, Initializable {
     }
 
     /// @notice Pending recovery request
+    /// @dev Packed: newOwner (20 bytes) + initiatedAt (6 bytes) = 26 bytes in slot 1
     struct RecoveryRequest {
         /// @notice Proposed new owner
         address newOwner;
-        /// @notice Number of guardian approvals received
-        uint256 approvalCount;
         /// @notice Timestamp when recovery was initiated
         uint48 initiatedAt;
+        /// @notice Number of guardian approvals received
+        uint256 approvalCount;
         /// @notice Mapping of guardian approvals
         mapping(address => bool) approvals;
     }
@@ -83,12 +85,18 @@ contract OmniAccount is IAccount, Initializable {
     /// @dev For 3 guardians = 2 approvals, 5 guardians = 3 approvals, 7 guardians = 4 approvals
     uint256 internal constant RECOVERY_DELAY = 2 days;
 
+    /// @notice ERC-20 transfer(address,uint256) selector
+    bytes4 internal constant ERC20_TRANSFER = 0xa9059cbb;
+
+    /// @notice ERC-20 approve(address,uint256) selector
+    bytes4 internal constant ERC20_APPROVE = 0x095ea7b3;
+
     // ══════════════════════════════════════════════════════════════
     //                      STATE VARIABLES
     // ══════════════════════════════════════════════════════════════
 
     /// @notice The ERC-4337 EntryPoint contract
-    address public immutable entryPoint;
+    address public immutable entryPoint; // solhint-disable-line immutable-vars-naming
 
     /// @notice Account owner (can execute arbitrary calls, change settings)
     address public owner;
@@ -119,7 +127,7 @@ contract OmniAccount is IAccount, Initializable {
     /// @param target Contract called
     /// @param value Native token value sent
     /// @param data Calldata executed
-    event Executed(address indexed target, uint256 value, bytes data);
+    event Executed(address indexed target, uint256 indexed value, bytes data);
 
     /// @notice Emitted when ownership is transferred
     /// @param previousOwner Old owner address
@@ -138,7 +146,11 @@ contract OmniAccount is IAccount, Initializable {
     /// @param signer Session key signer address
     /// @param validUntil Expiration timestamp
     /// @param allowedTarget Scoped target contract
-    event SessionKeyAdded(address indexed signer, uint48 validUntil, address allowedTarget);
+    event SessionKeyAdded(
+        address indexed signer,
+        uint48 indexed validUntil,
+        address indexed allowedTarget
+    );
 
     /// @notice Emitted when a session key is revoked
     /// @param signer Revoked session key address
@@ -147,7 +159,7 @@ contract OmniAccount is IAccount, Initializable {
     /// @notice Emitted when a spending limit is set
     /// @param token Token address (address(0) for native)
     /// @param dailyLimit Maximum daily spend
-    event SpendingLimitSet(address indexed token, uint256 dailyLimit);
+    event SpendingLimitSet(address indexed token, uint256 indexed dailyLimit);
 
     /// @notice Emitted when recovery is initiated
     /// @param newOwner Proposed new owner
@@ -223,6 +235,9 @@ contract OmniAccount is IAccount, Initializable {
     /// @notice Invalid address (zero address)
     error InvalidAddress();
 
+    /// @notice Guardian management is frozen during active recovery
+    error GuardiansFrozenDuringRecovery();
+
     // ══════════════════════════════════════════════════════════════
     //                        MODIFIERS
     // ══════════════════════════════════════════════════════════════
@@ -277,6 +292,9 @@ contract OmniAccount is IAccount, Initializable {
         _disableInitializers();
     }
 
+    /// @notice Allow the account to receive native tokens
+    receive() external payable {} // solhint-disable-line no-empty-blocks
+
     /**
      * @notice Initialize the account with an owner (called by factory)
      * @param owner_ The initial owner of this smart account
@@ -325,6 +343,11 @@ contract OmniAccount is IAccount, Initializable {
         // Check if signer is an active session key
         SessionKey storage sk = sessionKeys[signer];
         if (sk.active && sk.signer == signer) {
+            // Enforce session key target and value constraints on callData
+            if (!_validateSessionKeyCallData(userOp.callData, sk)) {
+                return SIG_VALIDATION_FAILED;
+            }
+
             // Pack validUntil into validation data (bits 160-207)
             return uint256(sk.validUntil) << 160;
         }
@@ -348,7 +371,20 @@ contract OmniAccount is IAccount, Initializable {
         address target,
         uint256 value,
         bytes calldata data
-    ) external onlyOwnerOrEntryPoint returns (bytes memory result) {
+    ) external onlyOwnerOrEntryPoint nonReentrant returns (bytes memory result) {
+        // Enforce spending limits only for EntryPoint calls (session key path).
+        // Direct owner calls are unrestricted.
+        if (msg.sender == entryPoint) {
+            // Check native token spending limit
+            if (value > 0) {
+                _checkAndUpdateSpendingLimit(address(0), value);
+            }
+            // Check ERC-20 transfer/approve spending limits
+            if (data.length > 3) {
+                _checkERC20SpendingLimit(target, data);
+            }
+        }
+
         // solhint-disable-next-line avoid-low-level-calls
         (bool success, bytes memory returnData) = target.call{value: value}(data);
         if (!success) revert ExecutionFailed(target);
@@ -367,7 +403,7 @@ contract OmniAccount is IAccount, Initializable {
         address[] calldata targets,
         uint256[] calldata values,
         bytes[] calldata datas
-    ) external onlyOwnerOrEntryPoint {
+    ) external onlyOwnerOrEntryPoint nonReentrant {
         uint256 len = targets.length;
         if (len != values.length || len != datas.length) revert BatchLengthMismatch();
 
@@ -402,9 +438,12 @@ contract OmniAccount is IAccount, Initializable {
      * @param guardian Address of the new guardian
      */
     function addGuardian(address guardian) external onlyOwner {
+        if (recoveryRequest.initiatedAt > 0) {
+            revert GuardiansFrozenDuringRecovery();
+        }
         if (guardian == address(0)) revert InvalidAddress();
         if (isGuardian[guardian]) revert AlreadyGuardian();
-        if (guardians.length >= MAX_GUARDIANS) revert TooManyGuardians();
+        if (guardians.length > MAX_GUARDIANS - 1) revert TooManyGuardians();
 
         guardians.push(guardian);
         isGuardian[guardian] = true;
@@ -416,6 +455,9 @@ contract OmniAccount is IAccount, Initializable {
      * @param guardian Address to remove
      */
     function removeGuardian(address guardian) external onlyOwner {
+        if (recoveryRequest.initiatedAt > 0) {
+            revert GuardiansFrozenDuringRecovery();
+        }
         if (!isGuardian[guardian]) revert NotGuardian();
 
         isGuardian[guardian] = false;
@@ -430,24 +472,6 @@ contract OmniAccount is IAccount, Initializable {
             }
         }
         emit GuardianRemoved(guardian);
-    }
-
-    /**
-     * @notice Get the number of guardians
-     * @return count Number of registered guardians
-     */
-    function guardianCount() external view returns (uint256 count) {
-        return guardians.length;
-    }
-
-    /**
-     * @notice Get the required number of approvals for recovery
-     * @return threshold Minimum approvals needed
-     */
-    function recoveryThreshold() public view returns (uint256 threshold) {
-        uint256 count = guardians.length;
-        if (count == 0) return 0;
-        return (count / 2) + 1;
     }
 
     // ══════════════════════════════════════════════════════════════
@@ -534,7 +558,7 @@ contract OmniAccount is IAccount, Initializable {
         uint256 maxValue
     ) external onlyOwner {
         if (signer == address(0)) revert InvalidAddress();
-        if (sessionKeyList.length >= MAX_SESSION_KEYS) revert TooManySessionKeys();
+        if (sessionKeyList.length > MAX_SESSION_KEYS - 1) revert TooManySessionKeys();
 
         // If replacing, don't increment list
         if (!sessionKeys[signer].active) {
@@ -572,14 +596,6 @@ contract OmniAccount is IAccount, Initializable {
         emit SessionKeyRevoked(signer);
     }
 
-    /**
-     * @notice Get the number of active session keys
-     * @return count Number of session keys
-     */
-    function sessionKeyCount() external view returns (uint256 count) {
-        return sessionKeyList.length;
-    }
-
     // ══════════════════════════════════════════════════════════════
     //                     SPENDING LIMITS
     // ══════════════════════════════════════════════════════════════
@@ -596,6 +612,26 @@ contract OmniAccount is IAccount, Initializable {
         emit SpendingLimitSet(token, dailyLimit);
     }
 
+    // ══════════════════════════════════════════════════════════════
+    //                   EXTERNAL VIEW FUNCTIONS
+    // ══════════════════════════════════════════════════════════════
+
+    /**
+     * @notice Get the number of guardians
+     * @return count Number of registered guardians
+     */
+    function guardianCount() external view returns (uint256 count) {
+        return guardians.length;
+    }
+
+    /**
+     * @notice Get the number of active session keys
+     * @return count Number of session keys
+     */
+    function sessionKeyCount() external view returns (uint256 count) {
+        return sessionKeyList.length;
+    }
+
     /**
      * @notice Check remaining spending allowance for a token
      * @param token Token address (address(0) for native)
@@ -606,17 +642,81 @@ contract OmniAccount is IAccount, Initializable {
         if (limit.dailyLimit == 0) return type(uint256).max;
 
         // solhint-disable-next-line not-rely-on-time
-        if (block.timestamp >= limit.resetTime) {
+        if (block.timestamp > limit.resetTime - 1) {
             return limit.dailyLimit;
         }
 
-        if (limit.spentToday >= limit.dailyLimit) return 0;
+        if (limit.spentToday > limit.dailyLimit - 1) return 0;
         return limit.dailyLimit - limit.spentToday;
+    }
+
+    // ══════════════════════════════════════════════════════════════
+    //                    PUBLIC VIEW FUNCTIONS
+    // ══════════════════════════════════════════════════════════════
+
+    /**
+     * @notice Get the required number of approvals for recovery
+     * @return threshold Minimum approvals needed
+     */
+    function recoveryThreshold() public view returns (uint256 threshold) {
+        uint256 count = guardians.length;
+        if (count == 0) return 0;
+        return (count / 2) + 1;
     }
 
     // ══════════════════════════════════════════════════════════════
     //                    INTERNAL FUNCTIONS
     // ══════════════════════════════════════════════════════════════
+
+    /**
+     * @notice Check and update daily spending limit for a token
+     * @dev Reverts with SpendingLimitExceeded if the spend would exceed the daily limit.
+     *      Automatically resets the daily counter when the reset time has passed.
+     *      If no limit is set (dailyLimit == 0), the function returns without enforcement.
+     * @param token Token address (address(0) for native token)
+     * @param amount Amount being spent
+     */
+    function _checkAndUpdateSpendingLimit(
+        address token,
+        uint256 amount
+    ) internal {
+        SpendingLimit storage limit = spendingLimits[token];
+        if (limit.dailyLimit == 0) return; // No limit configured
+
+        // Reset counter if new period has started
+        // solhint-disable-next-line not-rely-on-time
+        if (block.timestamp > limit.resetTime - 1) {
+            limit.spentToday = 0;
+            limit.resetTime = _nextMidnight();
+        }
+
+        if (limit.spentToday + amount > limit.dailyLimit) {
+            revert SpendingLimitExceeded();
+        }
+        limit.spentToday += amount;
+    }
+
+    /**
+     * @notice Check ERC-20 transfer/approve calldata against spending limits
+     * @dev Decodes the first 4 bytes of data to identify transfer or approve calls,
+     *      then extracts the amount and checks against the spending limit for the
+     *      target token contract.
+     * @param token The target contract address (presumed to be an ERC-20 token)
+     * @param data The calldata being sent to the target
+     */
+    function _checkERC20SpendingLimit(
+        address token,
+        bytes calldata data
+    ) internal {
+        bytes4 selector = bytes4(data[:4]);
+
+        // Only enforce for transfer(address,uint256) and approve(address,uint256)
+        if (selector == ERC20_TRANSFER || selector == ERC20_APPROVE) {
+            if (data.length < 68) return; // 4 + 32 + 32
+            (, uint256 amount) = abi.decode(data[4:68], (address, uint256));
+            _checkAndUpdateSpendingLimit(token, amount);
+        }
+    }
 
     /**
      * @notice Clear the current recovery request
@@ -635,6 +735,47 @@ contract OmniAccount is IAccount, Initializable {
     }
 
     /**
+     * @notice Validate that session key callData respects target and value constraints
+     * @dev Session keys may only call execute(address,uint256,bytes). executeBatch and
+     *      all other selectors are rejected. If allowedTarget is set, the decoded target
+     *      must match. If maxValue is set, the decoded value must not exceed it.
+     * @param callData The callData from the UserOperation
+     * @param sk The session key to validate against
+     * @return valid True if the call is permitted under the session key constraints
+     */
+    function _validateSessionKeyCallData(
+        bytes calldata callData,
+        SessionKey storage sk
+    ) internal view returns (bool valid) {
+        // Minimum length: 4 bytes selector + 32 target + 32 value + 32 data offset = 100
+        if (callData.length < 100) return false;
+
+        // Session keys may only call execute(address,uint256,bytes)
+        bytes4 selector = bytes4(callData[:4]);
+        // solhint-disable-next-line max-line-length
+        if (selector != bytes4(keccak256("execute(address,uint256,bytes)"))) {
+            return false;
+        }
+
+        // Decode target and value from callData
+        (address target, uint256 value,) = abi.decode(
+            callData[4:],
+            (address, uint256, bytes)
+        );
+
+        // Validate target constraint (address(0) means any target is allowed)
+        if (sk.allowedTarget != address(0) && target != sk.allowedTarget) {
+            return false;
+        }
+
+        // Validate value constraint (maxValue == 0 means no native transfers allowed)
+        if (sk.maxValue == 0 && value > 0) return false;
+        if (sk.maxValue > 0 && value > sk.maxValue) return false;
+
+        return true;
+    }
+
+    /**
      * @notice Calculate the next midnight UTC timestamp
      * @return midnight Unix timestamp of next midnight UTC
      */
@@ -642,11 +783,4 @@ contract OmniAccount is IAccount, Initializable {
         // solhint-disable-next-line not-rely-on-time
         return uint48(((block.timestamp / 1 days) + 1) * 1 days);
     }
-
-    // ══════════════════════════════════════════════════════════════
-    //                        RECEIVE
-    // ══════════════════════════════════════════════════════════════
-
-    /// @notice Allow the account to receive native tokens
-    receive() external payable {}
 }
