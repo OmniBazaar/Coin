@@ -45,7 +45,7 @@ async function main() {
   console.log("OmniCore deployed to:", await omniCore.getAddress());
   
   // Deploy OmniGovernance (needs core address)
-  const OmniGovernance = await hre.ethers.getContractFactory("OmniGovernance");
+  const OmniGovernance = await hre.ethers.getContractFactory("OmniGovernanceV1");
   const omniGovernance = await OmniGovernance.deploy(await omniCore.getAddress());
   await omniGovernance.waitForDeployment();
   console.log("OmniGovernance deployed to:", await omniGovernance.getAddress());

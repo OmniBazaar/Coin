@@ -8,7 +8,6 @@ import {ECDSA} from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 import {MessageHashUtils} from "@openzeppelin/contracts/utils/cryptography/MessageHashUtils.sol";
 import {IRWAAMM} from "./interfaces/IRWAAMM.sol";
 import {IRWAComplianceOracle} from "./interfaces/IRWAComplianceOracle.sol";
-import {IRWAFeeCollector} from "./interfaces/IRWAFeeCollector.sol";
 import {RWAPool} from "./RWAPool.sol";
 
 /**
@@ -81,8 +80,8 @@ contract RWAAMM is IRWAAMM, ReentrancyGuard {
     /// @notice Emergency multi-sig address 5
     address public immutable EMERGENCY_SIGNER_5;
 
-    /// @notice Fee collector contract address
-    address public immutable FEE_COLLECTOR;
+    /// @notice Fee vault contract address (UnifiedFeeVault)
+    address public immutable FEE_VAULT;
 
     /// @notice XOM token address (for fee collection)
     address public immutable XOM_TOKEN;
@@ -161,14 +160,14 @@ contract RWAAMM is IRWAAMM, ReentrancyGuard {
      * @notice Deploy the immutable RWAAMM contract
      * @dev All immutable parameters set here and CANNOT be changed
      * @param _emergencyMultisig Array of 5 multi-sig addresses
-     * @param _feeCollector Fee collector contract address
+     * @param _feeVault Fee vault contract address (UnifiedFeeVault)
      * @param _xomToken XOM token address
      * @param _complianceOracle Compliance oracle contract
      */
     // solhint-disable-next-line code-complexity
     constructor(
         address[5] memory _emergencyMultisig,
-        address _feeCollector,
+        address _feeVault,
         address _xomToken,
         address _complianceOracle
     ) {
@@ -193,11 +192,11 @@ contract RWAAMM is IRWAAMM, ReentrancyGuard {
         EMERGENCY_SIGNER_4 = _emergencyMultisig[3];
         EMERGENCY_SIGNER_5 = _emergencyMultisig[4];
 
-        if (_feeCollector == address(0)) revert ZeroAddress();
+        if (_feeVault == address(0)) revert ZeroAddress();
         if (_xomToken == address(0)) revert ZeroAddress();
         if (_complianceOracle == address(0)) revert ZeroAddress();
 
-        FEE_COLLECTOR = _feeCollector;
+        FEE_VAULT = _feeVault;
         XOM_TOKEN = _xomToken;
         COMPLIANCE_ORACLE = IRWAComplianceOracle(_complianceOracle);
 
@@ -477,13 +476,10 @@ contract RWAAMM is IRWAAMM, ReentrancyGuard {
         );
 
         // Transfer collector fee (20% staking + 10% liquidity)
-        // and notify FeeCollector for internal accounting
+        // to UnifiedFeeVault for batched distribution
         if (collectorFee > 0) {
             IERC20(tokenIn).safeTransferFrom(
-                msg.sender, FEE_COLLECTOR, collectorFee
-            );
-            IRWAFeeCollector(FEE_COLLECTOR).notifyFeeReceived(
-                tokenIn, collectorFee
+                msg.sender, FEE_VAULT, collectorFee
             );
         }
 

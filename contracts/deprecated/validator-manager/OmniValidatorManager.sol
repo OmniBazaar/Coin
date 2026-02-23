@@ -10,6 +10,7 @@ import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
  * @title OmniValidatorManager V3
  * @author OmniCoin Team
  * @notice Custom Validator Manager that bypasses WARP signature aggregation bug
+ * @custom:deprecated Replaced by Avalanche PoS Validator Manager precompile
  * @dev This implementation completely bypasses the initializeValidatorSet requirement,
  *      avoiding the Avalanche CLI bug #2705 that prevents validator addition.
  *

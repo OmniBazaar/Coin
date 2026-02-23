@@ -4,12 +4,13 @@ pragma solidity ^0.8.20;
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
-import {IRWAFeeCollector} from "./interfaces/IRWAFeeCollector.sol";
+import {IRWAFeeCollector} from "./IRWAFeeCollector.sol";
 
 /**
  * @title RWAFeeCollector
  * @author OmniCoin Development Team
  * @notice Immutable protocol fee collection and distribution for RWA trading
+ * @custom:deprecated Superseded by UnifiedFeeVault for batched 70/20/10 distribution
  * @dev This contract is intentionally NON-UPGRADEABLE.
  *
  * Fee Distribution Model:

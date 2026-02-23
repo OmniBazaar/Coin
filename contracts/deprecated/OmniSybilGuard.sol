@@ -17,6 +17,7 @@ import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol
  * @title OmniSybilGuard
  * @author OmniBazaar Team
  * @notice Additional Sybil protection for gas-free OmniBazaar environment.
+ * @custom:deprecated Superseded by OmniRegistration uniqueness enforcement
  * @dev Implements device fingerprinting, community reporting, and behavioral
  *      analysis using XOM ERC-20 tokens for all stake and reward operations.
  *

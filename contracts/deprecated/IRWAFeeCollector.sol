@@ -5,6 +5,7 @@ pragma solidity ^0.8.20;
  * @title IRWAFeeCollector
  * @author OmniCoin Development Team
  * @notice Interface for the RWA fee collection and distribution contract
+ * @custom:deprecated Superseded by UnifiedFeeVault
  * @dev Used by RWAAMM to notify the fee collector of received fees
  */
 interface IRWAFeeCollector {

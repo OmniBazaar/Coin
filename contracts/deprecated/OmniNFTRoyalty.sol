@@ -26,6 +26,7 @@ interface IOwnable {
  * @title OmniNFTRoyalty
  * @author OmniBazaar Development Team
  * @notice Standalone ERC-2981 royalty registry for NFT collections.
+ * @custom:deprecated Superseded by native ERC-2981 support in OmniNFTCollection
  * @dev Collection owners can register royalty information for any
  *      NFT contract that does not natively support ERC-2981. The
  *      OmniBazaar marketplace queries this registry at settlement

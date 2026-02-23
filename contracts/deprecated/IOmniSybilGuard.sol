@@ -5,6 +5,7 @@ pragma solidity ^0.8.20;
  * @title IOmniSybilGuard
  * @author OmniBazaar Team
  * @notice Interface for OmniSybilGuard contract
+ * @custom:deprecated Superseded by OmniRegistration uniqueness enforcement
  * @dev Defines the public API for Sybil protection and device fingerprinting
  */
 interface IOmniSybilGuard {

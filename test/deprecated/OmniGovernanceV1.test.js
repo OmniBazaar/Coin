@@ -2,7 +2,7 @@ const { expect } = require("chai");
 const { ethers, upgrades } = require("hardhat");
 const { time } = require("@nomicfoundation/hardhat-network-helpers");
 
-describe("OmniGovernance", function () {
+describe("OmniGovernanceV1", function () {
   let governance;
   let core;
   let token;
@@ -36,7 +36,7 @@ describe("OmniGovernance", function () {
     await token.grantRole(await token.MINTER_ROLE(), core.target);
 
     // Deploy OmniGovernance
-    const OmniGovernance = await ethers.getContractFactory("OmniGovernance");
+    const OmniGovernance = await ethers.getContractFactory("OmniGovernanceV1");
     governance = await OmniGovernance.deploy(core.target);
 
     // Setup: Distribute tokens

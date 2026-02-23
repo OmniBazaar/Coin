@@ -9,7 +9,7 @@ const { time, mine } = require("@nomicfoundation/hardhat-network-helpers");
  * 1. OmniCoin ERC20Votes (delegation, getPastVotes, nonces)
  * 2. OmniTimelockController (two-tier delays, critical selectors)
  * 3. EmergencyGuardian (pause 1-of-N, cancel 3-of-5, guardian management)
- * 4. OmniGovernanceV2 (propose, vote, queue, execute, cancel, ossify)
+ * 4. OmniGovernance (propose, vote, queue, execute, cancel, ossify)
  * 5. OmniCore staking snapshots (getStakedAt)
  * 6. OmniBridge UUPS (initialize, ossify)
  * 7. Ossification pattern (across UUPS contracts)
@@ -29,7 +29,7 @@ describe("UUPS Governance System", function () {
 
   /**
    * Helper: deploy OmniCoin, OmniCore, OmniTimelockController,
-   * EmergencyGuardian, and OmniGovernanceV2 in the correct order.
+   * EmergencyGuardian, and OmniGovernance in the correct order.
    */
   async function deployFullStack() {
     [
@@ -78,8 +78,8 @@ describe("UUPS Governance System", function () {
     const CANCELLER_ROLE = await timelock.CANCELLER_ROLE();
     await timelock.connect(owner).grantRole(CANCELLER_ROLE, guardian.target);
 
-    // 5. Deploy OmniGovernanceV2 via UUPS proxy
-    const Governance = await ethers.getContractFactory("OmniGovernanceV2");
+    // 5. Deploy OmniGovernance via UUPS proxy
+    const Governance = await ethers.getContractFactory("OmniGovernance");
     governance = await upgrades.deployProxy(
       Governance,
       [token.target, core.target, timelock.target, admin.address],
@@ -595,9 +595,9 @@ describe("UUPS Governance System", function () {
   });
 
   // =========================================================================
-  // 4. OmniGovernanceV2
+  // 4. OmniGovernance
   // =========================================================================
-  describe("OmniGovernanceV2", function () {
+  describe("OmniGovernance", function () {
     beforeEach(deployFullStack);
 
     describe("Initialization", function () {
@@ -626,7 +626,7 @@ describe("UUPS Governance System", function () {
       });
 
       it("Should reject zero address in initialization", async function () {
-        const Gov = await ethers.getContractFactory("OmniGovernanceV2");
+        const Gov = await ethers.getContractFactory("OmniGovernance");
         await expect(
           upgrades.deployProxy(
             Gov,
@@ -872,7 +872,7 @@ describe("UUPS Governance System", function () {
 
         // Build EIP-712 domain
         const domain = {
-          name: "OmniGovernanceV2",
+          name: "OmniGovernance",
           version: "1",
           chainId: (await ethers.provider.getNetwork()).chainId,
           verifyingContract: governance.target
@@ -907,7 +907,7 @@ describe("UUPS Governance System", function () {
         const nonceBefore = await governance.voteNonce(voter1.address);
 
         const domain = {
-          name: "OmniGovernanceV2",
+          name: "OmniGovernance",
           version: "1",
           chainId: (await ethers.provider.getNetwork()).chainId,
           verifyingContract: governance.target
@@ -940,7 +940,7 @@ describe("UUPS Governance System", function () {
 
       it("Should reject vote with wrong nonce", async function () {
         const domain = {
-          name: "OmniGovernanceV2",
+          name: "OmniGovernance",
           version: "1",
           chainId: (await ethers.provider.getNetwork()).chainId,
           verifyingContract: governance.target
@@ -1183,7 +1183,7 @@ describe("UUPS Governance System", function () {
 
         // Must connect as admin (who has ADMIN_ROLE) to reach the ossification check
         const GovV2 = await ethers.getContractFactory(
-          "OmniGovernanceV2", admin
+          "OmniGovernance", admin
         );
         await expect(
           upgrades.upgradeProxy(governance.target, GovV2)

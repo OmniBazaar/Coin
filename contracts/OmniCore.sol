@@ -138,7 +138,7 @@ contract OmniCore is
     bool private _ossified;
 
     /// @notice Checkpointed staking amounts for governance snapshot queries
-    /// @dev Used by OmniGovernanceV2.getVotingPowerAt() for flash-loan
+    /// @dev Used by OmniGovernance.getVotingPowerAt() for flash-loan
     ///      protection. Writes on stake() and unlock().
     mapping(address => Checkpoints.Trace224) private _stakeCheckpoints;
 
@@ -794,7 +794,7 @@ contract OmniCore is
 
     /**
      * @notice Get staked amount at a specific past block number
-     * @dev Used by OmniGovernanceV2 for snapshot-based voting power.
+     * @dev Used by OmniGovernance for snapshot-based voting power.
      *      Returns the most recent checkpoint at or before the given block.
      * @param user Address of the staker
      * @param blockNumber Block number to query

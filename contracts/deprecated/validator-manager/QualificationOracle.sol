@@ -8,6 +8,7 @@ import "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
 /**
  * @title QualificationOracle
  * @notice Ultra-lean oracle storing ONLY boolean qualification flags
+ * @custom:deprecated Superseded by QualificationOracle in contracts/
  * @dev Stores minimal data on-chain - full PoP scoring happens off-chain
  *
  * Architecture Principle: ULTRA-LEAN

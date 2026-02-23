@@ -31,7 +31,7 @@ import {
  * - Token holders must call delegate(self) to activate voting power
  * - Voting power can be delegated to any address without transferring tokens
  * - Historical voting power queryable via getPastVotes() for snapshot-based governance
- * - Compatible with OmniGovernanceV2 on-chain execution model
+ * - Compatible with OmniGovernance on-chain execution model
  *
  * Security (M-02): The DEFAULT_ADMIN_ROLE holder should be a
  * TimelockController or multi-sig wallet in production. The 48-hour

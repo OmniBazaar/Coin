@@ -10,7 +10,6 @@ describe('RWAAMM Protocol', function () {
     let owner;
     let user1;
     let user2;
-    let feeCollectorOwner;
     let emergencySigners;
 
     /**
@@ -28,7 +27,7 @@ describe('RWAAMM Protocol', function () {
     // Contracts
     let amm;
     let router;
-    let feeCollector;
+    let feeVault;
     let complianceOracle;
 
     // Mock tokens
@@ -47,8 +46,6 @@ describe('RWAAMM Protocol', function () {
         owner = signers[0];
         user1 = signers[1];
         user2 = signers[2];
-        feeCollectorOwner = signers[3];
-
         // Emergency signers (need 5) - signers 4-8
         emergencySigners = signers.slice(4, 9);
     });
@@ -70,32 +67,16 @@ describe('RWAAMM Protocol', function () {
         complianceOracle = await ComplianceOracle.deploy(owner.address);
         await complianceOracle.waitForDeployment();
 
-        // Pre-compute AMM address so the fee collector's immutable AMM_CONTRACT
-        // is correct from deployment (both AMM and FeeCollector use immutables).
-        const deployerNonce = await ethers.provider.getTransactionCount(owner.address);
-        // FeeCollector will be deployed at nonce, AMM at nonce+1
-        const predictedAmmAddress = ethers.getCreateAddress({
-            from: owner.address,
-            nonce: deployerNonce + 1,
-        });
+        // Use a dedicated signer as the fee vault (UnifiedFeeVault stand-in)
+        const signers = await ethers.getSigners();
+        feeVault = signers[3];
 
-        // Deploy fee collector with predicted AMM address
-        const FeeCollector = await ethers.getContractFactory('RWAFeeCollector');
-        feeCollector = await FeeCollector.deploy(
-            await xomToken.getAddress(),
-            owner.address, // staking pool
-            predictedAmmAddress, // AMM contract (pre-computed)
-            owner.address, // liquidity pool
-            owner.address, // admin
-        );
-        await feeCollector.waitForDeployment();
-
-        // Deploy RWAAMM (will land at predictedAmmAddress)
+        // Deploy RWAAMM with fee vault address
         const emergencyAddresses = emergencySigners.map(s => s.address);
         const RWAAMM = await ethers.getContractFactory('RWAAMM');
         amm = await RWAAMM.deploy(
             emergencyAddresses,
-            await feeCollector.getAddress(),
+            feeVault.address,
             await xomToken.getAddress(),
             await complianceOracle.getAddress(),
         );
@@ -122,7 +103,7 @@ describe('RWAAMM Protocol', function () {
         });
 
         it('Should set immutable addresses correctly', async function () {
-            expect(await amm.FEE_COLLECTOR()).to.equal(await feeCollector.getAddress());
+            expect(await amm.FEE_VAULT()).to.equal(feeVault.address);
             expect(await amm.XOM_TOKEN()).to.equal(await xomToken.getAddress());
             expect(await amm.COMPLIANCE_ORACLE()).to.equal(await complianceOracle.getAddress());
         });
@@ -139,7 +120,7 @@ describe('RWAAMM Protocol', function () {
             await expect(
                 RWAAMM.deploy(
                     emergencyAddresses,
-                    ethers.ZeroAddress, // Invalid fee collector
+                    ethers.ZeroAddress, // Invalid fee vault
                     await xomToken.getAddress(),
                     await complianceOracle.getAddress(),
                 ),
@@ -448,27 +429,14 @@ describe('RWAAMM Protocol', function () {
         });
     });
 
-    describe('RWAFeeCollector', function () {
-        it('Should deploy with correct parameters', async function () {
-            expect(await feeCollector.XOM_TOKEN()).to.equal(await xomToken.getAddress());
-            expect(await feeCollector.STAKING_POOL()).to.equal(owner.address);
+    describe('Fee Vault Integration', function () {
+        it('Should have correct fee distribution ratios on AMM', async function () {
+            // FEE_LP_BPS (70%) stays in pool, rest goes to UnifiedFeeVault
+            expect(await amm.FEE_LP_BPS()).to.equal(7000n); // 70%
         });
 
-        it('Should have correct fee distribution ratios', async function () {
-            // FEE_LP_BPS (70%) is on the AMM contract, not the FeeCollector.
-            // The FeeCollector only receives 30% of the protocol fee and
-            // splits it into staking (2/3 = 20%) and liquidity (1/3 = 10%).
-            expect(await amm.FEE_LP_BPS()).to.equal(7000n); // 70% (on AMM)
-            expect(await feeCollector.FEE_STAKING_BPS()).to.equal(2000n); // 20%
-            expect(await feeCollector.FEE_LIQUIDITY_BPS()).to.equal(1000n); // 10%
-        });
-
-        it('Should track fee distribution state', async function () {
-            // Total distributed fees should be zero initially
-            expect(await feeCollector.totalFeesDistributed()).to.equal(0n);
-            expect(await feeCollector.totalFeesToLiquidity()).to.equal(0n);
-            // Initial epoch should be 0
-            expect(await feeCollector.currentEpoch()).to.equal(0n);
+        it('Should set FEE_VAULT correctly', async function () {
+            expect(await amm.FEE_VAULT()).to.equal(feeVault.address);
         });
     });
 

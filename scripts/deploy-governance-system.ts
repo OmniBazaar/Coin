@@ -2,7 +2,7 @@
  * @file deploy-governance-system.ts
  * @description Deployment script for the OmniBazaar governance system
  *
- * Deploys OmniTimelockController, EmergencyGuardian, and OmniGovernanceV2
+ * Deploys OmniTimelockController, EmergencyGuardian, and OmniGovernance
  * in the correct order, then wires up all access control roles.
  *
  * This script implements Step 9 of FIX_UUPS.md - the final deployment
@@ -11,7 +11,7 @@
  * Deployment order (CRITICAL — must be sequential):
  *   1. Deploy OmniTimelockController (immutable, two-tier delay)
  *   2. Deploy EmergencyGuardian (immutable, pause + cancel)
- *   3. Deploy OmniGovernanceV2 (UUPS proxy, full on-chain governance)
+ *   3. Deploy OmniGovernance (UUPS proxy, full on-chain governance)
  *   4. Wire timelock roles (proposer, canceller, admin renounce)
  *   5. Transfer ADMIN_ROLE on GovernanceV2 to timelock
  *   6. (Optional) Transfer ADMIN_ROLE on OmniCore to timelock
@@ -83,8 +83,8 @@ function saveDeploymentConfig(
 
     contracts.OmniTimelockController = result.timelockAddress;
     contracts.EmergencyGuardian = result.guardianAddress;
-    contracts.OmniGovernanceV2 = result.governorProxyAddress;
-    contracts.OmniGovernanceV2Implementation = result.governorImplAddress;
+    contracts.OmniGovernance = result.governorProxyAddress;
+    contracts.OmniGovernanceImplementation = result.governorImplAddress;
 
     config.contracts = contracts;
     config.upgradedAt = result.timestamp;
@@ -164,7 +164,7 @@ async function verifyContractExists(
 async function main(): Promise<void> {
     console.log('================================================================');
     console.log('  OmniBazaar Governance System Deployment');
-    console.log('  (OmniTimelockController + EmergencyGuardian + OmniGovernanceV2)');
+    console.log('  (OmniTimelockController + EmergencyGuardian + OmniGovernance)');
     console.log('================================================================\n');
 
     // =====================================================================
@@ -278,14 +278,14 @@ async function main(): Promise<void> {
     console.log(`  Cancel threshold: ${await guardian.CANCEL_THRESHOLD()}\n`);
 
     // =====================================================================
-    // Phase 4: Deploy OmniGovernanceV2 (UUPS Proxy)
+    // Phase 4: Deploy OmniGovernance (UUPS Proxy)
     // =====================================================================
-    console.log('--- Phase 4: Deploy OmniGovernanceV2 ---\n');
+    console.log('--- Phase 4: Deploy OmniGovernance ---\n');
 
-    const OmniGovernanceV2 = await ethers.getContractFactory('OmniGovernanceV2');
-    console.log('  Deploying OmniGovernanceV2 proxy...');
+    const OmniGovernance = await ethers.getContractFactory('OmniGovernance');
+    console.log('  Deploying OmniGovernance proxy...');
     const governorProxy = await upgrades.deployProxy(
-        OmniGovernanceV2,
+        OmniGovernance,
         [omniCoinAddress, omniCoreAddress, timelockAddress, adminAddress],
         { initializer: 'initialize', kind: 'uups' }
     );
@@ -316,8 +316,8 @@ async function main(): Promise<void> {
     const CANCELLER_ROLE = await timelock.CANCELLER_ROLE();
     const TL_ADMIN_ROLE = await timelock.DEFAULT_ADMIN_ROLE();
 
-    // 5a. Grant OmniGovernanceV2 the PROPOSER_ROLE
-    console.log('  5a. Granting PROPOSER_ROLE to OmniGovernanceV2...');
+    // 5a. Grant OmniGovernance the PROPOSER_ROLE
+    console.log('  5a. Granting PROPOSER_ROLE to OmniGovernance...');
     let tx = await timelock.grantRole(PROPOSER_ROLE, governorProxyAddress);
     await tx.wait();
     console.log(`      Tx: ${tx.hash}`);
@@ -460,7 +460,7 @@ async function main(): Promise<void> {
     console.log('  Contracts Deployed:');
     console.log(`    OmniTimelockController: ${timelockAddress}`);
     console.log(`    EmergencyGuardian:      ${guardianContractAddress}`);
-    console.log(`    OmniGovernanceV2:       ${governorProxyAddress}`);
+    console.log(`    OmniGovernance:       ${governorProxyAddress}`);
     console.log(`    GovernanceV2 Impl:      ${governorImplAddress}\n`);
 
     console.log('  Prerequisites (existing):');

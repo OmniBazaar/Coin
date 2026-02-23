@@ -11,6 +11,7 @@ import "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol
  * @title OmniValidatorManager V3 Upgradeable
  * @author OmniCoin Team
  * @notice Upgradeable implementation that bypasses WARP signature aggregation bug
+ * @custom:deprecated Replaced by Avalanche PoS Validator Manager precompile
  * @dev This is designed to replace the existing implementation behind the proxy at
  *      0x00a62B0E0e3bb9D067fC0D62DEd1d07f9f028410
  *

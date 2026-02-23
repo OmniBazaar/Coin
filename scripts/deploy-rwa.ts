@@ -5,8 +5,7 @@
  * Deployment order:
  *   1. RWAComplianceOracle - Compliance verification system
  *   2. RWAAMM - Core AMM contract (immutable)
- *   3. RWAFeeCollector - Fee distribution system
- *   4. RWARouter - User-facing router
+ *   3. RWARouter - User-facing router
  *
  * @notice RWAAMM is intentionally NON-UPGRADEABLE for legal defensibility
  */
@@ -95,12 +94,12 @@ async function main(): Promise<void> {
 
   console.log("\n2. Deploying RWAAMM...");
 
-  // Note: We use deployer as FEE_COLLECTOR temporarily
-  // In production, deploy RWAFeeCollector first, or redeploy RWAAMM
+  // Note: We use deployer as FEE_VAULT temporarily
+  // In production, deploy with UnifiedFeeVault address
   const RWAAMM = await ethers.getContractFactory("RWAAMM");
   const rwaamm = await RWAAMM.deploy(
     config.emergencySigners,
-    deployer.address, // Temporary fee collector (will receive fees for now)
+    deployer.address, // Temporary fee vault (will receive fees for now)
     xomTokenAddress,
     complianceOracleAddress
   );
@@ -114,28 +113,10 @@ async function main(): Promise<void> {
   console.log(`   Protocol Fee: ${protocolFeeBps} bps (${Number(protocolFeeBps) / 100}%)`);
 
   // ==========================================================================
-  // 3. Deploy RWAFeeCollector
+  // 3. Deploy RWARouter
   // ==========================================================================
 
-  console.log("\n3. Deploying RWAFeeCollector...");
-
-  const RWAFeeCollector = await ethers.getContractFactory("RWAFeeCollector");
-  const feeCollector = await RWAFeeCollector.deploy(
-    xomTokenAddress,
-    config.stakingPool,
-    rwaammAddress,
-    config.liquidityPool
-  );
-  await feeCollector.waitForDeployment();
-  const feeCollectorAddress = await feeCollector.getAddress();
-
-  console.log(`   RWAFeeCollector deployed: ${feeCollectorAddress}`);
-
-  // ==========================================================================
-  // 4. Deploy RWARouter
-  // ==========================================================================
-
-  console.log("\n4. Deploying RWARouter...");
+  console.log("\n3. Deploying RWARouter...");
 
   const RWARouter = await ethers.getContractFactory("RWARouter");
   const router = await RWARouter.deploy(rwaammAddress, config.wrappedNative);
@@ -148,7 +129,7 @@ async function main(): Promise<void> {
   // Update deployment file
   // ==========================================================================
 
-  console.log("\n5. Updating deployment file...");
+  console.log("\n4. Updating deployment file...");
 
   // Add RWA contracts to deployment
   if (!deployment.contracts.rwa) {
@@ -158,10 +139,9 @@ async function main(): Promise<void> {
   deployment.contracts.rwa = {
     RWAComplianceOracle: complianceOracleAddress,
     RWAAMM: rwaammAddress,
-    RWAFeeCollector: feeCollectorAddress,
     RWARouter: routerAddress,
     deployedAt: new Date().toISOString(),
-    note: "RWAAMM uses deployer as fee collector temporarily. Redeploy for production with proper fee collector.",
+    note: "RWAAMM uses deployer as fee vault temporarily. Redeploy for production with UnifiedFeeVault address.",
   };
 
   fs.writeFileSync(deploymentPath, JSON.stringify(deployment, null, 2));
@@ -175,14 +155,13 @@ async function main(): Promise<void> {
   console.log("Contracts deployed:");
   console.log(`  RWAComplianceOracle: ${complianceOracleAddress}`);
   console.log(`  RWAAMM:              ${rwaammAddress}`);
-  console.log(`  RWAFeeCollector:     ${feeCollectorAddress}`);
   console.log(`  RWARouter:           ${routerAddress}`);
   console.log("\nConfiguration:");
   console.log(`  XOM Token:           ${xomTokenAddress}`);
   console.log(`  Protocol Fee:        ${Number(protocolFeeBps) / 100}%`);
   console.log(`  Emergency Signers:   ${config.emergencySigners[0]} (and 4 more)`);
-  console.log("\n⚠️  NOTE: RWAAMM uses deployer as fee collector.");
-  console.log("   For production, redeploy with proper RWAFeeCollector address.");
+  console.log("\n⚠️  NOTE: RWAAMM uses deployer as fee vault.");
+  console.log("   For production, redeploy with UnifiedFeeVault address.");
   console.log("\nRemember to sync contract addresses:");
   console.log("  ./scripts/sync-contract-addresses.sh fuji");
 

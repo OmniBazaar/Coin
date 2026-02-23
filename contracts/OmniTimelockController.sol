@@ -19,7 +19,7 @@ import {TimelockController} from "@openzeppelin/contracts/governance/TimelockCon
  * the entire batch uses the 7-day delay.
  *
  * Role architecture:
- * - PROPOSER_ROLE: OmniGovernanceV2 (and initial multisig during Phase 1)
+ * - PROPOSER_ROLE: OmniGovernance (and initial multisig during Phase 1)
  * - EXECUTOR_ROLE: address(0) = anyone can execute after delay
  * - CANCELLER_ROLE: EmergencyGuardian
  * - TIMELOCK_ADMIN_ROLE: self (changes go through timelock itself)

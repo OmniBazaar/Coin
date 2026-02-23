@@ -11,6 +11,7 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
  * @title OddaoToken
  * @author OmniCoin Development Team
  * @notice ERC-20 governance token for the OmniDevelopment DAO (ODDAO)
+ * @custom:deprecated ODDAO token distribution handled off-chain pre-mainnet
  * @dev Fixed-supply ERC20 with ERC20Votes (delegation) and ERC20Permit
  *      (gasless approvals). All tokens are minted at deployment to the
  *      specified holders — no further minting is possible. This contract
@@ -21,7 +22,7 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
  * - ERC20Permit: EIP-2612 gasless approvals
  * - Immutable supply: constructor mints all tokens, no mint function exists
  * - Freeze/clawback: governance-controlled emergency powers via timelock
- * - Compatible with OmniGovernanceV2 and OpenZeppelin Governor
+ * - Compatible with OmniGovernance and OpenZeppelin Governor
  *
  * Token holders are LLC members of the RMI-registered ODDAO entity.
  * Distributions from DividendDistributor are dividends on membership interest.

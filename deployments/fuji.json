@@ -13,7 +13,7 @@
     "MinimalEscrow": "0xa0aF1B47C6B4c56E776c8c920dB677E394060bDD",
     "OmniCore": "0x0Ef606683222747738C04b4b00052F5357AC6c8b",
     "OmniCoreImplementation": "0x6a65Be8FCc1CaBADE6190B5E473a19ABfca3aBdc",
-    "OmniGovernance": "0x56E233DDE02E016AF83e352B9Dd191bc62e108B5",
+    "OmniGovernanceV1": "0x56E233DDE02E016AF83e352B9Dd191bc62e108B5",
     "LegacyBalanceClaim": "0x1201b2f0e94B8722792FC4F515E64133c122CD39",
     "QualificationOracle": "0x85722E5bA6d0E8b97a9fB7B6796816C8B9c49356",
     "QualificationOracleImplementation": "",
@@ -30,10 +30,10 @@
     "rwa": {
       "RWAComplianceOracle": "0xF6acBc80dd1Ba20F9e4e90e1A6fe145536C60bb5",
       "RWAAMM": "0xb287f8CE22748a4b3f0fB570bc7FF7B67161cB8f",
-      "RWAFeeCollector": "0x467Bbe51D960b8EDAEDDF7053B9E31bb0efd5aEe",
+      "RWAFeeCollector_DEPRECATED": "0x467Bbe51D960b8EDAEDDF7053B9E31bb0efd5aEe",
       "RWARouter": "0x88fF08e10ab7004ab375AD9e5201Ecad67865be2",
       "deployedAt": "2025-12-30T17:31:49.060Z",
-      "note": "RWAAMM uses deployer as fee collector temporarily. Redeploy for production with proper fee collector."
+      "note": "RWAAMM FEE_VAULT should point to UnifiedFeeVault on redeploy. RWAFeeCollector is deprecated."
     },
     "LiquidityBootstrappingPool": "0x5C032b6F109B9d2f2Cf86A0fB70b7A419EeBA408",
     "OmniBonding": "0x1F976D7F01a31Fd6A1afd3508BfC562D778404Dd",
