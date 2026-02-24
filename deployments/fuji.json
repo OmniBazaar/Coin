@@ -58,12 +58,13 @@
     "OmniPredictionRouter": "0xBBD4C2dca354cfF43458b52c95173131E77443D9",
     "OmniYieldFeeCollector": "0x1312eE58a794eb3aDa6D38cEbfcBD05f87e76511",
     "ReputationCredential": "0x4f41a213a4eBa3e74Cc17b28695BCC3e8692be63",
-    "RWAPool": "0x853CB0499b8fb159f48dE7696194Db852b305355"
+    "RWAPool": "0x853CB0499b8fb159f48dE7696194Db852b305355",
+    "UpdateRegistry": "0x3A396c75573f1F3c2C45456600cc950605d8Fa02"
   },
   "validatorManager": {
     "type": "AvalanchePoSValidatorManager",
     "precompileAddress": "0x0FEEDC0DE0000000000000000000000000000000",
     "note": "Using standard Avalanche PoS Validator Manager precompile instead of deprecated OmniValidatorManager"
   },
-  "upgradedAt": "2026-02-20T18:18:27.758Z"
+  "upgradedAt": "2026-02-24T20:37:18.820Z"
 }
