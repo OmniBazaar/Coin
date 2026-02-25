@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.24;
+pragma solidity 0.8.24;
 
 import {IERC721} from "@openzeppelin/contracts/token/ERC721/IERC721.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
@@ -9,7 +9,8 @@ import {ERC721Holder} from
     "@openzeppelin/contracts/token/ERC721/utils/ERC721Holder.sol";
 import {ReentrancyGuard} from
     "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
-import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
+import {Ownable2Step, Ownable} from
+    "@openzeppelin/contracts/access/Ownable2Step.sol";
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import {ERC20Burnable} from
     "@openzeppelin/contracts/token/ERC20/extensions/ERC20Burnable.sol";
@@ -102,7 +103,7 @@ contract FractionToken is ERC20, ERC20Burnable {
  *      once funded, remaining share-holders can claim their pro-rata
  *      share. Platform creation fee sent to the fee recipient.
  */
-contract OmniFractionalNFT is ERC721Holder, ReentrancyGuard, Ownable {
+contract OmniFractionalNFT is ERC721Holder, ReentrancyGuard, Ownable2Step {
     using SafeERC20 for IERC20;
 
     // ── Structs ──────────────────────────────────────────────────────

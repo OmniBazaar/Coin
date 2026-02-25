@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.24;
+pragma solidity 0.8.24;
 
 import {IERC721} from "@openzeppelin/contracts/token/ERC721/IERC721.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
@@ -9,7 +9,8 @@ import {ERC721Holder} from
     "@openzeppelin/contracts/token/ERC721/utils/ERC721Holder.sol";
 import {ReentrancyGuard} from
     "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
-import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
+import {Ownable2Step, Ownable} from
+    "@openzeppelin/contracts/access/Ownable2Step.sol";
 
 /**
  * @title OmniNFTStaking
@@ -36,7 +37,7 @@ import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
  *          accounting (H-04).
  *        - lastClaimAt only advances when rewards are actually paid (H-05).
  */
-contract OmniNFTStaking is ERC721Holder, ReentrancyGuard, Ownable {
+contract OmniNFTStaking is ERC721Holder, ReentrancyGuard, Ownable2Step {
     using SafeERC20 for IERC20;
 
     // ── Structs ──────────────────────────────────────────────────────────

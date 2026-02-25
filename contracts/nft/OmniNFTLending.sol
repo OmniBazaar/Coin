@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.24;
+pragma solidity 0.8.24;
 
 import {IERC721} from "@openzeppelin/contracts/token/ERC721/IERC721.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
@@ -267,6 +267,10 @@ contract OmniNFTLending is ERC721Holder, ReentrancyGuard, Ownable2Step {
     /// @dev Loan is still within the grace period (M-01 NFTSuite).
     error GracePeriodActive();
 
+    /// @dev C-02: Actual transfer amount differs from expected
+    ///      (fee-on-transfer token protection).
+    error TransferAmountMismatch();
+
     // ── Constructor ──────────────────────────────────────────────────────
 
     /**
@@ -333,9 +337,9 @@ contract OmniNFTLending is ERC721Holder, ReentrancyGuard, Ownable2Step {
             offerCollections[offerId][collections[i]] = true;
         }
 
-        // Transfer principal from lender to contract
-        IERC20(currency).safeTransferFrom(
-            msg.sender, address(this), principal
+        // C-02: Balance-before/after for fee-on-transfer protection
+        _safeTransferInWithBalanceCheck(
+            currency, msg.sender, principal
         );
 
         emit OfferCreated(
@@ -447,12 +451,11 @@ contract OmniNFTLending is ERC721Holder, ReentrancyGuard, Ownable2Step {
             - platformFee;
         uint256 totalFromBorrower = loan.principal + loan.interest;
 
-        // Borrower pays principal + interest
-        IERC20(loan.currency).safeTransferFrom(
-            msg.sender,
-            address(this),
-            totalFromBorrower
+        // C-02: Balance-before/after for fee-on-transfer protection
+        _safeTransferInWithBalanceCheck(
+            loan.currency, msg.sender, totalFromBorrower
         );
+
         // Lender receives principal + interest - platform fee
         IERC20(loan.currency).safeTransfer(
             loan.lender, lenderAmount
@@ -693,5 +696,29 @@ contract OmniNFTLending is ERC721Holder, ReentrancyGuard, Ownable2Step {
      */
     function renounceOwnership() public pure override {
         revert ZeroAddress();
+    }
+
+    // ── Internal functions ────────────────────────────────────────────────
+
+    /**
+     * @notice Transfer tokens in with fee-on-transfer protection
+     * @dev C-02: Verifies actual received amount matches expected.
+     *      Reverts with TransferAmountMismatch if a fee-on-transfer token
+     *      causes less than the expected amount to arrive.
+     * @param token ERC-20 token to transfer
+     * @param from Sender address
+     * @param amount Expected transfer amount
+     */
+    function _safeTransferInWithBalanceCheck(
+        address token,
+        address from,
+        uint256 amount
+    ) internal {
+        uint256 balBefore = IERC20(token).balanceOf(address(this));
+        IERC20(token).safeTransferFrom(from, address(this), amount);
+        uint256 balAfter = IERC20(token).balanceOf(address(this));
+        if (balAfter - balBefore != amount) {
+            revert TransferAmountMismatch();
+        }
     }
 }

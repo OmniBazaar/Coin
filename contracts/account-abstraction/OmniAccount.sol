@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.25;
+pragma solidity 0.8.25;
 
 import {IAccount, UserOperation} from "./interfaces/IAccount.sol";
 import {ECDSA} from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
@@ -452,6 +452,10 @@ contract OmniAccount is IAccount, Initializable, ReentrancyGuard {
 
     /**
      * @notice Remove a guardian
+     * @dev C-04: Clears any stale recovery approval for the removed guardian
+     *      as defense-in-depth. The primary protection is GuardiansFrozenDuringRecovery
+     *      which prevents removal during active recovery, and _clearRecovery() which
+     *      clears all approvals when recovery ends.
      * @param guardian Address to remove
      */
     function removeGuardian(address guardian) external onlyOwner {
@@ -461,6 +465,14 @@ contract OmniAccount is IAccount, Initializable, ReentrancyGuard {
         if (!isGuardian[guardian]) revert NotGuardian();
 
         isGuardian[guardian] = false;
+
+        // C-04: Clear any stale recovery approval for defense-in-depth
+        if (recoveryRequest.approvals[guardian]) {
+            recoveryRequest.approvals[guardian] = false;
+            if (recoveryRequest.approvalCount > 0) {
+                --recoveryRequest.approvalCount;
+            }
+        }
 
         // Remove from array by swapping with last element
         uint256 len = guardians.length;

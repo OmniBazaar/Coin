@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.20;
+pragma solidity 0.8.24;
 
 import "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
@@ -687,6 +687,7 @@ contract OmniRegistration is
         bytes32 phoneHash,
         bytes32 emailHash
     ) external onlyRole(VALIDATOR_ROLE) nonReentrant {
+        if (user == address(0)) revert ZeroAddress(); // L-05: reject zero-address registration
         // Check user not already registered
         if (registrations[user].timestamp != 0) revert AlreadyRegistered();
 
@@ -859,6 +860,7 @@ contract OmniRegistration is
         bytes calldata userSignature
     ) internal {
         // Validate preconditions
+        if (user == address(0)) revert ZeroAddress(); // L-05: reject zero-address registration
         if (trustedVerificationKey == address(0)) revert TrustedVerificationKeyNotSet();
         if (registrations[user].timestamp != 0) revert AlreadyRegistered();
         if (block.timestamp > emailDeadline) revert ProofExpired(); // solhint-disable-line not-rely-on-time

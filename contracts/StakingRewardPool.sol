@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.19;
+pragma solidity 0.8.24;
 
 import {AccessControlUpgradeable} from
     "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
@@ -221,7 +221,8 @@ contract StakingRewardPool is
     bool private _ossified;
 
     /// @notice Storage gap for future upgrades
-    /// @dev Reduced from 36 to 35 to accommodate _ossified.
+    /// @dev Total reserved slots = 50. Used slots: 15 (state variables above).
+    ///      Gap = 50 - 15 = 35. Adjust if adding new state variables.
     uint256[35] private __gap;
 
     // ════════════════════════════════════════════════════════════════════

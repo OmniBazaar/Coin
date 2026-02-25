@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.19;
+pragma solidity 0.8.24;
 
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
@@ -140,6 +140,9 @@ contract MinimalEscrow is ReentrancyGuard, Pausable {
     /// @notice Total tokens held in active escrows per token (for M-07 rescue accounting)
     mapping(address => uint256) public totalEscrowed;
 
+    /// @notice Total tokens in claimable balances per token (M-01: pull-pattern accounting)
+    mapping(address => uint256) public totalClaimable;
+
     // Privacy-related state variables
     /// @notice Encrypted amounts for private escrows (ct = ciphertext for storage)
     mapping(uint256 => ctUint64) private encryptedEscrowAmounts;
@@ -224,6 +227,16 @@ contract MinimalEscrow is ReentrancyGuard, Pausable {
         address indexed arbitrator
     );
 
+    /// @notice Emitted when a dispute commitment is made (step 1 of commit-reveal)
+    /// @param escrowId Escrow identifier
+    /// @param committer Address that committed
+    /// @param commitment Commitment hash
+    event DisputeCommitted(
+        uint256 indexed escrowId,
+        address indexed committer,
+        bytes32 indexed commitment
+    );
+
     /// @notice Emitted when arbitrator is added to registry
     /// @param arbitrator Address of the new arbitrator
     event ArbitratorAdded(address indexed arbitrator);
@@ -260,6 +273,26 @@ contract MinimalEscrow is ReentrancyGuard, Pausable {
         uint256 indexed escrowId,
         uint256 totalArbitrationFee,
         uint256 arbitratorShare
+    );
+
+    /// @notice Emitted when funds are credited to pull-based claimable balance (M-01)
+    /// @param user Address receiving the claimable credit
+    /// @param token Token address credited
+    /// @param amount Amount credited
+    event FundsClaimable(
+        address indexed user,
+        address indexed token,
+        uint256 indexed amount
+    );
+
+    /// @notice Emitted when a user withdraws from their claimable balance (M-01)
+    /// @param user Address withdrawing
+    /// @param token Token address withdrawn
+    /// @param amount Amount withdrawn
+    event FundsClaimed(
+        address indexed user,
+        address indexed token,
+        uint256 indexed amount
     );
 
     /// @notice Emitted when the counterparty posts a matching dispute stake
@@ -394,10 +427,11 @@ contract MinimalEscrow is ReentrancyGuard, Pausable {
         
         if (escrow.buyer == address(0)) revert EscrowNotFound();
         if (escrow.resolved) revert AlreadyResolved();
-        if (msg.sender != escrow.buyer && msg.sender != escrow.seller) revert NotParticipant();
-        
-        // Simple 2-party agreement
-        if (!escrow.disputed && msg.sender == escrow.buyer) {
+        // L-05: Only buyer can release funds to seller
+        if (msg.sender != escrow.buyer) revert NotParticipant();
+
+        // Simple 2-party agreement (undisputed release by buyer)
+        if (!escrow.disputed) {
             escrow.resolved = true;
             uint256 amount = escrow.amount;
             escrow.amount = 0;
@@ -462,17 +496,18 @@ contract MinimalEscrow is ReentrancyGuard, Pausable {
      * @param commitment Hash of (escrowId, nonce, msg.sender)
      */
     function commitDispute(uint256 escrowId, bytes32 commitment) external nonReentrant whenNotPaused {
+        if (commitment == bytes32(0)) revert InvalidAmount(); // L-04: reject zero commitment
         Escrow storage escrow = escrows[escrowId];
-        
+
         if (escrow.buyer == address(0)) revert EscrowNotFound();
         if (escrow.resolved) revert AlreadyResolved();
         if (escrow.disputed) revert AlreadyDisputed();
         if (msg.sender != escrow.buyer && msg.sender != escrow.seller) revert NotParticipant();
-        
+
         // Must wait minimum time before dispute
         uint256 disputeEarliest = escrow.createdAt + ARBITRATOR_DELAY;
         if (block.timestamp < disputeEarliest) revert DisputeTooEarly(); // solhint-disable-line not-rely-on-time
-        
+
         // Require dispute stake (paid in OmniCoin)
         uint256 requiredStake = (escrow.amount * DISPUTE_STAKE_BASIS) / BASIS_POINTS;
         OMNI_COIN.safeTransferFrom(msg.sender, address(this), requiredStake);
@@ -484,6 +519,8 @@ contract MinimalEscrow is ReentrancyGuard, Pausable {
             revealDeadline: block.timestamp + 1 hours, // solhint-disable-line not-rely-on-time
             revealed: false
         });
+
+        emit DisputeCommitted(escrowId, msg.sender, commitment);
     }
 
     /**
@@ -707,7 +744,12 @@ contract MinimalEscrow is ReentrancyGuard, Pausable {
             }
         }
 
-        OMNI_COIN.safeTransfer(recipient, recipientAmount);
+        // M-01: Use pull pattern to prevent DoS via reverting recipients.
+        // Note: totalEscrowed already decremented at line 688 for full amount.
+        // We only need to credit the claimable balance (no double-decrement).
+        claimable[address(OMNI_COIN)][recipient] += recipientAmount;
+        totalClaimable[address(OMNI_COIN)] += recipientAmount;
+        emit FundsClaimable(recipient, address(OMNI_COIN), recipientAmount);
 
         // Return remaining dispute stakes to both parties (if any)
         _returnDisputeStake(escrowId, escrow.buyer);
@@ -726,26 +768,32 @@ contract MinimalEscrow is ReentrancyGuard, Pausable {
         uint256 stakeAmount = disputeStakes[escrowId][party];
         if (stakeAmount > 0) {
             disputeStakes[escrowId][party] = 0;
+            // M-01: Use pull pattern for stake returns
             totalEscrowed[address(OMNI_COIN)] -= stakeAmount;
-            OMNI_COIN.safeTransfer(party, stakeAmount);
+            claimable[address(OMNI_COIN)][party] += stakeAmount;
+            totalClaimable[address(OMNI_COIN)] += stakeAmount;
+            emit FundsClaimable(party, address(OMNI_COIN), stakeAmount);
             emit DisputeStakeReturned(escrowId, party, stakeAmount);
         }
     }
 
     /**
      * @notice Validate vote eligibility
-     * @dev Checks resolution status and participation
+     * @dev H-03: Requires escrow to be disputed before voting is allowed.
+     *      Non-disputed escrows must use releaseFunds() or refundBuyer().
      * @param escrow Escrow data
      * @param escrowId Escrow identifier
      */
     function _validateVote(Escrow storage escrow, uint256 escrowId) private view {
         if (escrow.resolved) revert AlreadyResolved();
+        // H-03: Voting only allowed on disputed escrows
+        if (!escrow.disputed) revert NotDisputed();
         if (hasVoted[escrowId][msg.sender]) revert AlreadyVoted();
 
         // For disputed escrows, arbitrator can also vote
         bool isParticipant = msg.sender == escrow.buyer ||
                            msg.sender == escrow.seller ||
-                           (escrow.disputed && msg.sender == escrow.arbitrator);
+                           msg.sender == escrow.arbitrator;
         if (!isParticipant) revert NotParticipant();
     }
 
@@ -1027,6 +1075,24 @@ contract MinimalEscrow is ReentrancyGuard, Pausable {
     );
 
     /**
+     * @notice Withdraw accumulated claimable balance (M-01: pull pattern)
+     * @dev Allows users to withdraw funds credited during escrow resolution.
+     *      This prevents DoS where a reverting recipient blocks _resolveEscrow().
+     *      Users MUST call this after escrow resolution to receive their funds.
+     * @param token Token address to withdraw (typically OMNI_COIN)
+     */
+    function withdrawClaimable(address token) external nonReentrant {
+        uint256 amount = claimable[token][msg.sender];
+        if (amount == 0) revert NothingToClaim();
+
+        claimable[token][msg.sender] = 0;
+        totalClaimable[token] -= amount;
+        IERC20(token).safeTransfer(msg.sender, amount);
+
+        emit FundsClaimed(msg.sender, token, amount);
+    }
+
+    /**
      * @notice Pause the contract, preventing new escrow creation and state changes
      * @dev Only callable by admin. Existing escrows can still be resolved (refundBuyer
      *      is not paused) to prevent funds from being permanently locked.
@@ -1045,8 +1111,9 @@ contract MinimalEscrow is ReentrancyGuard, Pausable {
 
     /**
      * @notice Recover ERC20 tokens accidentally sent to this contract
-     * @dev Only allows recovery of tokens that are NOT held in active escrows.
-     *      The recoverable amount is: contract balance - totalEscrowed[token].
+     * @dev Only allows recovery of tokens that are NOT held in active escrows
+     *      or pending in claimable balances.
+     *      The recoverable amount is: balance - totalEscrowed - totalClaimable.
      *      This prevents admin from withdrawing funds belonging to escrow participants.
      * @param token Address of the ERC20 token to recover
      * @param recipient Address to receive the recovered tokens
@@ -1055,7 +1122,7 @@ contract MinimalEscrow is ReentrancyGuard, Pausable {
         if (token == address(0) || recipient == address(0)) revert InvalidAddress();
 
         uint256 contractBalance = IERC20(token).balanceOf(address(this));
-        uint256 locked = totalEscrowed[token];
+        uint256 locked = totalEscrowed[token] + totalClaimable[token];
 
         // solhint-disable-next-line gas-strict-inequalities
         if (contractBalance <= locked) revert NothingToClaim();

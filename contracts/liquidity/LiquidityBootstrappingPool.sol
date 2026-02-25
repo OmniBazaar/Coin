@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.19;
+pragma solidity 0.8.24;
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
@@ -523,7 +523,9 @@ contract LiquidityBootstrappingPool is ReentrancyGuard, Ownable, Pausable {
 
     /**
      * @notice Get current spot price of XOM in counter-asset terms
-     * @dev Price = (counterReserve / wCounter) / (xomReserve / wXOM)
+     * @dev WARNING: This price is derived from pool reserves and is
+     *      manipulable via large swaps. Do NOT use as a price oracle feed.
+     *      Price = (counterReserve / wCounter) / (xomReserve / wXOM)
      *      Simplified: (counterReserve * wXOM) / (xomReserve * wCounter)
      *      Counter-asset is normalized to 18 decimals.
      * @return price Price in counter-asset per XOM (18 decimals)

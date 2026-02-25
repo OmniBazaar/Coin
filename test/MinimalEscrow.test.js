@@ -172,7 +172,19 @@ describe("MinimalEscrow", function () {
       expect(escrowData.resolved).to.be.true;
     });
 
-    it("Should allow both parties to vote for release (with fee)", async function () {
+    it("Should allow disputed vote-based release (with fee)", async function () {
+      // H-03: Voting requires disputed escrow. Raise dispute first.
+      await time.increase(ARBITRATOR_DELAY + 1);
+      const nonce = 55555;
+      const commitment = ethers.keccak256(
+        ethers.solidityPacked(
+          ["uint256", "uint256", "address"],
+          [escrowId, nonce, buyer.address]
+        )
+      );
+      await escrow.connect(buyer).commitDispute(escrowId, commitment);
+      await escrow.connect(buyer).revealDispute(escrowId, nonce);
+
       // First vote from seller
       await escrow.connect(seller).vote(escrowId, true);
 
@@ -186,11 +198,6 @@ describe("MinimalEscrow", function () {
 
       escrowData = await escrow.escrows(escrowId);
       expect(escrowData.resolved).to.be.true;
-
-      // Check seller received 99% (initial 100 + 99 from escrow = 199)
-      const sellerBalance = await token.balanceOf(seller.address);
-      const expectedSellerAmount = ESCROW_AMOUNT - (ESCROW_AMOUNT * 100n / 10000n);
-      expect(sellerBalance).to.equal(ethers.parseEther("100") + expectedSellerAmount);
     });
 
     it("Should allow buyer to request refund after expiry", async function () {
@@ -442,10 +449,22 @@ describe("MinimalEscrow", function () {
       escrowId = receipt.logs.find(
         log => log.fragment && log.fragment.name === "EscrowCreated"
       ).args.escrowId;
+
+      // H-03: Voting requires a disputed escrow. Raise a dispute first.
+      await time.increase(ARBITRATOR_DELAY + 1);
+      const nonce = 99999;
+      const commitment = ethers.keccak256(
+        ethers.solidityPacked(
+          ["uint256", "uint256", "address"],
+          [escrowId, nonce, buyer.address]
+        )
+      );
+      await escrow.connect(buyer).commitDispute(escrowId, commitment);
+      await escrow.connect(buyer).revealDispute(escrowId, nonce);
     });
 
     it("Should count votes correctly", async function () {
-      // Both vote for release
+      // Both vote for release (2-of-3: buyer + seller)
       await escrow.connect(buyer).vote(escrowId, true);
       await escrow.connect(seller).vote(escrowId, true);
 
@@ -455,9 +474,6 @@ describe("MinimalEscrow", function () {
     });
 
     it("Should handle refund votes", async function () {
-      const buyerBalanceBefore = await token.balanceOf(buyer.address);
-      expect(buyerBalanceBefore).to.equal(ethers.parseEther("900"));
-
       // Both vote for refund
       await escrow.connect(buyer).vote(escrowId, false);
       await escrow.connect(seller).vote(escrowId, false);
@@ -465,10 +481,6 @@ describe("MinimalEscrow", function () {
       const escrowData = await escrow.escrows(escrowId);
       expect(escrowData.refundVotes).to.equal(2);
       expect(escrowData.resolved).to.be.true;
-
-      // Check buyer got refund
-      const buyerBalance = await token.balanceOf(buyer.address);
-      expect(buyerBalance).to.equal(ethers.parseEther("1000"));
     });
 
     it("Should prevent double voting", async function () {
@@ -486,6 +498,23 @@ describe("MinimalEscrow", function () {
       const escrowData = await escrow.escrows(escrowId);
       expect(escrowData.releaseVotes).to.equal(1);
       expect(escrowData.resolved).to.be.false;
+    });
+
+    it("Should reject voting on non-disputed escrow (H-03)", async function () {
+      // Create a fresh non-disputed escrow
+      const tx = await escrow.connect(buyer).createEscrow(
+        seller.address,
+        ESCROW_AMOUNT,
+        ESCROW_DURATION
+      );
+      const receipt = await tx.wait();
+      const freshEscrowId = receipt.logs.find(
+        log => log.fragment && log.fragment.name === "EscrowCreated"
+      ).args.escrowId;
+
+      await expect(
+        escrow.connect(buyer).vote(freshEscrowId, true)
+      ).to.be.revertedWithCustomError(escrow, "NotDisputed");
     });
   });
 
@@ -533,6 +562,18 @@ describe("MinimalEscrow", function () {
         log => log.fragment && log.fragment.name === "EscrowCreated"
       ).args.escrowId;
 
+      // H-03: Raise dispute first (voting requires disputed escrow)
+      await time.increase(ARBITRATOR_DELAY + 1);
+      const nonce = 77777;
+      const commitment = ethers.keccak256(
+        ethers.solidityPacked(
+          ["uint256", "uint256", "address"],
+          [escrowId, nonce, buyer.address]
+        )
+      );
+      await escrow.connect(buyer).commitDispute(escrowId, commitment);
+      await escrow.connect(buyer).revealDispute(escrowId, nonce);
+
       await expect(escrow.connect(seller).vote(escrowId, true))
         .to.emit(escrow, "VoteCast")
         .withArgs(escrowId, seller.address, true);
@@ -564,6 +605,75 @@ describe("MinimalEscrow", function () {
           ESCROW_DURATION
         )
       ).to.be.revertedWithCustomError(token, "ERC20InsufficientAllowance");
+    });
+  });
+
+  describe("Pull-Pattern Withdrawal (M-01)", function () {
+    it("Should credit claimable balance on dispute resolution and allow withdrawal", async function () {
+      // Create escrow
+      const tx = await escrow.connect(buyer).createEscrow(
+        seller.address,
+        ESCROW_AMOUNT,
+        ESCROW_DURATION
+      );
+      const receipt = await tx.wait();
+      const escrowId = receipt.logs.find(
+        log => log.fragment && log.fragment.name === "EscrowCreated"
+      ).args.escrowId;
+
+      // Raise dispute
+      await time.increase(ARBITRATOR_DELAY + 1);
+      const nonce = 88888;
+      const commitment = ethers.keccak256(
+        ethers.solidityPacked(
+          ["uint256", "uint256", "address"],
+          [escrowId, nonce, buyer.address]
+        )
+      );
+      await escrow.connect(buyer).commitDispute(escrowId, commitment);
+      await escrow.connect(buyer).revealDispute(escrowId, nonce);
+
+      const escrowData = await escrow.escrows(escrowId);
+      const assignedArbitrator = escrowData.arbitrator;
+
+      let arbitratorSigner;
+      if (assignedArbitrator === arbitrator.address) {
+        arbitratorSigner = arbitrator;
+      } else {
+        await ethers.provider.send("hardhat_setBalance", [
+          assignedArbitrator,
+          ethers.toBeHex(ethers.parseEther("10"))
+        ]);
+        arbitratorSigner = await ethers.getImpersonatedSigner(assignedArbitrator);
+      }
+
+      // Resolve via voting (arbitrator + seller vote for release)
+      await escrow.connect(arbitratorSigner).vote(escrowId, true);
+      await escrow.connect(seller).vote(escrowId, true);
+
+      // Seller should have claimable balance (not direct transfer)
+      const sellerClaimable = await escrow.claimable(token.target, seller.address);
+      expect(sellerClaimable).to.be.gt(0);
+
+      // Seller withdraws claimable
+      const sellerBalanceBefore = await token.balanceOf(seller.address);
+      await escrow.connect(seller).withdrawClaimable(token.target);
+      const sellerBalanceAfter = await token.balanceOf(seller.address);
+
+      expect(sellerBalanceAfter - sellerBalanceBefore).to.equal(sellerClaimable);
+
+      // Claimable should be zero after withdrawal
+      expect(await escrow.claimable(token.target, seller.address)).to.equal(0);
+
+      if (assignedArbitrator !== arbitrator.address) {
+        await ethers.provider.send("hardhat_stopImpersonatingAccount", [assignedArbitrator]);
+      }
+    });
+
+    it("Should reject withdrawal with zero claimable balance", async function () {
+      await expect(
+        escrow.connect(buyer).withdrawClaimable(token.target)
+      ).to.be.revertedWithCustomError(escrow, "NothingToClaim");
     });
   });
 });

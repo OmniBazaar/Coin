@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.20;
+pragma solidity 0.8.24;
 
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import {ERC20Burnable} from "@openzeppelin/contracts/token/ERC20/extensions/ERC20Burnable.sol";
@@ -156,7 +156,7 @@ contract OmniCoin is
         if (recipients.length > 10) revert TooManyRecipients();
 
         for (uint256 i = 0; i < recipients.length; ++i) {
-            if (recipients[i] == address(0)) revert InvalidRecipient();
+            if (recipients[i] == address(0) || recipients[i] == address(this)) revert InvalidRecipient();
             _transfer(msg.sender, recipients[i], amounts[i]);
         }
 

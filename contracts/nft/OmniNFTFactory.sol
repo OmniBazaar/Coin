@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.24;
+pragma solidity 0.8.24;
 
 import {Clones} from "@openzeppelin/contracts/proxy/Clones.sol";
-import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
+import {Ownable2Step, Ownable} from
+    "@openzeppelin/contracts/access/Ownable2Step.sol";
 
 /**
  * @title IOmniNFTCollection
@@ -44,10 +45,12 @@ interface IOmniNFTCollection {
  *      collections. The fee percentage is included in the
  *      CollectionCreated event for auditability.
  */
-contract OmniNFTFactory is Ownable {
+contract OmniNFTFactory is Ownable2Step {
     // ── Constants ────────────────────────────────────────────────────
     /// @notice Maximum platform fee: 10 % (1000 basis points).
     uint16 public constant MAX_PLATFORM_FEE_BPS = 1000;
+    /// @notice Maximum number of collections deployable via this factory.
+    uint256 public constant MAX_COLLECTIONS = 10000;
 
     // ── Storage ──────────────────────────────────────────────────────
     /// @notice Implementation contract for ERC-1167 clones.
@@ -101,6 +104,8 @@ contract OmniNFTFactory is Ownable {
     error FeeTooHigh();
     /// @dev Thrown when maxSupply is zero.
     error InvalidMaxSupply();
+    /// @dev Thrown when the factory has reached MAX_COLLECTIONS.
+    error TooManyCollections();
 
     // ── Constructor ──────────────────────────────────────────────────
     /**
@@ -137,6 +142,10 @@ contract OmniNFTFactory is Ownable {
         string calldata unrevealedURI
     ) external returns (address clone) {
         if (maxSupply == 0) revert InvalidMaxSupply();
+        // solhint-disable-next-line gas-strict-inequalities
+        if (collections.length >= MAX_COLLECTIONS) {
+            revert TooManyCollections();
+        }
 
         clone = Clones.clone(implementation);
 

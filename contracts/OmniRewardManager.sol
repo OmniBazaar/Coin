@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.20;
+pragma solidity 0.8.24;
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
@@ -1197,6 +1197,7 @@ contract OmniRewardManager is
         uint256 deadline,
         bytes calldata signature
     ) external nonReentrant whenNotPaused {
+        if (user == address(0)) revert ZeroAddressNotAllowed(); // L-03: match welcome bonus check
         // 1. Check deadline
         if (block.timestamp > deadline) revert ClaimDeadlineExpired();
 
@@ -1738,7 +1739,7 @@ contract OmniRewardManager is
      * - Users 1 - 10,000:            2,500 XOM
      * - Users 10,001 - 100,000:      1,250 XOM
      * - Users 100,001 - 1,000,000:     625 XOM
-     * - Users 1,000,001+:             312.5 XOM (rounded to 312 XOM)
+     * - Users 1,000,001+:             312.5 XOM
      */
     function _calculateReferralBonus(uint256 registrationNumber) internal pure returns (uint256) {
         if (registrationNumber <= 10000) {
@@ -1748,7 +1749,7 @@ contract OmniRewardManager is
         } else if (registrationNumber <= 1000000) {
             return 625 * 10 ** 18;
         } else {
-            return 312 * 10 ** 18; // 312.5 rounded down
+            return 3125 * 10 ** 17; // 312.5 XOM
         }
     }
 
@@ -1762,7 +1763,7 @@ contract OmniRewardManager is
      * - Users 1 - 100,000:             500 XOM
      * - Users 100,001 - 1,000,000:     250 XOM
      * - Users 1,000,001 - 10,000,000:  125 XOM
-     * - Users 10,000,001+:              62.5 XOM (rounded to 62 XOM)
+     * - Users 10,000,001+:              62.5 XOM
      */
     function _calculateFirstSaleBonus(uint256 registrationNumber) internal pure returns (uint256) {
         if (registrationNumber <= 100000) {
@@ -1772,7 +1773,7 @@ contract OmniRewardManager is
         } else if (registrationNumber <= 10000000) {
             return 125 * 10 ** 18;
         } else {
-            return 62 * 10 ** 18; // 62.5 rounded down
+            return 625 * 10 ** 17; // 62.5 XOM
         }
     }
 

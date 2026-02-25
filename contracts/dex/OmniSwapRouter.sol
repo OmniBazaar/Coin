@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.20;
+pragma solidity 0.8.24;
 
 /* solhint-disable import-path-check */
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
@@ -118,9 +118,6 @@ contract OmniSwapRouter is Ownable2Step, Pausable, ReentrancyGuard {
 
     /// @notice Maximum number of hops in a swap path
     uint256 public constant MAX_HOPS = 3;
-
-    /// @notice Maximum slippage tolerance in basis points (10% = 1000)
-    uint256 public constant MAX_SLIPPAGE_BPS = 1000;
 
     /// @notice Basis points divisor (100%)
     uint256 public constant BASIS_POINTS_DIVISOR = 10000;
@@ -260,9 +257,6 @@ contract OmniSwapRouter is Ownable2Step, Pausable, ReentrancyGuard {
 
     /// @notice Thrown when input amount is zero
     error ZeroInputAmount();
-
-    /// @notice Thrown when slippage tolerance is too high
-    error SlippageTooHigh();
 
     /// @notice Thrown when liquidity source is not registered
     error InvalidLiquiditySource();

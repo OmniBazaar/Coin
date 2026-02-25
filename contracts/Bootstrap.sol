@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.20;
+pragma solidity 0.8.24;
 
 import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
 
@@ -846,9 +846,13 @@ contract Bootstrap is AccessControl {
         if (!info.active && nodeType < 3) {
             ++activeNodeCounts[nodeType];
         } else if (info.active && info.nodeType != nodeType && info.nodeType < 3) {
-            // Node type changed - update counts
-            --activeNodeCounts[info.nodeType];
-            ++activeNodeCounts[nodeType];
+            // Node type changed - update counts (M-02: underflow guard)
+            if (activeNodeCounts[info.nodeType] > 0) {
+                --activeNodeCounts[info.nodeType];
+            }
+            if (nodeType < 3) {
+                ++activeNodeCounts[nodeType];
+            }
         }
 
         // Update node info (following struct field order for clarity)
@@ -881,7 +885,11 @@ contract Bootstrap is AccessControl {
     function _validateNoForbiddenChars(bytes memory data) internal pure {
         for (uint256 i = 0; i < data.length; ++i) {
             bytes1 c = data[i];
-            if (c == "," || c == "\n" || c == "\r") {
+            // M-04: Block characters that corrupt peer list format
+            // (nodeID@publicIP:port comma-separated output)
+            if (
+                c == "," || c == "\n" || c == "\r" || c == "@"
+            ) {
                 revert ForbiddenCharacter();
             }
         }

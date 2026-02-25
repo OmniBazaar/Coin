@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.19;
+pragma solidity 0.8.24;
 
 import {AccessControlUpgradeable} from "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
 import {ReentrancyGuardUpgradeable} from "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
@@ -516,9 +516,12 @@ contract OmniCore is
 
         uint256 amount = userStake.amount;
 
-        // Clear stake
+        // Clear stake fully (L-05: clear all fields for storage hygiene)
         userStake.active = false;
         userStake.amount = 0;
+        userStake.tier = 0;
+        userStake.duration = 0;
+        userStake.lockTime = 0;
         totalStaked -= amount;
 
         // Write zero checkpoint for governance snapshot
@@ -736,7 +739,8 @@ contract OmniCore is
      * @param amount Amount to deposit
      */
     function depositToDEX(address token, uint256 amount) external nonReentrant whenNotPaused {
-        if (token == address(0) || amount == 0) revert InvalidAmount();
+        if (token == address(0)) revert InvalidAddress();
+        if (amount == 0) revert InvalidAmount();
 
         // M-03: Use balance-before/after pattern to handle
         // fee-on-transfer tokens correctly.
@@ -888,8 +892,9 @@ contract OmniCore is
             username, claimAddress, nonce, signatures
         );
 
-        // Get balance and mark as claimed
+        // Get balance and mark as claimed (L-02: reject zero balances)
         uint256 amount = legacyBalances[usernameHash];
+        if (amount == 0) revert InvalidAmount();
         legacyClaimed[usernameHash] = claimAddress;
         totalLegacyClaimed += amount;
 

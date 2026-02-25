@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.19;
+pragma solidity 0.8.24;
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
@@ -250,6 +250,9 @@ contract OmniBonding is ReentrancyGuard, Ownable, Pausable {
     /// @notice Thrown when MAX_BOND_ASSETS limit is reached
     error TooManyAssets();
 
+    /// @notice Thrown when actual transferred amount differs from expected (M-02: fee-on-transfer protection)
+    error TransferAmountMismatch();
+
     // ============ Constructor ============
 
     /**
@@ -446,10 +449,17 @@ contract OmniBonding is ReentrancyGuard, Ownable, Pausable {
             revert InsufficientXomBalance();
         }
 
-        // Transfer asset to treasury
+        // M-02: Transfer asset to treasury with fee-on-transfer protection
+        uint256 treasuryBalBefore =
+            terms.asset.balanceOf(treasury);
         terms.asset.safeTransferFrom(
             msg.sender, treasury, amount
         );
+        uint256 actualReceived =
+            terms.asset.balanceOf(treasury) - treasuryBalBefore;
+        if (actualReceived != amount) {
+            revert TransferAmountMismatch();
+        }
 
         // Create bond
         // solhint-disable-next-line not-rely-on-time

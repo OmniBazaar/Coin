@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.20;
+pragma solidity 0.8.24;
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
@@ -245,10 +245,16 @@ contract OmniBridge is
     /// @param chainId Chain identifier
     /// @param isActive Whether chain is active
     /// @param teleporterAddress Teleporter contract address
+    /// @param minTransfer Minimum transfer amount
+    /// @param maxTransfer Maximum transfer amount
+    /// @param dailyLimit Daily transfer volume limit
     event ChainConfigUpdated(
         uint256 indexed chainId,
         bool indexed isActive,
-        address indexed teleporterAddress
+        address indexed teleporterAddress,
+        uint256 minTransfer,
+        uint256 maxTransfer,
+        uint256 dailyLimit
     );
 
     /// @notice Emitted when a trusted bridge address is updated
@@ -306,6 +312,8 @@ contract OmniBridge is
     // Custom errors
     /// @notice Thrown when amount is zero or insufficient balance
     error InvalidAmount();
+    /// @notice Thrown when a resolved token or service address is the zero address
+    error InvalidAddress();
     /// @notice Thrown when target chain is not configured or inactive
     error ChainNotSupported();
     /// @notice Thrown when transfer amount exceeds min/max limits
@@ -552,7 +560,10 @@ contract OmniBridge is
             delete chainToBlockchainId[chainId];
         }
 
-        emit ChainConfigUpdated(chainId, isActive, teleporterAddress);
+        emit ChainConfigUpdated(
+            chainId, isActive, teleporterAddress,
+            minTransfer, maxTransfer, dailyLimit
+        );
     }
 
     /**
@@ -631,7 +642,7 @@ contract OmniBridge is
             ? PRIVATE_OMNICOIN_SERVICE
             : OMNICOIN_SERVICE;
         address tokenAddress = core.getService(tokenService);
-        if (tokenAddress == address(0)) revert InvalidAmount();
+        if (tokenAddress == address(0)) revert InvalidAddress();
 
         IERC20(tokenAddress).safeTransfer(t.sender, t.amount);
         emit TransferRefunded(transferId, t.sender, t.amount);
@@ -818,7 +829,7 @@ contract OmniBridge is
             ? PRIVATE_OMNICOIN_SERVICE
             : OMNICOIN_SERVICE;
         address tokenAddress = core.getService(tokenService);
-        if (tokenAddress == address(0)) revert InvalidAmount();
+        if (tokenAddress == address(0)) revert InvalidAddress();
 
         IERC20 token = IERC20(tokenAddress);
         uint256 balance = token.balanceOf(address(this));
@@ -909,7 +920,7 @@ contract OmniBridge is
             ? PRIVATE_OMNICOIN_SERVICE
             : OMNICOIN_SERVICE;
         tokenAddress = core.getService(tokenService);
-        if (tokenAddress == address(0)) revert InvalidAmount();
+        if (tokenAddress == address(0)) revert InvalidAddress();
     }
 }
 /* solhint-enable max-states-count */
