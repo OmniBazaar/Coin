@@ -10,12 +10,14 @@ Smart contract layer for OmniBazaar - a decentralized marketplace platform built
 
 **952 passing tests** | **39 audit reports** | **591 findings across 50+ contracts**
 
-A comprehensive security audit was completed on 2026-02-20/21 using a 6-pass enhanced methodology (static analysis via solhint + dual-agent LLM semantic audit covering OWASP SC Top 10 and business logic). All 39 audit reports are available in `audit-reports/`. See `audit-reports/MASTER-SUMMARY-2026-02-21.md` for the full findings matrix.
+A comprehensive security audit was completed on 2026-02-20/21 using a 6-pass enhanced methodology (static analysis via solhint + dual-agent LLM semantic audit covering OWASP SC Top 10 and business logic). Remediation was verified on 2026-02-24. All 39 audit reports are available in `audit-reports/`. See `audit-reports/MASTER-SUMMARY-2026-02-21.md` for the full findings matrix and remediation status.
 
-Key audit outcomes:
-- 34 Critical, 121 High, 178 Medium, 152 Low, 106 Informational findings identified
-- Systemic patterns catalogued: admin drain vectors, dead code paths, fee-on-transfer incompatibilities, storage gap omissions, RWA compliance bypasses
-- Remediation roadmap prioritized by deployment-blocking severity
+Remediation status (verified 2026-02-24):
+- **Critical (34 found):** 31 fixed, 2 partially fixed, 1 not fixed
+- **High (121 found):** ~64 fixed, ~5 partial, ~8 not fixed (77 of 121 individually verified)
+- **Medium (178), Low (152), Informational (106):** Not yet individually verified
+
+Remaining critical items: OmniValidatorRewards `emergencyWithdraw` needs timelock + token exclusion; AccountAbstraction guardian removal needs approval cleanup; OmniNFTLending needs fee-on-transfer protection. See `CURRENT_STATUS.md` for full remediation details.
 
 ## Trustless Architecture
 
