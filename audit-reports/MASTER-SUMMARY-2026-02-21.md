@@ -413,16 +413,16 @@ All major token-handling contracts now use balance-before/after pattern:
 3. ~~Verify all Medium findings~~ → **148/178 FIXED, 14 PARTIAL, 8 NOT FIXED, 8 N/A**
 
 ### Before Mainnet (Remaining Items)
-4. Deploy EmergencyGuardian, OmniTimelockController, UnifiedFeeVault, MintController
-5. Transfer admin roles to timelock on all contracts
-6. Add timelock on UUPS upgrade authorization (OmniRegistration M-07, UpdateRegistry M-04, MintController M-04)
-7. Decide on OmniParticipation M-02: staking score range 0-24 vs spec 2-36
-8. Add multi-key verification for OmniRegistration M-05 (single trustedVerificationKey)
+1. Deploy EmergencyGuardian, OmniTimelockController, UnifiedFeeVault, MintController
+2. Transfer admin roles to timelock on all contracts
+3. Add timelock on UUPS upgrade authorization (OmniRegistration M-07, UpdateRegistry M-04, MintController M-04)
+4. Decide on OmniParticipation M-02: staking score range 0-24 vs spec 2-36
+5. Add multi-key verification for OmniRegistration M-05 (single trustedVerificationKey)
 
 ### Pre-Launch Hardening
-9. Address Low findings (152 total — not yet individually verified)
-10. Pin all floating pragmas to specific solc versions
-11. External professional security audit
+1. Address Low findings (152 total — not yet individually verified)
+2. Pin all floating pragmas to specific solc versions
+3. External professional security audit
 
 ---
 
