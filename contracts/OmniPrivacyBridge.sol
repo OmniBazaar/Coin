@@ -43,7 +43,7 @@ interface IPrivateOmniCoin is IERC20 {
  * @dev Facilitates secure conversions with fee management and safety limits
  *
  * Architecture:
- * - XOM → pXOM: Locks XOM, mints private pXOM balance (0.3% fee)
+ * - XOM → pXOM: Locks XOM, mints private pXOM balance (0.5% fee)
  * - pXOM → XOM: Burns private pXOM balance, releases XOM (no fee)
  *
  * Security Features:
@@ -73,8 +73,8 @@ contract OmniPrivacyBridge is
     /// @notice Role identifier for fee management
     bytes32 public constant FEE_MANAGER_ROLE = keccak256("FEE_MANAGER_ROLE");
 
-    /// @notice Privacy conversion fee in basis points (30 = 0.3%)
-    uint16 public constant PRIVACY_FEE_BPS = 30;
+    /// @notice Privacy conversion fee in basis points (50 = 0.5%)
+    uint16 public constant PRIVACY_FEE_BPS = 50;
 
     /// @notice Basis points denominator (10000 = 100%)
     uint16 public constant BPS_DENOMINATOR = 10000;
@@ -274,7 +274,7 @@ contract OmniPrivacyBridge is
     /**
      * @notice Convert public XOM to public pXOM
      * @dev User must approve bridge contract before calling.
-     *      Charges 0.3% fee. User can then call
+     *      Charges 0.5% fee. User can then call
      *      PrivateOmniCoin.convertToPrivate() to make pXOM private.
      *      Fee XOM is held separately and withdrawable by FEE_MANAGER.
      * @param amount Amount of XOM to convert
@@ -491,7 +491,7 @@ contract OmniPrivacyBridge is
 
     /**
      * @notice Get conversion rate (always 1:1, but fees apply)
-     * @dev Fee is 0.3% for XOM to pXOM, 0% for pXOM to XOM
+     * @dev Fee is 0.5% for XOM to pXOM, 0% for pXOM to XOM
      * @return rate Conversion rate (always 1e18 for 1:1)
      */
     function getConversionRate()
@@ -505,7 +505,7 @@ contract OmniPrivacyBridge is
     /**
      * @notice Calculate output for XOM to pXOM conversion
      * @param amountIn Amount of XOM to convert
-     * @return amountOut pXOM received (after 0.3% fee)
+     * @return amountOut pXOM received (after 0.5% fee)
      * @return fee Fee charged
      */
     function previewConvertToPrivate(
