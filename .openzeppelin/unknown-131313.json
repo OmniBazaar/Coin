@@ -9,6 +9,11 @@
       "address": "0x1A12040129c47B92fd10083d4969Fb392a9554Af",
       "txHash": "0x1bab39330637e29a8d050d679e34177c6b690d42244c526a0c9c1ab8a1bcc3cf",
       "kind": "uups"
+    },
+    {
+      "address": "0x45dB9304a5124d3cD6d646900b1c4C0cA6A89658",
+      "txHash": "0xe46d1f629b1a64c96cabbe8c987dd829670ba6ca0f18d428be04bff00fd7747b",
+      "kind": "uups"
     }
   ],
   "impls": {
@@ -1266,6 +1271,319 @@
           }
         },
         "namespaces": {
+          "erc7201:openzeppelin.storage.ReentrancyGuard": [
+            {
+              "contract": "ReentrancyGuardUpgradeable",
+              "label": "_status",
+              "type": "t_uint256",
+              "src": "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol:43",
+              "offset": 0,
+              "slot": "0"
+            }
+          ],
+          "erc7201:openzeppelin.storage.AccessControl": [
+            {
+              "contract": "AccessControlUpgradeable",
+              "label": "_roles",
+              "type": "t_mapping(t_bytes32,t_struct(RoleData)26_storage)",
+              "src": "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol:62",
+              "offset": 0,
+              "slot": "0"
+            }
+          ],
+          "erc7201:openzeppelin.storage.Initializable": [
+            {
+              "contract": "Initializable",
+              "label": "_initialized",
+              "type": "t_uint64",
+              "src": "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol:69",
+              "offset": 0,
+              "slot": "0"
+            },
+            {
+              "contract": "Initializable",
+              "label": "_initializing",
+              "type": "t_bool",
+              "src": "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol:73",
+              "offset": 8,
+              "slot": "0"
+            }
+          ]
+        }
+      }
+    },
+    "12b2ef2603d2ace861c5d1e920cbeace603de59ccc6e9489f7998805298bb1a5": {
+      "address": "0xbbeb10150563c3016067c713702c8a7b41BbFE8E",
+      "txHash": "0x0b5c865148803d9c615c6d8ba560b4c4c12c5c0bc153b655fc45209ed558a909",
+      "layout": {
+        "solcVersion": "0.8.24",
+        "storage": [
+          {
+            "label": "stakingPool",
+            "offset": 0,
+            "slot": "0",
+            "type": "t_address",
+            "contract": "UnifiedFeeVault",
+            "src": "contracts/UnifiedFeeVault.sol:158"
+          },
+          {
+            "label": "protocolTreasury",
+            "offset": 0,
+            "slot": "1",
+            "type": "t_address",
+            "contract": "UnifiedFeeVault",
+            "src": "contracts/UnifiedFeeVault.sol:161"
+          },
+          {
+            "label": "pendingBridge",
+            "offset": 0,
+            "slot": "2",
+            "type": "t_mapping(t_address,t_uint256)",
+            "contract": "UnifiedFeeVault",
+            "src": "contracts/UnifiedFeeVault.sol:165"
+          },
+          {
+            "label": "totalDistributed",
+            "offset": 0,
+            "slot": "3",
+            "type": "t_mapping(t_address,t_uint256)",
+            "contract": "UnifiedFeeVault",
+            "src": "contracts/UnifiedFeeVault.sol:167"
+          },
+          {
+            "label": "totalBridged",
+            "offset": 0,
+            "slot": "4",
+            "type": "t_mapping(t_address,t_uint256)",
+            "contract": "UnifiedFeeVault",
+            "src": "contracts/UnifiedFeeVault.sol:173"
+          },
+          {
+            "label": "_ossified",
+            "offset": 0,
+            "slot": "5",
+            "type": "t_bool",
+            "contract": "UnifiedFeeVault",
+            "src": "contracts/UnifiedFeeVault.sol:177"
+          },
+          {
+            "label": "pendingStakingPool",
+            "offset": 1,
+            "slot": "5",
+            "type": "t_address",
+            "contract": "UnifiedFeeVault",
+            "src": "contracts/UnifiedFeeVault.sol:182"
+          },
+          {
+            "label": "pendingProtocolTreasury",
+            "offset": 0,
+            "slot": "6",
+            "type": "t_address",
+            "contract": "UnifiedFeeVault",
+            "src": "contracts/UnifiedFeeVault.sol:186"
+          },
+          {
+            "label": "recipientChangeTimestamp",
+            "offset": 0,
+            "slot": "7",
+            "type": "t_uint256",
+            "contract": "UnifiedFeeVault",
+            "src": "contracts/UnifiedFeeVault.sol:190"
+          },
+          {
+            "label": "pendingClaims",
+            "offset": 0,
+            "slot": "8",
+            "type": "t_mapping(t_address,t_mapping(t_address,t_uint256))",
+            "contract": "UnifiedFeeVault",
+            "src": "contracts/UnifiedFeeVault.sol:195"
+          },
+          {
+            "label": "tokenBridgeMode",
+            "offset": 0,
+            "slot": "9",
+            "type": "t_mapping(t_address,t_enum(BridgeMode)52795)",
+            "contract": "UnifiedFeeVault",
+            "src": "contracts/UnifiedFeeVault.sol:204"
+          },
+          {
+            "label": "swapRouter",
+            "offset": 0,
+            "slot": "10",
+            "type": "t_address",
+            "contract": "UnifiedFeeVault",
+            "src": "contracts/UnifiedFeeVault.sol:208"
+          },
+          {
+            "label": "xomToken",
+            "offset": 0,
+            "slot": "11",
+            "type": "t_address",
+            "contract": "UnifiedFeeVault",
+            "src": "contracts/UnifiedFeeVault.sol:209"
+          },
+          {
+            "label": "privacyBridge",
+            "offset": 0,
+            "slot": "12",
+            "type": "t_address",
+            "contract": "UnifiedFeeVault",
+            "src": "contracts/UnifiedFeeVault.sol:212"
+          },
+          {
+            "label": "pxomToken",
+            "offset": 0,
+            "slot": "13",
+            "type": "t_address",
+            "contract": "UnifiedFeeVault",
+            "src": "contracts/UnifiedFeeVault.sol:217"
+          },
+          {
+            "label": "__gap",
+            "offset": 0,
+            "slot": "14",
+            "type": "t_array(t_uint256)35_storage",
+            "contract": "UnifiedFeeVault",
+            "src": "contracts/UnifiedFeeVault.sol:220"
+          }
+        ],
+        "types": {
+          "t_address": {
+            "label": "address",
+            "numberOfBytes": "20"
+          },
+          "t_bool": {
+            "label": "bool",
+            "numberOfBytes": "1"
+          },
+          "t_bytes32": {
+            "label": "bytes32",
+            "numberOfBytes": "32"
+          },
+          "t_mapping(t_address,t_bool)": {
+            "label": "mapping(address => bool)",
+            "numberOfBytes": "32"
+          },
+          "t_mapping(t_bytes32,t_struct(RoleData)26_storage)": {
+            "label": "mapping(bytes32 => struct AccessControlUpgradeable.RoleData)",
+            "numberOfBytes": "32"
+          },
+          "t_struct(AccessControlStorage)36_storage": {
+            "label": "struct AccessControlUpgradeable.AccessControlStorage",
+            "members": [
+              {
+                "label": "_roles",
+                "type": "t_mapping(t_bytes32,t_struct(RoleData)26_storage)",
+                "offset": 0,
+                "slot": "0"
+              }
+            ],
+            "numberOfBytes": "32"
+          },
+          "t_struct(InitializableStorage)147_storage": {
+            "label": "struct Initializable.InitializableStorage",
+            "members": [
+              {
+                "label": "_initialized",
+                "type": "t_uint64",
+                "offset": 0,
+                "slot": "0"
+              },
+              {
+                "label": "_initializing",
+                "type": "t_bool",
+                "offset": 8,
+                "slot": "0"
+              }
+            ],
+            "numberOfBytes": "32"
+          },
+          "t_struct(PausableStorage)555_storage": {
+            "label": "struct PausableUpgradeable.PausableStorage",
+            "members": [
+              {
+                "label": "_paused",
+                "type": "t_bool",
+                "offset": 0,
+                "slot": "0"
+              }
+            ],
+            "numberOfBytes": "32"
+          },
+          "t_struct(ReentrancyGuardStorage)619_storage": {
+            "label": "struct ReentrancyGuardUpgradeable.ReentrancyGuardStorage",
+            "members": [
+              {
+                "label": "_status",
+                "type": "t_uint256",
+                "offset": 0,
+                "slot": "0"
+              }
+            ],
+            "numberOfBytes": "32"
+          },
+          "t_struct(RoleData)26_storage": {
+            "label": "struct AccessControlUpgradeable.RoleData",
+            "members": [
+              {
+                "label": "hasRole",
+                "type": "t_mapping(t_address,t_bool)",
+                "offset": 0,
+                "slot": "0"
+              },
+              {
+                "label": "adminRole",
+                "type": "t_bytes32",
+                "offset": 0,
+                "slot": "1"
+              }
+            ],
+            "numberOfBytes": "64"
+          },
+          "t_uint256": {
+            "label": "uint256",
+            "numberOfBytes": "32"
+          },
+          "t_uint64": {
+            "label": "uint64",
+            "numberOfBytes": "8"
+          },
+          "t_array(t_uint256)35_storage": {
+            "label": "uint256[35]",
+            "numberOfBytes": "1120"
+          },
+          "t_enum(BridgeMode)52795": {
+            "label": "enum UnifiedFeeVault.BridgeMode",
+            "members": [
+              "IN_KIND",
+              "SWAP_TO_XOM"
+            ],
+            "numberOfBytes": "1"
+          },
+          "t_mapping(t_address,t_enum(BridgeMode)52795)": {
+            "label": "mapping(address => enum UnifiedFeeVault.BridgeMode)",
+            "numberOfBytes": "32"
+          },
+          "t_mapping(t_address,t_mapping(t_address,t_uint256))": {
+            "label": "mapping(address => mapping(address => uint256))",
+            "numberOfBytes": "32"
+          },
+          "t_mapping(t_address,t_uint256)": {
+            "label": "mapping(address => uint256)",
+            "numberOfBytes": "32"
+          }
+        },
+        "namespaces": {
+          "erc7201:openzeppelin.storage.Pausable": [
+            {
+              "contract": "PausableUpgradeable",
+              "label": "_paused",
+              "type": "t_bool",
+              "src": "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol:21",
+              "offset": 0,
+              "slot": "0"
+            }
+          ],
           "erc7201:openzeppelin.storage.ReentrancyGuard": [
             {
               "contract": "ReentrancyGuardUpgradeable",

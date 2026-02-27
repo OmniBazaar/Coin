@@ -85,10 +85,19 @@ async function main() {
     // 1. Network and deployer information
     // ─────────────────────────────────────────────────
     const network = await ethers.provider.getNetwork();
-    const networkName = network.name === 'unknown'
-        ? 'localhost'
-        : network.name;
-    console.log(`Network: ${networkName} (chainId: ${network.chainId})`);
+    const chainId = Number(network.chainId);
+
+    // Resolve network name: use HRE network name when ethers reports
+    // 'unknown' (custom chains like OmniCoin L1 with chainId 131313)
+    let networkName = network.name;
+    if (networkName === 'unknown') {
+        if (chainId === 131313) {
+            networkName = 'fuji';
+        } else {
+            networkName = 'localhost';
+        }
+    }
+    console.log(`Network: ${networkName} (chainId: ${chainId})`);
 
     const [deployer] = await ethers.getSigners();
     const deployerAddress = await deployer.getAddress();

@@ -146,6 +146,17 @@ interface IOmniCore {
  * - M-02: totalOutstandingRewards accumulator for solvency
  * - M-03: MAX_BATCH_EPOCHS documented (50 = 100s catch-up)
  * - M-04: Ossification timeline documented
+ *
+ * Gateway Role Bonus (2026-02-27):
+ * - roleMultiplier mapping: basis-point multiplier per validator
+ *   (10000 = 1.0x, 15000 = 1.5x). Separate from penalty
+ *   rewardMultiplier (0-100 scale) which cannot represent >1.0x.
+ * - Gateway validators earn 1.5x to offset AVAX staking costs
+ *   and avalanchego infrastructure overhead.
+ * - Anti-gaming: bonus only applied when _heartbeatScore > 0
+ *   (active heartbeat within 20s). Offline = no bonus.
+ * - Max cap: 20000 bps (2.0x) to prevent abuse.
+ * - Access: ROLE_MANAGER_ROLE (granted to deployer + validators).
  */
 contract OmniValidatorRewards is
     AccessControlUpgradeable,
@@ -186,6 +197,10 @@ contract OmniValidatorRewards is
     /// @notice Role for applying reward penalties
     bytes32 public constant PENALTY_ROLE =
         keccak256("PENALTY_ROLE");
+
+    /// @notice Role for managing gateway/service-node role multipliers
+    bytes32 public constant ROLE_MANAGER_ROLE =
+        keccak256("ROLE_MANAGER_ROLE");
 
     /// @notice Epoch duration in seconds (2 second blocks)
     uint256 public constant EPOCH_DURATION = 2;
@@ -315,10 +330,18 @@ contract OmniValidatorRewards is
     ///      0 = default (100%), 1-100 = explicit multiplier.
     mapping(address => uint256) public rewardMultiplier;
 
+    /// @notice Role-based reward multiplier in basis points
+    /// @dev Gateway validators earn 1.5x (15000 bps) vs service
+    ///      nodes at 1.0x (10000 bps). Set via setRoleMultiplier()
+    ///      by ROLE_MANAGER_ROLE. Unset (0) defaults to 10000 (1.0x).
+    ///      Only applied when validator has an active heartbeat,
+    ///      preventing offline nodes from claiming the bonus.
+    mapping(address => uint256) public roleMultiplier;
+
     /// @dev Storage gap for future upgrades.
-    ///      Slots used: 15 explicit + mappings (6 slot headers).
-    ///      Gap = 35 to leave headroom.
-    uint256[35] private __gap;
+    ///      Slots used: 16 explicit + mappings (7 slot headers).
+    ///      Gap = 34 to leave headroom.
+    uint256[34] private __gap;
 
     // ══════════════════════════════════════════════════════════════════
     //                              EVENTS
@@ -456,6 +479,14 @@ contract OmniValidatorRewards is
         string reason
     );
 
+    /// @notice Emitted when a validator's role multiplier is changed
+    /// @param validator Address of the validator
+    /// @param multiplierBps New multiplier in basis points
+    event RoleMultiplierUpdated(
+        address indexed validator,
+        uint256 indexed multiplierBps
+    );
+
     // ══════════════════════════════════════════════════════════════════
     //                              ERRORS
     // ══════════════════════════════════════════════════════════════════
@@ -513,6 +544,9 @@ contract OmniValidatorRewards is
     /// @notice Thrown when reward multiplier exceeds 100
     error MultiplierTooHigh();
 
+    /// @notice Thrown when role multiplier exceeds 20000 bps (2.0x)
+    error RoleMultiplierTooHigh();
+
     // ══════════════════════════════════════════════════════════════════
     //                           INITIALIZATION
     // ══════════════════════════════════════════════════════════════════
@@ -542,6 +576,7 @@ contract OmniValidatorRewards is
 
         _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
         _grantRole(BLOCKCHAIN_ROLE, msg.sender);
+        _grantRole(ROLE_MANAGER_ROLE, msg.sender);
 
         if (xomTokenAddr == address(0)) revert ZeroAddress();
         if (participationAddr == address(0)) {
@@ -1004,6 +1039,31 @@ contract OmniValidatorRewards is
     }
 
     /**
+     * @notice Set role-based reward multiplier for a validator
+     * @dev Gateway validators should be set to 15000 (1.5x) to
+     *      compensate for higher operational costs (AVAX staking,
+     *      avalanchego infrastructure). Service nodes default to
+     *      10000 (1.0x). The bonus only applies when the validator
+     *      has an active heartbeat (heartbeat score > 0), preventing
+     *      offline nodes from earning the gateway premium.
+     *      Maximum 20000 (2.0x) to prevent abuse.
+     * @param validator Address of the validator
+     * @param multiplierBps Multiplier in basis points (10000 = 1.0x)
+     */
+    function setRoleMultiplier(
+        address validator,
+        uint256 multiplierBps
+    ) external onlyRole(ROLE_MANAGER_ROLE) {
+        if (multiplierBps > 20000) {
+            revert RoleMultiplierTooHigh();
+        }
+
+        roleMultiplier[validator] = multiplierBps;
+
+        emit RoleMultiplierUpdated(validator, multiplierBps);
+    }
+
+    /**
      * @notice Pause all operations
      * @dev Only DEFAULT_ADMIN_ROLE can pause. Blocks epoch
      *      processing, heartbeats, claims, and recording.
@@ -1140,20 +1200,33 @@ contract OmniValidatorRewards is
 
     /**
      * @notice Get effective weight for a validator
-     * @dev Returns the base weight scaled by the reward multiplier.
-     *      If multiplier is 0 (default), returns full weight.
+     * @dev Returns the base weight scaled by both the penalty
+     *      multiplier (rewardMultiplier) and the role bonus
+     *      multiplier (roleMultiplier). Mirrors the logic in
+     *      _computeEpochWeights() for external visibility.
      * @param validator Address of the validator
-     * @return Effective weight after penalty application
+     * @return Effective weight after penalty and role application
      */
     function getEffectiveWeight(
         address validator
     ) external view returns (uint256) {
-        uint256 baseWeight = _calculateValidatorWeight(
+        uint256 weight = _calculateValidatorWeight(
             validator, getCurrentEpoch()
         );
+        // Apply penalty multiplier
         uint256 mult = rewardMultiplier[validator];
-        if (mult == 0) return baseWeight; // Default = 100%
-        return (baseWeight * mult) / 100;
+        if (mult != 0) {
+            weight = (weight * mult) / 100;
+        }
+        // Apply role bonus (heartbeat-gated)
+        uint256 roleMul = roleMultiplier[validator];
+        if (
+            roleMul > 10000
+                && _heartbeatScore(validator) > 0
+        ) {
+            weight = (weight * roleMul) / 10000;
+        }
+        return weight;
     }
 
     /**
@@ -1166,6 +1239,20 @@ contract OmniValidatorRewards is
         address validator
     ) external view returns (uint256) {
         return rewardMultiplier[validator];
+    }
+
+    /**
+     * @notice Get the role multiplier for a validator
+     * @dev Returns 10000 (1.0x) if no explicit value is set.
+     *      Gateway validators are expected to have 15000 (1.5x).
+     * @param validator Address to check
+     * @return Multiplier in basis points (10000 = 1.0x default)
+     */
+    function getRoleMultiplier(
+        address validator
+    ) external view returns (uint256) {
+        uint256 m = roleMultiplier[validator];
+        return m == 0 ? 10000 : m;
     }
 
     /**
@@ -1368,6 +1455,20 @@ contract OmniValidatorRewards is
                         (baseWeight * mult) / 100;
                 }
                 // else mult == 0 → default = 100%
+
+                // Apply role multiplier (gateway bonus)
+                // Only applies when heartbeat is active
+                uint256 roleMul =
+                    roleMultiplier[validators[i]];
+                if (
+                    roleMul > 10000
+                        && _heartbeatScore(validators[i])
+                            > 0
+                ) {
+                    baseWeight =
+                        (baseWeight * roleMul) / 10000;
+                }
+                // else no role bonus (unset or 1.0x)
                 weights[i] = baseWeight;
                 totalWeight += weights[i];
                 ++activeCount;

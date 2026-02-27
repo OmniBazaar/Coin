@@ -59,12 +59,15 @@
     "OmniYieldFeeCollector": "0x1312eE58a794eb3aDa6D38cEbfcBD05f87e76511",
     "ReputationCredential": "0x4f41a213a4eBa3e74Cc17b28695BCC3e8692be63",
     "RWAPool": "0x853CB0499b8fb159f48dE7696194Db852b305355",
-    "UpdateRegistry": "0x3A396c75573f1F3c2C45456600cc950605d8Fa02"
+    "UpdateRegistry": "0x3A396c75573f1F3c2C45456600cc950605d8Fa02",
+    "UnifiedFeeVault": "0x45dB9304a5124d3cD6d646900b1c4C0cA6A89658",
+    "UnifiedFeeVaultImplementation": "0xbbeb10150563c3016067c713702c8a7b41BbFE8E",
+    "FeeSwapAdapter": "0x6Bce2b309b6C0107a8eB48d865ea52F858B9C865"
   },
   "validatorManager": {
     "type": "AvalanchePoSValidatorManager",
     "precompileAddress": "0x0FEEDC0DE0000000000000000000000000000000",
     "note": "Using standard Avalanche PoS Validator Manager precompile instead of deprecated OmniValidatorManager"
   },
-  "upgradedAt": "2026-02-24T20:37:18.820Z"
+  "upgradedAt": "2026-02-27T20:02:39.478Z"
 }
