@@ -12,6 +12,21 @@ import {PausableUpgradeable} from
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from
     "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import {IFeeSwapRouter} from "./interfaces/IFeeSwapRouter.sol";
+
+/**
+ * @title IOmniPrivacyBridge
+ * @author OmniBazaar Team
+ * @notice Subset of OmniPrivacyBridge used by UnifiedFeeVault
+ */
+interface IOmniPrivacyBridge {
+    /**
+     * @notice Convert pXOM back to XOM
+     * @dev Burns pXOM from msg.sender, releases XOM to msg.sender.
+     * @param amount Amount of pXOM to convert
+     */
+    function convertPXOMtoXOM(uint256 amount) external;
+}
 
 // ════════════════════════════════════════════════════════════════════════
 //                          UNIFIED FEE VAULT
@@ -59,6 +74,18 @@ contract UnifiedFeeVault is
     PausableUpgradeable
 {
     using SafeERC20 for IERC20;
+
+    // ════════════════════════════════════════════════════════════════════
+    //                              ENUMS
+    // ════════════════════════════════════════════════════════════════════
+
+    /// @notice Strategy for bridging a token's ODDAO share
+    /// @dev IN_KIND (0) bridges the original token as-is.
+    ///      SWAP_TO_XOM (1) swaps the token to XOM before bridging.
+    enum BridgeMode {
+        IN_KIND,
+        SWAP_TO_XOM
+    }
 
     // ════════════════════════════════════════════════════════════════════
     //                           CONSTANTS
@@ -140,10 +167,28 @@ contract UnifiedFeeVault is
     mapping(address => mapping(address => uint256))
         public pendingClaims;
 
+    // ── In-Kind / Swap-to-XOM Bridge Mode ────────────────────────
+
+    /// @notice Per-token bridge strategy: in-kind (default) or swap
+    /// @dev token address => BridgeMode enum value
+    mapping(address => BridgeMode) public tokenBridgeMode;
+
+    /// @notice IFeeSwapRouter adapter for token→XOM conversions
+    address public swapRouter;
+
+    /// @notice XOM token address (target of swap-to-XOM path)
+    address public xomToken;
+
+    /// @notice OmniPrivacyBridge address for pXOM→XOM conversions
+    address public privacyBridge;
+
+    /// @notice PrivateOmniCoin (pXOM) token address
+    address public pxomToken;
+
     /// @notice Storage gap for future upgrades
-    /// @dev Budget: 6 original + 4 new = 10 slots used. Gap = 40.
+    /// @dev Budget: 10 original + 5 new = 15 slots used. Gap = 35.
     ///      Reduce by N when adding N new state variables.
-    uint256[40] private __gap;
+    uint256[35] private __gap;
 
     // ════════════════════════════════════════════════════════════════════
     //                             EVENTS
@@ -246,6 +291,50 @@ contract UnifiedFeeVault is
         uint256 indexed amount
     );
 
+    /// @notice Emitted when fees are swapped to XOM and bridged
+    /// @param token Original fee token that was swapped
+    /// @param tokenAmount Amount of original token swapped
+    /// @param xomReceived Amount of XOM received from swap
+    /// @param recipient Bridge receiver address
+    event FeesSwappedAndBridged(
+        address indexed token,
+        uint256 indexed tokenAmount,
+        uint256 xomReceived,
+        address indexed recipient
+    );
+
+    /// @notice Emitted when pXOM is converted to XOM via privacy bridge
+    /// @param amount Amount of pXOM converted
+    /// @param xomReceived Amount of XOM received
+    event PXOMConverted(
+        uint256 indexed amount,
+        uint256 indexed xomReceived
+    );
+
+    /// @notice Emitted when a token's bridge mode is changed
+    /// @param token Token whose mode was updated
+    /// @param mode New bridge mode (0=IN_KIND, 1=SWAP_TO_XOM)
+    event TokenBridgeModeSet(
+        address indexed token,
+        BridgeMode indexed mode
+    );
+
+    /// @notice Emitted when the swap router is updated
+    /// @param newRouter New IFeeSwapRouter adapter address
+    event SwapRouterUpdated(address indexed newRouter);
+
+    /// @notice Emitted when the privacy bridge config is updated
+    /// @param bridge New OmniPrivacyBridge address
+    /// @param pxom New PrivateOmniCoin address
+    event PrivacyBridgeUpdated(
+        address indexed bridge,
+        address indexed pxom
+    );
+
+    /// @notice Emitted when the XOM token address is set
+    /// @param xom New XOM token address
+    event XOMTokenUpdated(address indexed xom);
+
     // ════════════════════════════════════════════════════════════════════
     //                          CUSTOM ERRORS
     // ════════════════════════════════════════════════════════════════════
@@ -289,6 +378,26 @@ contract UnifiedFeeVault is
 
     /// @notice Thrown when new implementation has no deployed code
     error InvalidImplementation();
+
+    /// @notice Thrown when swapRouter is not configured
+    error SwapRouterNotSet();
+
+    /// @notice Thrown when xomToken is not configured
+    error XOMTokenNotSet();
+
+    /// @notice Thrown when swap output is below the minimum
+    /// @param received Actual XOM received
+    /// @param minimum Required minimum
+    error InsufficientSwapOutput(
+        uint256 received,
+        uint256 minimum
+    );
+
+    /// @notice Thrown when pXOM→XOM conversion fails
+    error PXOMConversionFailed();
+
+    /// @notice Thrown when privacy bridge is not configured
+    error PrivacyBridgeNotSet();
 
     // ════════════════════════════════════════════════════════════════════
     //                      CONSTRUCTOR & INITIALIZER
@@ -640,6 +749,165 @@ contract UnifiedFeeVault is
         emit ContractOssified(msg.sender);
     }
 
+    // ── In-Kind / Swap-to-XOM Admin Configuration ────────────────
+
+    /**
+     * @notice Set the bridge mode for a specific token
+     * @dev IN_KIND (0) bridges the token as-is (default).
+     *      SWAP_TO_XOM (1) swaps to XOM before bridging.
+     * @param token ERC20 token whose mode to set
+     * @param mode Desired bridge mode
+     */
+    function setTokenBridgeMode(
+        address token,
+        BridgeMode mode
+    ) external onlyRole(ADMIN_ROLE) {
+        if (token == address(0)) revert ZeroAddress();
+
+        tokenBridgeMode[token] = mode;
+        emit TokenBridgeModeSet(token, mode);
+    }
+
+    /**
+     * @notice Set the IFeeSwapRouter adapter used for token→XOM swaps
+     * @param _swapRouter FeeSwapAdapter contract address
+     */
+    function setSwapRouter(
+        address _swapRouter
+    ) external onlyRole(ADMIN_ROLE) {
+        if (_swapRouter == address(0)) revert ZeroAddress();
+
+        swapRouter = _swapRouter;
+        emit SwapRouterUpdated(_swapRouter);
+    }
+
+    /**
+     * @notice Set the XOM token address (swap target)
+     * @param _xomToken OmniCoin ERC20 address
+     */
+    function setXomToken(
+        address _xomToken
+    ) external onlyRole(ADMIN_ROLE) {
+        if (_xomToken == address(0)) revert ZeroAddress();
+
+        xomToken = _xomToken;
+        emit XOMTokenUpdated(_xomToken);
+    }
+
+    /**
+     * @notice Set the OmniPrivacyBridge and pXOM token addresses
+     * @param _bridge OmniPrivacyBridge contract address
+     * @param _pxom PrivateOmniCoin (pXOM) ERC20 address
+     */
+    function setPrivacyBridge(
+        address _bridge,
+        address _pxom
+    ) external onlyRole(ADMIN_ROLE) {
+        if (_bridge == address(0)) revert ZeroAddress();
+        if (_pxom == address(0)) revert ZeroAddress();
+
+        privacyBridge = _bridge;
+        pxomToken = _pxom;
+        emit PrivacyBridgeUpdated(_bridge, _pxom);
+    }
+
+    // ── Swap-and-Bridge Functions ────────────────────────────────
+
+    /**
+     * @notice Swap a fee token to XOM and bridge to ODDAO treasury
+     * @dev Deducts from pendingBridge[token], swaps via the
+     *      IFeeSwapRouter adapter, and transfers XOM to receiver.
+     *      Uses balance-before/after to verify received amount.
+     * @param token ERC20 fee token to swap
+     * @param amount Amount of token to swap (must be <= pending)
+     * @param minXOMOut Minimum XOM output (slippage protection)
+     * @param bridgeReceiver Address to receive the XOM
+     */
+    function swapAndBridge(
+        address token,
+        uint256 amount,
+        uint256 minXOMOut,
+        address bridgeReceiver
+    )
+        external
+        onlyRole(BRIDGE_ROLE)
+        nonReentrant
+        whenNotPaused
+    {
+        _validateSwapBridge(token, bridgeReceiver, amount);
+
+        // Effects (CEI)
+        pendingBridge[token] -= amount;
+        totalBridged[token] += amount;
+
+        // Interactions: approve adapter, execute swap
+        IERC20(token).forceApprove(swapRouter, amount);
+
+        uint256 xomBefore =
+            IERC20(xomToken).balanceOf(address(this));
+
+        IFeeSwapRouter(swapRouter).swapExactInput(
+            token, xomToken, amount, minXOMOut, address(this)
+        );
+
+        uint256 xomReceived =
+            IERC20(xomToken).balanceOf(address(this)) - xomBefore;
+
+        if (xomReceived < minXOMOut) {
+            revert InsufficientSwapOutput(xomReceived, minXOMOut);
+        }
+
+        // Transfer XOM to bridge receiver
+        IERC20(xomToken).safeTransfer(bridgeReceiver, xomReceived);
+
+        emit FeesSwappedAndBridged(
+            token, amount, xomReceived, bridgeReceiver
+        );
+    }
+
+    /**
+     * @notice Convert accumulated pXOM fees to XOM and bridge
+     * @dev Burns pXOM via OmniPrivacyBridge.convertPXOMtoXOM(),
+     *      which releases XOM to this contract, then transfers
+     *      the received XOM to bridgeReceiver.
+     * @param amount Amount of pXOM to convert (must be <= pending)
+     * @param bridgeReceiver Address to receive the XOM
+     */
+    function convertPXOMAndBridge(
+        uint256 amount,
+        address bridgeReceiver
+    )
+        external
+        onlyRole(BRIDGE_ROLE)
+        nonReentrant
+        whenNotPaused
+    {
+        _validatePXOMBridge(bridgeReceiver, amount);
+
+        // Effects (CEI)
+        pendingBridge[pxomToken] -= amount;
+        totalBridged[pxomToken] += amount;
+
+        // Interactions: approve bridge, convert pXOM→XOM
+        IERC20(pxomToken).forceApprove(privacyBridge, amount);
+
+        uint256 xomBefore =
+            IERC20(xomToken).balanceOf(address(this));
+
+        IOmniPrivacyBridge(privacyBridge).convertPXOMtoXOM(amount);
+
+        uint256 xomReceived =
+            IERC20(xomToken).balanceOf(address(this)) - xomBefore;
+
+        if (xomReceived == 0) revert PXOMConversionFailed();
+
+        // Transfer received XOM to bridge receiver
+        IERC20(xomToken).safeTransfer(bridgeReceiver, xomReceived);
+
+        emit PXOMConverted(amount, xomReceived);
+        emit FeesBridged(xomToken, xomReceived, bridgeReceiver);
+    }
+
     // ════════════════════════════════════════════════════════════════════
     //                          VIEW FUNCTIONS
     // ════════════════════════════════════════════════════════════════════
@@ -743,6 +1011,56 @@ contract UnifiedFeeVault is
         if (_ossified) revert ContractIsOssified();
         if (newImplementation.code.length == 0) {
             revert InvalidImplementation();
+        }
+    }
+
+    /**
+     * @notice Validate inputs for swapAndBridge
+     * @dev Extracted to reduce cyclomatic complexity of swapAndBridge.
+     *      Checks zero-address, zero-amount, router/xom config, and
+     *      that the requested amount does not exceed pendingBridge.
+     * @param token ERC20 fee token address
+     * @param bridgeReceiver Destination address for XOM
+     * @param amount Amount of token to swap
+     */
+    function _validateSwapBridge(
+        address token,
+        address bridgeReceiver,
+        uint256 amount
+    ) internal view {
+        if (token == address(0)) revert ZeroAddress();
+        if (bridgeReceiver == address(0)) revert ZeroAddress();
+        if (amount == 0) revert ZeroAmount();
+        if (swapRouter == address(0)) revert SwapRouterNotSet();
+        if (xomToken == address(0)) revert XOMTokenNotSet();
+
+        uint256 pending = pendingBridge[token];
+        if (amount > pending) {
+            revert InsufficientPendingBalance(amount, pending);
+        }
+    }
+
+    /**
+     * @notice Validate inputs for convertPXOMAndBridge
+     * @dev Extracted to reduce cyclomatic complexity of
+     *      convertPXOMAndBridge. Checks zero-address, zero-amount,
+     *      bridge/pxom/xom config, and pending balance.
+     * @param bridgeReceiver Destination address for XOM
+     * @param amount Amount of pXOM to convert
+     */
+    function _validatePXOMBridge(
+        address bridgeReceiver,
+        uint256 amount
+    ) internal view {
+        if (bridgeReceiver == address(0)) revert ZeroAddress();
+        if (amount == 0) revert ZeroAmount();
+        if (privacyBridge == address(0)) revert PrivacyBridgeNotSet();
+        if (pxomToken == address(0)) revert PrivacyBridgeNotSet();
+        if (xomToken == address(0)) revert XOMTokenNotSet();
+
+        uint256 pending = pendingBridge[pxomToken];
+        if (amount > pending) {
+            revert InsufficientPendingBalance(amount, pending);
         }
     }
 }

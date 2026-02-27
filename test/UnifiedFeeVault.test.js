@@ -981,4 +981,600 @@ describe("UnifiedFeeVault", function () {
       }
     );
   });
+
+  // ─────────────────────────────────────────────────────────────────────
+  //  13. Token Bridge Mode Configuration
+  // ─────────────────────────────────────────────────────────────────────
+
+  describe("Token Bridge Mode", function () {
+    it("should default to IN_KIND (0) for any token", async function () {
+      expect(await vault.tokenBridgeMode(xom.target)).to.equal(0);
+      expect(await vault.tokenBridgeMode(usdc.target)).to.equal(0);
+    });
+
+    it("should allow ADMIN_ROLE to set SWAP_TO_XOM mode",
+      async function () {
+        await vault
+          .connect(admin)
+          .setTokenBridgeMode(usdc.target, 1); // SWAP_TO_XOM
+        expect(await vault.tokenBridgeMode(usdc.target)).to.equal(1);
+      }
+    );
+
+    it("should allow ADMIN_ROLE to set back to IN_KIND",
+      async function () {
+        await vault.connect(admin).setTokenBridgeMode(usdc.target, 1);
+        await vault.connect(admin).setTokenBridgeMode(usdc.target, 0);
+        expect(await vault.tokenBridgeMode(usdc.target)).to.equal(0);
+      }
+    );
+
+    it("should emit TokenBridgeModeSet event", async function () {
+      await expect(
+        vault.connect(admin).setTokenBridgeMode(usdc.target, 1)
+      )
+        .to.emit(vault, "TokenBridgeModeSet")
+        .withArgs(usdc.target, 1);
+    });
+
+    it("should revert for non-ADMIN_ROLE", async function () {
+      const ADMIN_ROLE = await vault.ADMIN_ROLE();
+      await expect(
+        vault.connect(attacker).setTokenBridgeMode(usdc.target, 1)
+      )
+        .to.be.revertedWithCustomError(
+          vault,
+          "AccessControlUnauthorizedAccount"
+        )
+        .withArgs(attacker.address, ADMIN_ROLE);
+    });
+  });
+
+  // ─────────────────────────────────────────────────────────────────────
+  //  14. Swap Router Configuration
+  // ─────────────────────────────────────────────────────────────────────
+
+  describe("Swap Router Config", function () {
+    it("should allow ADMIN_ROLE to set swap router", async function () {
+      await vault.connect(admin).setSwapRouter(user.address);
+      expect(await vault.swapRouter()).to.equal(user.address);
+    });
+
+    it("should emit SwapRouterUpdated event", async function () {
+      await expect(vault.connect(admin).setSwapRouter(user.address))
+        .to.emit(vault, "SwapRouterUpdated")
+        .withArgs(user.address);
+    });
+
+    it("should revert for non-ADMIN_ROLE", async function () {
+      const ADMIN_ROLE = await vault.ADMIN_ROLE();
+      await expect(
+        vault.connect(attacker).setSwapRouter(user.address)
+      )
+        .to.be.revertedWithCustomError(
+          vault,
+          "AccessControlUnauthorizedAccount"
+        )
+        .withArgs(attacker.address, ADMIN_ROLE);
+    });
+
+    it("should revert on zero address", async function () {
+      await expect(
+        vault.connect(admin).setSwapRouter(ethers.ZeroAddress)
+      ).to.be.revertedWithCustomError(vault, "ZeroAddress");
+    });
+  });
+
+  // ─────────────────────────────────────────────────────────────────────
+  //  15. XOM Token Configuration
+  // ─────────────────────────────────────────────────────────────────────
+
+  describe("XOM Token Config", function () {
+    it("should allow ADMIN_ROLE to set XOM token", async function () {
+      await vault.connect(admin).setXomToken(xom.target);
+      expect(await vault.xomToken()).to.equal(xom.target);
+    });
+
+    it("should emit XOMTokenUpdated event", async function () {
+      await expect(vault.connect(admin).setXomToken(xom.target))
+        .to.emit(vault, "XOMTokenUpdated")
+        .withArgs(xom.target);
+    });
+
+    it("should revert on zero address", async function () {
+      await expect(
+        vault.connect(admin).setXomToken(ethers.ZeroAddress)
+      ).to.be.revertedWithCustomError(vault, "ZeroAddress");
+    });
+  });
+
+  // ─────────────────────────────────────────────────────────────────────
+  //  16. Privacy Bridge Configuration
+  // ─────────────────────────────────────────────────────────────────────
+
+  describe("Privacy Bridge Config", function () {
+    it("should allow ADMIN_ROLE to set privacy bridge",
+      async function () {
+        await vault
+          .connect(admin)
+          .setPrivacyBridge(user.address, attacker.address);
+        expect(await vault.privacyBridge()).to.equal(user.address);
+        expect(await vault.pxomToken()).to.equal(attacker.address);
+      }
+    );
+
+    it("should emit PrivacyBridgeUpdated event", async function () {
+      await expect(
+        vault
+          .connect(admin)
+          .setPrivacyBridge(user.address, attacker.address)
+      )
+        .to.emit(vault, "PrivacyBridgeUpdated")
+        .withArgs(user.address, attacker.address);
+    });
+
+    it("should revert for non-ADMIN_ROLE", async function () {
+      const ADMIN_ROLE = await vault.ADMIN_ROLE();
+      await expect(
+        vault
+          .connect(attacker)
+          .setPrivacyBridge(user.address, attacker.address)
+      )
+        .to.be.revertedWithCustomError(
+          vault,
+          "AccessControlUnauthorizedAccount"
+        )
+        .withArgs(attacker.address, ADMIN_ROLE);
+    });
+
+    it("should revert on zero bridge address", async function () {
+      await expect(
+        vault
+          .connect(admin)
+          .setPrivacyBridge(ethers.ZeroAddress, attacker.address)
+      ).to.be.revertedWithCustomError(vault, "ZeroAddress");
+    });
+
+    it("should revert on zero pxom address", async function () {
+      await expect(
+        vault
+          .connect(admin)
+          .setPrivacyBridge(user.address, ethers.ZeroAddress)
+      ).to.be.revertedWithCustomError(vault, "ZeroAddress");
+    });
+  });
+
+  // ─────────────────────────────────────────────────────────────────────
+  //  17. swapAndBridge
+  // ─────────────────────────────────────────────────────────────────────
+
+  describe("swapAndBridge", function () {
+    let mockSwapRouter, oddaoShare;
+
+    beforeEach(async function () {
+      // Deploy mock swap router (1:1 exchange rate = 1e18)
+      const MockFeeSwapRouter = await ethers.getContractFactory(
+        "MockFeeSwapRouter"
+      );
+      mockSwapRouter = await MockFeeSwapRouter.deploy(
+        ethers.parseEther("1"),  // 1:1 rate
+        xom.target               // output = XOM
+      );
+      await mockSwapRouter.waitForDeployment();
+
+      // Configure vault: set swap router and XOM token
+      await vault.connect(admin).setSwapRouter(mockSwapRouter.target);
+      await vault.connect(admin).setXomToken(xom.target);
+
+      // Deposit USDC fees and distribute to build pendingBridge
+      await vault
+        .connect(depositor)
+        .deposit(usdc.target, DEPOSIT_AMOUNT);
+      await vault.connect(user).distribute(usdc.target);
+      oddaoShare =
+        (DEPOSIT_AMOUNT * ODDAO_BPS) / BPS_DENOMINATOR;
+    });
+
+    it("should swap USDC to XOM and transfer to receiver",
+      async function () {
+        const receiverBefore = await xom.balanceOf(user.address);
+
+        await vault
+          .connect(bridger)
+          .swapAndBridge(usdc.target, oddaoShare, 0, user.address);
+
+        const receiverAfter = await xom.balanceOf(user.address);
+        expect(receiverAfter - receiverBefore).to.equal(oddaoShare);
+      }
+    );
+
+    it("should deduct pendingBridge[token]", async function () {
+      await vault
+        .connect(bridger)
+        .swapAndBridge(usdc.target, oddaoShare, 0, user.address);
+
+      expect(await vault.pendingBridge(usdc.target)).to.equal(0n);
+    });
+
+    it("should update totalBridged[token]", async function () {
+      await vault
+        .connect(bridger)
+        .swapAndBridge(usdc.target, oddaoShare, 0, user.address);
+
+      expect(await vault.totalBridged(usdc.target)).to.equal(
+        oddaoShare
+      );
+    });
+
+    it("should emit FeesSwappedAndBridged event", async function () {
+      await expect(
+        vault
+          .connect(bridger)
+          .swapAndBridge(usdc.target, oddaoShare, 0, user.address)
+      )
+        .to.emit(vault, "FeesSwappedAndBridged")
+        .withArgs(usdc.target, oddaoShare, oddaoShare, user.address);
+    });
+
+    it("should revert for non-BRIDGE_ROLE", async function () {
+      const BRIDGE_ROLE = await vault.BRIDGE_ROLE();
+      await expect(
+        vault
+          .connect(attacker)
+          .swapAndBridge(usdc.target, oddaoShare, 0, user.address)
+      )
+        .to.be.revertedWithCustomError(
+          vault,
+          "AccessControlUnauthorizedAccount"
+        )
+        .withArgs(attacker.address, BRIDGE_ROLE);
+    });
+
+    it("should revert when swap router not set", async function () {
+      // Deploy a fresh vault without swap router configured
+      const Vault = await ethers.getContractFactory("UnifiedFeeVault");
+      const freshVault = await upgrades.deployProxy(
+        Vault,
+        [admin.address, stakingPool.address, protocolTreasury.address],
+        { initializer: "initialize", kind: "uups" }
+      );
+      await freshVault.waitForDeployment();
+
+      const BR = await freshVault.BRIDGE_ROLE();
+      await freshVault.connect(admin).grantRole(BR, bridger.address);
+      await freshVault.connect(admin).setXomToken(xom.target);
+
+      await expect(
+        freshVault
+          .connect(bridger)
+          .swapAndBridge(usdc.target, 1, 0, user.address)
+      ).to.be.revertedWithCustomError(freshVault, "SwapRouterNotSet");
+    });
+
+    it("should revert when XOM token not set", async function () {
+      const Vault = await ethers.getContractFactory("UnifiedFeeVault");
+      const freshVault = await upgrades.deployProxy(
+        Vault,
+        [admin.address, stakingPool.address, protocolTreasury.address],
+        { initializer: "initialize", kind: "uups" }
+      );
+      await freshVault.waitForDeployment();
+
+      const BR = await freshVault.BRIDGE_ROLE();
+      await freshVault.connect(admin).grantRole(BR, bridger.address);
+      await freshVault
+        .connect(admin)
+        .setSwapRouter(mockSwapRouter.target);
+
+      await expect(
+        freshVault
+          .connect(bridger)
+          .swapAndBridge(usdc.target, 1, 0, user.address)
+      ).to.be.revertedWithCustomError(freshVault, "XOMTokenNotSet");
+    });
+
+    it("should revert when amount exceeds pending", async function () {
+      const excessive = oddaoShare + 1n;
+      await expect(
+        vault
+          .connect(bridger)
+          .swapAndBridge(usdc.target, excessive, 0, user.address)
+      )
+        .to.be.revertedWithCustomError(
+          vault,
+          "InsufficientPendingBalance"
+        )
+        .withArgs(excessive, oddaoShare);
+    });
+
+    it("should enforce slippage protection", async function () {
+      // Set a very high minXOMOut that cannot be met
+      const impossibleMin = oddaoShare * 10n;
+      await expect(
+        vault
+          .connect(bridger)
+          .swapAndBridge(
+            usdc.target, oddaoShare, impossibleMin, user.address
+          )
+      ).to.be.revertedWithCustomError(
+        vault,
+        "InsufficientSwapOutput"
+      );
+    });
+
+    it("should revert when paused", async function () {
+      await vault.connect(admin).pause();
+      await expect(
+        vault
+          .connect(bridger)
+          .swapAndBridge(usdc.target, oddaoShare, 0, user.address)
+      ).to.be.revertedWithCustomError(vault, "EnforcedPause");
+    });
+  });
+
+  // ─────────────────────────────────────────────────────────────────────
+  //  18. convertPXOMAndBridge
+  // ─────────────────────────────────────────────────────────────────────
+
+  describe("convertPXOMAndBridge", function () {
+    let pxom, mockBridge, oddaoShare;
+
+    beforeEach(async function () {
+      // Deploy pXOM mock token
+      const MockERC20 = await ethers.getContractFactory("MockERC20");
+      pxom = await MockERC20.deploy("Private OmniCoin", "pXOM");
+      await pxom.waitForDeployment();
+
+      // Deploy mock privacy bridge
+      const MockBridge = await ethers.getContractFactory(
+        "MockOmniPrivacyBridge"
+      );
+      mockBridge = await MockBridge.deploy(pxom.target, xom.target);
+      await mockBridge.waitForDeployment();
+
+      // Configure vault
+      await vault.connect(admin).setXomToken(xom.target);
+      await vault
+        .connect(admin)
+        .setPrivacyBridge(mockBridge.target, pxom.target);
+
+      // Grant DEPOSITOR_ROLE and setup pXOM fees
+      const DEPOSITOR_ROLE = await vault.DEPOSITOR_ROLE();
+      await vault
+        .connect(admin)
+        .grantRole(DEPOSITOR_ROLE, depositor.address);
+
+      // Mint pXOM to depositor, approve vault, deposit
+      await pxom.mint(depositor.address, DEPOSIT_AMOUNT);
+      await pxom
+        .connect(depositor)
+        .approve(vault.target, DEPOSIT_AMOUNT);
+      await vault
+        .connect(depositor)
+        .deposit(pxom.target, DEPOSIT_AMOUNT);
+
+      // Distribute to build pendingBridge[pxom]
+      await vault.connect(user).distribute(pxom.target);
+      oddaoShare =
+        (DEPOSIT_AMOUNT * ODDAO_BPS) / BPS_DENOMINATOR;
+    });
+
+    it("should convert pXOM to XOM and transfer to receiver",
+      async function () {
+        const receiverBefore = await xom.balanceOf(user.address);
+
+        await vault
+          .connect(bridger)
+          .convertPXOMAndBridge(oddaoShare, user.address);
+
+        const receiverAfter = await xom.balanceOf(user.address);
+        expect(receiverAfter - receiverBefore).to.equal(oddaoShare);
+      }
+    );
+
+    it("should deduct pendingBridge[pxom]", async function () {
+      await vault
+        .connect(bridger)
+        .convertPXOMAndBridge(oddaoShare, user.address);
+
+      expect(await vault.pendingBridge(pxom.target)).to.equal(0n);
+    });
+
+    it("should update totalBridged[pxom]", async function () {
+      await vault
+        .connect(bridger)
+        .convertPXOMAndBridge(oddaoShare, user.address);
+
+      expect(await vault.totalBridged(pxom.target)).to.equal(
+        oddaoShare
+      );
+    });
+
+    it("should emit PXOMConverted and FeesBridged events",
+      async function () {
+        const tx = vault
+          .connect(bridger)
+          .convertPXOMAndBridge(oddaoShare, user.address);
+
+        await expect(tx)
+          .to.emit(vault, "PXOMConverted")
+          .withArgs(oddaoShare, oddaoShare);
+
+        await expect(tx)
+          .to.emit(vault, "FeesBridged")
+          .withArgs(xom.target, oddaoShare, user.address);
+      }
+    );
+
+    it("should revert for non-BRIDGE_ROLE", async function () {
+      const BRIDGE_ROLE = await vault.BRIDGE_ROLE();
+      await expect(
+        vault
+          .connect(attacker)
+          .convertPXOMAndBridge(oddaoShare, user.address)
+      )
+        .to.be.revertedWithCustomError(
+          vault,
+          "AccessControlUnauthorizedAccount"
+        )
+        .withArgs(attacker.address, BRIDGE_ROLE);
+    });
+
+    it("should revert when privacy bridge not set",
+      async function () {
+        const Vault = await ethers.getContractFactory(
+          "UnifiedFeeVault"
+        );
+        const freshVault = await upgrades.deployProxy(
+          Vault,
+          [
+            admin.address,
+            stakingPool.address,
+            protocolTreasury.address,
+          ],
+          { initializer: "initialize", kind: "uups" }
+        );
+        await freshVault.waitForDeployment();
+
+        const BR = await freshVault.BRIDGE_ROLE();
+        await freshVault
+          .connect(admin)
+          .grantRole(BR, bridger.address);
+        await freshVault.connect(admin).setXomToken(xom.target);
+
+        await expect(
+          freshVault
+            .connect(bridger)
+            .convertPXOMAndBridge(1, user.address)
+        ).to.be.revertedWithCustomError(
+          freshVault,
+          "PrivacyBridgeNotSet"
+        );
+      }
+    );
+
+    it("should revert when amount exceeds pending", async function () {
+      const excessive = oddaoShare + 1n;
+      await expect(
+        vault
+          .connect(bridger)
+          .convertPXOMAndBridge(excessive, user.address)
+      )
+        .to.be.revertedWithCustomError(
+          vault,
+          "InsufficientPendingBalance"
+        )
+        .withArgs(excessive, oddaoShare);
+    });
+
+    it("should revert when paused", async function () {
+      await vault.connect(admin).pause();
+      await expect(
+        vault
+          .connect(bridger)
+          .convertPXOMAndBridge(oddaoShare, user.address)
+      ).to.be.revertedWithCustomError(vault, "EnforcedPause");
+    });
+  });
+
+  // ─────────────────────────────────────────────────────────────────────
+  //  19. In-Kind Bridging Still Works
+  // ─────────────────────────────────────────────────────────────────────
+
+  describe("In-Kind Bridging Unchanged", function () {
+    it("should still bridge USDC in-kind via bridgeToTreasury",
+      async function () {
+        await vault
+          .connect(depositor)
+          .deposit(usdc.target, DEPOSIT_AMOUNT);
+        await vault.connect(user).distribute(usdc.target);
+
+        const oddaoShare =
+          (DEPOSIT_AMOUNT * ODDAO_BPS) / BPS_DENOMINATOR;
+        const receiverBefore = await usdc.balanceOf(user.address);
+
+        await vault
+          .connect(bridger)
+          .bridgeToTreasury(usdc.target, oddaoShare, user.address);
+
+        expect(await usdc.balanceOf(user.address)).to.equal(
+          receiverBefore + oddaoShare
+        );
+        expect(await vault.pendingBridge(usdc.target)).to.equal(0n);
+        expect(await vault.totalBridged(usdc.target)).to.equal(
+          oddaoShare
+        );
+      }
+    );
+
+    it("should still bridge XOM in-kind via bridgeToTreasury",
+      async function () {
+        await vault
+          .connect(depositor)
+          .deposit(xom.target, DEPOSIT_AMOUNT);
+        await vault.connect(user).distribute(xom.target);
+
+        const oddaoShare =
+          (DEPOSIT_AMOUNT * ODDAO_BPS) / BPS_DENOMINATOR;
+
+        await vault
+          .connect(bridger)
+          .bridgeToTreasury(xom.target, oddaoShare, user.address);
+
+        expect(await vault.pendingBridge(xom.target)).to.equal(0n);
+        expect(await vault.totalBridged(xom.target)).to.equal(
+          oddaoShare
+        );
+      }
+    );
+
+    it("should handle mixed: in-kind for one token, swap for another",
+      async function () {
+        // Setup swap router for USDC→XOM
+        const MockFeeSwapRouter = await ethers.getContractFactory(
+          "MockFeeSwapRouter"
+        );
+        const mockRouter = await MockFeeSwapRouter.deploy(
+          ethers.parseEther("1"),
+          xom.target
+        );
+        await mockRouter.waitForDeployment();
+        await vault.connect(admin).setSwapRouter(mockRouter.target);
+        await vault.connect(admin).setXomToken(xom.target);
+
+        // Deposit and distribute both tokens
+        await vault
+          .connect(depositor)
+          .deposit(xom.target, DEPOSIT_AMOUNT);
+        await vault
+          .connect(depositor)
+          .deposit(usdc.target, DEPOSIT_AMOUNT);
+        await vault.connect(user).distribute(xom.target);
+        await vault.connect(user).distribute(usdc.target);
+
+        const oddaoShare =
+          (DEPOSIT_AMOUNT * ODDAO_BPS) / BPS_DENOMINATOR;
+
+        // Bridge XOM in-kind
+        await vault
+          .connect(bridger)
+          .bridgeToTreasury(xom.target, oddaoShare, user.address);
+
+        // Swap USDC to XOM and bridge
+        await vault
+          .connect(bridger)
+          .swapAndBridge(usdc.target, oddaoShare, 0, user.address);
+
+        // Both should be fully bridged
+        expect(await vault.pendingBridge(xom.target)).to.equal(0n);
+        expect(await vault.pendingBridge(usdc.target)).to.equal(0n);
+        expect(await vault.totalBridged(xom.target)).to.equal(
+          oddaoShare
+        );
+        expect(await vault.totalBridged(usdc.target)).to.equal(
+          oddaoShare
+        );
+      }
+    );
+  });
 });

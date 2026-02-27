@@ -43,8 +43,11 @@ function loadDeploymentConfig(network) {
  * @param {string} network - Network name
  * @param {string} proxyAddress - UnifiedFeeVault proxy address
  * @param {string} implAddress - Implementation address
+ * @param {string} [adapterAddress] - FeeSwapAdapter address (optional)
  */
-function saveDeploymentConfig(network, proxyAddress, implAddress) {
+function saveDeploymentConfig(
+    network, proxyAddress, implAddress, adapterAddress
+) {
     const deploymentPath = path.join(
         __dirname, '..', 'deployments', `${network}.json`
     );
@@ -61,6 +64,9 @@ function saveDeploymentConfig(network, proxyAddress, implAddress) {
 
     config.contracts.UnifiedFeeVault = proxyAddress;
     config.contracts.UnifiedFeeVaultImplementation = implAddress;
+    if (adapterAddress) {
+        config.contracts.FeeSwapAdapter = adapterAddress;
+    }
     config.upgradedAt = new Date().toISOString();
 
     fs.writeFileSync(deploymentPath, JSON.stringify(config, null, 2));
@@ -206,7 +212,61 @@ async function main() {
     }
 
     // ─────────────────────────────────────────────────
-    // 6. Verify contract state
+    // 6. Deploy FeeSwapAdapter and configure vault
+    // ─────────────────────────────────────────────────
+    const omniSwapRouterAddr = contracts.OmniSwapRouter || '';
+    const omniCoinAddr = contracts.OmniCoin || '';
+    const privacyBridgeAddr = contracts.OmniBridge || '';
+    const privateOmniCoinAddr = contracts.PrivateOmniCoin || '';
+    let feeSwapAdapterAddr = '';
+
+    if (omniSwapRouterAddr) {
+        console.log('\nDeploying FeeSwapAdapter...');
+        const defaultSource = ethers.id('internal');
+        const FeeSwapAdapter = await ethers.getContractFactory(
+            'FeeSwapAdapter'
+        );
+        const adapter = await FeeSwapAdapter.deploy(
+            omniSwapRouterAddr,
+            defaultSource,
+            deployerAddress
+        );
+        await adapter.waitForDeployment();
+        const adapterAddr = await adapter.getAddress();
+        console.log(`  FeeSwapAdapter: ${adapterAddr}`);
+
+        // Configure vault with swap infrastructure
+        console.log('  Setting swapRouter on vault...');
+        const tx1 = await vault.setSwapRouter(adapterAddr);
+        await tx1.wait();
+
+        if (omniCoinAddr &&
+            omniCoinAddr !== ethers.ZeroAddress) {
+            console.log('  Setting xomToken on vault...');
+            const tx2 = await vault.setXomToken(omniCoinAddr);
+            await tx2.wait();
+        }
+
+        if (privacyBridgeAddr &&
+            privacyBridgeAddr !== ethers.ZeroAddress &&
+            privateOmniCoinAddr &&
+            privateOmniCoinAddr !== ethers.ZeroAddress) {
+            console.log('  Setting privacyBridge on vault...');
+            const tx3 = await vault.setPrivacyBridge(
+                privacyBridgeAddr, privateOmniCoinAddr
+            );
+            await tx3.wait();
+        }
+
+        feeSwapAdapterAddr = adapterAddr;
+    } else {
+        console.log(
+            '\nOmniSwapRouter not found — skipping FeeSwapAdapter'
+        );
+    }
+
+    // ─────────────────────────────────────────────────
+    // 7. Verify contract state
     // ─────────────────────────────────────────────────
     console.log('\nVerifying contract state...');
     console.log(
@@ -229,12 +289,15 @@ async function main() {
     );
 
     // ─────────────────────────────────────────────────
-    // 7. Update deployments/fuji.json
+    // 8. Update deployments/fuji.json
     // ─────────────────────────────────────────────────
-    saveDeploymentConfig(configKey, proxyAddress, implAddress);
+    saveDeploymentConfig(
+        configKey, proxyAddress, implAddress,
+        feeSwapAdapterAddr || undefined
+    );
 
     // ─────────────────────────────────────────────────
-    // 8. Summary
+    // 9. Summary
     // ─────────────────────────────────────────────────
     console.log('\n' + '='.repeat(50));
     console.log('Deployment Complete');
