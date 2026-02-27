@@ -305,6 +305,8 @@ describe('OmniParticipation', function () {
         });
 
         it('should update publisher activity to 4', async function () {
+            // M-02: Graduated scoring requires >= 100,000 listings for 4 points
+            await participation.connect(verifier).setPublisherListingCount(user1.address, 100000);
             await participation.connect(user1).submitServiceNodeHeartbeat();
 
             const comp = await participation.components(user1.address);
@@ -658,7 +660,8 @@ describe('OmniParticipation', function () {
                 await mockRegistration.setKycTier3(user1.address, true);
 
                 const [totalScore, kycTrust] = await participation.getScore(user1.address);
-                expect(kycTrust).to.equal(20);
+                // Per spec: Tier 3 (Enhanced) = 15 points, Tier 4 (Full) = 20 points
+                expect(kycTrust).to.equal(15);
             });
 
             it('should calculate score with KYC tier 4', async function () {

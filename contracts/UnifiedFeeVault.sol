@@ -574,6 +574,198 @@ contract UnifiedFeeVault is
         emit PendingClaimWithdrawn(msg.sender, token, amount);
     }
 
+    // ════════════════════════════════════════════════════════════════════
+    //                   MARKETPLACE FEE SETTLEMENT
+    // ════════════════════════════════════════════════════════════════════
+
+    /**
+     * @notice Deposit and distribute a marketplace transaction fee
+     * @dev Calculates the 1% marketplace fee split on-chain:
+     *      - 0.50% transaction fee: 70% ODDAO, 20% validator, 10%
+     *        staking
+     *      - 0.25% referral fee: 70% referrer, 20% L2 referrer, 10%
+     *        ODDAO
+     *      - 0.25% listing fee: 70% listing node, 20% selling node,
+     *        10% ODDAO
+     *
+     *      Caller must have DEPOSITOR_ROLE and have approved this
+     *      contract for the fee amount (1% of saleAmount in XOM).
+     *
+     * @param token XOM token address (fee currency)
+     * @param saleAmount Total sale amount (fee calculated as 1%)
+     * @param validator Validator processing the sale
+     * @param referrer Referrer who referred the seller (zero if none)
+     * @param referrerL2 Second-level referrer (zero if none)
+     * @param listingNode Node where listing was created
+     * @param sellingNode Node where buyer is shopping
+     */
+    function depositMarketplaceFee(
+        address token,
+        uint256 saleAmount,
+        address validator,
+        address referrer,
+        address referrerL2,
+        address listingNode,
+        address sellingNode
+    ) external onlyRole(DEPOSITOR_ROLE) nonReentrant whenNotPaused {
+        if (token == address(0)) revert ZeroAddress();
+        if (saleAmount == 0) revert ZeroAmount();
+
+        // Total fee = 1% of sale amount
+        uint256 totalFee = saleAmount / 100;
+        if (totalFee == 0) revert ZeroAmount();
+
+        // Transfer total fee from caller
+        IERC20(token).safeTransferFrom(
+            msg.sender, address(this), totalFee
+        );
+
+        // Split 1: Transaction fee (0.50% = half of total fee)
+        uint256 txFee = totalFee / 2;
+        uint256 txOddao = (txFee * 7000) / 10000; // 70% ODDAO
+        uint256 txValidator = (txFee * 2000) / 10000; // 20% validator
+        uint256 txStaking = txFee - txOddao - txValidator; // 10%
+
+        pendingBridge[token] += txOddao;
+        pendingClaims[validator][token] += txValidator;
+        _safePushOrQuarantine(token, stakingPool, txStaking);
+
+        // Split 2: Referral fee (0.25% = quarter of total fee)
+        uint256 refFee = totalFee / 4;
+        uint256 refPrimary = (refFee * 7000) / 10000; // 70% referrer
+        uint256 refSecondary = (refFee * 2000) / 10000; // 20% L2
+        uint256 refOddao = refFee - refPrimary - refSecondary; // 10%
+
+        if (referrer != address(0)) {
+            pendingClaims[referrer][token] += refPrimary;
+        } else {
+            pendingBridge[token] += refPrimary;
+        }
+        if (referrerL2 != address(0)) {
+            pendingClaims[referrerL2][token] += refSecondary;
+        } else {
+            pendingBridge[token] += refSecondary;
+        }
+        pendingBridge[token] += refOddao;
+
+        // Split 3: Listing fee (0.25% = quarter of total fee)
+        uint256 listFee = totalFee - txFee - refFee; // remainder
+        uint256 listNode = (listFee * 7000) / 10000; // 70%
+        uint256 sellNode = (listFee * 2000) / 10000; // 20%
+        uint256 listOddao = listFee - listNode - sellNode; // 10%
+
+        if (listingNode != address(0)) {
+            pendingClaims[listingNode][token] += listNode;
+        } else {
+            pendingBridge[token] += listNode;
+        }
+        if (sellingNode != address(0)) {
+            pendingClaims[sellingNode][token] += sellNode;
+        } else {
+            pendingBridge[token] += sellNode;
+        }
+        pendingBridge[token] += listOddao;
+
+        totalDistributed[token] += totalFee;
+
+        emit FeesDeposited(token, totalFee, msg.sender);
+    }
+
+    /**
+     * @notice Deposit and distribute an arbitration fee
+     * @dev Arbitration fee = 5% of disputed amount. Split:
+     *      70% arbitrator panel, 20% validator, 10% ODDAO.
+     *      Caller must have DEPOSITOR_ROLE and approved the fee.
+     * @param token XOM token address
+     * @param disputeAmount Amount in dispute
+     * @param arbitrator Arbitrator receiving primary share
+     * @param validator Validator processing the dispute
+     */
+    function depositArbitrationFee(
+        address token,
+        uint256 disputeAmount,
+        address arbitrator,
+        address validator
+    ) external onlyRole(DEPOSITOR_ROLE) nonReentrant whenNotPaused {
+        if (token == address(0)) revert ZeroAddress();
+        if (disputeAmount == 0) revert ZeroAmount();
+
+        uint256 totalFee = (disputeAmount * 500) / 10000; // 5%
+        if (totalFee == 0) revert ZeroAmount();
+
+        IERC20(token).safeTransferFrom(
+            msg.sender, address(this), totalFee
+        );
+
+        uint256 arbShare = (totalFee * 7000) / 10000; // 70%
+        uint256 valShare = (totalFee * 2000) / 10000; // 20%
+        uint256 oddaoShare = totalFee - arbShare - valShare; // 10%
+
+        pendingClaims[arbitrator][token] += arbShare;
+        pendingClaims[validator][token] += valShare;
+        pendingBridge[token] += oddaoShare;
+
+        totalDistributed[token] += totalFee;
+
+        emit FeesDeposited(token, totalFee, msg.sender);
+    }
+
+    // ════════════════════════════════════════════════════════════════════
+    //                     FEE BREAKDOWN VIEW FUNCTIONS
+    // ════════════════════════════════════════════════════════════════════
+
+    /**
+     * @notice Calculate marketplace fee breakdown for a sale amount
+     * @param saleAmount Total sale amount
+     * @return totalFee Total 1% fee
+     * @return txFee Transaction fee portion (0.50%)
+     * @return refFee Referral fee portion (0.25%)
+     * @return listFee Listing fee portion (0.25%)
+     */
+    function getMarketplaceFeeBreakdown(
+        uint256 saleAmount
+    )
+        external
+        pure
+        returns (
+            uint256 totalFee,
+            uint256 txFee,
+            uint256 refFee,
+            uint256 listFee
+        )
+    {
+        totalFee = saleAmount / 100;
+        txFee = totalFee / 2;
+        refFee = totalFee / 4;
+        listFee = totalFee - txFee - refFee;
+    }
+
+    /**
+     * @notice Calculate arbitration fee breakdown
+     * @param disputeAmount Disputed amount
+     * @return totalFee Total 5% fee
+     * @return arbitratorShare 70% to arbitrator
+     * @return validatorShare 20% to validator
+     * @return oddaoShare 10% to ODDAO
+     */
+    function getArbitrationFeeBreakdown(
+        uint256 disputeAmount
+    )
+        external
+        pure
+        returns (
+            uint256 totalFee,
+            uint256 arbitratorShare,
+            uint256 validatorShare,
+            uint256 oddaoShare
+        )
+    {
+        totalFee = (disputeAmount * 500) / 10000;
+        arbitratorShare = (totalFee * 7000) / 10000;
+        validatorShare = (totalFee * 2000) / 10000;
+        oddaoShare = totalFee - arbitratorShare - validatorShare;
+    }
+
     /**
      * @notice Bridge accumulated ODDAO share to Optimism treasury
      * @dev Only BRIDGE_ROLE can call. Transfers tokens to a bridge

@@ -285,6 +285,16 @@ contract DEXSettlement is
     );
 
     /**
+     * @notice Emitted when a trader cancels an order
+     * @param trader Trader who cancelled
+     * @param nonce Nonce of the cancelled order
+     */
+    event OrderCancelled(
+        address indexed trader,
+        uint256 nonce
+    );
+
+    /**
      * @notice Emitted when a trade is settled
      * @param tradeId Unique trade identifier
      * @param maker Address of the maker
@@ -1174,6 +1184,37 @@ contract DEXSettlement is
         bytes32 orderHash
     ) external view returns (bool) {
         return filledOrders[orderHash];
+    }
+
+    /**
+     * @notice Verify an order's EIP-712 signature (public, for
+     *         WebApp pre-submission verification)
+     * @dev Allows frontends to confirm that an order is properly
+     *      signed before sending it to the validator's order book.
+     * @param order Order to verify
+     * @param signature EIP-712 signature
+     * @return valid True if signature matches order.trader
+     */
+    function verifyOrderSignature(
+        Order calldata order,
+        bytes calldata signature
+    ) external view returns (bool valid) {
+        bytes32 orderHash =
+            _hashTypedDataV4(_hashOrder(order));
+        address recovered = orderHash.recover(signature);
+        return recovered == order.trader;
+    }
+
+    /**
+     * @notice Get the EIP-712 hash of an order (for signing)
+     * @dev Frontend uses this to compute the digest for signing
+     * @param order Order to hash
+     * @return digest EIP-712 typed data hash
+     */
+    function getOrderHash(
+        Order calldata order
+    ) external view returns (bytes32 digest) {
+        return _hashTypedDataV4(_hashOrder(order));
     }
 
     /**
