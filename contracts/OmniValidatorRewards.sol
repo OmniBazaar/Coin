@@ -183,6 +183,10 @@ contract OmniValidatorRewards is
     bytes32 public constant BLOCKCHAIN_ROLE =
         keccak256("BLOCKCHAIN_ROLE");
 
+    /// @notice Role for applying reward penalties
+    bytes32 public constant PENALTY_ROLE =
+        keccak256("PENALTY_ROLE");
+
     /// @notice Epoch duration in seconds (2 second blocks)
     uint256 public constant EPOCH_DURATION = 2;
 
@@ -305,10 +309,16 @@ contract OmniValidatorRewards is
     ///      48h delay before execution
     PendingUpgrade public pendingUpgrade;
 
+    /// @notice Reward multiplier per validator (0-100 percentage)
+    /// @dev Defaults to 0 which is treated as 100% (full rewards).
+    ///      Set via setRewardMultiplier() by PENALTY_ROLE.
+    ///      0 = default (100%), 1-100 = explicit multiplier.
+    mapping(address => uint256) public rewardMultiplier;
+
     /// @dev Storage gap for future upgrades.
-    ///      Slots used: 14 explicit + mappings (5 slot headers).
-    ///      Gap = 36 to leave headroom.
-    uint256[36] private __gap;
+    ///      Slots used: 15 explicit + mappings (6 slot headers).
+    ///      Gap = 35 to leave headroom.
+    uint256[35] private __gap;
 
     // ══════════════════════════════════════════════════════════════════
     //                              EVENTS
@@ -434,6 +444,18 @@ contract OmniValidatorRewards is
     /// @notice Emitted when a pending upgrade is cancelled
     event UpgradeCancelled();
 
+    /// @notice Emitted when a validator's reward multiplier is changed
+    /// @param validator Address of the penalized/restored validator
+    /// @param oldMultiplier Previous multiplier value
+    /// @param newMultiplier New multiplier value (0-100)
+    /// @param reason Human-readable reason for the change
+    event RewardMultiplierChanged(
+        address indexed validator,
+        uint256 indexed oldMultiplier,
+        uint256 indexed newMultiplier,
+        string reason
+    );
+
     // ══════════════════════════════════════════════════════════════════
     //                              ERRORS
     // ══════════════════════════════════════════════════════════════════
@@ -487,6 +509,9 @@ contract OmniValidatorRewards is
         address proposed,
         address attempted
     );
+
+    /// @notice Thrown when reward multiplier exceeds 100
+    error MultiplierTooHigh();
 
     // ══════════════════════════════════════════════════════════════════
     //                           INITIALIZATION
@@ -951,6 +976,34 @@ contract OmniValidatorRewards is
     }
 
     /**
+     * @notice Set reward multiplier for a validator
+     * @dev Called by PENALTY_ROLE to penalize or restore validators.
+     *      A multiplier of 0 is treated as 100% (default/full rewards).
+     *      Values 1-100 set the explicit reward percentage.
+     *      Setting to 1 effectively zeroes rewards (1% of normal).
+     * @param validator Address of the validator
+     * @param multiplier Reward percentage (0=default/100%, 1-100)
+     * @param reason Human-readable reason for the change
+     */
+    function setRewardMultiplier(
+        address validator,
+        uint256 multiplier,
+        string calldata reason
+    ) external onlyRole(PENALTY_ROLE) {
+        if (multiplier > 100) revert MultiplierTooHigh();
+
+        uint256 oldMultiplier = rewardMultiplier[validator];
+        rewardMultiplier[validator] = multiplier;
+
+        emit RewardMultiplierChanged(
+            validator,
+            oldMultiplier,
+            multiplier,
+            reason
+        );
+    }
+
+    /**
      * @notice Pause all operations
      * @dev Only DEFAULT_ADMIN_ROLE can pause. Blocks epoch
      *      processing, heartbeats, claims, and recording.
@@ -1083,6 +1136,36 @@ contract OmniValidatorRewards is
         // solhint-disable-next-line gas-strict-inequalities
         return xomToken.balanceOf(address(this))
             >= totalOutstandingRewards;
+    }
+
+    /**
+     * @notice Get effective weight for a validator
+     * @dev Returns the base weight scaled by the reward multiplier.
+     *      If multiplier is 0 (default), returns full weight.
+     * @param validator Address of the validator
+     * @return Effective weight after penalty application
+     */
+    function getEffectiveWeight(
+        address validator
+    ) external view returns (uint256) {
+        uint256 baseWeight = _calculateValidatorWeight(
+            validator, getCurrentEpoch()
+        );
+        uint256 mult = rewardMultiplier[validator];
+        if (mult == 0) return baseWeight; // Default = 100%
+        return (baseWeight * mult) / 100;
+    }
+
+    /**
+     * @notice Get the reward multiplier for a validator
+     * @dev Returns 0 if no explicit multiplier set (treated as 100%).
+     * @param validator Address to check
+     * @return Multiplier value (0=default/100%, 1-100=explicit)
+     */
+    function getRewardMultiplier(
+        address validator
+    ) external view returns (uint256) {
+        return rewardMultiplier[validator];
     }
 
     /**
@@ -1272,9 +1355,20 @@ contract OmniValidatorRewards is
 
         for (uint256 i = 0; i < cap;) {
             if (isValidatorActive(validators[i])) {
-                weights[i] = _calculateValidatorWeight(
-                    validators[i], epoch
-                );
+                uint256 baseWeight =
+                    _calculateValidatorWeight(
+                        validators[i], epoch
+                    );
+                // Apply reward multiplier (penalty)
+                uint256 mult =
+                    rewardMultiplier[validators[i]];
+                if (mult != 0) {
+                    // Explicit multiplier set (1-100%)
+                    baseWeight =
+                        (baseWeight * mult) / 100;
+                }
+                // else mult == 0 → default = 100%
+                weights[i] = baseWeight;
                 totalWeight += weights[i];
                 ++activeCount;
             }
