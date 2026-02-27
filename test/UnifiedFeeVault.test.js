@@ -1,5 +1,6 @@
 const { expect } = require("chai");
 const { ethers, upgrades } = require("hardhat");
+const { time } = require("@nomicfoundation/hardhat-network-helpers");
 
 /**
  * @title UnifiedFeeVault Test Suite
@@ -276,10 +277,12 @@ describe("UnifiedFeeVault", function () {
         (DEPOSIT_AMOUNT * ODDAO_BPS) / BPS_DENOMINATOR;
       const expectedStaking =
         (DEPOSIT_AMOUNT * STAKING_BPS) / BPS_DENOMINATOR;
+      const expectedProtocol =
+        DEPOSIT_AMOUNT - expectedODDAO - expectedStaking;
 
       await expect(vault.connect(user).distribute(xom.target))
         .to.emit(vault, "FeesDistributed")
-        .withArgs(xom.target, expectedODDAO, expectedStaking);
+        .withArgs(xom.target, expectedODDAO, expectedStaking, expectedProtocol);
     });
 
     it("should update totalDistributed", async function () {
@@ -567,35 +570,46 @@ describe("UnifiedFeeVault", function () {
   // ─────────────────────────────────────────────────────────────────────
 
   describe("Admin Functions", function () {
-    it("should update recipients with setRecipients", async function () {
+    it("should update recipients via proposeRecipients + applyRecipients", async function () {
       const newStaking = user.address;
       const newTreasury = attacker.address;
 
+      // Propose new recipients (starts 48h timelock)
       await vault
         .connect(admin)
-        .setRecipients(newStaking, newTreasury);
+        .proposeRecipients(newStaking, newTreasury);
+
+      // Advance time past the 48h timelock
+      await time.increase(48 * 60 * 60 + 1);
+
+      // Apply the change
+      await vault.connect(admin).applyRecipients();
 
       expect(await vault.stakingPool()).to.equal(newStaking);
       expect(await vault.protocolTreasury()).to.equal(newTreasury);
     });
 
-    it("should emit RecipientsUpdated event", async function () {
+    it("should emit RecipientsUpdated event on applyRecipients", async function () {
+      await vault
+        .connect(admin)
+        .proposeRecipients(user.address, attacker.address);
+
+      await time.increase(48 * 60 * 60 + 1);
+
       await expect(
-        vault
-          .connect(admin)
-          .setRecipients(user.address, attacker.address)
+        vault.connect(admin).applyRecipients()
       )
         .to.emit(vault, "RecipientsUpdated")
         .withArgs(user.address, attacker.address);
     });
 
-    it("should revert setRecipients for non-ADMIN_ROLE",
+    it("should revert proposeRecipients for non-ADMIN_ROLE",
       async function () {
         const ADMIN_ROLE = await vault.ADMIN_ROLE();
         await expect(
           vault
             .connect(attacker)
-            .setRecipients(user.address, attacker.address)
+            .proposeRecipients(user.address, attacker.address)
         )
           .to.be.revertedWithCustomError(
             vault,
@@ -605,34 +619,37 @@ describe("UnifiedFeeVault", function () {
       }
     );
 
-    it("should revert setRecipients with zero staking pool",
+    it("should revert proposeRecipients with zero staking pool",
       async function () {
         await expect(
           vault
             .connect(admin)
-            .setRecipients(ethers.ZeroAddress, protocolTreasury.address)
+            .proposeRecipients(ethers.ZeroAddress, protocolTreasury.address)
         ).to.be.revertedWithCustomError(vault, "ZeroAddress");
       }
     );
 
-    it("should revert setRecipients with zero protocol treasury",
+    it("should revert proposeRecipients with zero protocol treasury",
       async function () {
         await expect(
           vault
             .connect(admin)
-            .setRecipients(stakingPool.address, ethers.ZeroAddress)
+            .proposeRecipients(stakingPool.address, ethers.ZeroAddress)
         ).to.be.revertedWithCustomError(vault, "ZeroAddress");
       }
     );
 
-    it("should distribute to new recipients after setRecipients",
+    it("should distribute to new recipients after proposeRecipients + applyRecipients",
       async function () {
-        // Change recipients
+        // Propose and apply new recipients
         const newStaking = user;
         const newTreasury = attacker;
         await vault
           .connect(admin)
-          .setRecipients(newStaking.address, newTreasury.address);
+          .proposeRecipients(newStaking.address, newTreasury.address);
+
+        await time.increase(48 * 60 * 60 + 1);
+        await vault.connect(admin).applyRecipients();
 
         // Deposit and distribute
         await vault

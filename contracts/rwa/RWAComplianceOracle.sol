@@ -11,21 +11,44 @@ import {IRWAComplianceOracle} from "./interfaces/IRWAComplianceOracle.sol";
  * @dev Delegates compliance checking to individual token contracts
  *
  * Supported Token Standards:
- * - ERC-20: Basic tokens (no compliance)
+ * - ERC-20: Basic tokens (no compliance requirements)
  * - ERC-3643: T-REX security tokens with canTransfer()
  * - ERC-1400: Security tokens with canTransferByPartition()
- * - ERC-4626: Tokenized vaults
+ * - ERC-4626: Tokenized vaults (classified but no special compliance)
+ *
+ * KYC Tier Requirements by Token Class:
+ *   - ERC-20 tokens: No KYC required (kycRequired = false)
+ *   - ERC-3643 (T-REX): KYC required (kycRequired = true). The
+ *     token's own identity registry enforces investor verification.
+ *     Accredited investor status is NOT required by default.
+ *   - ERC-1400 (Polymath): KYC and accredited investor status both
+ *     required (kycRequired = true, accreditedInvestorRequired = true).
+ *     These are typically institutional-grade securities with stricter
+ *     transfer restrictions.
+ *   - ERC-4626 vaults: No additional compliance (same as ERC-20).
+ *     The underlying vault asset may have its own compliance, but the
+ *     vault token itself is treated as a standard ERC-20.
  *
  * Key Features:
- * - Standard auto-detection
- * - Compliance result caching (5-minute TTL)
- * - Batch compliance checking
- * - Graceful degradation on failures
+ * - Standard auto-detection via ERC-165 and function probing
+ * - Compliance result caching (5-minute TTL, registrar-only refresh)
+ * - Batch compliance checking (max 50 per call)
+ * - Graceful degradation on external call failures (CHECK_FAILED)
+ * - Fail-closed default: unregistered tokens return NON_COMPLIANT
+ *
+ * Admin Security:
+ *   The `registrar` role controls all token registration, configuration,
+ *   cache management, and registrar transfer. For production deployment,
+ *   the registrar address MUST be a multisig (e.g., Gnosis Safe) or the
+ *   OmniGovernance timelock contract. A single EOA registrar is acceptable
+ *   only for testnet deployments. The registrar can be transferred via
+ *   setRegistrar(), which should use a 2-step transfer pattern in future
+ *   versions to prevent accidental transfers to incorrect addresses.
  *
  * Security Features:
- * - Reentrancy protection
- * - Safe external calls
- * - Timeout handling
+ * - Reentrancy protection on state-modifying functions
+ * - Safe external calls via try/catch
+ * - Fail-closed compliance default for unregistered tokens
  */
 contract RWAComplianceOracle is IRWAComplianceOracle, ReentrancyGuard {
     // ========================================================================
@@ -240,7 +263,13 @@ contract RWAComplianceOracle is IRWAComplianceOracle, ReentrancyGuard {
     /**
      * @notice Check if a user is compliant for a given token
      * @dev Checks cache first, then evaluates compliance based on
-     *      token standard. Unregistered tokens default to NON_COMPLIANT.
+     *      token standard. Unregistered tokens default to NON_COMPLIANT
+     *      (fail-closed). The cache is only populated when the registrar
+     *      explicitly calls refreshCompliance(). For on-chain callers
+     *      (e.g., RWAAMM), the cache will rarely hit since no on-chain
+     *      path writes to it. The cache is primarily useful for off-chain
+     *      consumers that first call refreshCompliance() and then read
+     *      via this function within the 5-minute TTL window.
      * @param user User address
      * @param token Token address
      * @return result Compliance result with status and details
@@ -249,70 +278,15 @@ contract RWAComplianceOracle is IRWAComplianceOracle, ReentrancyGuard {
         address user,
         address token
     ) external view override returns (ComplianceResult memory result) {
-        // Check cache first
+        // Check cache first (populated by registrar via refreshCompliance)
         ComplianceResult memory cached = _complianceCache[user][token];
         // solhint-disable-next-line not-rely-on-time
         if (cached.validUntil > block.timestamp) {
             return cached;
         }
 
-        // If token not registered, fail-closed: return NON_COMPLIANT.
-        // All RWA tokens must be explicitly registered before trading.
-        // This prevents unregistered wrapper tokens or newly deployed
-        // security tokens from bypassing compliance checks.
-        /* solhint-disable not-rely-on-time, gas-small-strings */
-        if (!_tokenConfigs[token].registered) {
-            return ComplianceResult({
-                status: ComplianceStatus.NON_COMPLIANT,
-                tokenStandard: TokenStandard.UNKNOWN,
-                kycRequired: false,
-                accreditedInvestorRequired: false,
-                holdingPeriodSeconds: 0,
-                maxHolding: 0,
-                reason: "Token not registered - compliance unknown",
-                timestamp: block.timestamp,
-                validUntil: block.timestamp + CACHE_TTL
-            });
-        }
-        /* solhint-enable gas-small-strings */
-
-        TokenConfig memory config = _tokenConfigs[token];
-
-        // For ERC-20 tokens, always compliant
-        if (config.standard == TokenStandard.ERC20 || !config.complianceEnabled) {
-            return ComplianceResult({
-                status: ComplianceStatus.COMPLIANT,
-                tokenStandard: config.standard,
-                kycRequired: false,
-                accreditedInvestorRequired: false,
-                holdingPeriodSeconds: 0,
-                maxHolding: 0,
-                reason: "No compliance requirements",
-                timestamp: block.timestamp,
-                validUntil: block.timestamp + CACHE_TTL
-            });
-        }
-
-        // Check compliance based on token standard
-        if (config.standard == TokenStandard.ERC3643) {
-            return _checkERC3643Compliance(user, token, config);
-        } else if (config.standard == TokenStandard.ERC1400) {
-            return _checkERC1400Compliance(user, token, config);
-        }
-
-        // Default: compliant
-        return ComplianceResult({
-            status: ComplianceStatus.COMPLIANT,
-            tokenStandard: config.standard,
-            kycRequired: false,
-            accreditedInvestorRequired: false,
-            holdingPeriodSeconds: 0,
-            maxHolding: 0,
-            reason: "Standard compliance check passed",
-            timestamp: block.timestamp,
-            validUntil: block.timestamp + CACHE_TTL
-        });
-        /* solhint-enable not-rely-on-time */
+        // Delegate to internal implementation (avoids external self-calls)
+        return _checkComplianceInternal(user, token);
     }
     /* solhint-enable code-complexity */
 
@@ -329,12 +303,12 @@ contract RWAComplianceOracle is IRWAComplianceOracle, ReentrancyGuard {
         bool outputCompliant,
         string memory reason
     ) {
-        // Check input token compliance
-        ComplianceResult memory inputResult = this.checkCompliance(user, tokenIn);
+        // Check input token compliance (internal call, no external overhead)
+        ComplianceResult memory inputResult = _checkComplianceInternal(user, tokenIn);
         inputCompliant = inputResult.status == ComplianceStatus.COMPLIANT;
 
-        // Check output token compliance
-        ComplianceResult memory outputResult = this.checkCompliance(user, tokenOut);
+        // Check output token compliance (internal call, no external overhead)
+        ComplianceResult memory outputResult = _checkComplianceInternal(user, tokenOut);
         outputCompliant = outputResult.status == ComplianceStatus.COMPLIANT;
 
         // Build combined reason
@@ -365,8 +339,8 @@ contract RWAComplianceOracle is IRWAComplianceOracle, ReentrancyGuard {
         address user,
         address token
     ) external override onlyRegistrar nonReentrant {
-        // Re-check compliance and update cache
-        ComplianceResult memory result = this.checkCompliance(user, token);
+        // Re-check compliance and update cache (internal call)
+        ComplianceResult memory result = _checkComplianceInternal(user, token);
 
         _complianceCache[user][token] = result;
 
@@ -405,7 +379,7 @@ contract RWAComplianceOracle is IRWAComplianceOracle, ReentrancyGuard {
         results = new ComplianceResult[](users.length);
 
         for (uint256 i = 0; i < users.length; ++i) {
-            results[i] = this.checkCompliance(users[i], tokens[i]);
+            results[i] = _checkComplianceInternal(users[i], tokens[i]);
         }
     }
 
@@ -493,6 +467,81 @@ contract RWAComplianceOracle is IRWAComplianceOracle, ReentrancyGuard {
     // ========================================================================
     // INTERNAL FUNCTIONS
     // ========================================================================
+
+    /* solhint-disable code-complexity */
+    /**
+     * @notice Internal compliance check logic (no cache read, no external call)
+     * @dev Shared implementation used by checkCompliance (external),
+     *      checkSwapCompliance, refreshCompliance, and batchCheckCompliance.
+     *      Using an internal function avoids the ~700 gas overhead of
+     *      external self-calls plus ABI encoding/decoding of the
+     *      ComplianceResult struct (which contains a variable-length string).
+     * @param user User address to check
+     * @param token Token address to check
+     * @return result Compliance result with status and details
+     */
+    /* solhint-disable not-rely-on-time, gas-small-strings */
+    function _checkComplianceInternal(
+        address user,
+        address token
+    ) internal view returns (ComplianceResult memory result) {
+        // If token not registered, fail-closed: return NON_COMPLIANT.
+        // All RWA tokens must be explicitly registered before trading.
+        if (!_tokenConfigs[token].registered) {
+            return ComplianceResult({
+                status: ComplianceStatus.NON_COMPLIANT,
+                tokenStandard: TokenStandard.UNKNOWN,
+                kycRequired: false,
+                accreditedInvestorRequired: false,
+                holdingPeriodSeconds: 0,
+                maxHolding: 0,
+                reason: "Token not registered - compliance unknown",
+                timestamp: block.timestamp,
+                validUntil: block.timestamp + CACHE_TTL
+            });
+        }
+
+        TokenConfig memory config = _tokenConfigs[token];
+
+        // For ERC-20 tokens or disabled compliance, always compliant
+        if (
+            config.standard == TokenStandard.ERC20
+            || !config.complianceEnabled
+        ) {
+            return ComplianceResult({
+                status: ComplianceStatus.COMPLIANT,
+                tokenStandard: config.standard,
+                kycRequired: false,
+                accreditedInvestorRequired: false,
+                holdingPeriodSeconds: 0,
+                maxHolding: 0,
+                reason: "No compliance requirements",
+                timestamp: block.timestamp,
+                validUntil: block.timestamp + CACHE_TTL
+            });
+        }
+
+        // Check compliance based on token standard
+        if (config.standard == TokenStandard.ERC3643) {
+            return _checkERC3643Compliance(user, token, config);
+        } else if (config.standard == TokenStandard.ERC1400) {
+            return _checkERC1400Compliance(user, token, config);
+        }
+
+        // Default: compliant (ERC-4626 and other standards)
+        return ComplianceResult({
+            status: ComplianceStatus.COMPLIANT,
+            tokenStandard: config.standard,
+            kycRequired: false,
+            accreditedInvestorRequired: false,
+            holdingPeriodSeconds: 0,
+            maxHolding: 0,
+            reason: "Standard compliance check passed",
+            timestamp: block.timestamp,
+            validUntil: block.timestamp + CACHE_TTL
+        });
+    }
+    /* solhint-enable not-rely-on-time, gas-small-strings, code-complexity */
 
     /**
      * @notice Detect token standard via interface checks

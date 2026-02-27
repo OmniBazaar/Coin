@@ -15,15 +15,36 @@ import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
  *
  * Key features:
  * - Multiple LP pool support (XOM/USDC, XOM/ETH, XOM/AVAX)
- * - Configurable reward rates per pool
- * - Split reward structure: 30% immediate, 70% vested
- * - Adjustable vesting periods per pool
+ * - Configurable reward rates per pool (capped by MAX_REWARD_PER_SECOND)
+ * - Split reward structure: immediate + vested portions
+ * - Adjustable vesting periods per pool (minimum 1 day)
  * - Anti-dump protection through vesting
- * - Owner cannot drain user-committed rewards
+ * - Owner cannot drain user-committed rewards (totalCommittedRewards)
+ * - Ownable2Step prevents accidental ownership transfers
+ * - Emergency withdrawal with 70/20/10 fee split
  *
- * Reward Distribution Model:
- * - 30% of rewards claimable immediately
- * - 70% of rewards vest linearly over 90 days (configurable per pool)
+ * Reward Calculation Formula:
+ * Each pool accumulates rewards at `rewardPerSecond`. For each second
+ * elapsed, `rewardPerSecond` XOM is divided among stakers proportional
+ * to their stake:
+ *   userReward = (elapsed * rewardPerSecond * userStake) / totalStaked
+ *
+ * The reward is then split into two portions:
+ *   immediateReward = userReward * immediateBps / 10000
+ *   vestingReward = userReward - immediateReward
+ *
+ * The `immediateBps` parameter controls the split:
+ * - DEFAULT_IMMEDIATE_BPS = 3000 (30%) means 30% claimable immediately,
+ *   70% vests linearly over the pool's vestingPeriod.
+ * - immediateBps = 10000 means 100% immediate (no vesting).
+ * - immediateBps = 0 means 100% vested (no immediate rewards).
+ *
+ * In addPool(), passing immediateBps = 0 defaults to DEFAULT_IMMEDIATE_BPS.
+ * To create a fully-vesting pool, use setVestingParams() after addPool().
+ *
+ * DEFAULT_VESTING_PERIOD = 90 days. The vesting period is configurable
+ * per pool via setVestingParams() and must be >= MIN_VESTING_PERIOD
+ * (1 day) when non-zero.
  */
 contract LiquidityMining is ReentrancyGuard, Ownable2Step, Pausable {
     using SafeERC20 for IERC20;
@@ -90,6 +111,15 @@ contract LiquidityMining is ReentrancyGuard, Ownable2Step, Pausable {
 
     /// @notice Minimum vesting period (1 day)
     uint256 public constant MIN_VESTING_PERIOD = 1 days;
+
+    /// @notice Maximum reward rate per second (~31.5 billion XOM/year)
+    /// @dev Prevents admin from setting absurdly high reward rates
+    ///      that would inflate totalCommittedRewards beyond the XOM
+    ///      balance and cause all claims to revert. At 1e24 per
+    ///      second: 1e24 * 365.25 * 86400 = ~3.15e31 XOM/year,
+    ///      far exceeding total supply (16.6B = 1.66e28). This is a
+    ///      safety cap, not a practical operational limit.
+    uint256 public constant MAX_REWARD_PER_SECOND = 1e24;
 
     // ============ Immutables ============
 
@@ -300,12 +330,20 @@ contract LiquidityMining is ReentrancyGuard, Ownable2Step, Pausable {
 
     /**
      * @notice Add a new staking pool
-     * @dev Reverts if MAX_POOLS limit is reached or LP token already exists
-     * @param lpToken LP token address
-     * @param rewardPerSecond XOM rewards per second (18 decimals)
+     * @dev Reverts if MAX_POOLS limit is reached, LP token already
+     *      exists, or rewardPerSecond exceeds MAX_REWARD_PER_SECOND.
+     *      If immediateBps is 0 it defaults to DEFAULT_IMMEDIATE_BPS
+     *      (30%). To create a fully-vesting pool (immediateBps = 0),
+     *      call addPool with any non-zero value then setVestingParams
+     *      with immediateBps = 0.
+     * @param lpToken LP token address (must not be zero or duplicate)
+     * @param rewardPerSecond XOM rewards per second (18 decimals,
+     *        must be <= MAX_REWARD_PER_SECOND)
      * @param immediateBps Percentage of rewards claimable immediately
-     * @param vestingPeriod Vesting period for remaining rewards
-     * @param name Pool display name
+     *        in basis points (0 defaults to DEFAULT_IMMEDIATE_BPS)
+     * @param vestingPeriod Vesting period for remaining rewards in
+     *        seconds (0 defaults to DEFAULT_VESTING_PERIOD)
+     * @param name Pool display name for UI
      */
     function addPool(
         address lpToken,
@@ -319,6 +357,9 @@ contract LiquidityMining is ReentrancyGuard, Ownable2Step, Pausable {
         if (immediateBps > BASIS_POINTS) revert InvalidParameters();
         // solhint-disable-next-line gas-strict-inequalities
         if (pools.length >= MAX_POOLS) revert InvalidParameters();
+        if (rewardPerSecond > MAX_REWARD_PER_SECOND) {
+            revert InvalidParameters();
+        }
 
         // Check LP token not already added
         uint256 poolLen = pools.length;
@@ -353,8 +394,13 @@ contract LiquidityMining is ReentrancyGuard, Ownable2Step, Pausable {
 
     /**
      * @notice Update pool reward rate
+     * @dev Enforces MAX_REWARD_PER_SECOND to prevent inflation of
+     *      totalCommittedRewards beyond the contract's XOM balance.
+     *      Calls _updatePool() first to settle pending rewards at
+     *      the old rate before applying the new rate.
      * @param poolId Pool identifier
-     * @param newRewardPerSecond New reward rate
+     * @param newRewardPerSecond New reward rate (must be <=
+     *        MAX_REWARD_PER_SECOND)
      */
     function setRewardRate(
         uint256 poolId,
@@ -362,6 +408,9 @@ contract LiquidityMining is ReentrancyGuard, Ownable2Step, Pausable {
     ) external onlyOwner {
         // solhint-disable-next-line gas-strict-inequalities
         if (poolId >= pools.length) revert PoolNotFound();
+        if (newRewardPerSecond > MAX_REWARD_PER_SECOND) {
+            revert InvalidParameters();
+        }
 
         _updatePool(poolId);
 
@@ -592,8 +641,13 @@ contract LiquidityMining is ReentrancyGuard, Ownable2Step, Pausable {
     }
 
     /**
-     * @notice Emergency withdraw without rewards (with fee)
-     * @dev Forfeits all pending and vesting rewards
+     * @notice Emergency withdraw LP tokens without rewards (with fee)
+     * @dev Forfeits ALL pending and vesting rewards. The emergency
+     *      withdrawal fee is split 70/20/10 (treasury/validator/
+     *      staking pool). Does not call _updatePool() -- the stale
+     *      accumulator has no effect since all reward state is zeroed.
+     *      This function is available even when paused to ensure
+     *      users can always recover their LP tokens.
      * @param poolId Pool identifier
      */
     function emergencyWithdraw(uint256 poolId) external nonReentrant {
@@ -606,13 +660,18 @@ contract LiquidityMining is ReentrancyGuard, Ownable2Step, Pausable {
         uint256 amount = user.amount;
         if (amount == 0) revert InsufficientStake();
 
-        // Calculate forfeited rewards and decrement committed tracker
+        // Calculate forfeited rewards and decrement committed tracker.
+        // Use min(forfeited, totalCommittedRewards) to partially
+        // correct the tracker rather than skipping entirely when
+        // totalCommittedRewards < forfeited due to accounting drift.
         uint256 forfeited = user.pendingImmediate +
             user.vestingTotal -
             user.vestingClaimed;
-        // solhint-disable-next-line gas-strict-inequalities
-        if (forfeited > 0 && totalCommittedRewards >= forfeited) {
-            totalCommittedRewards -= forfeited;
+        if (forfeited > 0) {
+            uint256 decrement = forfeited > totalCommittedRewards
+                ? totalCommittedRewards
+                : forfeited;
+            totalCommittedRewards -= decrement;
         }
 
         // Calculate fee
@@ -956,8 +1015,19 @@ contract LiquidityMining is ReentrancyGuard, Ownable2Step, Pausable {
                 // solhint-disable-next-line not-rely-on-time
                 userStakeInfo.vestingStart = block.timestamp;
             } else {
-                // Add to existing vesting (extends proportionally)
-                userStakeInfo.vestingTotal += vestingReward;
+                // Append to existing vesting schedule.
+                // Account for the portion that becomes instantly
+                // vested due to already-elapsed time inheriting
+                // into the new reward (M-01 accounting fix).
+                // solhint-disable-next-line not-rely-on-time
+                uint256 alreadyElapsed = block.timestamp
+                    - userStakeInfo.vestingStart;
+                uint256 instantlyVested =
+                    (vestingReward * alreadyElapsed)
+                        / pool.vestingPeriod;
+                userStakeInfo.pendingImmediate += instantlyVested;
+                userStakeInfo.vestingTotal +=
+                    vestingReward - instantlyVested;
             }
         }
 

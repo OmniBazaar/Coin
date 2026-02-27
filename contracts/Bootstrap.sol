@@ -68,6 +68,12 @@ contract Bootstrap is AccessControl {
     /// @notice Maximum number of nodes allowed in the registry (DoS protection)
     uint256 public constant MAX_NODES = 1000;
 
+    /// @notice Minimum allowed time window in seconds for getActiveNodesWithinTime
+    uint256 public constant MIN_TIME_WINDOW = 60;
+
+    /// @notice Maximum allowed time window in seconds (30 days)
+    uint256 public constant MAX_TIME_WINDOW = 30 days;
+
     /// @notice Address of OmniCore contract on OmniCoin L1 (for reference)
     address public omniCoreAddress;
 
@@ -88,6 +94,9 @@ contract Bootstrap is AccessControl {
 
     /// @notice Count of active nodes by type (0=gateway, 1=computation, 2=listing)
     mapping(uint8 => uint256) public activeNodeCounts;
+
+    /// @notice Addresses banned by admin (cannot re-register after deactivation)
+    mapping(address => bool) public banned;
 
     /**
      * @notice Emitted when OmniCore reference is updated
@@ -138,6 +147,16 @@ contract Bootstrap is AccessControl {
     );
 
     /**
+     * @notice Emitted when an admin unbans a previously banned node
+     * @param nodeAddress Unbanned node's address
+     * @param admin Admin who performed the action
+     */
+    event NodeUnbanned(
+        address indexed nodeAddress,
+        address indexed admin
+    );
+
+    /**
      * @notice Invalid address provided
      */
     error InvalidAddress();
@@ -184,6 +203,9 @@ contract Bootstrap is AccessControl {
 
     /// @notice Gateway nodes must use registerGatewayNode() with peer-info
     error GatewayMustUseRegisterGatewayNode();
+
+    /// @notice Node address has been banned and cannot re-register
+    error NodeBanned();
 
     /**
      * @notice Initializes the Bootstrap contract
@@ -294,7 +316,9 @@ contract Bootstrap is AccessControl {
 
     /**
      * @notice Update node endpoints (self-update)
-     * @dev Nodes can update their endpoints without changing type
+     * @dev Nodes can update their endpoints without changing type.
+     *      Enforces the same string length limits as registration to
+     *      prevent storage bloat via the update path.
      * @param multiaddr New libp2p multiaddr
      * @param httpEndpoint New HTTP endpoint URL
      * @param wsEndpoint New WebSocket endpoint URL
@@ -308,17 +332,38 @@ contract Bootstrap is AccessControl {
     ) external {
         NodeInfo storage info = nodeRegistry[msg.sender];
         if (!info.active) revert NodeNotActive();
-        if (bytes(httpEndpoint).length == 0) revert InvalidParameter();
+        if (bytes(httpEndpoint).length == 0) {
+            revert InvalidParameter();
+        }
         // multiaddr required for gateway validators
-        if (info.nodeType == 0 && bytes(multiaddr).length == 0) revert InvalidParameter();
+        if (
+            info.nodeType == 0 &&
+            bytes(multiaddr).length == 0
+        ) {
+            revert InvalidParameter();
+        }
+
+        // Enforce same string length limits as registration
+        if (bytes(multiaddr).length > 256) revert StringTooLong();
+        if (bytes(httpEndpoint).length > 256) {
+            revert StringTooLong();
+        }
+        if (bytes(wsEndpoint).length > 256) revert StringTooLong();
+        if (bytes(region).length > 64) revert StringTooLong();
 
         info.multiaddr = multiaddr;
         info.httpEndpoint = httpEndpoint;
         info.wsEndpoint = wsEndpoint;
         info.region = region;
-        info.lastUpdate = block.timestamp; // solhint-disable-line not-rely-on-time
+        // solhint-disable-next-line not-rely-on-time
+        info.lastUpdate = block.timestamp;
 
-        emit NodeRegistered(msg.sender, info.nodeType, httpEndpoint, false);
+        emit NodeRegistered(
+            msg.sender,
+            info.nodeType,
+            httpEndpoint,
+            false
+        );
     }
 
     /**
@@ -356,8 +401,10 @@ contract Bootstrap is AccessControl {
     // ============================================================
 
     /**
-     * @notice Admin force-deactivate a node
-     * @dev Only for emergency situations (misbehaving nodes)
+     * @notice Admin force-deactivate and ban a node
+     * @dev Only for emergency situations (misbehaving nodes).
+     *      The node is also added to the banned mapping to prevent
+     *      re-registration. Use adminUnbanNode() to reverse.
      * @param nodeAddress Address of the node to deactivate
      * @param reason Reason for deactivation
      */
@@ -369,13 +416,35 @@ contract Bootstrap is AccessControl {
         if (!info.active) revert NodeNotActive();
 
         info.active = false;
+        banned[nodeAddress] = true;
 
         // Update active count
-        if (info.nodeType < 3 && activeNodeCounts[info.nodeType] > 0) {
+        if (
+            info.nodeType < 3 &&
+            activeNodeCounts[info.nodeType] > 0
+        ) {
             --activeNodeCounts[info.nodeType];
         }
 
-        emit NodeAdminDeactivated(nodeAddress, msg.sender, reason);
+        emit NodeAdminDeactivated(
+            nodeAddress,
+            msg.sender,
+            reason
+        );
+    }
+
+    /**
+     * @notice Unban a previously banned node address
+     * @dev Only callable by BOOTSTRAP_ADMIN_ROLE. Allows the node
+     *      to re-register after a ban has been lifted.
+     * @param nodeAddress Address of the node to unban
+     */
+    function adminUnbanNode(
+        address nodeAddress
+    ) external onlyRole(BOOTSTRAP_ADMIN_ROLE) {
+        if (nodeAddress == address(0)) revert InvalidAddress();
+        banned[nodeAddress] = false;
+        emit NodeUnbanned(nodeAddress, msg.sender);
     }
 
     /**
@@ -480,10 +549,7 @@ contract Bootstrap is AccessControl {
             maxCount = 100;
         }
 
-        uint256 end = offset + totalLen; // scan from offset
-        if (end > totalLen) end = totalLen;
-
-        // Count active nodes in range
+        // Count active nodes starting from offset
         uint256 count = 0;
         for (uint256 i = offset; i < totalLen && count < maxCount; ++i) {
             if (nodeRegistry[registeredNodes[i]].active) {
@@ -562,7 +628,11 @@ contract Bootstrap is AccessControl {
 
     /**
      * @notice Get active nodes within a time window
-     * @dev Returns nodes that have been updated within the specified time period
+     * @dev Returns nodes that have been updated within the specified time period.
+     *      The timeWindowSeconds is clamped to [MIN_TIME_WINDOW, MAX_TIME_WINDOW]
+     *      to prevent underflow on subtraction and reject extreme values.
+     *      If timeWindowSeconds >= block.timestamp, cutoffTime is set to 0
+     *      (effectively returning all nodes).
      * @param nodeType Type of nodes to retrieve (0=gateway, 1=computation, 2=listing)
      * @param timeWindowSeconds Time window in seconds (e.g., 3600 for last hour)
      * @param limit Maximum number of nodes to return
@@ -575,8 +645,20 @@ contract Bootstrap is AccessControl {
     ) external view returns (address[] memory nodes) {
         if (nodeType > 2) revert InvalidNodeType();
 
+        // Clamp time window to prevent underflow and extreme values
+        uint256 clampedWindow = timeWindowSeconds;
+        if (clampedWindow < MIN_TIME_WINDOW) {
+            clampedWindow = MIN_TIME_WINDOW;
+        }
+        if (clampedWindow > MAX_TIME_WINDOW) {
+            clampedWindow = MAX_TIME_WINDOW;
+        }
+
+        // Safe subtraction: if window >= timestamp, return all
         // solhint-disable-next-line not-rely-on-time
-        uint256 cutoffTime = block.timestamp - timeWindowSeconds;
+        uint256 cutoffTime = clampedWindow >= block.timestamp
+            ? 0
+            : block.timestamp - clampedWindow;
 
         uint256 count = 0;
         uint256 maxCount = limit;
@@ -806,6 +888,7 @@ contract Bootstrap is AccessControl {
         string memory publicIp,
         string memory nodeId
     ) internal {
+        if (banned[msg.sender]) revert NodeBanned();
         if (nodeType > 2) revert InvalidNodeType();
         if (bytes(httpEndpoint).length == 0) revert InvalidParameter();
         // multiaddr is required for gateway validators (nodeType 0) for P2P bootstrap
@@ -879,16 +962,24 @@ contract Bootstrap is AccessControl {
     /**
      * @notice Validate that a string does not contain forbidden delimiter characters
      * @dev Prevents delimiter injection in peer list outputs. Checks for comma,
-     *      at-sign, and newline characters that could corrupt concatenated strings.
+     *      colon, at-sign, and newline characters that could corrupt concatenated
+     *      strings. Colons are blocked because publicIp is concatenated with
+     *      stakingPort using ":" in getAvalancheBootstrapPeers(). An embedded
+     *      colon in publicIp (e.g., "1.2.3.4:9999") would produce malformed
+     *      output like "1.2.3.4:9999:35579".
      * @param data The bytes to validate
      */
-    function _validateNoForbiddenChars(bytes memory data) internal pure {
+    function _validateNoForbiddenChars(
+        bytes memory data
+    ) internal pure {
         for (uint256 i = 0; i < data.length; ++i) {
             bytes1 c = data[i];
-            // M-04: Block characters that corrupt peer list format
-            // (nodeID@publicIP:port comma-separated output)
             if (
-                c == "," || c == "\n" || c == "\r" || c == "@"
+                c == "," ||
+                c == ":" ||
+                c == "\n" ||
+                c == "\r" ||
+                c == "@"
             ) {
                 revert ForbiddenCharacter();
             }

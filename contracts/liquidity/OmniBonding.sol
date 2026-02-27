@@ -24,11 +24,40 @@ import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
  * - Dynamic discount adjustment based on demand
  * - Solvency guarantees via totalXomOutstanding tracking
  * - Price change bounds (MAX_PRICE_CHANGE_BPS, MIN/MAX bounds)
+ * - 6-hour cooldown on price updates to prevent manipulation
  *
  * IMPORTANT: The current implementation assumes all bonded assets are
  * worth $1 per unit (stablecoins). Do NOT add non-stablecoin assets
  * (ETH, AVAX, LP tokens) without first integrating per-asset price
  * feeds. See _normalizeToPrice() documentation and audit H-03.
+ *
+ * SECURITY: The owner address MUST be a multisig wallet (e.g., Gnosis
+ * Safe) or a timelock controller -- NOT an externally owned account
+ * (EOA). All admin functions (setXomPrice, addBondAsset, setTreasury,
+ * updateBondTerms, setBondAssetEnabled, withdrawXom, depositXom,
+ * pause, unpause) are protected by onlyOwner. A compromised EOA would
+ * allow an attacker to manipulate bond pricing, redirect treasury
+ * funds, and extract excess XOM. Use transferOwnership() to transfer
+ * control to a multisig or timelock before mainnet deployment.
+ *
+ * Bonding Curve Formula:
+ * xomOwed = (assetValue * PRICE_PRECISION) / discountedPrice
+ * where:
+ *   assetValue = amount normalized to 18 decimals (1:1 for stablecoins)
+ *   discountedPrice = xomPrice * (10000 - discountBps) / 10000
+ *   discountBps is in [500, 1500] (5% to 15% discount)
+ *
+ * Example: Bond 1000 USDC at $0.005 XOM price with 10% discount:
+ *   assetValue = 1000e18
+ *   discountedPrice = 5e15 * (10000 - 1000) / 10000 = 4.5e15
+ *   xomOwed = 1000e18 * 1e18 / 4.5e15 = 222,222.22 XOM
+ *
+ * Relationship to Token Supply:
+ * The bonding contract distributes XOM from its deposited balance.
+ * It does NOT mint new tokens. The owner must deposit sufficient XOM
+ * via depositXom() before users can bond. The totalXomOutstanding
+ * tracker ensures the contract always holds enough XOM to satisfy
+ * all outstanding bond obligations.
  *
  * Inspired by Olympus DAO bonding mechanism.
  */
@@ -109,6 +138,13 @@ contract OmniBonding is ReentrancyGuard, Ownable, Pausable {
     /// @notice Maximum allowed XOM price ($100 in 18 decimals)
     uint256 public constant MAX_XOM_PRICE = 100e18;
 
+    /// @notice Cooldown between price updates (6 hours)
+    /// @dev Prevents multi-call price manipulation by requiring a
+    ///      minimum interval between setXomPrice() calls. Without
+    ///      this cooldown, the owner could make multiple 10% changes
+    ///      in a single block, achieving up to ~65% price movement.
+    uint256 public constant PRICE_COOLDOWN = 6 hours;
+
     // ============ Immutables ============
 
     /// @notice XOM token contract
@@ -124,6 +160,10 @@ contract OmniBonding is ReentrancyGuard, Ownable, Pausable {
 
     /// @notice Fixed XOM price used when oracle is not set (18 decimals)
     uint256 public fixedXomPrice;
+
+    /// @notice Timestamp of the last price update via setXomPrice()
+    /// @dev Used to enforce PRICE_COOLDOWN between consecutive updates
+    uint256 public lastPriceUpdateTime;
 
     /// @notice Bond terms by asset address
     mapping(address => BondTerms) public bondTerms;
@@ -147,6 +187,8 @@ contract OmniBonding is ReentrancyGuard, Ownable, Pausable {
 
     // ============ Events ============
 
+    /* solhint-disable gas-indexed-events */
+
     /// @notice Emitted when a new bond is created
     /// @param user User creating the bond
     /// @param asset Asset being bonded
@@ -157,7 +199,7 @@ contract OmniBonding is ReentrancyGuard, Ownable, Pausable {
         address indexed user,
         address indexed asset,
         uint256 assetAmount,
-        uint256 indexed xomOwed,
+        uint256 xomOwed,
         uint256 vestingEnd
     );
 
@@ -168,7 +210,7 @@ contract OmniBonding is ReentrancyGuard, Ownable, Pausable {
     event BondClaimed(
         address indexed user,
         address indexed asset,
-        uint256 indexed amount
+        uint256 amount
     );
 
     /// @notice Emitted when bond terms are updated
@@ -178,8 +220,8 @@ contract OmniBonding is ReentrancyGuard, Ownable, Pausable {
     /// @param dailyCapacity New daily capacity
     event BondTermsUpdated(
         address indexed asset,
-        uint256 indexed discountBps,
-        uint256 indexed vestingPeriod,
+        uint256 discountBps,
+        uint256 vestingPeriod,
         uint256 dailyCapacity
     );
 
@@ -202,6 +244,50 @@ contract OmniBonding is ReentrancyGuard, Ownable, Pausable {
         uint256 indexed amount,
         address indexed treasuryAddr
     );
+
+    /// @notice Emitted when a bond asset is enabled or disabled
+    /// @param asset Asset address that was toggled
+    /// @param enabled New enabled state (true = accepting bonds)
+    event BondAssetEnabledChanged(
+        address indexed asset,
+        bool indexed enabled
+    );
+
+    /// @notice Emitted when treasury address is changed
+    /// @param oldTreasury Previous treasury address
+    /// @param newTreasury New treasury address
+    event TreasuryUpdated(
+        address indexed oldTreasury,
+        address indexed newTreasury
+    );
+
+    /// @notice Emitted when price oracle address is changed
+    /// @param oldOracle Previous oracle address
+    /// @param newOracle New oracle address
+    event PriceOracleUpdated(
+        address indexed oldOracle,
+        address indexed newOracle
+    );
+
+    /// @notice Emitted when XOM is deposited for bond distribution
+    /// @param depositor Address that deposited XOM
+    /// @param amount Amount of XOM deposited
+    event XomDeposited(
+        address indexed depositor,
+        uint256 amount
+    );
+
+    /// @notice Emitted when a non-XOM token is rescued from the contract
+    /// @param token Token address rescued
+    /// @param amount Amount rescued
+    /// @param recipient Address receiving the rescued tokens
+    event TokenRescued(
+        address indexed token,
+        uint256 amount,
+        address indexed recipient
+    );
+
+    /* solhint-enable gas-indexed-events */
 
     // ============ Errors ============
 
@@ -250,8 +336,16 @@ contract OmniBonding is ReentrancyGuard, Ownable, Pausable {
     /// @notice Thrown when MAX_BOND_ASSETS limit is reached
     error TooManyAssets();
 
-    /// @notice Thrown when actual transferred amount differs from expected (M-02: fee-on-transfer protection)
+    /// @notice Thrown when actual transferred amount differs from expected
+    ///         (fee-on-transfer protection)
     error TransferAmountMismatch();
+
+    /// @notice Thrown when setXomPrice is called before PRICE_COOLDOWN
+    ///         has elapsed since the last price update
+    error PriceCooldownActive();
+
+    /// @notice Thrown when rescueToken is called with XOM address
+    error CannotRescueXom();
 
     // ============ Constructor ============
 
@@ -270,7 +364,12 @@ contract OmniBonding is ReentrancyGuard, Ownable, Pausable {
         if (_xom == address(0) || _treasury == address(0)) {
             revert InvalidParameters();
         }
-        if (_initialXomPrice == 0) revert InvalidParameters();
+        if (
+            _initialXomPrice < MIN_XOM_PRICE
+                || _initialXomPrice > MAX_XOM_PRICE
+        ) {
+            revert PriceOutOfBounds(_initialXomPrice);
+        }
 
         XOM = IERC20(_xom);
         treasury = _treasury;
@@ -280,11 +379,17 @@ contract OmniBonding is ReentrancyGuard, Ownable, Pausable {
     // ============ External Functions ============
 
     /**
-     * @notice Add a new bondable asset
-     * @param asset Asset contract address
-     * @param decimals Asset decimals
+     * @notice Add a new bondable asset to the bonding program
+     * @dev Only stablecoin assets should be added (see contract-level
+     *      NatSpec). The admin SHOULD be a multisig or timelock.
+     *      Bounded by MAX_BOND_ASSETS (50) to limit claimAll() gas.
+     * @param asset Asset contract address (must not be zero or
+     *        already added)
+     * @param decimals Asset decimals (must be <= 24)
      * @param discountBps Initial discount in basis points
+     *        (MIN_DISCOUNT_BPS to MAX_DISCOUNT_BPS)
      * @param vestingPeriod Vesting period in seconds
+     *        (MIN_VESTING_PERIOD to MAX_VESTING_PERIOD)
      * @param dailyCapacity Maximum daily bonding capacity
      *        (in asset terms)
      */
@@ -344,10 +449,14 @@ contract OmniBonding is ReentrancyGuard, Ownable, Pausable {
 
     /**
      * @notice Update bond terms for an existing asset
-     * @param asset Asset address
+     * @dev Does not affect existing active bonds, only future ones.
+     *      The admin SHOULD be a multisig or timelock.
+     * @param asset Asset address (must already be added)
      * @param discountBps New discount in basis points
-     * @param vestingPeriod New vesting period
-     * @param dailyCapacity New daily capacity
+     *        (MIN_DISCOUNT_BPS to MAX_DISCOUNT_BPS)
+     * @param vestingPeriod New vesting period in seconds
+     *        (MIN_VESTING_PERIOD to MAX_VESTING_PERIOD)
+     * @param dailyCapacity New daily capacity in asset terms
      */
     function updateBondTerms(
         address asset,
@@ -383,8 +492,11 @@ contract OmniBonding is ReentrancyGuard, Ownable, Pausable {
 
     /**
      * @notice Enable or disable a bond asset
+     * @dev Emits BondAssetEnabledChanged for off-chain monitoring.
+     *      The admin (owner) SHOULD be a multisig or timelock to
+     *      prevent a single compromised key from disabling all assets.
      * @param asset Asset address
-     * @param enabled Whether to enable
+     * @param enabled Whether to enable (true) or disable (false)
      */
     function setBondAssetEnabled(
         address asset,
@@ -395,6 +507,7 @@ contract OmniBonding is ReentrancyGuard, Ownable, Pausable {
             revert AssetNotSupported();
         }
         terms.enabled = enabled;
+        emit BondAssetEnabledChanged(asset, enabled);
     }
 
     /**
@@ -563,17 +676,28 @@ contract OmniBonding is ReentrancyGuard, Ownable, Pausable {
     }
 
     /**
-     * @notice Update fixed XOM price with bounds and rate-of-change limits
+     * @notice Update fixed XOM price with bounds, rate-of-change
+     *         limits, and cooldown
      * @dev Prevents price manipulation by enforcing:
      *      1. Price must be within [MIN_XOM_PRICE, MAX_XOM_PRICE]
-     *      2. Price change cannot exceed MAX_PRICE_CHANGE_BPS per update
-     *      These constraints limit owner's ability to extract value from
-     *      bonders via front-running or sudden price changes (H-02 fix).
+     *      2. Price change cannot exceed MAX_PRICE_CHANGE_BPS (10%)
+     *         per update
+     *      3. A PRICE_COOLDOWN (6 hours) must elapse between updates
+     *      Without the cooldown, an owner (or batch contract) could
+     *      make 10 sequential calls, changing price by ~65% in one
+     *      block. With the cooldown, effective max change is ~10%
+     *      per 6 hours. The admin SHOULD be a multisig or timelock.
      * @param newPrice New price in 18 decimals
      */
     function setXomPrice(uint256 newPrice) external onlyOwner {
         if (newPrice < MIN_XOM_PRICE || newPrice > MAX_XOM_PRICE) {
             revert PriceOutOfBounds(newPrice);
+        }
+
+        // Enforce cooldown between price updates
+        // solhint-disable-next-line not-rely-on-time
+        if (block.timestamp < lastPriceUpdateTime + PRICE_COOLDOWN) {
+            revert PriceCooldownActive();
         }
 
         uint256 oldPrice = fixedXomPrice;
@@ -582,29 +706,43 @@ contract OmniBonding is ReentrancyGuard, Ownable, Pausable {
         uint256 priceDelta = newPrice > oldPrice
             ? newPrice - oldPrice
             : oldPrice - newPrice;
-        uint256 maxDelta = (oldPrice * MAX_PRICE_CHANGE_BPS) / BASIS_POINTS;
+        uint256 maxDelta =
+            (oldPrice * MAX_PRICE_CHANGE_BPS) / BASIS_POINTS;
         if (priceDelta > maxDelta) {
             revert PriceChangeExceedsLimit(oldPrice, newPrice);
         }
 
         fixedXomPrice = newPrice;
+        // solhint-disable-next-line not-rely-on-time
+        lastPriceUpdateTime = block.timestamp;
         emit XomPriceUpdated(newPrice);
     }
 
     /**
      * @notice Update treasury address
-     * @param _treasury New treasury address
+     * @dev Rejects zero address and self-reference. If treasury is
+     *      set to this contract, bonded assets would be trapped with
+     *      no recovery mechanism. The admin SHOULD be a multisig.
+     * @param _treasury New treasury address (must not be zero or this
+     *        contract)
      */
     function setTreasury(
         address _treasury
     ) external onlyOwner {
         if (_treasury == address(0)) revert InvalidParameters();
+        if (_treasury == address(this)) revert InvalidParameters();
+        address oldTreasury = treasury;
         treasury = _treasury;
+        emit TreasuryUpdated(oldTreasury, _treasury);
     }
 
     /**
      * @notice Update price oracle address
-     * @param _priceOracle New oracle address
+     * @dev The oracle is stored for future integration but is not
+     *      currently used by getXomPrice(). When oracle integration
+     *      is ready, getXomPrice() will be updated to query it.
+     *      The admin SHOULD be a multisig or timelock.
+     * @param _priceOracle New oracle address (must not be zero)
      */
     function setPriceOracle(
         address _priceOracle
@@ -612,22 +750,38 @@ contract OmniBonding is ReentrancyGuard, Ownable, Pausable {
         if (_priceOracle == address(0)) {
             revert InvalidParameters();
         }
+        address oldOracle = priceOracle;
         priceOracle = _priceOracle;
+        emit PriceOracleUpdated(oldOracle, _priceOracle);
     }
 
     /**
      * @notice Deposit XOM for bond distribution
-     * @param amount Amount of XOM to deposit
+     * @dev Uses balance-before/after pattern to verify actual received
+     *      amount matches expected. This protects the solvency
+     *      invariant if XOM ever implements fee-on-transfer.
+     * @param amount Amount of XOM to deposit (must match actual
+     *        received)
      */
     function depositXom(uint256 amount) external onlyOwner {
+        uint256 balBefore = XOM.balanceOf(address(this));
         XOM.safeTransferFrom(msg.sender, address(this), amount);
+        uint256 actualReceived =
+            XOM.balanceOf(address(this)) - balBefore;
+        if (actualReceived != amount) {
+            revert TransferAmountMismatch();
+        }
+        emit XomDeposited(msg.sender, amount);
     }
 
     /**
      * @notice Withdraw excess XOM above outstanding obligations
      * @dev Only allows withdrawal of XOM not committed to bond
-     *      holders, preventing rug pulls (H-01 fix)
-     * @param amount Amount to withdraw
+     *      holders, preventing rug pulls. The solvency invariant
+     *      balance >= totalXomOutstanding is maintained. Sends excess
+     *      to the treasury. The admin SHOULD be a multisig.
+     * @param amount Amount to withdraw (must be <= excess above
+     *        totalXomOutstanding)
      */
     function withdrawXom(uint256 amount) external onlyOwner {
         uint256 balance = XOM.balanceOf(address(this));
@@ -638,7 +792,10 @@ contract OmniBonding is ReentrancyGuard, Ownable, Pausable {
     }
 
     /**
-     * @notice Pause bonding
+     * @notice Pause bonding (emergency only)
+     * @dev Only pauses bond(), not claim() or claimAll(). Users can
+     *      always claim vested tokens even when paused. The admin
+     *      SHOULD be a multisig or timelock.
      */
     function pause() external onlyOwner {
         _pause();
@@ -646,9 +803,28 @@ contract OmniBonding is ReentrancyGuard, Ownable, Pausable {
 
     /**
      * @notice Unpause bonding
+     * @dev Only callable by the contract owner (should be multisig).
      */
     function unpause() external onlyOwner {
         _unpause();
+    }
+
+    /**
+     * @notice Rescue accidentally sent ERC20 tokens (not XOM)
+     * @dev Users may accidentally send tokens directly to this contract
+     *      via transfer(). Only non-XOM tokens can be rescued to prevent
+     *      violation of the solvency invariant. Rescued tokens are sent
+     *      to the treasury. The admin SHOULD be a multisig or timelock.
+     * @param token Token address to rescue (must not be XOM)
+     * @param amount Amount of tokens to rescue
+     */
+    function rescueToken(
+        address token,
+        uint256 amount
+    ) external onlyOwner {
+        if (token == address(XOM)) revert CannotRescueXom();
+        IERC20(token).safeTransfer(treasury, amount);
+        emit TokenRescued(token, amount, treasury);
     }
 
     // ============ View Functions ============
@@ -793,6 +969,34 @@ contract OmniBonding is ReentrancyGuard, Ownable, Pausable {
         returns (uint256 count)
     {
         return bondAssets.length;
+    }
+
+    /**
+     * @notice Get aggregated protocol statistics
+     * @dev Provides a single-call summary of key protocol metrics
+     *      for frontend display and monitoring dashboards
+     * @return distributed Lifetime XOM distributed via bonds
+     * @return outstanding XOM currently owed to bond holders
+     * @return valueReceived Lifetime value of bonded assets
+     *         (18 decimals)
+     * @return assetCount Number of configured bond assets
+     */
+    function getProtocolStats()
+        external
+        view
+        returns (
+            uint256 distributed,
+            uint256 outstanding,
+            uint256 valueReceived,
+            uint256 assetCount
+        )
+    {
+        return (
+            totalXomDistributed,
+            totalXomOutstanding,
+            totalValueReceived,
+            bondAssets.length
+        );
     }
 
     // ============ Public View Functions ============

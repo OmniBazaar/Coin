@@ -9,14 +9,31 @@ import {TimelockController} from "@openzeppelin/contracts/governance/TimelockCon
  * @notice Two-tier timelock controller for OmniBazaar governance
  * @dev Extends OpenZeppelin TimelockController with a dual-delay system:
  *
- * - ROUTINE operations (48 hours): parameter changes, service registry
- *   updates, fee adjustments, scoring weight changes
- * - CRITICAL operations (7 days): contract upgrades, role management,
- *   ossification, validator management, pause/unpause
+ * Delay Tiers:
+ * - ROUTINE (48 hours): Parameter changes, service registry updates,
+ *   fee adjustments, scoring weight changes. These operations are
+ *   lower-risk and benefit from faster execution while still allowing
+ *   community observation.
+ * - CRITICAL (7 days): Contract upgrades (UUPS upgradeTo/upgradeToAndCall),
+ *   role management (grantRole/revokeRole/renounceRole), pause/unpause,
+ *   delay changes (updateDelay), and critical selector management
+ *   (addCriticalSelector/removeCriticalSelector). These operations have
+ *   the highest potential impact and require extended community review.
  *
  * The contract identifies critical operations by checking function selectors
  * in scheduled calldata. If any call in a batch targets a critical selector,
  * the entire batch uses the 7-day delay.
+ *
+ * Relationship with OmniGovernance:
+ * - OmniGovernance creates proposals and, upon successful vote, calls
+ *   scheduleBatch() on this timelock via the PROPOSER_ROLE.
+ * - OmniGovernance classifies proposals as ROUTINE or CRITICAL, but this
+ *   timelock independently validates the delay requirement based on
+ *   function selectors, providing defense-in-depth.
+ * - After the timelock delay expires, anyone can call executeBatch()
+ *   (EXECUTOR_ROLE is granted to address(0) for open execution).
+ * - EmergencyGuardian holds CANCELLER_ROLE and can cancel queued
+ *   operations with a 3-of-N guardian threshold.
  *
  * Role architecture:
  * - PROPOSER_ROLE: OmniGovernance (and initial multisig during Phase 1)
@@ -57,6 +74,18 @@ contract OmniTimelockController is TimelockController {
     /// @notice Pausable selector: unpause()
     bytes4 public constant SEL_UNPAUSE = 0x3f4ba83a;
 
+    /// @notice TimelockController selector: updateDelay(uint256)
+    /// @dev M-01: Classified as critical to prevent 48h delay reduction
+    bytes4 public constant SEL_UPDATE_DELAY = 0x64d62353;
+
+    /// @notice Self selector: addCriticalSelector(bytes4)
+    /// @dev M-02: Classified as critical to prevent 48h selector changes
+    bytes4 public constant SEL_ADD_CRITICAL = 0xb634ebcf;
+
+    /// @notice Self selector: removeCriticalSelector(bytes4)
+    /// @dev M-02: Classified as critical to prevent 48h selector changes
+    bytes4 public constant SEL_REMOVE_CRITICAL = 0x199e6fef;
+
     // State
     /// @notice Registry of additional critical selectors (admin-extensible)
     mapping(bytes4 => bool) private _criticalSelectors;
@@ -76,6 +105,9 @@ contract OmniTimelockController is TimelockController {
     // Custom errors
     /// @notice Thrown when delay is below the required minimum for the operation
     error DelayBelowCriticalMinimum(uint256 provided, uint256 required);
+
+    /// @notice Thrown when caller is not the timelock itself
+    error OnlySelfCall();
 
     /**
      * @notice Deploy the two-tier timelock controller
@@ -101,7 +133,12 @@ contract OmniTimelockController is TimelockController {
         _criticalSelectors[SEL_RENOUNCE_ROLE] = true;
         _criticalSelectors[SEL_PAUSE] = true;
         _criticalSelectors[SEL_UNPAUSE] = true;
-        criticalSelectorCount = 7;
+        // M-01: updateDelay must require 7-day delay
+        _criticalSelectors[SEL_UPDATE_DELAY] = true;
+        // M-02: Selector management must require 7-day delay
+        _criticalSelectors[SEL_ADD_CRITICAL] = true;
+        _criticalSelectors[SEL_REMOVE_CRITICAL] = true;
+        criticalSelectorCount = 10;
     }
 
     // =========================================================================
@@ -110,14 +147,16 @@ contract OmniTimelockController is TimelockController {
 
     /**
      * @notice Register a new critical function selector
-     * @dev Can only be called through the timelock itself (self-administered).
+     * @dev M-03 fix: Only callable through the timelock itself via a
+     *      scheduled operation (self-administration pattern matching
+     *      updateDelay()). This function is itself classified as critical
+     *      (M-02), requiring 7-day delay for selector changes.
      *      Adding a critical selector means future calls to functions with
      *      that selector will require CRITICAL_DELAY instead of ROUTINE_DELAY.
      * @param selector The 4-byte function selector to classify as critical
      */
-    function addCriticalSelector(
-        bytes4 selector
-    ) external onlyRoleOrOpenRole(DEFAULT_ADMIN_ROLE) {
+    function addCriticalSelector(bytes4 selector) external {
+        if (msg.sender != address(this)) revert OnlySelfCall();
         if (!_criticalSelectors[selector]) {
             _criticalSelectors[selector] = true;
             ++criticalSelectorCount;
@@ -127,14 +166,15 @@ contract OmniTimelockController is TimelockController {
 
     /**
      * @notice Remove a critical function selector
-     * @dev Can only be called through the timelock itself.
+     * @dev M-03 fix: Only callable through the timelock itself via a
+     *      scheduled operation. This function is itself classified as
+     *      critical (M-02), requiring 7-day delay for selector changes.
      *      Hardcoded selectors (upgrade, role management, pause) can be
      *      removed but this is strongly discouraged.
      * @param selector The 4-byte function selector to declassify
      */
-    function removeCriticalSelector(
-        bytes4 selector
-    ) external onlyRoleOrOpenRole(DEFAULT_ADMIN_ROLE) {
+    function removeCriticalSelector(bytes4 selector) external {
+        if (msg.sender != address(this)) revert OnlySelfCall();
         if (_criticalSelectors[selector]) {
             _criticalSelectors[selector] = false;
             --criticalSelectorCount;
@@ -182,6 +222,22 @@ contract OmniTimelockController is TimelockController {
             return CRITICAL_DELAY;
         }
         return getMinDelay();
+    }
+
+    /**
+     * @notice Batch-check whether multiple selectors are critical
+     * @dev L-04: Allows frontends and monitoring systems to verify the
+     *      complete critical selector set without replaying all events.
+     * @param selectors Array of 4-byte function selectors to check
+     * @return results Array of booleans (true = critical)
+     */
+    function areCriticalSelectors(
+        bytes4[] calldata selectors
+    ) external view returns (bool[] memory results) {
+        results = new bool[](selectors.length);
+        for (uint256 i = 0; i < selectors.length; ++i) {
+            results[i] = _criticalSelectors[selectors[i]];
+        }
     }
 
     // =========================================================================

@@ -350,12 +350,14 @@ describe("Account Abstraction — ERC-4337 Contracts", function () {
     });
 
     it("should allow the owner to addSessionKey", async function () {
-      const validUntil = Math.floor(Date.now() / 1000) + 3600; // 1 hour from now
+      const latestBlock = await ethers.provider.getBlock("latest");
+      const validUntil = latestBlock.timestamp + 3600; // 1 hour from now
+      const validAfter = 0; // immediately valid
       const allowedTarget = ethers.ZeroAddress; // any target
 
       await account
         .connect(owner)
-        .addSessionKey(sessionSigner.address, validUntil, allowedTarget, 0);
+        .addSessionKey(sessionSigner.address, validUntil, validAfter, allowedTarget, 0);
 
       const sk = await account.sessionKeys(sessionSigner.address);
       expect(sk.active).to.be.true;
@@ -364,11 +366,12 @@ describe("Account Abstraction — ERC-4337 Contracts", function () {
     });
 
     it("should allow the owner to revokeSessionKey", async function () {
-      const validUntil = Math.floor(Date.now() / 1000) + 3600;
+      const latestBlock = await ethers.provider.getBlock("latest");
+      const validUntil = latestBlock.timestamp + 3600;
 
       await account
         .connect(owner)
-        .addSessionKey(sessionSigner.address, validUntil, ethers.ZeroAddress, 0);
+        .addSessionKey(sessionSigner.address, validUntil, 0, ethers.ZeroAddress, 0);
 
       expect(await account.sessionKeyCount()).to.equal(1);
 

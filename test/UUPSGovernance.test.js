@@ -209,8 +209,9 @@ describe("UUPS Governance System", function () {
       expect(await timelock.isCriticalSelector(unpauseSel)).to.be.true;
     });
 
-    it("Should report 7 initial critical selectors", async function () {
-      expect(await timelock.criticalSelectorCount()).to.equal(7);
+    it("Should report 10 initial critical selectors", async function () {
+      // 7 original + updateDelay + addCriticalSelector + removeCriticalSelector
+      expect(await timelock.criticalSelectorCount()).to.equal(10);
     });
 
     it("Should return ROUTINE_DELAY for non-critical calldata", async function () {
@@ -482,9 +483,10 @@ describe("UUPS Governance System", function () {
 
       it("Should collect cancel signatures from guardians", async function () {
         await guardian.connect(guardian1).signCancel(operationId);
-        expect(await guardian.cancelSignatureCount(operationId)).to.equal(1);
+        // Use epoch-aware view functions (H-01 epoch-based keys)
+        expect(await guardian.currentCancelSignatureCount(operationId)).to.equal(1);
         expect(
-          await guardian.cancelSignatures(operationId, guardian1.address)
+          await guardian.hasSignedCancel(operationId, guardian1.address)
         ).to.be.true;
       });
 
@@ -1065,7 +1067,7 @@ describe("UUPS Governance System", function () {
         await expect(
           governance.connect(voter3).cancel(proposalId)
         ).to.be.revertedWithCustomError(
-          governance, "InvalidProposalState"
+          governance, "NotAuthorizedToCancel"
         );
       });
 

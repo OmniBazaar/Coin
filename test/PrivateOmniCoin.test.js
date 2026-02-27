@@ -150,20 +150,20 @@ describe("PrivateOmniCoin", function () {
             expect(typeof token.convertToPrivate).to.equal("function");
         });
 
-        it("Should calculate correct 0.3% conversion fee", async function () {
+        it("Should calculate correct 0.5% conversion fee", async function () {
             const { token } = await loadFixture(deployPrivateOmniCoinFixture);
 
             // Verify fee constants are correct
             const feeBps = await token.PRIVACY_FEE_BPS();
             const denominator = await token.BPS_DENOMINATOR();
 
-            expect(feeBps).to.equal(30);
+            expect(feeBps).to.equal(50);
             expect(denominator).to.equal(10000);
 
-            // 30 / 10000 = 0.003 = 0.3%
+            // 50 / 10000 = 0.005 = 0.5%
             const testAmount = 1000000n;
             const expectedFee = (testAmount * feeBps) / denominator;
-            expect(expectedFee).to.equal(3000n); // 0.3% of 1,000,000 = 3,000
+            expect(expectedFee).to.equal(5000n); // 0.5% of 1,000,000 = 5,000
         });
 
         it("Should verify event signature for ConvertedToPrivate", async function () {
@@ -174,10 +174,9 @@ describe("PrivateOmniCoin", function () {
             const event = iface.getEvent("ConvertedToPrivate");
 
             expect(event.name).to.equal("ConvertedToPrivate");
-            expect(event.inputs.length).to.equal(3);
+            expect(event.inputs.length).to.equal(2);
             expect(event.inputs[0].name).to.equal("user");
             expect(event.inputs[1].name).to.equal("publicAmount");
-            expect(event.inputs[2].name).to.equal("fee");
         });
 
         it("Should revert on zero amount when privacy enabled", async function () {
@@ -607,7 +606,7 @@ describe("PrivateOmniCoin", function () {
         it("Should have correct privacy fee constant", async function () {
             const { token } = await loadFixture(deployPrivateOmniCoinFixture);
 
-            expect(await token.PRIVACY_FEE_BPS()).to.equal(30); // 0.3% = 30 basis points
+            expect(await token.PRIVACY_FEE_BPS()).to.equal(50); // 0.5% = 50 basis points
         });
 
         it("Should have correct BPS denominator", async function () {

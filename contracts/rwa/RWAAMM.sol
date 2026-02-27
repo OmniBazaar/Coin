@@ -25,6 +25,42 @@ import {RWAPool} from "./RWAPool.sol";
  * - Compliance oracle integration
  * - Emergency pause ONLY by multi-sig (3-of-5 threshold)
  *
+ * Fee Model:
+ *   The protocol charges a flat 0.30% fee on every swap, deducted upfront
+ *   from amountIn. The fee is split 70/20/10:
+ *     - 70% (LP Fee): Transferred into the pool alongside the trade amount.
+ *       This increases the pool's K-value over time, benefiting LPs
+ *       proportionally to their share of the total LP token supply. LPs
+ *       realize these accumulated fees when they burn LP tokens and withdraw
+ *       their share of the reserves (which now include the fee donations).
+ *     - 20% (Staking) + 10% (Protocol): Transferred to UnifiedFeeVault for
+ *       batched distribution to the staking reward pool and protocol treasury.
+ *
+ *   The LP fee is a "donation" to the pool, not part of the constant-product
+ *   AMM curve calculation. The swap output is computed using only
+ *   amountInAfterFee (the 99.70% remainder after the full 0.30% deduction),
+ *   while the pool receives amountInAfterFee + lpFee. This means:
+ *     - The effective user-facing fee is always 0.30%
+ *     - LP yield comes from BOTH curve spread AND explicit fee donations
+ *     - getQuote() output matches actual swap output exactly
+ *
+ * Fee Vault Compliance:
+ *   The FEE_VAULT (UnifiedFeeVault) address MUST be whitelisted in the
+ *   compliance contracts of ALL registered RWA tokens (ERC-3643, ERC-1400).
+ *   If the vault is not whitelisted, swaps involving those tokens as
+ *   tokenIn will revert because the fee transfer to the vault will fail
+ *   the token's internal compliance check. Deploy-time setup must include
+ *   registering FEE_VAULT as an approved participant in each RWA token's
+ *   identity registry or transfer whitelist.
+ *
+ * Fee-on-Transfer (FOT) Tokens:
+ *   This contract does NOT support fee-on-transfer (deflationary) tokens.
+ *   If tokenIn charges a transfer fee, the pool will receive less than
+ *   amountToPool, and the K-invariant check may fail with KValueDecreased.
+ *   All tokens used in RWA pools must deliver the exact amount specified in
+ *   safeTransferFrom. This is acceptable for RWA security tokens, which do
+ *   not typically charge transfer fees.
+ *
  * Security Features:
  * - Reentrancy protection
  * - Deadline checks for all operations
@@ -289,6 +325,9 @@ contract RWAAMM is IRWAAMM, ReentrancyGuard {
 
     /**
      * @inheritdoc IRWAAMM
+     * @dev The output reflects the full 0.30% fee deduction. LP revenue
+     *      includes both the AMM curve spread and a 70% fee donation
+     *      that increases pool reserves over time.
      */
     function getQuote(
         address tokenIn,
@@ -455,9 +494,9 @@ contract RWAAMM is IRWAAMM, ReentrancyGuard {
         uint256 amountInAfterFee = amountIn - protocolFee;
 
         // Split protocol fee: 70% stays in pool (LP revenue),
-        // 30% goes to FeeCollector (20% staking + 10% liquidity)
+        // 30% goes to UnifiedFeeVault (20% staking + 10% protocol)
         uint256 lpFee = (protocolFee * FEE_LP_BPS) / BPS_DENOMINATOR;
-        uint256 collectorFee = protocolFee - lpFee;
+        uint256 vaultFee = protocolFee - lpFee;
 
         // Calculate output amount (LP fee portion stays in pool
         // to increase reserves and benefit liquidity providers)
@@ -475,11 +514,11 @@ contract RWAAMM is IRWAAMM, ReentrancyGuard {
             msg.sender, poolAddr, amountToPool
         );
 
-        // Transfer collector fee (20% staking + 10% liquidity)
+        // Transfer vault fee (20% staking + 10% protocol)
         // to UnifiedFeeVault for batched distribution
-        if (collectorFee > 0) {
+        if (vaultFee > 0) {
             IERC20(tokenIn).safeTransferFrom(
-                msg.sender, FEE_VAULT, collectorFee
+                msg.sender, FEE_VAULT, vaultFee
             );
         }
 

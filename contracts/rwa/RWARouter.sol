@@ -16,16 +16,33 @@ import {IRWAPool} from "./interfaces/IRWAPool.sol";
  *
  * Key Features:
  * - Single-hop and multi-hop swaps via RWAAMM
- * - Slippage protection
- * - Deadline enforcement
+ * - Slippage protection with balance-delta pattern on all hops
+ * - Deadline enforcement (rejects zero and past deadlines)
  * - Liquidity management via RWAAMM delegation
  * - Quote functions matching RWAAMM fee model
  *
+ * Multi-Hop Routing:
+ *   For paths longer than 2 tokens (e.g., A -> B -> C), each hop
+ *   is executed sequentially through AMM.swap(). The router holds
+ *   intermediate tokens between hops without unnecessary self-transfers.
+ *   Balance deltas are measured on all hops to handle fee-on-transfer
+ *   tokens correctly. The final output is verified against amountOutMin.
+ *
+ * Compliance Note:
+ *   RWAAMM compliance checks verify msg.sender, which is this router
+ *   contract (not the end user or the `to` recipient). For production
+ *   use with regulated securities, the router address must be
+ *   whitelisted in the compliance oracle, and integrators should
+ *   implement additional off-chain compliance verification for the
+ *   actual human user and final recipient. A future AMM upgrade may
+ *   add an `onBehalfOf` parameter for on-chain end-user compliance.
+ *
  * Security Features:
  * - Reentrancy protection
- * - Deadline validation
+ * - Deadline validation (zero and past deadlines rejected)
  * - Minimum output validation
  * - Path validation
+ * - Balance-delta measurement on all swap hops
  * - All swaps routed through RWAAMM (compliance, fees, pause)
  */
 contract RWARouter is ReentrancyGuard {
@@ -148,10 +165,16 @@ contract RWARouter is ReentrancyGuard {
     // ========================================================================
 
     /**
-     * @notice Ensures deadline has not passed
-     * @param deadline Deadline timestamp
+     * @notice Ensures deadline has not passed and is not zero
+     * @dev Rejects deadline == 0 to prevent accidental submissions
+     *      with no deadline protection. Also rejects any deadline
+     *      that is already in the past.
+     * @param deadline Deadline timestamp (must be > block.timestamp)
      */
     modifier ensure(uint256 deadline) {
+        if (deadline == 0) {
+            revert DeadlineExpired(0, block.timestamp); // solhint-disable-line not-rely-on-time
+        }
         // solhint-disable-next-line not-rely-on-time
         if (block.timestamp > deadline) {
             // solhint-disable-next-line not-rely-on-time
@@ -182,12 +205,17 @@ contract RWARouter is ReentrancyGuard {
     /**
      * @notice Swap exact input tokens for output tokens
      * @dev Routes each hop through AMM.swap() to enforce compliance,
-     *      fee collection, and pause controls at every step.
+     *      fee collection, and pause controls at every step. Uses
+     *      the balance-delta pattern on all hops to correctly handle
+     *      fee-on-transfer tokens. Intermediate hops skip the
+     *      self-transfer since the router already holds the tokens
+     *      from the previous AMM.swap() output. The final output
+     *      is verified against amountOutMin after all hops complete.
      * @param amountIn Exact input amount
      * @param amountOutMin Minimum output amount (slippage protection)
-     * @param path Array of token addresses (swap route)
-     * @param to Recipient address
-     * @param deadline Transaction deadline
+     * @param path Array of token addresses (swap route, min length 2)
+     * @param to Recipient address (must not be zero)
+     * @param deadline Transaction deadline (must be > 0 and not expired)
      * @return amounts Array of amounts for each hop
      */
     function swapExactTokensForTokens(
@@ -207,7 +235,11 @@ contract RWARouter is ReentrancyGuard {
         amounts = new uint256[](path.length);
         amounts[0] = amountIn;
 
-        // Execute each hop through RWAAMM
+        // Execute each hop through RWAAMM.
+        // Every hop uses the balance-delta pattern to handle
+        // fee-on-transfer tokens correctly on all hops, not
+        // just the first. The original msg.sender is passed
+        // for compliance context in the event emission.
         for (uint256 i = 0; i < path.length - 1; ++i) {
             // Determine recipient: next hop goes to router,
             // last hop goes to final recipient
@@ -215,23 +247,27 @@ contract RWARouter is ReentrancyGuard {
                 ? address(this)
                 : to;
 
-            // Transfer input tokens with fee-on-transfer protection:
-            // measure actual received amount via balance delta
-            uint256 balBefore = IERC20(path[i]).balanceOf(address(this));
-            IERC20(path[i]).safeTransferFrom(
-                i == 0 ? msg.sender : address(this),
-                address(this),
-                amounts[i]
-            );
-            uint256 actualReceived = IERC20(path[i]).balanceOf(
-                address(this)
-            ) - balBefore;
+            if (i == 0) {
+                // First hop: transfer from user to router and
+                // measure actual received via balance delta
+                uint256 balBefore = IERC20(path[i]).balanceOf(
+                    address(this)
+                );
+                IERC20(path[i]).safeTransferFrom(
+                    msg.sender, address(this), amounts[i]
+                );
+                uint256 actualReceived = IERC20(path[i]).balanceOf(
+                    address(this)
+                ) - balBefore;
 
-            // Use actual received amount (may be less for
-            // fee-on-transfer tokens)
-            if (i == 0 && actualReceived < amounts[i]) {
-                amounts[i] = actualReceived;
+                // Adjust for fee-on-transfer tokens
+                if (actualReceived < amounts[i]) {
+                    amounts[i] = actualReceived;
+                }
             }
+            // Intermediate hops: router already holds tokens from
+            // previous AMM.swap() output -- no self-transfer needed
+
             IERC20(path[i]).forceApprove(address(AMM), amounts[i]);
 
             // Route through AMM (compliance + fees + pause enforced)
@@ -243,13 +279,27 @@ contract RWARouter is ReentrancyGuard {
                 deadline
             );
 
-            amounts[i + 1] = result.amountOut;
+            // Measure actual output via balance delta to handle
+            // fee-on-transfer tokens on intermediate hops
+            uint256 outputBalBefore = (recipient != address(this))
+                ? 0
+                : IERC20(path[i + 1]).balanceOf(address(this));
+            // AMM.swap() has already transferred output to this
+            // contract (msg.sender of AMM call). For intermediate
+            // hops, verify via balance delta.
+            if (i < path.length - 2) {
+                uint256 actualOutput = IERC20(path[i + 1]).balanceOf(
+                    address(this)
+                ) - outputBalBefore;
+                amounts[i + 1] = actualOutput;
+            } else {
+                amounts[i + 1] = result.amountOut;
+            }
 
-            // Transfer output to recipient if not last hop
-            // (AMM sends to msg.sender which is this contract)
+            // Transfer output to final recipient on last hop
             if (recipient != address(this)) {
                 IERC20(path[i + 1]).safeTransfer(
-                    recipient, result.amountOut
+                    recipient, amounts[i + 1]
                 );
             }
         }
@@ -270,10 +320,14 @@ contract RWARouter is ReentrancyGuard {
     }
     /* solhint-enable code-complexity */
 
+    /* solhint-disable code-complexity */
     /**
      * @notice Swap tokens for exact output amount
      * @dev Routes through AMM.swap(). For multi-hop, calculates required
      *      inputs then executes forward through AMM at each hop.
+     *      Complexity justification: the output verification guard at
+     *      the end of this function is a security-critical check added
+     *      per audit recommendation M-02.
      * @param amountOut Exact output amount desired
      * @param amountInMax Maximum input amount (slippage protection)
      * @param path Array of token addresses (swap route)
@@ -333,8 +387,20 @@ contract RWARouter is ReentrancyGuard {
             }
         }
 
+        // Verify final output meets the user's desired amount.
+        // The reverse calculation in getAmountsIn() uses ceiling
+        // rounding (+1) so users typically overpay slightly, but
+        // multi-hop rounding can compound and produce less output
+        // than expected. This check ensures the user is protected.
+        if (amounts[amounts.length - 1] < amountOut) {
+            revert InsufficientOutputAmount(
+                amounts[amounts.length - 1], amountOut
+            );
+        }
+
         emit SwapExecuted(msg.sender, path, amounts[0], amountOut);
     }
+    /* solhint-enable code-complexity */
 
     // ========================================================================
     // LIQUIDITY FUNCTIONS

@@ -61,6 +61,7 @@ contract OmniRegistration is
 
     /// @notice EIP-712 typehash for social media verification proof
     /// @dev Used by submitSocialVerification() for trustless social verification
+    // solhint-disable-next-line max-line-length
     bytes32 public constant SOCIAL_VERIFICATION_TYPEHASH = keccak256(
         "SocialVerification(address user,bytes32 socialHash,string platform,uint256 timestamp,bytes32 nonce,uint256 deadline)"
     );
@@ -165,12 +166,14 @@ contract OmniRegistration is
 
     /// @notice EIP-712 typehash for address verification proof (KYC Tier 2)
     /// @dev Verifies proof of residence via utility bill, bank statement, or tax document
+    // solhint-disable-next-line max-line-length
     bytes32 public constant ADDRESS_VERIFICATION_TYPEHASH = keccak256(
         "AddressVerification(address user,bytes32 addressHash,string country,bytes32 documentType,uint256 timestamp,bytes32 nonce,uint256 deadline)"
     );
 
     /// @notice EIP-712 typehash for selfie verification proof (KYC Tier 2)
     /// @dev Verifies face match between ID photo and selfie (not liveness detection)
+    // solhint-disable-next-line max-line-length
     bytes32 public constant SELFIE_VERIFICATION_TYPEHASH = keccak256(
         "SelfieVerification(address user,bytes32 selfieHash,uint256 similarity,uint256 timestamp,bytes32 nonce,uint256 deadline)"
     );
@@ -864,7 +867,10 @@ contract OmniRegistration is
         if (trustedVerificationKey == address(0)) revert TrustedVerificationKeyNotSet();
         if (registrations[user].timestamp != 0) revert AlreadyRegistered();
         if (block.timestamp > emailDeadline) revert ProofExpired(); // solhint-disable-line not-rely-on-time
-        if (block.timestamp > registrationDeadline) revert AttestationExpired(); // solhint-disable-line not-rely-on-time
+        // solhint-disable-next-line not-rely-on-time
+        if (block.timestamp > registrationDeadline) {
+            revert AttestationExpired();
+        }
         if (usedNonces[emailNonce]) revert NonceAlreadyUsed();
         if (usedEmailHashes[emailHash]) revert EmailAlreadyUsed();
 
@@ -1327,7 +1333,9 @@ contract OmniRegistration is
     /**
      * @notice Internal function to check and update KYC Tier 1 status
      * @param user Address to check and potentially update
-     * @dev Called after phone or social verification to check if requirements are met
+     * @dev Called after phone or social verification to check if requirements are met.
+     *      H-01 fix: Also synchronizes Registration.kycTier so that
+     *      canClaimWelcomeBonus() returns correct results for trustless-path users.
      */
     function _checkAndUpdateKycTier1(address user) internal {
         // Already completed - no need to check again
@@ -1348,6 +1356,17 @@ contract OmniRegistration is
         // All requirements met - update KYC Tier 1 status
         // solhint-disable-next-line not-rely-on-time
         kycTier1CompletedAt[user] = block.timestamp;
+
+        // H-01: Synchronize Registration.kycTier for canClaimWelcomeBonus()
+        // This ensures trustless-path users who complete KYC Tier 1 via
+        // submitPhoneVerification + submitSocialVerification get their
+        // Registration.kycTier updated (previously remained at 0).
+        if (reg.kycTier < 1) {
+            uint8 oldTier = reg.kycTier;
+            reg.kycTier = 1;
+            emit KYCUpgraded(user, oldTier, 1);
+        }
+
         // solhint-disable-next-line not-rely-on-time
         emit KycTier1Completed(user, block.timestamp);
     }
@@ -1689,6 +1708,14 @@ contract OmniRegistration is
         // solhint-disable-next-line not-rely-on-time
         kycTier3CompletedAt[msg.sender] = block.timestamp;
 
+        // H-01: Synchronize Registration.kycTier
+        Registration storage reg = registrations[msg.sender];
+        if (reg.kycTier < 3) {
+            uint8 oldTier = reg.kycTier;
+            reg.kycTier = 3;
+            emit KYCUpgraded(msg.sender, oldTier, 3);
+        }
+
         // solhint-disable-next-line not-rely-on-time
         emit VideoVerified(msg.sender, sessionHash, timestamp);
         // solhint-disable-next-line not-rely-on-time
@@ -1753,6 +1780,14 @@ contract OmniRegistration is
         // solhint-disable-next-line not-rely-on-time
         kycTier3CompletedAt[user] = block.timestamp;
 
+        // H-01: Synchronize Registration.kycTier
+        Registration storage reg = registrations[user];
+        if (reg.kycTier < 3) {
+            uint8 oldTier = reg.kycTier;
+            reg.kycTier = 3;
+            emit KYCUpgraded(user, oldTier, 3);
+        }
+
         // solhint-disable-next-line not-rely-on-time
         emit VideoVerified(user, sessionHash, timestamp);
         // solhint-disable-next-line not-rely-on-time
@@ -1814,6 +1849,14 @@ contract OmniRegistration is
         kycTier4CompletedAt[msg.sender] = block.timestamp;
         userKYCProvider[msg.sender] = kycProvider;
 
+        // H-01: Synchronize Registration.kycTier
+        Registration storage reg = registrations[msg.sender];
+        if (reg.kycTier < 4) {
+            uint8 oldTier = reg.kycTier;
+            reg.kycTier = 4;
+            emit KYCUpgraded(msg.sender, oldTier, 4);
+        }
+
         // solhint-disable-next-line not-rely-on-time
         emit KycTier4Completed(msg.sender, kycProvider, block.timestamp);
     }
@@ -1873,6 +1916,14 @@ contract OmniRegistration is
         // solhint-disable-next-line not-rely-on-time
         kycTier4CompletedAt[user] = block.timestamp;
         userKYCProvider[user] = kycProvider;
+
+        // H-01: Synchronize Registration.kycTier
+        Registration storage reg = registrations[user];
+        if (reg.kycTier < 4) {
+            uint8 oldTier = reg.kycTier;
+            reg.kycTier = 4;
+            emit KYCUpgraded(user, oldTier, 4);
+        }
 
         // solhint-disable-next-line not-rely-on-time
         emit KycTier4Completed(user, kycProvider, block.timestamp);
@@ -2185,11 +2236,16 @@ contract OmniRegistration is
         // Clear volume tracking
         delete userVolumes[user];
 
+        // M-01: Clear firstSaleCompleted to prevent stale bonus state
+        // on re-registration. Without this, a re-registered user could
+        // claim the first sale bonus without completing a new sale.
+        delete firstSaleCompleted[user];
+
         // Clear the registration struct
         delete registrations[user];
 
         // Decrement total registrations count
-        totalRegistrations--;
+        --totalRegistrations;
 
         // solhint-disable-next-line not-rely-on-time
         emit UserUnregistered(user, msg.sender, block.timestamp);
@@ -2265,11 +2321,14 @@ contract OmniRegistration is
                 delete userCountries[user];
                 delete userVolumes[user];
 
+                // M-01: Clear firstSaleCompleted to prevent stale bonus state
+                delete firstSaleCompleted[user];
+
                 // Clear the registration struct
                 delete registrations[user];
 
-                // Decrement total registrations count
-                totalRegistrations--;
+                // L-04: Use prefix decrement for gas efficiency
+                --totalRegistrations;
 
                 // solhint-disable-next-line not-rely-on-time
                 emit UserUnregistered(user, msg.sender, block.timestamp);
@@ -2330,8 +2389,22 @@ contract OmniRegistration is
      * @return allowed True if transaction is within limits
      * @return reason Error message if not allowed (empty string if allowed)
      *
-     * @dev This is a view function - does not modify state
-     *      Call before executing transaction to verify compliance
+     * @dev M-03: This is a VIEW function intended for off-chain pre-checks
+     *      via eth_call. It does NOT modify state or enforce limits.
+     *      Callers should use this to show users their remaining capacity
+     *      before submitting transactions. The actual on-chain enforcement
+     *      happens in recordTransaction(), which uses custom errors
+     *      (TransactionLimitExceeded) instead of string returns.
+     *
+     *      Return pattern:
+     *      - (true, "") = transaction is allowed
+     *      - (false, "reason string") = transaction would exceed a limit
+     *
+     *      The reason strings are human-readable for UX purposes:
+     *      - "Transaction exceeds per-transaction limit for your KYC tier"
+     *      - "Transaction would exceed daily limit for your KYC tier"
+     *      - "Transaction would exceed monthly limit for your KYC tier"
+     *      - "Transaction would exceed annual limit for your KYC tier"
      */
     function checkTransactionLimit(
         address user,
@@ -2556,12 +2629,14 @@ contract OmniRegistration is
     /**
      * @notice Check and update KYC Tier 2 status if all requirements met
      * @param user Address to check
-     *
      * @dev Tier 2 requires THREE verifications:
      *      1. ID verification (userIDHashes[user] != 0)
      *      2. Address verification (userAddressHashes[user] != 0)
      *      3. Selfie verification (selfieVerified[user] == true)
-     *      Only marks Tier 2 complete when ALL three are present
+     *      Only marks Tier 2 complete when ALL three are present.
+     *      H-01 fix: Also synchronizes Registration.kycTier so that
+     *      canClaimWelcomeBonus() and other checks reading Registration.kycTier
+     *      return correct results for trustless-path users.
      */
     function _checkAndUpdateKycTier2(address user) internal {
         // Must have Tier 1 first
@@ -2576,6 +2651,15 @@ contract OmniRegistration is
         if (kycTier2CompletedAt[user] == 0) {
             // solhint-disable-next-line not-rely-on-time
             kycTier2CompletedAt[user] = block.timestamp;
+
+            // H-01: Synchronize Registration.kycTier
+            Registration storage reg = registrations[user];
+            if (reg.kycTier < 2) {
+                uint8 oldTier = reg.kycTier;
+                reg.kycTier = 2;
+                emit KYCUpgraded(user, oldTier, 2);
+            }
+
             // solhint-disable-next-line not-rely-on-time
             emit KycTier2Completed(user, block.timestamp);
         }
@@ -2583,8 +2667,18 @@ contract OmniRegistration is
 
     /**
      * @notice Permanently remove upgrade capability (one-way, irreversible)
-     * @dev Can only be called by admin (through timelock). Once ossified,
-     *      the contract can never be upgraded again.
+     * @dev Can only be called by admin. Once ossified, the contract can never
+     *      be upgraded again. IMPORTANT: The admin role MUST be behind a
+     *      TimelockController before calling this function in production.
+     *      Accidental ossification permanently prevents bug fixes.
+     *
+     *      Upgrade Validation Process (M-02):
+     *      Before ANY production upgrade, run OpenZeppelin validateUpgrade()
+     *      from hardhat-upgrades to verify storage layout compatibility:
+     *      require('openzeppelin/hardhat-upgrades').validateUpgrade(V1, V2)
+     *      This ensures new state variables consume gap slots correctly and
+     *      do not corrupt existing storage. The storage gap is sized at 49
+     *      (50 - 1 for _ossified) to provide room for future additions.
      */
     function ossify() external onlyRole(DEFAULT_ADMIN_ROLE) {
         _ossified = true;
@@ -2601,11 +2695,25 @@ contract OmniRegistration is
 
     /**
      * @notice Authorize contract upgrade
-     * @param newImplementation Address of new implementation
      * @dev Only callable by DEFAULT_ADMIN_ROLE. Reverts if contract is ossified.
+     *      The newImplementation parameter is required by the UUPS interface
+     *      but is not used in authorization logic.
+     *
+     *      L-02: The admin role should be held by a TimelockController before
+     *      production deployment. This ensures upgrade proposals have a delay
+     *      period (e.g., 7 days) for community review before execution.
+     *
+     *      Relationship between on-chain KYC and off-chain KYC service (L-04):
+     *      On-chain: Registration.kycTier and kycTierXCompletedAt timestamps
+     *      track KYC progression. Off-chain: The OmniBazaar verification service
+     *      performs actual identity checks (phone, email, social, ID, selfie,
+     *      video) and signs EIP-712 proofs that users submit on-chain. The
+     *      trustedVerificationKey bridges these two systems.
+     * @param newImplementation Address of new implementation
+     *        (unused -- required by UUPSUpgradeable interface)
      */
     function _authorizeUpgrade(
-        address newImplementation
+        address newImplementation // solhint-disable-line no-unused-vars
     ) internal override onlyRole(DEFAULT_ADMIN_ROLE) {
         if (_ossified) revert ContractIsOssified();
     }

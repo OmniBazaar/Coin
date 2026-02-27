@@ -3,6 +3,7 @@ pragma solidity 0.8.24;
 
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
 import {ECDSA} from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 import {MessageHashUtils} from "@openzeppelin/contracts/utils/cryptography/MessageHashUtils.sol";
 import {OmniCoin} from "./OmniCoin.sol";
@@ -23,15 +24,20 @@ import {OmniCoin} from "./OmniCoin.sol";
  *
  * Security:
  * - Passwords NEVER sent to blockchain (validated off-chain)
- * - Validator backend signs validation proof including chainId to prevent
- *   cross-chain replay attacks
+ * - M-of-N multi-sig validation: requires multiple validator signatures
+ *   to authorize each claim, preventing single-key compromise
+ * - Signature includes chainId and per-user nonce to prevent cross-chain
+ *   and intra-chain replay attacks
  * - Uses OpenZeppelin ECDSA for signature verification (prevents ecrecover
  *   returning address(0) and signature malleability)
+ * - Uses abi.encode (not abi.encodePacked) to prevent hash collisions
+ *   with the dynamic-length username string
  * - ReentrancyGuard protects against reentrancy attacks
+ * - Pausable emergency brake allows owner to halt claims instantly
  * - One-time claiming enforced
  * - Migration finalization requires a 2-year timelock
  */
-contract LegacyBalanceClaim is Ownable, ReentrancyGuard {
+contract LegacyBalanceClaim is Ownable, ReentrancyGuard, Pausable {
     // ──────────────────────────────────────────────────────────────
     // Constants
     // ──────────────────────────────────────────────────────────────
@@ -45,6 +51,9 @@ contract LegacyBalanceClaim is Ownable, ReentrancyGuard {
     ///      This caps total minting via this contract to prevent unbounded inflation
     ///      even if the owner loads more balances than expected.
     uint256 public constant MAX_MIGRATION_SUPPLY = 4_130_000_000e18;
+
+    /// @notice Maximum number of validators allowed in the set
+    uint256 public constant MAX_VALIDATORS = 20;
 
     // ──────────────────────────────────────────────────────────────
     // Immutable variables
@@ -61,8 +70,20 @@ contract LegacyBalanceClaim is Ownable, ReentrancyGuard {
     // Public state variables
     // ──────────────────────────────────────────────────────────────
 
-    /// @notice Authorized validator backend service address
-    address public validator;
+    /// @notice Array of authorized validator addresses for M-of-N multi-sig
+    address[] public validators;
+
+    /// @notice Quick lookup for validator membership
+    mapping(address => bool) public isValidator;
+
+    /// @notice Number of valid signatures required to approve a claim
+    uint256 public requiredSignatures;
+
+    /// @notice Whether the contract has been initialized with legacy balances
+    bool public initialized;
+
+    /// @notice Per-user nonce for claim signature replay protection
+    mapping(address => uint256) public claimNonces;
 
     /// @notice Mapping from username hash to legacy balance (in Wei)
     mapping(bytes32 => uint256) public legacyBalances;
@@ -117,12 +138,12 @@ contract LegacyBalanceClaim is Ownable, ReentrancyGuard {
         address indexed unclaimedRecipient
     );
 
-    /// @notice Emitted when validator address is updated
-    /// @param oldValidator Previous validator address
-    /// @param newValidator New validator address
-    event ValidatorUpdated(
-        address indexed oldValidator,
-        address indexed newValidator
+    /// @notice Emitted when the validator set is updated
+    /// @param validatorCount Number of validators in the new set
+    /// @param requiredSigs Number of signatures required
+    event ValidatorSetUpdated(
+        uint256 indexed validatorCount,
+        uint256 indexed requiredSigs
     );
 
     /// @notice Emitted when contract is initialized with legacy balances
@@ -187,10 +208,32 @@ contract LegacyBalanceClaim is Ownable, ReentrancyGuard {
     /// @notice Thrown when the signature verification fails
     error InvalidProof();
 
-    /// @notice Thrown when the caller is not the authorized validator
-    /// @param caller The unauthorized caller address
-    /// @param expected The expected validator address
-    error NotValidator(address caller, address expected);
+    /// @notice Thrown when not enough valid signatures are provided
+    /// @param required Number of signatures required
+    /// @param provided Number of valid signatures provided
+    error InsufficientSignatures(
+        uint256 required,
+        uint256 provided
+    );
+
+    /// @notice Thrown when a recovered signer is not an authorized validator
+    /// @param recovered The recovered signer address
+    error InvalidSigner(address recovered);
+
+    /// @notice Thrown when an invalid validator set is provided
+    /// @param threshold Required signatures count
+    /// @param validatorCount Number of validators provided
+    error InvalidValidatorSet(
+        uint256 threshold,
+        uint256 validatorCount
+    );
+
+    /// @notice Thrown when a duplicate validator address is found
+    /// @param validator The duplicate validator address
+    error DuplicateValidator(address validator);
+
+    /// @notice Thrown when the contract has not been initialized yet
+    error NotInitialized();
 
     /// @notice Thrown when finalization is attempted before the deadline
     /// @param currentTime Current block timestamp
@@ -212,40 +255,44 @@ contract LegacyBalanceClaim is Ownable, ReentrancyGuard {
     // Modifiers
     // ──────────────────────────────────────────────────────────────
 
-    /**
-     * @notice Restricts function to the authorized validator backend
-     * @dev Reverts with NotValidator if caller is not the validator
-     */
-    modifier onlyValidator() {
-        if (msg.sender != validator) {
-            revert NotValidator(msg.sender, validator);
-        }
-        _;
-    }
-
     // ──────────────────────────────────────────────────────────────
     // Constructor
     // ──────────────────────────────────────────────────────────────
 
     /**
      * @notice Deploy the legacy balance claim contract
-     * @dev Sets the OmniCoin reference, initial owner, and validator.
+     * @dev Sets the OmniCoin reference, initial owner, and M-of-N validator set.
      *      Records the deployment timestamp for migration timelock.
+     *      Validates that the validator set has no duplicates, no zero addresses,
+     *      and that the threshold is valid (1 <= threshold <= validators.length).
      * @param _omniCoin Address of the OmniCoin token contract
      * @param initialOwner Address of the contract owner
-     * @param _validator Address of the authorized validator backend
+     * @param _validators Array of authorized validator backend addresses
+     * @param _requiredSignatures Number of signatures required (M in M-of-N)
      */
     constructor(
         address _omniCoin,
         address initialOwner,
-        address _validator
+        address[] memory _validators,
+        uint256 _requiredSignatures
     ) Ownable(initialOwner) {
         if (_omniCoin == address(0)) revert ZeroAddress();
-        if (_validator == address(0)) revert ZeroAddress();
+
+        _validateValidatorSet(_validators, _requiredSignatures);
 
         OMNI_COIN = OmniCoin(_omniCoin);
-        validator = _validator;
         DEPLOYED_AT = block.timestamp; // solhint-disable-line not-rely-on-time
+
+        for (uint256 i = 0; i < _validators.length; ++i) {
+            validators.push(_validators[i]);
+            isValidator[_validators[i]] = true;
+        }
+        requiredSignatures = _requiredSignatures;
+
+        emit ValidatorSetUpdated(
+            _validators.length,
+            _requiredSignatures
+        );
     }
 
     // ──────────────────────────────────────────────────────────────
@@ -254,7 +301,10 @@ contract LegacyBalanceClaim is Ownable, ReentrancyGuard {
 
     /**
      * @notice Initialize contract with legacy balances
-     * @dev Can only be called once, before any claims. Owner only.
+     * @dev Can only be called once, before any claims or addLegacyUsers calls.
+     *      Uses a dedicated boolean flag to prevent the ordering vulnerability
+     *      where addLegacyUsers() could make initialize() permanently unreachable.
+     *      Owner only.
      * @param usernames Array of legacy usernames
      * @param balances Array of balances (in Wei, 18 decimals)
      */
@@ -262,14 +312,19 @@ contract LegacyBalanceClaim is Ownable, ReentrancyGuard {
         string[] calldata usernames,
         uint256[] calldata balances
     ) external onlyOwner {
-        if (reservedCount != 0) revert AlreadyInitialized();
+        if (initialized) revert AlreadyInitialized();
+        initialized = true;
+
         _validateBatchInputs(usernames, balances);
 
         uint256 total = _loadLegacyBatch(usernames, balances);
 
-        // M-01: Enforce supply cap at initialization
+        // Enforce supply cap at initialization
         if (total > MAX_MIGRATION_SUPPLY) {
-            revert MigrationSupplyExceeded(total, MAX_MIGRATION_SUPPLY);
+            revert MigrationSupplyExceeded(
+                total,
+                MAX_MIGRATION_SUPPLY
+            );
         }
 
         totalReserved = total;
@@ -280,7 +335,8 @@ contract LegacyBalanceClaim is Ownable, ReentrancyGuard {
     /**
      * @notice Add more legacy users after initial deployment
      * @dev Allows batch additions for large user sets that exceed
-     *      gas limits. Owner only. Cannot be called after finalization.
+     *      gas limits. Owner only. Requires initialize() to have been
+     *      called first. Cannot be called after finalization.
      * @param usernames Array of legacy usernames to add
      * @param balances Array of balances (in Wei, 18 decimals)
      */
@@ -288,6 +344,7 @@ contract LegacyBalanceClaim is Ownable, ReentrancyGuard {
         string[] calldata usernames,
         uint256[] calldata balances
     ) external onlyOwner {
+        if (!initialized) revert NotInitialized();
         if (migrationFinalized) revert MigrationAlreadyFinalized();
         _validateBatchInputs(usernames, balances);
 
@@ -313,36 +370,41 @@ contract LegacyBalanceClaim is Ownable, ReentrancyGuard {
 
     /**
      * @notice Claim legacy balance after off-chain password validation
-     * @dev Only callable by the authorized validator backend. The validator
-     *      signs a proof after verifying the user's legacy credentials.
+     * @dev Requires M-of-N multi-sig validation proofs from authorized
+     *      validators. Each validator independently verifies the user's
+     *      legacy credentials off-chain, then signs a proof. The signed
+     *      message includes a per-user nonce to prevent replay attacks.
      *      Uses CEI pattern: state updates before external mint call.
+     *      Protected by Pausable for emergency halting and ReentrancyGuard.
      * @param username Legacy username
      * @param ethAddress New Ethereum address to receive tokens
-     * @param validationProof Signature from validator backend
+     * @param nonce Per-user nonce (must match current claimNonces[ethAddress])
+     * @param validationProofs Array of signatures from validator backends
      * @return success Whether the claim was successful
      */
     function claim(
         string calldata username,
         address ethAddress,
-        bytes calldata validationProof
-    ) external onlyValidator nonReentrant returns (bool success) {
-        if (migrationFinalized) revert MigrationAlreadyFinalized();
-        if (bytes(username).length == 0) revert EmptyUsername();
-        if (ethAddress == address(0)) revert ZeroAddress();
+        uint256 nonce,
+        bytes[] calldata validationProofs
+    ) external nonReentrant whenNotPaused returns (bool success) {
+        bytes32 usernameHash = _validateClaim(
+            username,
+            ethAddress,
+            nonce
+        );
 
-        bytes32 usernameHash = keccak256(bytes(username));
-
-        if (legacyBalances[usernameHash] == 0) revert NoLegacyBalance();
-        if (claimedBy[usernameHash] != address(0)) {
-            revert AlreadyClaimed(claimedBy[usernameHash]);
-        }
-
-        // Verify validation proof (signed by validator backend)
-        _verifyProof(username, ethAddress, validationProof);
+        // Verify M-of-N validation proofs (signed by validator backends)
+        _verifyMultiSigProof(
+            username,
+            ethAddress,
+            nonce,
+            validationProofs
+        );
 
         uint256 amount = legacyBalances[usernameHash];
 
-        // M-01: Enforce migration supply cap before minting
+        // Enforce migration supply cap before minting
         uint256 newTotalMinted = totalMinted + amount;
         if (newTotalMinted > MAX_MIGRATION_SUPPLY) {
             revert MigrationSupplyExceeded(
@@ -353,9 +415,11 @@ contract LegacyBalanceClaim is Ownable, ReentrancyGuard {
 
         // Update state before external call (CEI pattern)
         claimedBy[usernameHash] = ethAddress;
+        legacyBalances[usernameHash] = 0; // Gas refund
         totalClaimed += amount;
         totalMinted = newTotalMinted;
         ++uniqueClaimants;
+        ++claimNonces[ethAddress]; // Consume the nonce
 
         // Mint tokens to user's new Ethereum address
         OMNI_COIN.mint(ethAddress, amount);
@@ -414,15 +478,53 @@ contract LegacyBalanceClaim is Ownable, ReentrancyGuard {
     }
 
     /**
-     * @notice Set authorized validator backend address
-     * @dev Only callable by contract owner. Cannot set to zero address.
-     * @param _validator New validator address
+     * @notice Update the authorized validator set and threshold
+     * @dev Only callable by contract owner. Validates that the new set
+     *      has no duplicates, no zero addresses, and a valid threshold.
+     *      Clears the old validator set before applying the new one.
+     * @param _validators New array of validator addresses
+     * @param _requiredSigs New number of required signatures
      */
-    function setValidator(address _validator) external onlyOwner {
-        if (_validator == address(0)) revert ZeroAddress();
-        address oldValidator = validator;
-        validator = _validator;
-        emit ValidatorUpdated(oldValidator, _validator);
+    function updateValidatorSet(
+        address[] calldata _validators,
+        uint256 _requiredSigs
+    ) external onlyOwner {
+        _validateValidatorSet(_validators, _requiredSigs);
+
+        // Clear old validator set
+        for (uint256 i = 0; i < validators.length; ++i) {
+            isValidator[validators[i]] = false;
+        }
+        delete validators;
+
+        // Set new validator set
+        for (uint256 i = 0; i < _validators.length; ++i) {
+            validators.push(_validators[i]);
+            isValidator[_validators[i]] = true;
+        }
+        requiredSignatures = _requiredSigs;
+
+        emit ValidatorSetUpdated(
+            _validators.length,
+            _requiredSigs
+        );
+    }
+
+    /**
+     * @notice Pause the contract, halting all claim operations
+     * @dev Only callable by contract owner. Use in emergency situations
+     *      such as suspected validator key compromise.
+     */
+    function pause() external onlyOwner {
+        _pause();
+    }
+
+    /**
+     * @notice Unpause the contract, resuming claim operations
+     * @dev Only callable by contract owner.
+     */
+    function unpause() external onlyOwner {
+        _unpause();
     }
 
     // ──────────────────────────────────────────────────────────────
@@ -521,37 +623,155 @@ contract LegacyBalanceClaim is Ownable, ReentrancyGuard {
         return DEPLOYED_AT + MIGRATION_DURATION;
     }
 
+    /**
+     * @notice Get the full list of authorized validators
+     * @return validatorList Array of validator addresses
+     */
+    function getValidators()
+        external
+        view
+        returns (address[] memory validatorList)
+    {
+        return validators;
+    }
+
+    /**
+     * @notice Get the current claim nonce for an address
+     * @dev Used by off-chain tools to construct correctly signed messages
+     * @param ethAddress The address to check
+     * @return nonce Current nonce value
+     */
+    function getClaimNonce(
+        address ethAddress
+    ) external view returns (uint256 nonce) {
+        return claimNonces[ethAddress];
+    }
+
     // ──────────────────────────────────────────────────────────────
     // Internal functions
     // ──────────────────────────────────────────────────────────────
 
     /**
-     * @notice Verify validation proof from validator backend
-     * @dev Uses OpenZeppelin ECDSA.recover which reverts on invalid
-     *      signatures and prevents address(0) recovery. The signed
-     *      message includes block.chainid to prevent cross-chain replay.
-     * @param username Username being claimed
-     * @param ethAddress Ethereum address receiving tokens
-     * @param validationProof Signature from validator backend
+     * @notice Validate all preconditions for a claim
+     * @dev Checks migration status, input validity, balance existence,
+     *      claim uniqueness, and nonce correctness.
+     * @param username Legacy username to claim
+     * @param ethAddress Address to receive tokens
+     * @param nonce Expected per-user nonce
+     * @return usernameHash Keccak256 hash of the username
      */
-    function _verifyProof(
+    function _validateClaim(
         string calldata username,
         address ethAddress,
-        bytes calldata validationProof
+        uint256 nonce
+    ) internal view returns (bytes32 usernameHash) {
+        if (migrationFinalized) revert MigrationAlreadyFinalized();
+        if (bytes(username).length == 0) revert EmptyUsername();
+        if (ethAddress == address(0)) revert ZeroAddress();
+
+        usernameHash = keccak256(bytes(username));
+
+        if (legacyBalances[usernameHash] == 0) {
+            revert NoLegacyBalance();
+        }
+        if (claimedBy[usernameHash] != address(0)) {
+            revert AlreadyClaimed(claimedBy[usernameHash]);
+        }
+        if (nonce != claimNonces[ethAddress]) {
+            revert InvalidProof();
+        }
+    }
+
+    /**
+     * @notice Verify M-of-N validation proofs from validator backends
+     * @dev Uses OpenZeppelin ECDSA.recover which reverts on invalid
+     *      signatures and prevents address(0) recovery. The signed
+     *      message includes block.chainid, address(this), and a per-user
+     *      nonce to prevent cross-chain, cross-contract, and intra-chain
+     *      replay attacks. Uses abi.encode (not abi.encodePacked) to
+     *      prevent hash collisions with the dynamic-length username.
+     *      Uses a bitmap to detect duplicate signers efficiently.
+     * @param username Username being claimed
+     * @param ethAddress Ethereum address receiving tokens
+     * @param nonce Per-user replay protection nonce
+     * @param proofs Array of ECDSA signatures from validators
+     */
+    function _verifyMultiSigProof(
+        string calldata username,
+        address ethAddress,
+        uint256 nonce,
+        bytes[] calldata proofs
     ) internal view {
+        if (proofs.length < requiredSignatures) {
+            revert InsufficientSignatures(
+                requiredSignatures,
+                proofs.length
+            );
+        }
+
+        // Use abi.encode to prevent hash collision with dynamic string
         bytes32 message = keccak256(
-            abi.encodePacked(
+            abi.encode(
                 username,
                 ethAddress,
+                nonce,
                 address(this),
                 block.chainid
             )
         );
         bytes32 ethSignedMessage =
             MessageHashUtils.toEthSignedMessageHash(message);
-        address signer =
-            ECDSA.recover(ethSignedMessage, validationProof);
-        if (signer != validator) revert InvalidProof();
+
+        uint256 validCount = 0;
+        // Bitmap for duplicate detection (supports up to 256 validators)
+        uint256 seenBitmap = 0;
+
+        for (
+            uint256 i = 0;
+            i < proofs.length && validCount < requiredSignatures;
+            ++i
+        ) {
+            address signer =
+                ECDSA.recover(ethSignedMessage, proofs[i]);
+
+            if (!isValidator[signer]) {
+                revert InvalidSigner(signer);
+            }
+
+            // Find signer index for bitmap
+            uint256 idx = _getValidatorIndex(signer);
+            uint256 bit = 1 << idx;
+
+            // Skip duplicate signatures from the same validator
+            if ((seenBitmap & bit) != 0) continue;
+            seenBitmap |= bit;
+
+            ++validCount;
+        }
+
+        if (validCount < requiredSignatures) {
+            revert InsufficientSignatures(
+                requiredSignatures,
+                validCount
+            );
+        }
+    }
+
+    /**
+     * @notice Get the index of a validator in the validators array
+     * @dev Used for bitmap-based duplicate detection. Reverts if the
+     *      validator is not found (should not happen after isValidator check).
+     * @param _validator Address to find
+     * @return idx Index in the validators array
+     */
+    function _getValidatorIndex(
+        address _validator
+    ) internal view returns (uint256 idx) {
+        for (uint256 i = 0; i < validators.length; ++i) {
+            if (validators[i] == _validator) return i;
+        }
+        // Should not reach here if isValidator check passed
+        revert InvalidSigner(_validator);
     }
 
     // ──────────────────────────────────────────────────────────────
@@ -619,5 +839,51 @@ contract LegacyBalanceClaim is Ownable, ReentrancyGuard {
             );
         }
         if (usernames.length == 0) revert EmptyArray();
+    }
+
+    /**
+     * @notice Validate a validator set and required signature threshold
+     * @dev Checks for zero addresses, duplicates, valid threshold range,
+     *      and MAX_VALIDATORS limit. Uses O(n^2) duplicate detection
+     *      which is acceptable given MAX_VALIDATORS = 20.
+     * @param _validators Array of validator addresses to validate
+     * @param _requiredSigs Signature threshold to validate
+     */
+    function _validateValidatorSet(
+        address[] memory _validators,
+        uint256 _requiredSigs
+    ) private pure {
+        if (
+            _validators.length == 0 ||
+            _validators.length > MAX_VALIDATORS
+        ) {
+            revert InvalidValidatorSet(
+                _requiredSigs,
+                _validators.length
+            );
+        }
+        if (
+            _requiredSigs == 0 ||
+            _requiredSigs > _validators.length
+        ) {
+            revert InvalidValidatorSet(
+                _requiredSigs,
+                _validators.length
+            );
+        }
+
+        // Check for zero addresses and duplicates
+        for (uint256 i = 0; i < _validators.length; ++i) {
+            if (_validators[i] == address(0)) revert ZeroAddress();
+            for (
+                uint256 j = i + 1;
+                j < _validators.length;
+                ++j
+            ) {
+                if (_validators[i] == _validators[j]) {
+                    revert DuplicateValidator(_validators[i]);
+                }
+            }
+        }
     }
 }

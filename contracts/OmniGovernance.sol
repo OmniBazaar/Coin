@@ -240,6 +240,22 @@ contract OmniGovernance is
     /// @param contractAddress Address of this contract
     event ContractOssified(address indexed contractAddress);
 
+    /// @notice Emitted when admin authority is transferred to the timelock
+    /// @param previousAdmin Address that held the admin role
+    /// @param timelockAddress Address of the timelock (new admin)
+    event AdminTransferredToTimelock(
+        address indexed previousAdmin,
+        address indexed timelockAddress
+    );
+
+    /// @notice Emitted when a timelock cancel fails during proposal cancellation
+    /// @param proposalId The proposal whose timelock cancel failed
+    /// @param timelockId The timelock operation that could not be cancelled
+    event TimelockCancelFailed(
+        uint256 indexed proposalId,
+        bytes32 indexed timelockId
+    );
+
     // =========================================================================
     // Custom Errors
     // =========================================================================
@@ -268,6 +284,12 @@ contract OmniGovernance is
     error InvalidNonce();
     /// @notice Thrown when queue deadline has passed for a succeeded proposal
     error QueueDeadlinePassed();
+    /// @notice Thrown when the queried proposal does not exist
+    error ProposalNotFound();
+    /// @notice Thrown when caller is not authorized to cancel
+    error NotAuthorizedToCancel();
+    /// @notice Thrown when a ROUTINE proposal contains critical selectors
+    error CriticalActionInRoutineProposal();
 
     // =========================================================================
     // Constructor & Initializer
@@ -340,6 +362,11 @@ contract OmniGovernance is
         string calldata description
     ) external nonReentrant returns (uint256 proposalId) {
         _validateActions(targets, values, calldatas);
+
+        // M-02: Validate ROUTINE proposals do not contain critical selectors
+        if (proposalType == ProposalType.ROUTINE) {
+            _validateNoCriticalSelectors(calldatas);
+        }
 
         uint256 votingPower = getVotingPower(msg.sender);
         if (votingPower < PROPOSAL_THRESHOLD) {
@@ -550,28 +577,26 @@ contract OmniGovernance is
             );
         }
 
-        // Only proposer or admin can cancel
+        // L-03: Use dedicated authorization error
         bool isProposer = msg.sender == proposal.proposer;
         bool isAdmin = hasRole(ADMIN_ROLE, msg.sender);
 
         if (!isProposer && !isAdmin) {
-            revert InvalidProposalState(
-                state(proposalId), ProposalState.Pending
-            );
+            revert NotAuthorizedToCancel();
         }
 
         proposal.cancelled = true;
 
-        // If queued, also cancel in timelock
+        // L-02: If queued, attempt timelock cancel and emit event on failure
         if (proposal.queued) {
             bytes32 timelockId = _getTimelockId(proposalId);
             // solhint-disable-next-line avoid-low-level-calls
             (bool success, ) = timelock.call(
                 abi.encodeWithSignature("cancel(bytes32)", timelockId)
             );
-            // If timelock cancel fails (already executed/not pending),
-            // the governance cancel still proceeds
-            success; // silence unused warning
+            if (!success) {
+                emit TimelockCancelFailed(proposalId, timelockId);
+            }
         }
 
         emit ProposalCancelled(proposalId);
@@ -592,8 +617,13 @@ contract OmniGovernance is
     ) public view returns (ProposalState) {
         Proposal storage proposal = proposals[proposalId];
 
+        // L-01: Revert on non-existent proposals instead of returning Pending
+        if (proposal.proposer == address(0) && proposal.voteStart == 0) {
+            revert ProposalNotFound();
+        }
+
         if (proposal.voteStart == 0) {
-            return ProposalState.Pending; // non-existent
+            return ProposalState.Pending;
         }
         if (proposal.cancelled) return ProposalState.Cancelled;
         if (proposal.executed) return ProposalState.Executed;
@@ -727,6 +757,36 @@ contract OmniGovernance is
         emit ContractOssified(address(this));
     }
 
+    /**
+     * @notice Transfer all admin authority to the timelock (irreversible)
+     * @dev H-01 fix: One-shot function that atomically grants ADMIN_ROLE and
+     *      DEFAULT_ADMIN_ROLE to the timelock, then revokes both from the
+     *      caller. This ensures governance cannot be bypassed by the deployer
+     *      after the system is operational.
+     *
+     *      Expected deployment sequence:
+     *      1. Deploy OmniGovernance via proxy with admin = deployer
+     *      2. Deploy OmniTimelockController
+     *      3. Configure all roles and contracts
+     *      4. Call transferAdminToTimelock() to hand over control
+     *      5. After this call, only governance proposals through the
+     *         timelock can exercise admin powers
+     */
+    function transferAdminToTimelock() external onlyRole(ADMIN_ROLE) {
+        address timelockAddr = timelock;
+        if (timelockAddr == address(0)) revert InvalidAddress();
+
+        // Grant admin roles to the timelock
+        _grantRole(ADMIN_ROLE, timelockAddr);
+        _grantRole(DEFAULT_ADMIN_ROLE, timelockAddr);
+
+        // Revoke admin roles from the caller
+        _revokeRole(ADMIN_ROLE, msg.sender);
+        _revokeRole(DEFAULT_ADMIN_ROLE, msg.sender);
+
+        emit AdminTransferredToTimelock(msg.sender, timelockAddr);
+    }
+
     // =========================================================================
     // Internal Functions
     // =========================================================================
@@ -788,6 +848,8 @@ contract OmniGovernance is
 
     /**
      * @notice Check if a proposal passed (majority + quorum)
+     * @dev Requires strict majority (forVotes > againstVotes) and
+     *      quorum (total votes >= 4% of snapshotted total supply).
      * @param proposal Proposal to check
      * @return True if proposal passed
      */
@@ -798,14 +860,15 @@ contract OmniGovernance is
         // solhint-disable-next-line gas-strict-inequalities
         if (proposal.forVotes <= proposal.againstVotes) return false;
 
-        // Quorum: total votes >= 4% of snapshotted supply
+        // M-01: Quorum: total votes >= 4% of snapshotted supply
         uint256 quorumVotes =
             (proposal.snapshotTotalSupply * QUORUM_BPS) / BASIS_POINTS;
         uint256 totalVotes = proposal.forVotes +
             proposal.againstVotes +
             proposal.abstainVotes;
 
-        return totalVotes > quorumVotes - 1;
+        // solhint-disable-next-line gas-strict-inequalities
+        return totalVotes >= quorumVotes;
     }
 
     /**
@@ -827,6 +890,41 @@ contract OmniGovernance is
             revert InvalidActionsLength();
         }
         if (targets.length > MAX_ACTIONS) revert TooManyActions();
+    }
+
+    /**
+     * @notice Validate that calldata does not contain critical selectors
+     * @dev M-02 fix: Queries the timelock's isCriticalSelector() for each
+     *      action's function selector. Reverts if any ROUTINE proposal
+     *      contains a critical selector, preventing misclassification that
+     *      would cause the proposal to become stuck at queue time.
+     * @param calldatas Array of encoded function calls to validate
+     */
+    function _validateNoCriticalSelectors(
+        bytes[] calldata calldatas
+    ) internal view {
+        for (uint256 i = 0; i < calldatas.length; ++i) {
+            // solhint-disable-next-line gas-strict-inequalities
+            if (calldatas[i].length >= 4) {
+                bytes4 selector = bytes4(calldatas[i][:4]);
+                // solhint-disable-next-line avoid-low-level-calls
+                (bool success, bytes memory data) = timelock.staticcall(
+                    abi.encodeWithSignature(
+                        "isCriticalSelector(bytes4)",
+                        selector
+                    )
+                );
+                /* solhint-disable gas-strict-inequalities */
+                if (
+                    success &&
+                    data.length >= 32 &&
+                    abi.decode(data, (bool))
+                ) {
+                /* solhint-enable gas-strict-inequalities */
+                    revert CriticalActionInRoutineProposal();
+                }
+            }
+        }
     }
 
     /**

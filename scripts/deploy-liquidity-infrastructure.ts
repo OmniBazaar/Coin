@@ -126,10 +126,19 @@ async function main(): Promise<void> {
   // ================================================================
   console.log("\n=== Deploying LiquidityMining ===");
 
+  // Validator and staking pool fee recipients
+  // In production, these should be distinct addresses (multisig/contracts)
+  const validatorFeeRecipient = deployer.address;
+  const stakingPoolFeeRecipient = deployer.address;
+  console.log("Validator fee recipient:", validatorFeeRecipient);
+  console.log("Staking pool fee recipient:", stakingPoolFeeRecipient);
+
   const LiquidityMining = await ethers.getContractFactory("LiquidityMining");
   const mining = await LiquidityMining.deploy(
     omniCoinAddress,           // XOM reward token
-    treasuryAddress            // Treasury for fees
+    treasuryAddress,           // Treasury for fees (70%)
+    validatorFeeRecipient,     // Validator fee recipient (20%)
+    stakingPoolFeeRecipient    // Staking pool fee recipient (10%)
   );
   await mining.waitForDeployment();
   const miningAddress = await mining.getAddress();

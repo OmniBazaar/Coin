@@ -40,18 +40,33 @@ interface IRWAPoolCallee {
  *      compliance checks, fee collection, and pause functionality.
  *
  * Key Features:
- * - Constant-product formula (x * y = k)
- * - LP tokens as ERC20 for composability
- * - Cumulative price oracles (TWAP support)
+ * - Constant-product formula: x * y = k, where x and y are the
+ *   reserves of token0 and token1 respectively. Every swap preserves
+ *   or increases k, ensuring that the product of reserves never
+ *   decreases. Output amount dy for input dx is calculated as:
+ *   dy = (y * dx) / (x + dx).
+ * - LP tokens as ERC20 for composability. LP token value accrues
+ *   from both the constant-product curve spread and explicit fee
+ *   donations from RWAAMM (70% of the 0.30% protocol fee).
+ * - Cumulative price oracles (TWAP support via UQ112x112 fixed-point)
  * - Reentrancy protection via lock modifier
  * - Flash swap support via callback
  * - Factory-only access control on critical functions
+ *
+ * Relationship to RWAAMM:
+ *   RWAPool is deployed and initialized by RWAAMM (the factory). All
+ *   state-changing operations (mint, burn, swap, skim) are restricted
+ *   to the factory via the onlyFactory modifier. RWAAMM handles fee
+ *   collection, compliance oracle checks, pause enforcement, and
+ *   multi-sig emergency controls before delegating to the pool. Users
+ *   never interact with RWAPool directly; they interact via RWAAMM
+ *   or RWARouter, both of which enforce the compliance layer.
  *
  * Security Features:
  * - Reentrancy lock
  * - Factory-only access for mint, burn, swap, skim
  * - Minimum liquidity lock (1000 wei)
- * - K-value invariant check
+ * - K-value invariant check with uint112 overflow guard
  * - Balance synchronization
  */
 contract RWAPool is ERC20, IRWAPool {
@@ -184,6 +199,12 @@ contract RWAPool is ERC20, IRWAPool {
 
     /**
      * @inheritdoc IRWAPool
+     * @dev Mints LP tokens proportional to the deposited liquidity.
+     *      For the first deposit, liquidity = sqrt(amount0 * amount1)
+     *      minus MINIMUM_LIQUIDITY (locked to prevent share inflation).
+     *      For subsequent deposits, liquidity is the minimum of
+     *      (amount0 / reserve0) and (amount1 / reserve1) scaled by
+     *      totalSupply, ensuring proportional minting.
      */
     function mint(
         address to
@@ -227,6 +248,10 @@ contract RWAPool is ERC20, IRWAPool {
 
     /**
      * @inheritdoc IRWAPool
+     * @dev Burns LP tokens and returns the proportional share of both
+     *      reserves. amount0 = (liquidity * balance0) / totalSupply,
+     *      amount1 = (liquidity * balance1) / totalSupply. Follows
+     *      CEI pattern: reserves updated before token transfers.
      */
     function burn(
         address to
@@ -259,13 +284,18 @@ contract RWAPool is ERC20, IRWAPool {
         // read-only reentrancy. External contracts reading getReserves()
         // during token transfer callbacks will see accurate post-burn
         // values, not inflated pre-burn reserves.
+        uint256 newBalance0 = balance0 - amount0;
+        uint256 newBalance1 = balance1 - amount1;
         _update(
-            balance0 - amount0,
-            balance1 - amount1,
+            newBalance0,
+            newBalance1,
             uint256(reserve0),
             uint256(reserve1)
         );
-        kLast = uint256(reserve0) * uint256(reserve1);
+        // Compute kLast from local variables (not storage reads) for
+        // explicitness. _update() has already validated uint112 bounds
+        // and written to storage, so this multiplication is safe.
+        kLast = newBalance0 * newBalance1;
 
         // Transfer underlying tokens (after state updates)
         IERC20(token0).safeTransfer(to, amount0);
@@ -276,6 +306,12 @@ contract RWAPool is ERC20, IRWAPool {
 
     /**
      * @inheritdoc IRWAPool
+     * @dev Executes an optimistic swap: output tokens are transferred
+     *      first, then the K-invariant (reserve0 * reserve1) is verified.
+     *      The constant-product formula guarantees that the pool's value
+     *      never decreases. Fees are handled upstream by RWAAMM, so the
+     *      pool's K-check uses raw balances without fee adjustment.
+     *      Supports flash swaps via the data callback parameter.
      */
     function swap(
         uint256 amount0Out,
@@ -315,6 +351,13 @@ contract RWAPool is ERC20, IRWAPool {
 
     /**
      * @inheritdoc IRWAPool
+     * @dev Synchronizes reserves with actual token balances. Emits a
+     *      Sync event with the updated reserve values. This function
+     *      is intentionally permissionless (no onlyFactory) following
+     *      the Uniswap V2 convention, serving as an escape hatch to
+     *      recover from balance/reserve mismatches. Note: TWAP oracle
+     *      data from this pool should not be used for on-chain pricing
+     *      decisions, as donations + sync() can manipulate TWAP.
      */
     function sync() external override lock {
         uint256 balance0 = IERC20(token0).balanceOf(address(this));
@@ -329,6 +372,9 @@ contract RWAPool is ERC20, IRWAPool {
 
     /**
      * @inheritdoc IRWAPool
+     * @dev Transfers any excess token balances (above stored reserves)
+     *      to the specified recipient. Used to recover tokens sent
+     *      directly to the pool outside of mint/swap operations.
      */
     function skim(
         address to
@@ -404,7 +450,19 @@ contract RWAPool is ERC20, IRWAPool {
             revert InsufficientInputAmount();
         }
 
-        // Verify k invariant
+        // Guard against uint256 overflow in the K-invariant check.
+        // balanceOf() returns arbitrary uint256 from external contracts;
+        // a malicious token could return values exceeding uint112 that
+        // would cause a Solidity 0.8 arithmetic panic on multiplication.
+        // This explicit check provides a descriptive Overflow() error.
+        if (
+            balance0 > type(uint112).max
+            || balance1 > type(uint112).max
+        ) {
+            revert Overflow();
+        }
+
+        // Verify k invariant (constant-product: x * y = k)
         // Note: Fee is handled by RWAAMM, not the pool
         if (balance0 * balance1 < _reserve0 * _reserve1) {
             revert KValueDecreased();

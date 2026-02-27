@@ -8,7 +8,7 @@ describe("OmniPrivacyBridge", function () {
   const INITIAL_SUPPLY = ethers.parseEther("1000000000"); // 1 billion
   const MAX_CONVERSION = ethers.parseEther("10000000"); // 10 million (initial limit)
   const MIN_CONVERSION = ethers.parseUnits("1", 15); // 0.001 tokens
-  const PRIVACY_FEE_BPS = 30n; // 0.3%
+  const PRIVACY_FEE_BPS = 50n; // 0.5%
   const BPS_DENOMINATOR = 10000n;
 
   beforeEach(async function () {
@@ -112,7 +112,7 @@ describe("OmniPrivacyBridge", function () {
   });
 
   describe("XOM to pXOM Conversion (convertXOMtoPXOM)", function () {
-    it("Should convert XOM to pXOM with 0.3% fee", async function () {
+    it("Should convert XOM to pXOM with 0.5% fee", async function () {
       const amount = ethers.parseEther("1");
       const fee = (amount * PRIVACY_FEE_BPS) / BPS_DENOMINATOR;
       const amountAfterFee = amount - fee;

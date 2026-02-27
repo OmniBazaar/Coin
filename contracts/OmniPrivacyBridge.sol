@@ -40,19 +40,35 @@ interface IPrivateOmniCoin is IERC20 {
  * @title OmniPrivacyBridge
  * @author OmniCoin Development Team
  * @notice Bridge contract for converting between public XOM and private pXOM tokens
- * @dev Facilitates secure conversions with fee management and safety limits
+ * @dev Facilitates secure conversions with fee management and safety limits.
+ *
+ * Privacy Fee: 0.5% (50 basis points) charged on XOM -> pXOM conversions only.
+ * This fee is the sole fee point for privacy operations. PrivateOmniCoin does
+ * NOT charge a separate fee. After bridging, users can call
+ * PrivateOmniCoin.convertToPrivate() to encrypt their pXOM balance using
+ * COTI V2's MPC (Multi-Party Computation) garbled circuits for on-chain privacy.
  *
  * Architecture:
- * - XOM → pXOM: Locks XOM, mints private pXOM balance (0.5% fee)
- * - pXOM → XOM: Burns private pXOM balance, releases XOM (no fee)
+ * - XOM -> pXOM: Locks XOM, mints public pXOM (0.5% fee). User then
+ *   optionally calls PrivateOmniCoin.convertToPrivate() for MPC encryption.
+ * - pXOM -> XOM: Burns public pXOM, releases XOM (no fee). User must first
+ *   call PrivateOmniCoin.convertToPublic() if pXOM is encrypted.
+ *
+ * COTI Integration:
+ * - COTI V2 provides confidential token balances via MPC garbled circuits
+ * - The bridge operates on PUBLIC pXOM (ERC20 layer), not encrypted balances
+ * - Privacy (encryption) is handled by PrivateOmniCoin, not this bridge
+ * - Bridge works regardless of MPC availability status
  *
  * Security Features:
  * - Pausable for emergency stops
- * - Conversion limits to prevent large manipulations
- * - Reentrancy protection
- * - Role-based access control
- * - Slippage protection for fee calculations
- * - Upgradeable via UUPS proxy pattern
+ * - Per-transaction conversion limits (configurable)
+ * - Daily volume limits (calendar-day boundaries, configurable)
+ * - Reentrancy protection on all conversion functions
+ * - Role-based access control (OPERATOR, FEE_MANAGER, ADMIN)
+ * - Solvency tracking: totalLocked == sum of outstanding bridge-minted pXOM
+ * - bridgeMintedPXOM prevents genesis pXOM from draining bridge reserves
+ * - Upgradeable via UUPS proxy pattern with ossification capability
  */
 contract OmniPrivacyBridge is
     Initializable,
@@ -146,20 +162,20 @@ contract OmniPrivacyBridge is
     /// @param fee Fee charged for conversion
     event ConvertedToPrivate(
         address indexed user,
-        uint256 indexed amountIn,
-        uint256 indexed amountOut,
+        uint256 amountIn,
+        uint256 amountOut,
         uint256 fee
     );
 
     /// @notice Emitted when pXOM is converted to XOM
     /// @param user Address performing the conversion
     /// @param amountOut Amount of XOM released
-    event ConvertedToPublic(address indexed user, uint256 indexed amountOut);
+    event ConvertedToPublic(address indexed user, uint256 amountOut);
 
     /// @notice Emitted when max conversion limit is updated
     /// @param oldLimit Previous limit
     /// @param newLimit New limit
-    event MaxConversionLimitUpdated(uint256 indexed oldLimit, uint256 indexed newLimit);
+    event MaxConversionLimitUpdated(uint256 oldLimit, uint256 newLimit);
 
     /// @notice Emitted when emergency withdrawal is performed
     /// @param token Address of token withdrawn
@@ -168,7 +184,7 @@ contract OmniPrivacyBridge is
     event EmergencyWithdrawal(
         address indexed token,
         address indexed to,
-        uint256 indexed amount
+        uint256 amount
     );
 
     /// @notice Emitted when accumulated fees are withdrawn
@@ -176,15 +192,15 @@ contract OmniPrivacyBridge is
     /// @param amount Amount of fees withdrawn
     event FeesWithdrawn(
         address indexed recipient,
-        uint256 indexed amount
+        uint256 amount
     );
 
     /// @notice Emitted when daily volume limit is updated
     /// @param oldLimit Previous daily limit
     /// @param newLimit New daily limit (0 = unlimited)
     event DailyVolumeLimitUpdated(
-        uint256 indexed oldLimit,
-        uint256 indexed newLimit
+        uint256 oldLimit,
+        uint256 newLimit
     );
 
     /// @notice Emitted when the contract is permanently ossified
@@ -413,7 +429,9 @@ contract OmniPrivacyBridge is
      *      withdrawal to prevent redemptions against depleted
      *      reserves. Use only in emergency situations.
      *      SECURITY: Admin MUST be a multi-sig wallet with
-     *      timelock.
+     *      timelock. Emergency withdraw supersedes FEE_MANAGER
+     *      separation: totalFeesCollected is zeroed
+     *      proportionally when XOM is withdrawn.
      * @param token Address of token to withdraw
      * @param to Recipient address
      * @param amount Amount to withdraw
@@ -429,10 +447,20 @@ contract OmniPrivacyBridge is
         // If withdrawing the locked XOM token, update solvency
         // tracking and pause to prevent redemptions
         if (token == address(omniCoin)) {
-            if (amount < totalLocked) {
-                totalLocked -= amount;
-            } else {
+            // M-01: Safely handle totalLocked underflow.
+            // Cap amount at totalLocked to prevent underflow.
+            if (amount > totalLocked) {
+                // Withdrawing more than locked means we are also
+                // taking fee XOM; zero out fees proportionally
+                uint256 excessOverLocked = amount - totalLocked;
+                if (excessOverLocked > totalFeesCollected) {
+                    totalFeesCollected = 0;
+                } else {
+                    totalFeesCollected -= excessOverLocked;
+                }
                 totalLocked = 0;
+            } else {
+                totalLocked -= amount;
             }
             // Pause the bridge to prevent redemptions
             _pause();
@@ -461,6 +489,30 @@ contract OmniPrivacyBridge is
         omniCoin.safeTransfer(recipient, fees);
 
         emit FeesWithdrawn(recipient, fees);
+    }
+
+    /**
+     * @notice Permanently remove upgrade capability (one-way, irreversible)
+     * @dev Can only be called by admin. Once ossified, the contract can never
+     *      be upgraded again. IMPORTANT: The admin role MUST be behind a
+     *      TimelockController before calling this function in production.
+     *      Accidental ossification permanently prevents bug fixes, feature
+     *      additions, and security patches. Consider using a two-step process:
+     *      1. Transfer admin role to a TimelockController with a 7-day delay.
+     *      2. Propose ossification through the timelock.
+     *      3. Execute after the delay period.
+     */
+    function ossify() external onlyRole(DEFAULT_ADMIN_ROLE) {
+        _ossified = true;
+        emit ContractOssified(address(this));
+    }
+
+    /**
+     * @notice Check if the contract has been permanently ossified
+     * @return True if ossified (no further upgrades possible)
+     */
+    function isOssified() external view returns (bool) {
+        return _ossified;
     }
 
     // ========================================================================
@@ -536,7 +588,10 @@ contract OmniPrivacyBridge is
 
     /**
      * @notice Check and update the daily volume counter
-     * @dev Resets the counter when a new 24-hour period begins.
+     * @dev M-02: Uses calendar-day boundaries (midnight UTC) to prevent
+     *      period drift. Resets the counter when a new day begins.
+     *      Uses `currentDayStart + 1 days` (not `block.timestamp`)
+     *      for the new period start, ensuring consistent 24-hour windows.
      *      Reverts if the daily volume limit would be exceeded.
      *      If dailyVolumeLimit is 0, no limit is enforced.
      * @param amount The conversion amount to add to today's volume
@@ -546,12 +601,18 @@ contract OmniPrivacyBridge is
     ) internal {
         if (dailyVolumeLimit == 0) return; // Unlimited
 
-        // Reset counter if 24 hours have passed
+        // M-02: Reset counter using fixed-period boundaries (no drift).
+        // Advance currentDayStart by full 1-day increments until current.
         // solhint-disable-next-line not-rely-on-time
-        if (block.timestamp > currentDayStart + 1 days - 1) {
+        if (block.timestamp >= currentDayStart + 1 days) {
             currentDayVolume = 0;
+            // Advance to the start of the current calendar day
+            // to prevent accumulating drift from block.timestamp
             // solhint-disable-next-line not-rely-on-time
-            currentDayStart = block.timestamp;
+            currentDayStart += (
+                ((block.timestamp - currentDayStart) / 1 days) *
+                1 days
+            );
         }
 
         if (currentDayVolume + amount > dailyVolumeLimit) {
@@ -561,31 +622,16 @@ contract OmniPrivacyBridge is
     }
 
     /**
-     * @notice Permanently remove upgrade capability (one-way, irreversible)
-     * @dev Can only be called by admin (through timelock). Once ossified,
-     *      the contract can never be upgraded again.
-     */
-    function ossify() external onlyRole(DEFAULT_ADMIN_ROLE) {
-        _ossified = true;
-        emit ContractOssified(address(this));
-    }
-
-    /**
-     * @notice Check if the contract has been permanently ossified
-     * @return True if ossified (no further upgrades possible)
-     */
-    function isOssified() external view returns (bool) {
-        return _ossified;
-    }
-
-    /**
      * @notice Authorize contract upgrades (UUPS pattern)
      * @dev Only admin can authorize upgrades to new
      *      implementation. Reverts if contract is ossified.
+     *      The newImplementation parameter is required by the
+     *      UUPS interface but not used in authorization logic.
      * @param newImplementation Address of new implementation
+     *        (unused -- required by UUPSUpgradeable interface)
      */
     function _authorizeUpgrade(
-        address newImplementation
+        address newImplementation // solhint-disable-line no-unused-vars
     )
         internal
         override

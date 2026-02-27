@@ -83,7 +83,7 @@ interface IOmniCore {
  * @notice Trustless participation scoring for OmniBazaar platform
  * @dev Reputation accumulated on-chain through user actions
  *
- * Score Components (0-88 theoretical max, clamped to 0-100):
+ * Score Components (-15 to 88 raw, clamped to 0-100):
  * - KYC Trust (0-20): Queried from OmniRegistration
  * - Marketplace Reputation (-10 to +10): From verified reviews
  * - Staking Score (0-24): (tier*3)+(durationTier*3), OmniCore
@@ -242,6 +242,11 @@ contract OmniParticipation is
     /// @notice Publisher listing count set by VERIFIER_ROLE (M-04)
     mapping(address => uint256) public publisherListingCount;
 
+    /// @notice Whether contract is ossified (permanently non-upgradeable)
+    /// @dev M-01: Declared with other storage variables (not at end of file)
+    ///      to prevent future developers from accidentally shifting storage slots.
+    bool private _ossified;
+
     /// @notice Score decay period (90 days of inactivity = 1 point decay)
     uint256 public constant DECAY_PERIOD = 90 days;
 
@@ -334,6 +339,16 @@ contract OmniParticipation is
     /// @notice Emitted when the contract is permanently ossified
     /// @param contractAddress Address of this contract
     event ContractOssified(address indexed contractAddress);
+
+    /// @notice L-04: Emitted when a score component is updated
+    /// @param user Address whose score component changed
+    /// @param component Name of the component that changed
+    /// @param newValue New value of the component (cast to int256)
+    event ScoreComponentUpdated(
+        address indexed user,
+        string component,
+        int256 newValue
+    );
 
     // ═══════════════════════════════════════════════════════════════════════
     //                              ERRORS
@@ -525,6 +540,11 @@ contract OmniParticipation is
         components[user].lastUpdate = block.timestamp; // solhint-disable-line not-rely-on-time
 
         emit ReputationUpdated(user, newReputation);
+        emit ScoreComponentUpdated(
+            user,
+            "marketplaceReputation",
+            int256(newReputation)
+        );
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -536,6 +556,9 @@ contract OmniParticipation is
      * @notice Service node submits heartbeat (proves it's operational)
      * @dev Service nodes call this regularly to prove they're serving listings.
      *      Grouped with publisher activity functions for readability.
+     *      M-02: Uses graduated scoring based on publisherListingCount
+     *      instead of awarding flat 4 points. Thresholds match
+     *      updatePublisherActivity(): 100/1K/10K/100K listings.
      */
     function submitServiceNodeHeartbeat() external {
         if (!registration.isRegistered(msg.sender)) revert NotRegistered();
@@ -545,11 +568,26 @@ contract OmniParticipation is
         // Mark as operational if heartbeat within timeout
         operationalServiceNodes[msg.sender] = true;
 
-        // Award full 4 points for being operational
-        components[msg.sender].publisherActivity = 4;
+        // M-02: Graduated scoring based on listing count (not flat 4)
+        uint256 listings = publisherListingCount[msg.sender];
+        // solhint-disable gas-strict-inequalities
+        uint8 score;
+        if (listings >= 100_000) score = 4;
+        else if (listings >= 10_000) score = 3;
+        else if (listings >= 1_000) score = 2;
+        else if (listings >= 100) score = 1;
+        else score = 0;
+        // solhint-enable gas-strict-inequalities
+
+        components[msg.sender].publisherActivity = score;
         components[msg.sender].lastUpdate = block.timestamp; // solhint-disable-line not-rely-on-time
 
         emit ServiceNodeHeartbeat(msg.sender, block.timestamp); // solhint-disable-line not-rely-on-time
+        emit ScoreComponentUpdated(
+            msg.sender,
+            "publisherActivity",
+            int256(uint256(score))
+        );
     }
     /* solhint-enable ordering */
 
@@ -574,6 +612,7 @@ contract OmniParticipation is
         if (!isServiceNodeOperational(user)) {
             components[user].publisherActivity = 0;
             components[user].lastUpdate = block.timestamp; // solhint-disable-line not-rely-on-time
+            emit ScoreComponentUpdated(user, "publisherActivity", 0);
             return;
         }
 
@@ -590,6 +629,11 @@ contract OmniParticipation is
 
         components[user].publisherActivity = score;
         components[user].lastUpdate = block.timestamp; // solhint-disable-line not-rely-on-time
+        emit ScoreComponentUpdated(
+            user,
+            "publisherActivity",
+            int256(uint256(score))
+        );
     }
 
     /**
@@ -693,6 +737,11 @@ contract OmniParticipation is
 
         components[user].marketplaceActivity = newActivity;
         components[user].lastUpdate = block.timestamp; // solhint-disable-line not-rely-on-time
+        emit ScoreComponentUpdated(
+            user,
+            "marketplaceActivity",
+            int256(uint256(newActivity))
+        );
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -785,6 +834,11 @@ contract OmniParticipation is
 
         components[user].communityPolicing = newPolicing;
         components[user].lastUpdate = block.timestamp; // solhint-disable-line not-rely-on-time
+        emit ScoreComponentUpdated(
+            user,
+            "communityPolicing",
+            int256(uint256(newPolicing))
+        );
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -885,6 +939,11 @@ contract OmniParticipation is
 
         components[user].forumActivity = score;
         components[user].lastUpdate = block.timestamp; // solhint-disable-line not-rely-on-time
+        emit ScoreComponentUpdated(
+            user,
+            "forumActivity",
+            int256(uint256(score))
+        );
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -946,6 +1005,11 @@ contract OmniParticipation is
 
         components[user].reliability = newReliability;
         components[user].lastUpdate = block.timestamp; // solhint-disable-line not-rely-on-time
+        emit ScoreComponentUpdated(
+            user,
+            "reliability",
+            int256(newReliability)
+        );
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -978,45 +1042,18 @@ contract OmniParticipation is
         uint8 forumActivity,
         int8 reliability
     ) {
-        ParticipationComponents memory comp = components[user];
-
-        // Query on-chain components
-        kycTrust = _getKYCTrust(user);
-        stakingScore = _getStakingScore(user);
-        referralActivity = _getReferralActivity(user);
-
-        // Get stored components
-        marketplaceReputation = comp.marketplaceReputation;
-        publisherActivity = comp.publisherActivity;
-        marketplaceActivity = comp.marketplaceActivity;
-        communityPolicing = comp.communityPolicing;
-        forumActivity = comp.forumActivity;
-        reliability = comp.reliability;
-
-        // Sum all components
-        int256 total = int256(uint256(kycTrust)) +
-                       int256(marketplaceReputation) +
-                       int256(uint256(stakingScore)) +
-                       int256(uint256(referralActivity)) +
-                       int256(uint256(publisherActivity)) +
-                       int256(uint256(marketplaceActivity)) +
-                       int256(uint256(communityPolicing)) +
-                       int256(uint256(forumActivity)) +
-                       int256(reliability);
-
-        // Clamp to 0-100 range
-        if (total < 0) totalScore = 0;
-        else if (total > 100) totalScore = 100;
-        else totalScore = uint256(total);
+        return _calculateScore(user);
     }
 
     /**
      * @notice Get just the total score (gas-efficient)
+     * @dev L-01: Uses internal _calculateScore() instead of external
+     *      self-call, saving ~2,600 gas per invocation.
      * @param user Address to check
      * @return Total score (0-100)
      */
     function getTotalScore(address user) external view returns (uint256) {
-        (uint256 total,,,,,,,,,) = this.getScore(user);
+        (uint256 total,,,,,,,,,) = _calculateScore(user);
         return total;
     }
 
@@ -1083,11 +1120,13 @@ contract OmniParticipation is
 
     /**
      * @notice Check if user can be a validator
+     * @dev L-01: Uses internal _calculateScore() for gas efficiency.
+     *      Requires both minimum score (50) and KYC Tier 4.
      * @param user Address to check
      * @return True if score >= 50 AND has KYC Tier 4
      */
     function canBeValidator(address user) external view returns (bool) {
-        (uint256 score,,,,,,,,,) = this.getScore(user);
+        (uint256 score,,,,,,,,,) = _calculateScore(user);
         bool hasRequiredKYC = registration.hasKycTier4(user);
         // solhint-disable-next-line gas-strict-inequalities
         return score >= MIN_VALIDATOR_SCORE && hasRequiredKYC;
@@ -1095,11 +1134,13 @@ contract OmniParticipation is
 
     /**
      * @notice Check if user can be a listing node
+     * @dev L-01: Uses internal _calculateScore() for gas efficiency.
+     *      No KYC requirement -- only minimum score (25).
      * @param user Address to check
      * @return True if score >= 25
      */
     function canBeListingNode(address user) external view returns (bool) {
-        (uint256 score,,,,,,,,,) = this.getScore(user);
+        (uint256 score,,,,,,,,,) = _calculateScore(user);
         // solhint-disable-next-line gas-strict-inequalities
         return score >= MIN_LISTING_NODE_SCORE;
     }
@@ -1167,6 +1208,101 @@ contract OmniParticipation is
     // ═══════════════════════════════════════════════════════════════════════
 
     /**
+     * @notice Calculate complete score breakdown for a user
+     * @dev L-01: Internal view function shared by getScore(),
+     *      getTotalScore(), canBeValidator(), and canBeListingNode().
+     *      Eliminates external self-call overhead (~2,600 gas savings).
+     *
+     *      L-02: Score components and their ranges:
+     *      - KYC Trust (0-20): Queried live from OmniRegistration
+     *        Tier 0=0, Tier 1=5, Tier 2=10, Tier 3=15, Tier 4=20
+     *      - Marketplace Reputation (-10 to +10): From verified reviews
+     *        Average stars mapped: 1=-10, 2=-5, 3=0, 4=+5, 5=+10
+     *      - Staking Score (0-24): Queried live from OmniCore
+     *        Formula: (stakingTier * 3) + (durationTier * 3)
+     *      - Referral Activity (0-10): Queried live from OmniRegistration
+     *        One point per referral, capped at 10
+     *      - Publisher Activity (0-4): Graduated listing count thresholds
+     *        100=1pt, 1K=2pt, 10K=3pt, 100K=4pt
+     *      - Marketplace Activity (0-5): Verified transaction count
+     *        5=1pt, 10=2pt, 20=3pt, 50=4pt, 100+=5pt (with decay)
+     *      - Community Policing (0-5): Validated accurate reports
+     *        1=1pt, 5=2pt, 10=3pt, 20=4pt, 50+=5pt (with decay)
+     *      - Forum Activity (0-5): Verified forum contributions
+     *        1=1pt, 6=2pt, 16=3pt, 31=4pt, 51+=5pt (with decay)
+     *      - Reliability (-5 to +5): Validator uptime percentage
+     *        100%=+5, 95%+=+3, 90%+=+1, 80%+=0, 70%+=-2, <70%=-5
+     *
+     *      Raw range: -15 to 88. Clamped to 0-100.
+     *
+     * @param user Address to calculate score for
+     * @return totalScore Total score clamped to 0-100
+     * @return kycTrust KYC trust points (0-20)
+     * @return marketplaceReputation Marketplace reputation (-10 to +10)
+     * @return stakingScore Staking score (0-24)
+     * @return referralActivity Referral activity (0-10)
+     * @return publisherActivity Publisher activity (0-4)
+     * @return marketplaceActivity Marketplace activity (0-5)
+     * @return communityPolicing Community policing (0-5)
+     * @return forumActivity Forum activity (0-5)
+     * @return reliability Reliability (-5 to +5)
+     */
+    function _calculateScore(
+        address user
+    ) internal view returns (
+        uint256 totalScore,
+        uint8 kycTrust,
+        int8 marketplaceReputation,
+        uint8 stakingScore,
+        uint8 referralActivity,
+        uint8 publisherActivity,
+        uint8 marketplaceActivity,
+        uint8 communityPolicing,
+        uint8 forumActivity,
+        int8 reliability
+    ) {
+        ParticipationComponents memory comp = components[user];
+
+        // Query on-chain components (live from external contracts)
+        kycTrust = _getKYCTrust(user);
+        stakingScore = _getStakingScore(user);
+        referralActivity = _getReferralActivity(user);
+
+        // Get stored components (M-03: apply decay at read time)
+        marketplaceReputation = comp.marketplaceReputation;
+        publisherActivity = comp.publisherActivity;
+        marketplaceActivity = _applyDecay(
+            comp.marketplaceActivity,
+            comp.lastUpdate
+        );
+        communityPolicing = _applyDecay(
+            comp.communityPolicing,
+            comp.lastUpdate
+        );
+        forumActivity = _applyDecay(
+            comp.forumActivity,
+            comp.lastUpdate
+        );
+        reliability = comp.reliability;
+
+        // Sum all components
+        int256 total = int256(uint256(kycTrust)) +
+                       int256(marketplaceReputation) +
+                       int256(uint256(stakingScore)) +
+                       int256(uint256(referralActivity)) +
+                       int256(uint256(publisherActivity)) +
+                       int256(uint256(marketplaceActivity)) +
+                       int256(uint256(communityPolicing)) +
+                       int256(uint256(forumActivity)) +
+                       int256(reliability);
+
+        // Clamp to 0-100 range
+        if (total < 0) totalScore = 0;
+        else if (total > 100) totalScore = 100;
+        else totalScore = uint256(total);
+    }
+
+    /**
      * @notice Apply time-based decay to a score component
      * @dev M-05: Reduces score by 1 point per DECAY_PERIOD of inactivity.
      *      Score floors at 0. If lastUpdate is 0 (never set), no decay is applied.
@@ -1192,10 +1328,29 @@ contract OmniParticipation is
 
     /**
      * @notice Permanently remove upgrade capability (one-way, irreversible)
-     * @dev Can only be called by admin (through timelock). Once ossified,
-     *      the contract can never be upgraded again.
+     * @dev L-03: CRITICAL -- This action is IRREVERSIBLE. Once ossified,
+     *      this contract can never be upgraded again. All future
+     *      `upgradeTo()` / `upgradeToAndCall()` calls will revert.
+     *
+     *      Recommended deployment pattern (two-step with timelock):
+     *      1. Deploy behind OpenZeppelin TimelockController (48h+ delay)
+     *      2. Grant DEFAULT_ADMIN_ROLE to the timelock controller
+     *      3. Schedule ossify() via timelock -- this triggers the delay
+     *      4. After delay, execute ossify() to finalize
+     *
+     *      Pre-ossification checklist:
+     *      - Run `hardhat-upgrades validateUpgrade()` to confirm no
+     *        storage layout issues in the current implementation
+     *      - Verify all scoring thresholds and decay parameters are final
+     *      - Confirm external contract references (registration, omniCore)
+     *        point to their intended permanent addresses
+     *      - Ensure all VERIFIER_ROLE grants are finalized
+     *
+     *      I-02: Guard against double-ossification to prevent misleading
+     *      duplicate events and wasted gas.
      */
     function ossify() external onlyRole(DEFAULT_ADMIN_ROLE) {
+        if (_ossified) revert ContractIsOssified();
         _ossified = true;
         emit ContractOssified(address(this));
     }
@@ -1210,28 +1365,30 @@ contract OmniParticipation is
 
     /**
      * @notice Authorize contract upgrade
-     * @param newImplementation Address of new implementation
-     * @dev Reverts if contract is ossified.
+     * @param newImplementation Address of new implementation contract
+     * @dev Reverts if contract is ossified or new implementation is zero.
+     *      L-03: Should be called through a TimelockController with
+     *      a minimum 48-hour delay for production deployments.
+     *      I-01: Validates newImplementation is not address(0).
      */
     function _authorizeUpgrade(
         address newImplementation
     ) internal override onlyRole(DEFAULT_ADMIN_ROLE) {
         if (_ossified) revert ContractIsOssified();
+        if (newImplementation == address(0)) revert ZeroAddress();
     }
 
     // ═══════════════════════════════════════════════════════════════════════
     //                        UPGRADE GAP
     // ═══════════════════════════════════════════════════════════════════════
 
-    /// @notice Whether contract is ossified (permanently non-upgradeable)
-    bool private _ossified;
-
     /**
      * @notice Reserved storage gap for future upgrades.
      * @dev Prevents storage collisions when new state variables are
      *      added in future implementations. Follows the OpenZeppelin
      *      upgradeable contract pattern.
-     *      Reduced from 50 to 49 to accommodate _ossified.
+     *      Reduced from 50 to 49 to accommodate _ossified (declared in
+     *      the STORAGE section above, alongside other state variables).
      */
     uint256[49] private __gap;
 }

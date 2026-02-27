@@ -2,6 +2,7 @@
 pragma solidity 0.8.25;
 
 import {IPaymaster} from "./interfaces/IPaymaster.sol";
+import {IEntryPoint} from "./interfaces/IEntryPoint.sol";
 import {UserOperation} from "./interfaces/IAccount.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
@@ -47,18 +48,27 @@ contract OmniPaymaster is IPaymaster, Ownable {
     /// @notice Maximum allowed free operations per account
     uint256 public constant MAX_FREE_OPS = 100;
 
-    /// @notice Nominal XOM fee per operation (0.001 XOM = 1e15 wei at 18 decimals)
-    uint256 public constant XOM_GAS_FEE = 1e15;
+    /// @notice Default XOM fee per operation (0.001 XOM = 1e15 wei at 18 decimals)
+    uint256 public constant DEFAULT_XOM_GAS_FEE = 1e15;
 
     // ══════════════════════════════════════════════════════════════
     //                      STATE VARIABLES
     // ══════════════════════════════════════════════════════════════
 
     /// @notice The ERC-4337 EntryPoint contract
-    address public immutable entryPoint; // solhint-disable-line immutable-vars-naming
+    IEntryPoint public immutable entryPoint; // solhint-disable-line immutable-vars-naming
 
     /// @notice XOM token contract for gas payment mode
     IERC20 public immutable xomToken; // solhint-disable-line immutable-vars-naming
+
+    /// @notice OmniRegistration contract for sybil-resistant user checks
+    /// @dev Set to address(0) to disable registration checks.
+    ///      When set, only registered users receive free gas (M-01).
+    address public registration;
+
+    /// @notice Configurable XOM fee per operation (L-02)
+    /// @dev Allows adjusting the fee as XOM price changes
+    uint256 public xomGasFee;
 
     /// @notice Number of free operations per new account
     uint256 public freeOpsLimit;
@@ -122,6 +132,24 @@ contract OmniPaymaster is IPaymaster, Ownable {
     /// @param newBudget The new daily budget (0 = unlimited)
     event DailySponsorshipBudgetUpdated(uint256 indexed newBudget);
 
+    /// @notice Emitted when the XOM gas fee is updated
+    /// @param newFee The new fee amount
+    event XomGasFeeUpdated(uint256 indexed newFee);
+
+    /// @notice Emitted when the registration contract is updated
+    /// @param newRegistration The new registration contract address
+    event RegistrationUpdated(address indexed newRegistration);
+
+    /// @notice Emitted when tokens are rescued from the contract
+    /// @param token The token rescued
+    /// @param to Recipient address
+    /// @param amount Amount rescued
+    event TokensRescued(
+        address indexed token,
+        address indexed to,
+        uint256 indexed amount
+    );
+
     // ══════════════════════════════════════════════════════════════
     //                       CUSTOM ERRORS
     // ══════════════════════════════════════════════════════════════
@@ -144,6 +172,9 @@ contract OmniPaymaster is IPaymaster, Ownable {
     /// @notice Limit exceeds maximum
     error ExceedsMaxLimit();
 
+    /// @notice EntryPoint call failed
+    error EntryPointCallFailed();
+
     // ══════════════════════════════════════════════════════════════
     //                        MODIFIERS
     // ══════════════════════════════════════════════════════════════
@@ -152,7 +183,7 @@ contract OmniPaymaster is IPaymaster, Ownable {
      * @notice Restricts access to the EntryPoint contract only
      */
     modifier onlyEntryPointCaller() {
-        if (msg.sender != entryPoint) revert OnlyEntryPoint();
+        if (msg.sender != address(entryPoint)) revert OnlyEntryPoint();
         _;
     }
 
@@ -174,11 +205,12 @@ contract OmniPaymaster is IPaymaster, Ownable {
         if (entryPoint_ == address(0)) revert InvalidAddress();
         if (xomToken_ == address(0)) revert InvalidAddress();
 
-        entryPoint = entryPoint_;
+        entryPoint = IEntryPoint(entryPoint_);
         xomToken = IERC20(xomToken_);
+        xomGasFee = DEFAULT_XOM_GAS_FEE;
         freeOpsLimit = DEFAULT_FREE_OPS;
         sponsorshipEnabled = true;
-        dailySponsorshipBudget = 1000; // Default: 1000 sponsored ops per day
+        dailySponsorshipBudget = 1000;
         // solhint-disable-next-line not-rely-on-time
         lastBudgetReset = block.timestamp;
     }
@@ -190,13 +222,17 @@ contract OmniPaymaster is IPaymaster, Ownable {
     /**
      * @notice Validate whether to sponsor this UserOperation
      * @dev Sponsorship decision logic:
-     *      1. If whitelisted → always sponsor (SponsorMode.subsidized)
-     *      2. If under free ops limit → sponsor free (SponsorMode.free)
-     *      3. If user has XOM balance → accept XOM payment (SponsorMode.xomPayment)
-     *      4. Otherwise → reject (revert NotSponsored)
+     *      1. If whitelisted -> always sponsor (SponsorMode.subsidized)
+     *      2. If registered and under free ops limit -> sponsor free
+     *      3. If user has XOM balance -> accept XOM payment
+     *      4. Otherwise -> reject (revert NotSponsored)
+     *
+     *      H-01: XOM fee is collected DURING validation (not postOp)
+     *      to prevent free-riding via allowance revocation.
+     *      M-01: Registration check for sybil resistance.
      * @param userOp The UserOperation requesting sponsorship
-     * @param userOpHash Hash of the UserOperation (unused, for interface compliance)
-     * @param maxCost Maximum cost that could be charged (unused on our L1)
+     * @param userOpHash Hash of the UserOperation (unused)
+     * @param maxCost Maximum cost that could be charged (unused on L1)
      * @return context Encoded sponsor mode + account for postOp
      * @return validationData Always 0 (valid, no time restriction)
      */
@@ -204,31 +240,31 @@ contract OmniPaymaster is IPaymaster, Ownable {
         UserOperation calldata userOp,
         bytes32 userOpHash,
         uint256 maxCost
-    ) external override onlyEntryPointCaller returns (bytes memory context, uint256 validationData) {
+    ) external override onlyEntryPointCaller returns (
+        bytes memory context,
+        uint256 validationData
+    ) {
         // Silence unused parameter warnings
         (userOpHash, maxCost);
 
         if (!sponsorshipEnabled) revert SponsorshipDisabled();
 
         address account = userOp.sender;
-        SponsorMode mode;
+        SponsorMode mode = _determineSponsorMode(account);
 
-        if (whitelisted[account]) {
-            mode = SponsorMode.subsidized;
-        } else if (sponsoredOpsCount[account] < freeOpsLimit) {
-            mode = SponsorMode.free;
-        } else if (
-            xomToken.balanceOf(account) > XOM_GAS_FEE - 1
-            && xomToken.allowance(account, address(this)) > XOM_GAS_FEE - 1
-        ) {
-            mode = SponsorMode.xomPayment;
-        } else {
-            revert NotSponsored();
-        }
-
-        // Enforce daily sponsorship budget for non-XOM modes (sybil protection)
+        // Enforce daily budget for non-XOM modes (sybil protection)
         if (mode != SponsorMode.xomPayment) {
             _checkDailyBudget();
+        }
+
+        // H-01: Collect XOM fee during validation to prevent
+        // free-riding via allowance revocation during execution.
+        // If the transfer fails here, the entire validation reverts,
+        // and the UserOp is rejected.
+        if (mode == SponsorMode.xomPayment) {
+            uint256 fee = xomGasFee;
+            xomToken.safeTransferFrom(account, owner(), fee);
+            emit XOMGasPayment(account, fee);
         }
 
         context = abi.encode(mode, account);
@@ -237,9 +273,10 @@ contract OmniPaymaster is IPaymaster, Ownable {
 
     /**
      * @notice Post-operation accounting after UserOp execution
-     * @dev Updates sponsorship counters and collects XOM payment if applicable.
+     * @dev M-02: GasSponsored event only emitted on opSucceeded.
+     *      XOM fee collection moved to validatePaymasterUserOp (H-01).
      * @param mode Whether the operation succeeded or reverted
-     * @param context Data from validatePaymasterUserOp (sponsor mode + account)
+     * @param context Data from validatePaymasterUserOp
      * @param actualGasCost Actual gas cost charged
      */
     function postOp(
@@ -247,29 +284,17 @@ contract OmniPaymaster is IPaymaster, Ownable {
         bytes calldata context,
         uint256 actualGasCost
     ) external override onlyEntryPointCaller {
-        // Decode context
-        (SponsorMode sponsorMode, address account) = abi.decode(context, (SponsorMode, address));
+        (SponsorMode sponsorMode, address account) = abi.decode(
+            context, (SponsorMode, address)
+        );
 
-        // Only update counters on successful operations (failed ops should not
-        // consume the user's free ops allocation)
+        // M-02: Only update counters and emit event on success
         if (mode == PostOpMode.opSucceeded) {
             ++sponsoredOpsCount[account];
             ++totalOpsSponsored;
             totalGasSponsored += actualGasCost;
+            emit GasSponsored(account, sponsorMode, actualGasCost);
         }
-
-        // For XOM payment mode, collect a nominal XOM fee only on success
-        // On OmniCoin L1, gas is effectively free, so this is a micro-fee
-        if (
-            sponsorMode == SponsorMode.xomPayment
-            && mode == PostOpMode.opSucceeded
-        ) {
-            // Validated in validatePaymasterUserOp: balance and allowance > XOM_GAS_FEE - 1
-            xomToken.safeTransferFrom(account, owner(), XOM_GAS_FEE);
-            emit XOMGasPayment(account, XOM_GAS_FEE);
-        }
-
-        emit GasSponsored(account, sponsorMode, actualGasCost);
     }
 
     // ══════════════════════════════════════════════════════════════
@@ -316,28 +341,33 @@ contract OmniPaymaster is IPaymaster, Ownable {
 
     /**
      * @notice Deposit native tokens to the EntryPoint for gas
-     * @dev Required for the paymaster to function — the EntryPoint deducts
+     * @dev H-02: Uses typed IEntryPoint interface for compile-time safety.
+     *      Required for the paymaster to function -- the EntryPoint deducts
      *      gas costs from this deposit.
      */
     function deposit() external payable onlyOwner {
-        // solhint-disable-next-line avoid-low-level-calls
-        (bool success,) = entryPoint.call{value: msg.value}(
-            abi.encodeWithSignature("depositTo(address)", address(this))
-        );
-        if (!success) revert InvalidAddress();
+        entryPoint.depositTo{value: msg.value}(address(this));
     }
 
     /**
      * @notice Withdraw native tokens from the EntryPoint deposit
+     * @dev H-02: Uses low-level call with proper error type.
+     *      Validates recipient is not zero address.
      * @param amount Amount to withdraw
      * @param to Recipient address
      */
-    function withdrawDeposit(uint256 amount, address payable to) external onlyOwner {
+    function withdrawDeposit(
+        uint256 amount,
+        address payable to
+    ) external onlyOwner {
+        if (to == address(0)) revert InvalidAddress();
         // solhint-disable-next-line avoid-low-level-calls
-        (bool success,) = entryPoint.call(
-            abi.encodeWithSignature("withdrawTo(address,uint256)", to, amount)
+        (bool success,) = address(entryPoint).call(
+            abi.encodeWithSignature(
+                "withdrawTo(address,uint256)", to, amount
+            )
         );
-        if (!success) revert InvalidAddress();
+        if (!success) revert EntryPointCallFailed();
     }
 
     /**
@@ -352,13 +382,69 @@ contract OmniPaymaster is IPaymaster, Ownable {
     }
 
     /**
+     * @notice Update the XOM gas fee (L-02)
+     * @dev Allows adjusting the per-operation XOM fee as market conditions change
+     * @param newFee The new XOM fee per operation (in wei)
+     */
+    function setXomGasFee(uint256 newFee) external onlyOwner {
+        xomGasFee = newFee;
+        emit XomGasFeeUpdated(newFee);
+    }
+
+    /**
+     * @notice Set the OmniRegistration contract for sybil resistance (M-01)
+     * @dev Set to address(0) to disable registration checks
+     * @param registration_ The OmniRegistration contract address
+     */
+    function setRegistration(address registration_) external onlyOwner {
+        registration = registration_;
+        emit RegistrationUpdated(registration_);
+    }
+
+    /**
+     * @notice Add multiple accounts to the whitelist in one transaction (L-03)
+     * @param accounts Array of accounts to whitelist
+     */
+    function whitelistAccountBatch(
+        address[] calldata accounts
+    ) external onlyOwner {
+        uint256 len = accounts.length;
+        for (uint256 i; i < len; ++i) {
+            if (accounts[i] == address(0)) revert InvalidAddress();
+            whitelisted[accounts[i]] = true;
+            emit AccountWhitelisted(accounts[i]);
+        }
+    }
+
+    /**
+     * @notice Rescue ERC-20 tokens accidentally sent to this contract (M-04)
+     * @dev Only callable by the owner. Useful for recovering tokens sent
+     *      directly to the paymaster address by mistake.
+     * @param token The ERC-20 token to rescue
+     * @param to Recipient of the rescued tokens
+     * @param amount Amount to rescue
+     */
+    function rescueTokens(
+        IERC20 token,
+        address to,
+        uint256 amount
+    ) external onlyOwner {
+        if (to == address(0)) revert InvalidAddress();
+        token.safeTransfer(to, amount);
+        emit TokensRescued(address(token), to, amount);
+    }
+
+    /**
      * @notice Get remaining free operations for an account
+     * @dev L-01: Handles freeOpsLimit==0 without underflow
      * @param account The account to query
      * @return remaining Number of free operations remaining
      */
-    function remainingFreeOps(address account) external view returns (uint256 remaining) {
+    function remainingFreeOps(
+        address account
+    ) external view returns (uint256 remaining) {
         uint256 used = sponsoredOpsCount[account];
-        if (used > freeOpsLimit - 1) return 0;
+        if (freeOpsLimit == 0 || used > freeOpsLimit - 1) return 0;
         return freeOpsLimit - used;
     }
 
@@ -368,16 +454,20 @@ contract OmniPaymaster is IPaymaster, Ownable {
 
     /**
      * @notice Check and update the daily sponsorship budget
-     * @dev Resets the counter when a new day begins (24h period from last reset).
-     *      Reverts if the daily budget has been exhausted.
+     * @dev M-03: Uses calendar-day boundaries (midnight UTC) instead of
+     *      rolling 24h windows. This prevents drift and provides
+     *      consistent, predictable budget windows.
      *      If dailySponsorshipBudget is 0, the budget is unlimited.
      */
     function _checkDailyBudget() internal {
         if (dailySponsorshipBudget == 0) return; // Unlimited
 
-        // Reset counter if 24 hours have passed since last reset
+        // M-03: Use calendar-day boundaries for consistent budget windows
         // solhint-disable-next-line not-rely-on-time
-        if (block.timestamp > lastBudgetReset + 1 days - 1) {
+        uint256 currentDay = block.timestamp / 1 days;
+        uint256 lastResetDay = lastBudgetReset / 1 days;
+
+        if (currentDay > lastResetDay) {
             dailySponsorshipUsed = 0;
             // solhint-disable-next-line not-rely-on-time
             lastBudgetReset = block.timestamp;
@@ -388,5 +478,48 @@ contract OmniPaymaster is IPaymaster, Ownable {
         }
 
         ++dailySponsorshipUsed;
+    }
+
+    /**
+     * @notice Determine sponsorship mode for an account
+     * @dev M-01: When registration is set, free ops require registration.
+     * @param account The account requesting sponsorship
+     * @return mode The determined sponsorship mode
+     */
+    function _determineSponsorMode(
+        address account
+    ) internal view returns (SponsorMode mode) {
+        if (whitelisted[account]) {
+            return SponsorMode.subsidized;
+        }
+
+        // M-01: Check registration for free ops (sybil resistance)
+        bool isRegistered = true;
+        if (registration != address(0)) {
+            // solhint-disable-next-line avoid-low-level-calls
+            (bool ok, bytes memory result) = registration.staticcall(
+                abi.encodeWithSignature(
+                    "isRegistered(address)", account
+                )
+            );
+            if (ok && result.length > 31) {
+                isRegistered = abi.decode(result, (bool));
+            }
+        }
+
+        if (isRegistered && sponsoredOpsCount[account] < freeOpsLimit) {
+            return SponsorMode.free;
+        }
+
+        uint256 fee = xomGasFee;
+        if (
+            fee > 0
+            && xomToken.balanceOf(account) > fee - 1
+            && xomToken.allowance(account, address(this)) > fee - 1
+        ) {
+            return SponsorMode.xomPayment;
+        }
+
+        revert NotSponsored();
     }
 }

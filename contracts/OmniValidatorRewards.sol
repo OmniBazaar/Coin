@@ -88,6 +88,16 @@ interface IOmniCore {
  * - 30% staking amount (from OmniCore)
  * - 30% activity (heartbeat + transaction processing)
  *
+ * Relationship Between Block Rewards and Validator Rewards:
+ *   Block rewards are the primary funding source for this contract.
+ *   The MintController mints XOM per block at the emission schedule
+ *   rate. A portion of each block reward is allocated to validator
+ *   rewards and deposited into this contract. Validators earn
+ *   rewards proportional to their weighted participation score.
+ *   The per-epoch reward is calculated using the same emission
+ *   schedule as block rewards (15.602 XOM initial, 1% reduction
+ *   per 6,311,520 epochs).
+ *
  * Reward Distribution:
  * - Epoch every 2 seconds (tied to block time)
  * - Rewards accumulate in contract
@@ -103,11 +113,25 @@ interface IOmniCore {
  * - Sequential epoch enforcement prevents reward destruction
  * - Retired validators can still claim earned rewards
  * - 48h timelock on contract reference updates
+ * - 48h timelock on UUPS upgrades (H-01 audit fix Round 3)
  * - Flash-stake protection via lock expiry check
  * - Validator iteration capped at 200 per epoch
  * - Transaction recording capped at 1000 per call
  * - Epoch processing restricted to BLOCKCHAIN_ROLE (M-07)
  * - Batch processing capped at 50 epochs (M-03)
+ * - External calls wrapped in try/catch (M-01 Round 3)
+ * - Total outstanding rewards tracked for solvency (M-02 R3)
+ * - Ossification mechanism for permanent upgrade lockdown
+ *
+ * Planned Ossification Timeline (M-04 audit recommendation):
+ *   After initial deployment and a minimum 6-month tuning period
+ *   on mainnet, the admin (via governance vote) should call
+ *   ossify() to permanently freeze the contract. Once ossified:
+ *   - No further UUPS upgrades are possible
+ *   - Reward parameters become immutable
+ *   - Only epoch processing, heartbeats, and claims continue
+ *   - Admin retains pause/unpause and contract reference updates
+ *   Post-ossification risk rating drops from 7/10 to 3/10.
  *
  * Audit Fixes (2026-02-22):
  * - M-02: Reward reduction based on epoch number (time-based)
@@ -115,6 +139,13 @@ interface IOmniCore {
  * - M-04: Staking score uses linear interpolation
  * - M-05: Graduated heartbeat scoring (not binary)
  * - M-07: processEpoch restricted to BLOCKCHAIN_ROLE
+ *
+ * Audit Fixes (2026-02-26 Round 3):
+ * - H-01: Upgrade timelock (propose/apply with 48h delay)
+ * - M-01: External calls wrapped in try/catch
+ * - M-02: totalOutstandingRewards accumulator for solvency
+ * - M-03: MAX_BATCH_EPOCHS documented (50 = 100s catch-up)
+ * - M-04: Ossification timeline documented
  */
 contract OmniValidatorRewards is
     AccessControlUpgradeable,
@@ -134,6 +165,13 @@ contract OmniValidatorRewards is
         address xomToken;
         address participation;
         address omniCore;
+        uint256 effectiveTimestamp;
+    }
+
+    /// @notice Pending upgrade awaiting timelock
+    /// @dev Set via proposeUpgrade(), checked in _authorizeUpgrade()
+    struct PendingUpgrade {
+        address newImplementation;
         uint256 effectiveTimestamp;
     }
 
@@ -193,11 +231,20 @@ contract OmniValidatorRewards is
     /// @dev Limits state drift when processing historical epochs
     ///      with current validator/heartbeat state (M-03 fix).
     ///      50 epochs = 100 seconds of catch-up per batch.
+    ///      At 200 validators max per epoch, worst-case gas is
+    ///      50 * 200 = 10,000 weight calculations per batch,
+    ///      well within Avalanche block gas limits.
     uint256 public constant MAX_BATCH_EPOCHS = 50;
 
     /// @notice Timelock delay for contract reference updates
     /// @dev 48 hours in seconds
     uint256 public constant CONTRACT_UPDATE_DELAY = 48 hours;
+
+    /// @notice Timelock delay for UUPS upgrades
+    /// @dev H-01 Round 3 audit fix: 48 hours to allow monitoring
+    ///      and intervention before an upgrade takes effect.
+    ///      MUST be used with a multisig wallet for production.
+    uint256 public constant UPGRADE_DELAY = 48 hours;
 
     // ══════════════════════════════════════════════════════════════════
     //                              STORAGE
@@ -218,7 +265,9 @@ contract OmniValidatorRewards is
     /// @notice Last processed epoch
     uint256 public lastProcessedEpoch;
 
-    /// @notice Total blocks produced (for reduction calculation)
+    /// @notice Total blocks produced (for monitoring only)
+    /// @dev Not used in reward calculation (epoch-based instead).
+    ///      Kept for off-chain monitoring and transparency.
     uint256 public totalBlocksProduced;
 
     /// @notice Accumulated rewards per validator
@@ -246,8 +295,20 @@ contract OmniValidatorRewards is
     /// @notice Whether contract is ossified (permanently non-upgradeable)
     bool private _ossified;
 
-    /// @dev Storage gap for future upgrades (reduced by 1 for _ossified)
-    uint256[38] private __gap;
+    /// @notice Total outstanding (unclaimed) rewards across all validators
+    /// @dev M-02 Round 3 audit fix: tracks total allocated but unclaimed
+    ///      rewards. Enables solvency check: balance >= totalOutstanding.
+    uint256 public totalOutstandingRewards;
+
+    /// @notice Pending upgrade awaiting timelock
+    /// @dev H-01 Round 3 audit fix: UUPS upgrades require proposal +
+    ///      48h delay before execution
+    PendingUpgrade public pendingUpgrade;
+
+    /// @dev Storage gap for future upgrades.
+    ///      Slots used: 14 explicit + mappings (5 slot headers).
+    ///      Gap = 36 to leave headroom.
+    uint256[36] private __gap;
 
     // ══════════════════════════════════════════════════════════════════
     //                              EVENTS
@@ -313,6 +374,18 @@ contract OmniValidatorRewards is
         uint256 weight
     );
 
+    /// @notice Emitted when reward distribution fails for a validator
+    /// @dev M-01 Round 3 audit fix: emitted when external call to
+    ///      OmniParticipation or OmniCore fails during weight calc.
+    /// @param validator Address that failed
+    /// @param epoch Epoch being processed
+    /// @param reason Encoded revert reason (may be empty)
+    event RewardDistributionFailed(
+        address indexed validator,
+        uint256 indexed epoch,
+        bytes reason
+    );
+
     /// @notice Emitted when emergency withdrawal occurs
     /// @param token Address of the withdrawn token
     /// @param amount Amount withdrawn
@@ -326,11 +399,13 @@ contract OmniValidatorRewards is
     /// @notice Emitted when a contract update is proposed
     /// @param xomTokenAddr Proposed XOM token address
     /// @param participationAddr Proposed participation address
+    /// @param omniCoreAddr Proposed OmniCore address
     /// @param effectiveTimestamp When the update can be applied
     event ContractsUpdateProposed(
         address indexed xomTokenAddr,
         address indexed participationAddr,
-        uint256 indexed effectiveTimestamp
+        address indexed omniCoreAddr,
+        uint256 effectiveTimestamp
     );
 
     /// @notice Emitted when a pending contract update is cancelled
@@ -347,6 +422,17 @@ contract OmniValidatorRewards is
     /// @notice Emitted when the contract is permanently ossified
     /// @param contractAddress Address of this contract
     event ContractOssified(address indexed contractAddress);
+
+    /// @notice Emitted when a UUPS upgrade is proposed
+    /// @param newImplementation Proposed implementation address
+    /// @param effectiveTimestamp When the upgrade can be executed
+    event UpgradeProposed(
+        address indexed newImplementation,
+        uint256 indexed effectiveTimestamp
+    );
+
+    /// @notice Emitted when a pending upgrade is cancelled
+    event UpgradeCancelled();
 
     // ══════════════════════════════════════════════════════════════════
     //                              ERRORS
@@ -391,6 +477,17 @@ contract OmniValidatorRewards is
     /// @notice Thrown when contract is ossified and upgrade attempted
     error ContractIsOssified();
 
+    /// @notice Thrown when upgrade target has no deployed code
+    error InvalidImplementation();
+
+    /// @notice Thrown when upgrade was not proposed or does not match
+    /// @param proposed The proposed implementation address
+    /// @param attempted The attempted implementation address
+    error UpgradeNotProposed(
+        address proposed,
+        address attempted
+    );
+
     // ══════════════════════════════════════════════════════════════════
     //                           INITIALIZATION
     // ══════════════════════════════════════════════════════════════════
@@ -402,6 +499,8 @@ contract OmniValidatorRewards is
 
     /**
      * @notice Initialize the contract
+     * @dev Called once during proxy deployment. Sets up roles,
+     *      external contract references, and genesis timestamp.
      * @param xomTokenAddr Address of XOM token contract
      * @param participationAddr Address of OmniParticipation
      * @param omniCoreAddr Address of OmniCore contract
@@ -420,17 +519,21 @@ contract OmniValidatorRewards is
         _grantRole(BLOCKCHAIN_ROLE, msg.sender);
 
         if (xomTokenAddr == address(0)) revert ZeroAddress();
-        if (participationAddr == address(0)) revert ZeroAddress();
+        if (participationAddr == address(0)) {
+            revert ZeroAddress();
+        }
         if (omniCoreAddr == address(0)) revert ZeroAddress();
 
         xomToken = IERC20(xomTokenAddr);
-        participation = IOmniParticipation(participationAddr);
+        participation =
+            IOmniParticipation(participationAddr);
         omniCore = IOmniCore(omniCoreAddr);
 
         // solhint-disable-next-line not-rely-on-time
         genesisTimestamp = block.timestamp;
         lastProcessedEpoch = 0;
         totalBlocksProduced = 0;
+        totalOutstandingRewards = 0;
     }
 
     // ══════════════════════════════════════════════════════════════════
@@ -450,15 +553,18 @@ contract OmniValidatorRewards is
         // solhint-disable-next-line not-rely-on-time
         lastHeartbeat[msg.sender] = block.timestamp;
 
-        // solhint-disable-next-line not-rely-on-time
-        emit ValidatorHeartbeat(msg.sender, block.timestamp);
+        /* solhint-disable not-rely-on-time */
+        emit ValidatorHeartbeat(
+            msg.sender, block.timestamp
+        );
+        /* solhint-enable not-rely-on-time */
     }
 
     /**
      * @notice Record transaction processing by validator
-     * @param validator Address of processing validator
      * @dev Called by BLOCKCHAIN_ROLE when validator processes
      *      a transaction.
+     * @param validator Address of processing validator
      */
     function recordTransactionProcessing(
         address validator
@@ -471,15 +577,17 @@ contract OmniValidatorRewards is
         ++transactionsProcessed[validator][currentEpoch];
         ++epochTotalTransactions[currentEpoch];
 
-        emit TransactionProcessed(validator, currentEpoch, 1);
+        emit TransactionProcessed(
+            validator, currentEpoch, 1
+        );
     }
 
     /**
      * @notice Record multiple transaction processing
-     * @param validator Address of processing validator
-     * @param count Number of transactions processed
      * @dev Capped at MAX_TX_BATCH (1000) per call to prevent
      *      unbounded gas consumption.
+     * @param validator Address of processing validator
+     * @param count Number of transactions processed
      */
     function recordMultipleTransactions(
         address validator,
@@ -503,14 +611,19 @@ contract OmniValidatorRewards is
 
     /**
      * @notice Process epoch and distribute rewards
-     * @param epoch Epoch number to process
      * @dev Epochs MUST be processed sequentially to prevent
      *      reward destruction via epoch skipping.
-     *      Can be called by anyone.
+     *      Only BLOCKCHAIN_ROLE can call (M-07 fix).
+     * @param epoch Epoch number to process
      */
     function processEpoch(
         uint256 epoch
-    ) external onlyRole(BLOCKCHAIN_ROLE) nonReentrant whenNotPaused {
+    )
+        external
+        onlyRole(BLOCKCHAIN_ROLE)
+        nonReentrant
+        whenNotPaused
+    {
         uint256 currentEpoch = getCurrentEpoch();
         if (epoch != lastProcessedEpoch + 1) {
             revert EpochNotSequential();
@@ -526,7 +639,7 @@ contract OmniValidatorRewards is
         address[] memory validators =
             omniCore.getActiveNodes();
 
-        // Count and distribute in single pass preparation
+        // Count and distribute in single pass
         (
             uint256 activeCount,
             uint256[] memory weights,
@@ -542,7 +655,11 @@ contract OmniValidatorRewards is
 
         // Distribute rewards proportionally
         _distributeRewards(
-            validators, weights, totalWeight, epochReward, epoch
+            validators,
+            weights,
+            totalWeight,
+            epochReward,
+            epoch
         );
 
         // Update state
@@ -550,21 +667,24 @@ contract OmniValidatorRewards is
         ++totalBlocksProduced;
         epochActiveValidators[epoch] = activeCount;
 
-        emit EpochProcessed(epoch, epochReward, activeCount);
+        emit EpochProcessed(
+            epoch, epochReward, activeCount
+        );
     }
 
     /**
      * @notice Process multiple epochs at once
-     * @param count Number of epochs to process
      * @dev Gas-optimized batch processing. Epochs are
      *      processed sequentially starting from
      *      lastProcessedEpoch + 1. Validator list is
      *      cached outside the loop (H-03 fix).
      *      Restricted to BLOCKCHAIN_ROLE to prevent
      *      front-running (M-07 fix).
-     *      Capped at MAX_BATCH_EPOCHS to limit gas and
-     *      reduce stale-state drift when processing
-     *      historical epochs with current state (M-03).
+     *      Capped at MAX_BATCH_EPOCHS (50 = 100 seconds
+     *      of catch-up) to limit gas and reduce stale-state
+     *      drift when processing historical epochs with
+     *      current state (M-03 fix).
+     * @param count Number of epochs to process
      */
     function processMultipleEpochs(
         uint256 count
@@ -636,16 +756,16 @@ contract OmniValidatorRewards is
      * @notice Claim accumulated validator rewards
      * @dev Transfers all accumulated XOM to caller.
      *      No active-validator check: rewards earned during
-     *      active period are claimable after deactivation.
+     *      active period are claimable after deactivation
+     *      (H-04 fix).
+     *      Updates totalOutstandingRewards for solvency
+     *      tracking (M-02 Round 3 fix).
      */
     function claimRewards()
         external
         nonReentrant
         whenNotPaused
     {
-        // Note: No isValidator check - rewards earned during
-        // active period should be claimable even after
-        // validator deactivation (H-04 fix).
         uint256 amount = accumulatedRewards[msg.sender];
         if (amount == 0) revert NoRewardsToClaim();
 
@@ -656,6 +776,7 @@ contract OmniValidatorRewards is
         // Update state before transfer (CEI pattern)
         accumulatedRewards[msg.sender] = 0;
         totalClaimed[msg.sender] += amount;
+        totalOutstandingRewards -= amount;
 
         // Transfer rewards
         xomToken.safeTransfer(msg.sender, amount);
@@ -688,9 +809,10 @@ contract OmniValidatorRewards is
         }
         if (omniCoreAddr == address(0)) revert ZeroAddress();
 
-        // solhint-disable-next-line not-rely-on-time
+        /* solhint-disable not-rely-on-time */
         uint256 effective = block.timestamp
             + CONTRACT_UPDATE_DELAY;
+        /* solhint-enable not-rely-on-time */
 
         pendingContracts = PendingContractsUpdate({
             xomToken: xomTokenAddr,
@@ -700,7 +822,10 @@ contract OmniValidatorRewards is
         });
 
         emit ContractsUpdateProposed(
-            xomTokenAddr, participationAddr, effective
+            xomTokenAddr,
+            participationAddr,
+            omniCoreAddr,
+            effective
         );
     }
 
@@ -755,6 +880,55 @@ contract OmniValidatorRewards is
     }
 
     /**
+     * @notice Propose a UUPS upgrade (48h timelock)
+     * @dev H-01 Round 3 audit fix: upgrades cannot be executed
+     *      immediately. The admin must propose the new
+     *      implementation, wait UPGRADE_DELAY (48h), then
+     *      call upgradeToAndCall(). The _authorizeUpgrade()
+     *      function verifies that the proposed implementation
+     *      matches and the timelock has elapsed.
+     *      MUST be combined with a multisig wallet for production.
+     * @param newImplementation Address of proposed implementation
+     */
+    function proposeUpgrade(
+        address newImplementation
+    ) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        if (_ossified) revert ContractIsOssified();
+        if (newImplementation == address(0)) {
+            revert ZeroAddress();
+        }
+        if (newImplementation.code.length == 0) {
+            revert InvalidImplementation();
+        }
+
+        /* solhint-disable not-rely-on-time */
+        uint256 effective = block.timestamp + UPGRADE_DELAY;
+        /* solhint-enable not-rely-on-time */
+
+        pendingUpgrade = PendingUpgrade({
+            newImplementation: newImplementation,
+            effectiveTimestamp: effective
+        });
+
+        emit UpgradeProposed(newImplementation, effective);
+    }
+
+    /**
+     * @notice Cancel a pending upgrade proposal
+     * @dev Can be called at any time before the upgrade is executed.
+     */
+    function cancelUpgrade()
+        external
+        onlyRole(DEFAULT_ADMIN_ROLE)
+    {
+        if (pendingUpgrade.effectiveTimestamp == 0) {
+            revert NoPendingUpdate();
+        }
+        delete pendingUpgrade;
+        emit UpgradeCancelled();
+    }
+
+    /**
      * @notice Emergency withdraw stuck tokens (non-XOM only)
      * @dev Cannot withdraw XOM to prevent draining validator
      *      rewards. SECURITY: Admin MUST be a multi-sig
@@ -776,7 +950,11 @@ contract OmniValidatorRewards is
         emit EmergencyWithdrawal(token, amount, recipient);
     }
 
-    /// @notice Pause all operations
+    /**
+     * @notice Pause all operations
+     * @dev Only DEFAULT_ADMIN_ROLE can pause. Blocks epoch
+     *      processing, heartbeats, claims, and recording.
+     */
     function pause()
         external
         onlyRole(DEFAULT_ADMIN_ROLE)
@@ -784,12 +962,48 @@ contract OmniValidatorRewards is
         _pause();
     }
 
-    /// @notice Unpause operations
+    /**
+     * @notice Unpause operations
+     * @dev Only DEFAULT_ADMIN_ROLE can unpause. Resumes
+     *      normal contract operation after emergency.
+     */
     function unpause()
         external
         onlyRole(DEFAULT_ADMIN_ROLE)
     {
         _unpause();
+    }
+
+    /**
+     * @notice Permanently remove upgrade capability
+     * @dev One-way, irreversible. Can only be called by admin
+     *      (through timelock). Once ossified, the contract can
+     *      never be upgraded again.
+     *
+     *      Planned Timeline (M-04 audit recommendation):
+     *        - Deploy to mainnet
+     *        - 6-month minimum tuning period
+     *        - Governance vote to approve ossification
+     *        - Admin calls ossify()
+     *        - Post-ossification: only epoch processing,
+     *          heartbeats, claims, and pause/unpause continue
+     */
+    function ossify()
+        external
+        onlyRole(DEFAULT_ADMIN_ROLE)
+    {
+        _ossified = true;
+        // Clear any pending upgrade
+        delete pendingUpgrade;
+        emit ContractOssified(address(this));
+    }
+
+    /**
+     * @notice Check if the contract has been permanently ossified
+     * @return True if ossified (no further upgrades possible)
+     */
+    function isOssified() external view returns (bool) {
+        return _ossified;
     }
 
     // ══════════════════════════════════════════════════════════════════
@@ -859,6 +1073,37 @@ contract OmniValidatorRewards is
         return xomToken.balanceOf(address(this));
     }
 
+    /**
+     * @notice Check if the contract is solvent
+     * @dev M-02 Round 3 audit fix: compares actual token balance
+     *      against total outstanding (unclaimed) rewards.
+     * @return True if balance covers all outstanding obligations
+     */
+    function isSolvent() external view returns (bool) {
+        // solhint-disable-next-line gas-strict-inequalities
+        return xomToken.balanceOf(address(this))
+            >= totalOutstandingRewards;
+    }
+
+    /**
+     * @notice Get the pending upgrade details
+     * @return newImplementation Proposed address (zero if none)
+     * @return effectiveTimestamp When upgrade can execute
+     */
+    function getPendingUpgrade()
+        external
+        view
+        returns (
+            address newImplementation,
+            uint256 effectiveTimestamp
+        )
+    {
+        newImplementation =
+            pendingUpgrade.newImplementation;
+        effectiveTimestamp =
+            pendingUpgrade.effectiveTimestamp;
+    }
+
     // ══════════════════════════════════════════════════════════════════
     //                       PUBLIC VIEW FUNCTIONS
     // ══════════════════════════════════════════════════════════════════
@@ -871,6 +1116,7 @@ contract OmniValidatorRewards is
     function isValidatorActive(
         address validator
     ) public view returns (bool) {
+        if (lastHeartbeat[validator] == 0) return false;
         // solhint-disable-next-line not-rely-on-time
         return (block.timestamp - lastHeartbeat[validator])
             < HEARTBEAT_TIMEOUT + 1;
@@ -918,9 +1164,15 @@ contract OmniValidatorRewards is
      *      Uses epoch number (time-based) rather than
      *      totalBlocksProduced to prevent emission schedule
      *      desynchronization when epochs are processed late
-     *      (M-02 fix).
-     *      Initial: 15.602 XOM per epoch.
-     *      After 100 reductions: 0 XOM.
+     *      (M-02 fix from Round 1).
+     *
+     *      Emission Schedule Examples:
+     *        Epoch 0: 15.602 XOM (initial)
+     *        Epoch 6,311,520: 15.446 XOM (1 reduction)
+     *        Epoch 12,623,040: 15.291 XOM (2 reductions)
+     *        Epoch ~315M (~year 20): ~9.46 XOM
+     *        Epoch ~625M (~year 40): ~5.79 XOM
+     *        Epoch 631,152,000+: 0 XOM (exhausted)
      */
     function calculateBlockRewardForEpoch(
         uint256 epoch
@@ -950,78 +1202,54 @@ contract OmniValidatorRewards is
     // ══════════════════════════════════════════════════════════════════
 
     /**
-     * @notice Distribute epoch rewards to validators
-     * @param validators Array of validator addresses
-     * @param weights Per-validator weight array
-     * @param totalWeight Sum of all weights
-     * @param epochReward Total reward for this epoch
-     * @param epoch Epoch number (for event emission)
-     */
-    function _distributeRewards(
-        address[] memory validators,
-        uint256[] memory weights,
-        uint256 totalWeight,
-        uint256 epochReward,
-        uint256 epoch
-    ) internal {
-        if (totalWeight == 0) return;
-
-        for (uint256 i = 0; i < validators.length;) {
-            if (weights[i] > 0) {
-                uint256 validatorReward =
-                    (epochReward * weights[i]) / totalWeight;
-                accumulatedRewards[validators[i]] +=
-                    validatorReward;
-
-                emit RewardDistributed(
-                    validators[i],
-                    epoch,
-                    validatorReward,
-                    weights[i]
-                );
-            }
-            unchecked { ++i; }
-        }
-    }
-
-    /**
-     * @notice Permanently remove upgrade capability (one-way, irreversible)
-     * @dev Can only be called by admin (through timelock). Once ossified,
-     *      the contract can never be upgraded again.
-     */
-    function ossify() external onlyRole(DEFAULT_ADMIN_ROLE) {
-        _ossified = true;
-        emit ContractOssified(address(this));
-    }
-
-    /**
-     * @notice Check if the contract has been permanently ossified
-     * @return True if ossified (no further upgrades possible)
-     */
-    function isOssified() external view returns (bool) {
-        return _ossified;
-    }
-
-    /**
      * @notice Authorize contract upgrade
+     * @dev H-01 Round 3 audit fix: verifies that the upgrade
+     *      was proposed via proposeUpgrade() and the 48h timelock
+     *      has elapsed. Reverts if contract is ossified or if the
+     *      implementation address does not match the proposal.
+     *      MUST be combined with a multisig wallet for production.
      * @param newImplementation Address of new implementation
-     * @dev Reverts if contract is ossified.
      */
     function _authorizeUpgrade(
         address newImplementation
     ) internal override onlyRole(DEFAULT_ADMIN_ROLE) {
         if (_ossified) revert ContractIsOssified();
+
+        PendingUpgrade memory pending = pendingUpgrade;
+
+        // Verify proposal exists and matches
+        if (
+            pending.newImplementation != newImplementation
+        ) {
+            revert UpgradeNotProposed(
+                pending.newImplementation,
+                newImplementation
+            );
+        }
+
+        // Verify timelock elapsed
+        // solhint-disable-next-line not-rely-on-time
+        if (block.timestamp < pending.effectiveTimestamp) {
+            revert TimelockNotElapsed();
+        }
+
+        // Clear pending upgrade
+        delete pendingUpgrade;
     }
 
     /**
      * @notice Compute active validator weights for an epoch
+     * @dev Iterates at most MAX_VALIDATORS_PER_EPOCH
+     *      validators to prevent gas DoS (H-03 fix).
+     *      External calls to OmniParticipation and OmniCore
+     *      are wrapped in try/catch per validator, so one
+     *      failing validator does not block the entire epoch
+     *      (M-01 Round 3 fix).
      * @param validators Array of validator addresses
      * @param epoch Epoch to compute weights for
      * @return activeCount Number of active validators
      * @return weights Per-validator weight array
      * @return totalWeight Sum of all weights
-     * @dev Iterates at most MAX_VALIDATORS_PER_EPOCH
-     *      validators to prevent gas DoS (H-03 fix).
      */
     function _computeEpochWeights(
         address[] memory validators,
@@ -1056,22 +1284,33 @@ contract OmniValidatorRewards is
 
     /**
      * @notice Calculate validator weight for distribution
-     * @param validator Validator address
-     * @param epoch Epoch being calculated
-     * @return Total weight (0-100 scale)
-     *
      * @dev Weight formula:
      *      40% participation score (OmniParticipation)
      *      30% staking amount (OmniCore)
      *      30% activity (60% heartbeat + 40% tx processing)
+     *
+     *      M-01 Round 3 fix: external calls wrapped in
+     *      try/catch. If OmniParticipation or OmniCore
+     *      revert, the affected component defaults to 0
+     *      rather than blocking the entire epoch.
+     * @param validator Validator address
+     * @param epoch Epoch being calculated
+     * @return Total weight (0-100 scale)
      */
     function _calculateValidatorWeight(
         address validator,
         uint256 epoch
     ) internal view returns (uint256) {
         // 1. Participation score (40% weight, 0-100 points)
-        uint256 pScore =
-            participation.getTotalScore(validator);
+        // M-01 R3: try/catch for external call resilience
+        uint256 pScore;
+        try participation.getTotalScore(validator)
+            returns (uint256 s)
+        {
+            pScore = s;
+        } catch {
+            pScore = 0; // Fail-safe: no participation bonus
+        }
         uint256 pComponent =
             (pScore * PARTICIPATION_WEIGHT) / 100;
 
@@ -1088,23 +1327,32 @@ contract OmniValidatorRewards is
 
     /**
      * @notice Calculate staking component of weight
+     * @dev Returns 0 if stake lock has expired to prevent
+     *      flash-stake weight inflation (H-01 Round 1 fix).
+     *      External call to omniCore.getStake() is wrapped in
+     *      try/catch (M-01 Round 3 fix).
      * @param validator Validator address
      * @return Staking component (0-30 points)
-     * @dev Returns 0 if stake lock has expired to prevent
-     *      flash-stake weight inflation (H-01 fix).
      */
     function _calculateStakingComponent(
         address validator
     ) internal view returns (uint256) {
-        IOmniCore.Stake memory stake =
-            omniCore.getStake(validator);
+        // M-01 R3: try/catch for external call resilience
+        IOmniCore.Stake memory stake;
+        try omniCore.getStake(validator) returns (
+            IOmniCore.Stake memory s
+        ) {
+            stake = s;
+        } catch {
+            return 0; // Fail-safe: no staking bonus
+        }
 
         if (!stake.active || stake.amount == 0) {
             return 0;
         }
 
-        // H-01: Reject expired locks to prevent flash-staking
-        // with zero duration commitment
+        // H-01 R1: Reject expired locks to prevent
+        // flash-staking with zero duration commitment
         // solhint-disable-next-line not-rely-on-time
         if (stake.lockTime < block.timestamp + 1) {
             return 0;
@@ -1121,16 +1369,15 @@ contract OmniValidatorRewards is
 
     /**
      * @notice Calculate activity component of weight
-     * @param validator Validator address
-     * @param epoch Epoch being calculated
-     * @return Activity component (0-30 points)
-     *
      * @dev Activity = 60% heartbeat + 40% tx processing.
      *      Heartbeat uses graduated scoring based on
      *      recency of last heartbeat rather than binary
-     *      active/inactive (M-05 fix). A validator who
-     *      sent a heartbeat 1s ago scores higher than
+     *      active/inactive (M-05 Round 1 fix). A validator
+     *      who sent a heartbeat 1s ago scores higher than
      *      one whose heartbeat is 18s old.
+     * @param validator Validator address
+     * @param epoch Epoch being calculated
+     * @return Activity component (0-30 points)
      */
     function _calculateActivityComponent(
         address validator,
@@ -1155,16 +1402,56 @@ contract OmniValidatorRewards is
     }
 
     /**
+     * @notice Distribute epoch rewards to validators
+     * @dev Updates totalOutstandingRewards for solvency
+     *      tracking (M-02 Round 3 fix). Emits per-validator
+     *      RewardDistributed events.
+     * @param validators Array of validator addresses
+     * @param weights Per-validator weight array
+     * @param totalWeight Sum of all weights
+     * @param epochReward Total reward for this epoch
+     * @param epoch Epoch number (for event emission)
+     */
+    function _distributeRewards(
+        address[] memory validators,
+        uint256[] memory weights,
+        uint256 totalWeight,
+        uint256 epochReward,
+        uint256 epoch
+    ) internal {
+        if (totalWeight == 0) return;
+
+        for (uint256 i = 0; i < validators.length;) {
+            if (weights[i] > 0) {
+                uint256 validatorReward =
+                    (epochReward * weights[i]) / totalWeight;
+                accumulatedRewards[validators[i]] +=
+                    validatorReward;
+                // M-02 R3: Track outstanding obligations
+                totalOutstandingRewards += validatorReward;
+
+                emit RewardDistributed(
+                    validators[i],
+                    epoch,
+                    validatorReward,
+                    weights[i]
+                );
+            }
+            unchecked { ++i; }
+        }
+    }
+
+    /**
      * @notice Calculate graduated heartbeat score
-     * @param validator Validator address
-     * @return score Graduated score 0-100 based on
-     *         heartbeat recency
-     * @dev M-05: Replaces binary 100/0 with graduated
+     * @dev M-05 Round 1: Replaces binary 100/0 with graduated
      *      scoring. Heartbeat within 5s = 100, within
      *      10s = 75, within 15s = 50, within 20s = 25,
      *      older = 0. This rewards validators with
      *      consistent uptime over those that merely
      *      submit the minimum heartbeats.
+     * @param validator Validator address
+     * @return score Graduated score 0-100 based on
+     *         heartbeat recency
      */
     function _heartbeatScore(
         address validator
@@ -1209,16 +1496,16 @@ contract OmniValidatorRewards is
 
     /**
      * @notice Map staking amount to a 0-100 score
-     * @param amount Staked XOM amount (18 decimals)
-     * @return score Normalized score (0-100)
      * @dev Uses linear interpolation within tiers to prevent
-     *      cliff effects at boundaries (M-04 fix):
+     *      cliff effects at boundaries (M-04 Round 1 fix):
      *      - 0 to 1M XOM: linear 0-20
      *      - 1M to 10M XOM: linear 20-40
      *      - 10M to 100M XOM: linear 40-60
      *      - 100M to 1B XOM: linear 60-80
      *      - 1B to 10B XOM: linear 80-100
      *      - 10B+ XOM: 100 (cap)
+     * @param amount Staked XOM amount (18 decimals)
+     * @return score Normalized score (0-100)
      */
     function _stakingTierScore(
         uint256 amount
@@ -1227,22 +1514,26 @@ contract OmniValidatorRewards is
             score = 100;
         } else if (amount > 1_000_000_000 ether - 1) {
             // Linear interpolation: 80-100 over 1B-10B
-            uint256 excess = amount - 1_000_000_000 ether;
+            uint256 excess =
+                amount - 1_000_000_000 ether;
             uint256 range = 9_000_000_000 ether;
             score = 80 + (excess * 20) / range;
         } else if (amount > 100_000_000 ether - 1) {
             // Linear interpolation: 60-80 over 100M-1B
-            uint256 excess = amount - 100_000_000 ether;
+            uint256 excess =
+                amount - 100_000_000 ether;
             uint256 range = 900_000_000 ether;
             score = 60 + (excess * 20) / range;
         } else if (amount > 10_000_000 ether - 1) {
             // Linear interpolation: 40-60 over 10M-100M
-            uint256 excess = amount - 10_000_000 ether;
+            uint256 excess =
+                amount - 10_000_000 ether;
             uint256 range = 90_000_000 ether;
             score = 40 + (excess * 20) / range;
         } else if (amount > 1_000_000 ether - 1) {
             // Linear interpolation: 20-40 over 1M-10M
-            uint256 excess = amount - 1_000_000 ether;
+            uint256 excess =
+                amount - 1_000_000 ether;
             uint256 range = 9_000_000 ether;
             score = 20 + (excess * 20) / range;
         } else {

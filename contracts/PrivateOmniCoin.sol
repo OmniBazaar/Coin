@@ -3,25 +3,32 @@ pragma solidity 0.8.24;
 
 import {
     ERC20Upgradeable
-} from "@openzeppelin/contracts-upgradeable/token/ERC20/ERC20Upgradeable.sol";
+} from
+    "@openzeppelin/contracts-upgradeable/token/ERC20/ERC20Upgradeable.sol";
 import {
     ERC20BurnableUpgradeable
-} from "@openzeppelin/contracts-upgradeable/token/ERC20/extensions/ERC20BurnableUpgradeable.sol";
+} from
+    "@openzeppelin/contracts-upgradeable/token/ERC20/extensions/ERC20BurnableUpgradeable.sol";
 import {
     ERC20PausableUpgradeable
-} from "@openzeppelin/contracts-upgradeable/token/ERC20/extensions/ERC20PausableUpgradeable.sol";
+} from
+    "@openzeppelin/contracts-upgradeable/token/ERC20/extensions/ERC20PausableUpgradeable.sol";
 import {
     AccessControlUpgradeable
-} from "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
+} from
+    "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
 import {
     Initializable
-} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
+} from
+    "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import {
     UUPSUpgradeable
-} from "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
+} from
+    "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
 import {
     ReentrancyGuardUpgradeable
-} from "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
+} from
+    "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
 import {
     MpcCore,
     gtUint64,
@@ -39,17 +46,27 @@ import {
  * - Public amounts use 18 decimals (standard ERC20)
  * - Private (MPC) amounts use 6 decimals (scaled by 1e12)
  * - Max private balance: ~18,446,744 XOM (18.4M XOM)
- * - Scaling dust (up to ~0.000001 XOM) is acceptable rounding loss
+ * - Scaling dust is refunded to the user's public balance
+ *   (only the cleanly-scaled portion is burned)
+ *
+ * Privacy Fee:
+ * - No fee is charged in this contract.
+ * - The OmniPrivacyBridge charges a 0.5% fee (50 basis points)
+ *   when users convert XOM to pXOM via the bridge entry point.
+ * - Example: User sends 1000 XOM to bridge. Bridge deducts 5 XOM
+ *   (0.5%) as fee, calls this contract to mint 995 pXOM.
  *
  * Features:
  * - Public balance management (standard ERC20)
  * - Private balance management (MPC-encrypted, 6-decimal precision)
- * - XOM to pXOM conversion (no fee here; bridge charges 0.3%)
+ * - XOM to pXOM conversion (no fee here; bridge charges 0.5%)
  * - Privacy-preserving transfers
  * - Shadow ledger for emergency recovery if MPC becomes unavailable
  * - Role-based access control
  * - Pausable for emergency stops
- * - Upgradeable via UUPS proxy pattern
+ * - Upgradeable via UUPS proxy pattern with ossification
+ * - Checked MPC arithmetic (checkedAdd/checkedSub) to revert on
+ *   overflow instead of silently wrapping
  *
  * Privacy Operations:
  * - onBoard: Convert from storage (ct) to computation (gt) type
@@ -91,10 +108,17 @@ contract PrivateOmniCoin is
     uint256 public constant INITIAL_SUPPLY =
         1_000_000_000 * 10 ** 18;
 
-    /// @notice Privacy conversion fee in basis points (30 = 0.3%)
-    /// @dev Retained for reference; fee is charged by OmniPrivacyBridge,
-    /// not by this contract. See H-01 fix notes.
-    uint16 public constant PRIVACY_FEE_BPS = 30;
+    /// @notice Privacy conversion fee in basis points (50 = 0.5%)
+    /// @dev This constant is retained for reference and external
+    ///      integrator queries. The fee is NOT charged by this
+    ///      contract; it is charged by OmniPrivacyBridge on the
+    ///      XOM-to-pXOM entry path.
+    ///
+    ///      Fee example (0.5% = 50 BPS):
+    ///        User converts 1000 XOM via bridge.
+    ///        Bridge deducts 1000 * 50 / 10000 = 5 XOM as fee.
+    ///        Bridge calls this contract to mint 995 pXOM.
+    uint16 public constant PRIVACY_FEE_BPS = 50;
 
     /// @notice Basis points denominator (10000 = 100%)
     uint16 public constant BPS_DENOMINATOR = 10000;
@@ -123,31 +147,48 @@ contract PrivateOmniCoin is
     /// @dev Total amount of tokens in private mode (scaled precision)
     ctUint64 private totalPrivateSupply;
 
-    /// @notice Privacy fee recipient address
-    /// @dev Retained for storage layout compatibility with deployed proxy
+    /// @notice VESTIGIAL: Fee recipient address (no longer used for
+    ///         fee routing)
+    /// @dev Retained solely for storage layout compatibility with
+    ///      deployed proxy. DO NOT rely on this value for fee
+    ///      configuration. See OmniPrivacyBridge for actual fee
+    ///      management.
     address private feeRecipient;
 
     /// @notice Whether privacy features are enabled on this network
     bool private privacyEnabled;
 
-    /// @notice Shadow ledger tracking private deposits for emergency recovery
-    /// @dev Tracks total scaled private balance per user (in MPC-scaled
-    /// units, i.e., 6-decimal precision). Used only when MPC is
-    /// unavailable and admin triggers emergencyRecoverPrivateBalance.
+    /// @notice Shadow ledger tracking private deposits for emergency
+    ///         recovery
+    /// @dev Tracks total scaled private balance per user (in
+    ///      MPC-scaled units, i.e., 6-decimal precision). Used only
+    ///      when MPC is unavailable and admin triggers
+    ///      emergencyRecoverPrivateBalance.
     mapping(address => uint256) public privateDepositLedger;
 
-    /// @notice Whether contract is ossified (permanently non-upgradeable)
+    /// @notice Whether contract is ossified (permanently
+    ///         non-upgradeable)
     bool private _ossified;
 
     /**
      * @dev Storage gap for future upgrades.
-     * @notice Reserves storage slots for adding new variables in upgrades
-     * without shifting inherited contract storage.
-     * Current storage: 6 variables (encryptedBalances, totalPrivateSupply,
-     * feeRecipient, privacyEnabled, privateDepositLedger, _ossified)
-     * Gap size: 50 - 6 = 44 slots reserved
+     * @notice Reserves storage slots for adding new variables in
+     *         upgrades without shifting inherited contract storage.
+     *
+     * Current named sequential state variables:
+     *   - encryptedBalances    (mapping, does not consume seq. slot)
+     *   - totalPrivateSupply   (1 slot)
+     *   - feeRecipient         (1 slot)
+     *   - privacyEnabled       (1 slot)
+     *   - privateDepositLedger (mapping, does not consume seq. slot)
+     *   - _ossified            (1 slot)
+     *
+     * Sequential slots used: 4 (totalPrivateSupply, feeRecipient,
+     *   privacyEnabled, _ossified)
+     * Gap = 50 - 4 = 46 slots reserved
+     * (mappings excluded per OZ convention)
      */
-    uint256[44] private __gap;
+    uint256[46] private __gap;
 
     // ====================================================================
     // EVENTS
@@ -155,20 +196,21 @@ contract PrivateOmniCoin is
 
     /// @notice Emitted when tokens are converted to private mode
     /// @param user Address converting tokens
-    /// @param publicAmount Amount converted (18-decimal public amount)
-    /// @param fee Fee charged for conversion (always 0 in this contract)
+    /// @param publicAmount Amount burned (18-decimal, after dust
+    ///        refund -- only the cleanly-scaled portion)
+    // solhint-disable-next-line gas-indexed-events
     event ConvertedToPrivate(
         address indexed user,
-        uint256 indexed publicAmount,
-        uint256 indexed fee
+        uint256 publicAmount
     );
 
     /// @notice Emitted when tokens are converted from private to public
     /// @param user Address converting tokens
     /// @param publicAmount Amount converted (18-decimal public amount)
+    // solhint-disable-next-line gas-indexed-events
     event ConvertedToPublic(
         address indexed user,
-        uint256 indexed publicAmount
+        uint256 publicAmount
     );
 
     /// @notice Emitted when a private transfer occurs
@@ -191,9 +233,10 @@ contract PrivateOmniCoin is
     /// @notice Emitted when an emergency private balance recovery occurs
     /// @param user Address whose private balance was recovered
     /// @param publicAmount Amount minted back (18-decimal)
+    // solhint-disable-next-line gas-indexed-events
     event EmergencyPrivateRecovery(
         address indexed user,
-        uint256 indexed publicAmount
+        uint256 publicAmount
     );
 
     /// @notice Emitted when the contract is permanently ossified
@@ -293,16 +336,24 @@ contract PrivateOmniCoin is
 
     /**
      * @notice Convert public XOM tokens to private pXOM
-     * @dev Burns public tokens and credits scaled private balance via MPC.
-     * No fee is charged here; the OmniPrivacyBridge charges 0.3%.
+     * @dev Burns public tokens and credits scaled private balance
+     *      via MPC. No fee is charged here; the OmniPrivacyBridge
+     *      charges 0.5%.
      *
      * Scaling: The 18-decimal public amount is divided by
      * PRIVACY_SCALING_FACTOR (1e12) to produce a 6-decimal value
-     * that fits within uint64. Rounding dust (up to ~0.000001 XOM)
-     * is acceptable loss.
+     * that fits within uint64.
+     *
+     * M-03 fix: Only the cleanly-scaled portion (scaledAmount *
+     * PRIVACY_SCALING_FACTOR) is burned. Any sub-1e12 remainder
+     * ("scaling dust") stays in the user's public balance, preventing
+     * permanent token destruction.
      *
      * Max convertible amount per call:
      * type(uint64).max * 1e12 = ~18,446,744 XOM
+     *
+     * M-01 fix: Uses MpcCore.checkedAdd() instead of unchecked
+     * MpcCore.add() to revert on overflow.
      *
      * @param amount Amount of public tokens to convert (18 decimals)
      */
@@ -319,41 +370,52 @@ contract PrivateOmniCoin is
             revert AmountTooLarge();
         }
 
-        // Burn the full public amount from user
-        _burn(msg.sender, amount);
+        // M-03: Only burn the cleanly-scaled portion;
+        // sub-1e12 dust stays in user's public balance
+        uint256 actualBurnAmount =
+            scaledAmount * PRIVACY_SCALING_FACTOR;
+        _burn(msg.sender, actualBurnAmount);
 
         // Create encrypted amount from scaled value
         gtUint64 gtAmount =
             MpcCore.setPublic64(uint64(scaledAmount));
 
-        // Load current encrypted balance and add
+        // M-01: Use checkedAdd to revert on overflow
         gtUint64 gtCurrentBalance =
             MpcCore.onBoard(encryptedBalances[msg.sender]);
         gtUint64 gtNewBalance =
-            MpcCore.add(gtCurrentBalance, gtAmount);
+            MpcCore.checkedAdd(gtCurrentBalance, gtAmount);
 
         // Store updated encrypted balance
         encryptedBalances[msg.sender] =
             MpcCore.offBoard(gtNewBalance);
 
-        // Update total private supply
+        // L-01: Check that total private supply does not exceed
+        // the uint64 boundary (defense-in-depth for encrypted supply)
         gtUint64 gtTotalPrivate =
             MpcCore.onBoard(totalPrivateSupply);
         gtUint64 gtNewTotalPrivate =
-            MpcCore.add(gtTotalPrivate, gtAmount);
+            MpcCore.checkedAdd(gtTotalPrivate, gtAmount);
         totalPrivateSupply =
             MpcCore.offBoard(gtNewTotalPrivate);
 
         // Update shadow ledger for emergency recovery
         privateDepositLedger[msg.sender] += scaledAmount;
 
-        emit ConvertedToPrivate(msg.sender, amount, 0);
+        emit ConvertedToPrivate(msg.sender, actualBurnAmount);
     }
 
     /**
      * @notice Convert private pXOM tokens back to public XOM
      * @dev Decrypts the MPC amount, scales it back to 18 decimals,
      * and mints public tokens. No fee charged.
+     *
+     * M-01 fix: Uses MpcCore.checkedSub() instead of unchecked
+     * MpcCore.sub() to revert on underflow.
+     *
+     * L-01/L-02: Enforces MAX_SUPPLY on the mint path as
+     * defense-in-depth.
+     *
      * @param encryptedAmount Encrypted amount to convert (6-decimal
      * scaled precision within MPC)
      */
@@ -373,9 +435,9 @@ contract PrivateOmniCoin is
             revert InsufficientPrivateBalance();
         }
 
-        // Subtract from encrypted balance
+        // M-01: Use checkedSub for defense-in-depth
         gtUint64 gtNewBalance =
-            MpcCore.sub(gtCurrentBalance, encryptedAmount);
+            MpcCore.checkedSub(gtCurrentBalance, encryptedAmount);
         encryptedBalances[msg.sender] =
             MpcCore.offBoard(gtNewBalance);
 
@@ -383,26 +445,32 @@ contract PrivateOmniCoin is
         gtUint64 gtTotalPrivate =
             MpcCore.onBoard(totalPrivateSupply);
         gtUint64 gtNewTotalPrivate =
-            MpcCore.sub(gtTotalPrivate, encryptedAmount);
+            MpcCore.checkedSub(gtTotalPrivate, encryptedAmount);
         totalPrivateSupply =
             MpcCore.offBoard(gtNewTotalPrivate);
 
         // Decrypt amount and scale back to 18 decimals
-        // M-02: Check for zero after decryption to prevent no-op
-        // conversions that waste gas and emit misleading events.
         uint64 plainAmount = MpcCore.decrypt(encryptedAmount);
         if (plainAmount == 0) revert ZeroAmount();
         uint256 publicAmount =
             uint256(plainAmount) * PRIVACY_SCALING_FACTOR;
 
         // Update shadow ledger (strict inequality for gas opt)
-        if (uint256(plainAmount) > privateDepositLedger[msg.sender]) {
+        if (
+            uint256(plainAmount) >
+            privateDepositLedger[msg.sender]
+        ) {
             // Edge case: ledger may be less if private transfers
             // occurred. Zero it out rather than underflow.
             privateDepositLedger[msg.sender] = 0;
         } else {
             privateDepositLedger[msg.sender] -=
                 uint256(plainAmount);
+        }
+
+        // L-01: Defense-in-depth MAX_SUPPLY check on mint
+        if (totalSupply() + publicAmount > MAX_SUPPLY) {
+            revert ExceedsMaxSupply();
         }
 
         // Mint public tokens to user
@@ -418,7 +486,12 @@ contract PrivateOmniCoin is
     /**
      * @notice Transfer private tokens to another address
      * @dev Transfers encrypted balance without revealing amount.
-     * Updates shadow ledgers for both sender and recipient.
+     *      Updates shadow ledgers for both sender and recipient.
+     *
+     *      M-01 fix: Uses MpcCore.checkedSub() and
+     *      MpcCore.checkedAdd() for defense-in-depth overflow/
+     *      underflow protection.
+     *
      * @param to Recipient address
      * @param encryptedAmount Encrypted amount to transfer (6-decimal
      * scaled precision within MPC)
@@ -429,7 +502,7 @@ contract PrivateOmniCoin is
     ) external nonReentrant whenNotPaused {
         if (!privacyEnabled) revert PrivacyNotAvailable();
         if (to == address(0)) revert ZeroAddress();
-        // M-01: Prevent self-transfers that waste gas and may
+        // Prevent self-transfers that waste gas and may
         // corrupt MPC state via same-slot read/write ordering.
         if (to == msg.sender) revert SelfTransfer();
 
@@ -444,17 +517,17 @@ contract PrivateOmniCoin is
             revert InsufficientPrivateBalance();
         }
 
-        // Subtract from sender
+        // M-01: checkedSub reverts on underflow
         gtUint64 gtNewSenderBalance =
-            MpcCore.sub(gtSenderBalance, encryptedAmount);
+            MpcCore.checkedSub(gtSenderBalance, encryptedAmount);
         encryptedBalances[msg.sender] =
             MpcCore.offBoard(gtNewSenderBalance);
 
-        // Add to recipient
+        // M-01: checkedAdd reverts on overflow
         gtUint64 gtRecipientBalance =
             MpcCore.onBoard(encryptedBalances[to]);
         gtUint64 gtNewRecipientBalance =
-            MpcCore.add(gtRecipientBalance, encryptedAmount);
+            MpcCore.checkedAdd(gtRecipientBalance, encryptedAmount);
         encryptedBalances[to] =
             MpcCore.offBoard(gtNewRecipientBalance);
 
@@ -475,8 +548,10 @@ contract PrivateOmniCoin is
 
     /**
      * @notice Update fee recipient address
-     * @dev Only admin can update. Retained for storage layout
-     * compatibility and potential future use.
+     * @dev Only admin can update. VESTIGIAL: Retained solely for
+     *      storage layout compatibility with deployed proxy. This
+     *      value is not used by any fee logic in this contract.
+     *      See OmniPrivacyBridge for actual fee management.
      * @param newRecipient New fee recipient address
      */
     function setFeeRecipient(
@@ -501,10 +576,15 @@ contract PrivateOmniCoin is
     }
 
     /**
-     * @notice Emergency recover private balance when MPC is unavailable
+     * @notice Emergency recover private balance when MPC is
+     *         unavailable
      * @dev Only callable by admin when privacy is disabled. Uses
      * the shadow ledger to determine the user's recoverable balance.
      * Mints the scaled-up public amount back to the user.
+     *
+     * L-01/L-02: Enforces MAX_SUPPLY cap on the mint as
+     * defense-in-depth, even though the recovered amounts correspond
+     * to previously burned tokens.
      *
      * Limitations: Only deposits made via convertToPrivate are
      * recoverable. Amounts received via privateTransfer are NOT
@@ -524,9 +604,15 @@ contract PrivateOmniCoin is
         // Clear the shadow ledger entry
         privateDepositLedger[user] = 0;
 
-        // Scale back to 18-decimal public amount and mint
+        // Scale back to 18-decimal public amount
         uint256 publicAmount =
             scaledBalance * PRIVACY_SCALING_FACTOR;
+
+        // L-01: Defense-in-depth MAX_SUPPLY check
+        if (totalSupply() + publicAmount > MAX_SUPPLY) {
+            revert ExceedsMaxSupply();
+        }
+
         _mint(user, publicAmount);
 
         emit EmergencyPrivateRecovery(user, publicAmount);
@@ -535,7 +621,7 @@ contract PrivateOmniCoin is
     /**
      * @notice Mint new public tokens
      * @dev Only MINTER_ROLE can mint. Enforces MAX_SUPPLY cap as
-     *      defense-in-depth against compromised minter keys (M-03).
+     *      defense-in-depth against compromised minter keys.
      * @param to Address to mint tokens to
      * @param amount Amount to mint (18 decimals)
      */
@@ -571,8 +657,19 @@ contract PrivateOmniCoin is
         _unpause();
     }
 
+    /**
+     * @notice Permanently remove upgrade capability (one-way,
+     *         irreversible)
+     * @dev Can only be called by admin (through timelock). Once
+     *      ossified, the contract can never be upgraded again.
+     */
+    function ossify() external onlyRole(DEFAULT_ADMIN_ROLE) {
+        _ossified = true;
+        emit ContractOssified(address(this));
+    }
+
     // ====================================================================
-    // BALANCE QUERY FUNCTIONS
+    // EXTERNAL NON-VIEW QUERY FUNCTIONS
     // ====================================================================
 
     /**
@@ -666,7 +763,8 @@ contract PrivateOmniCoin is
 
     /**
      * @notice Get current fee recipient
-     * @dev Retained for storage layout compatibility
+     * @dev VESTIGIAL: Retained for storage layout compatibility.
+     *      This value is not used by any fee logic in this contract.
      * @return recipient Current fee recipient address
      */
     function getFeeRecipient()
@@ -682,31 +780,16 @@ contract PrivateOmniCoin is
     // ====================================================================
 
     /**
-     * @notice Permanently remove upgrade capability (one-way, irreversible)
-     * @dev Can only be called by admin (through timelock). Once ossified,
-     *      the contract can never be upgraded again.
-     */
-    function ossify() external onlyRole(DEFAULT_ADMIN_ROLE) {
-        _ossified = true;
-        emit ContractOssified(address(this));
-    }
-
-    /**
-     * @notice Check if the contract has been permanently ossified
-     * @return True if ossified (no further upgrades possible)
-     */
-    function isOssified() external view returns (bool) {
-        return _ossified;
-    }
-
-    /**
      * @notice Authorize contract upgrades (UUPS pattern)
      * @dev Only admin can authorize upgrades to new implementation.
      *      Reverts if contract is ossified.
+     *      The newImplementation address is validated by
+     *      UUPSUpgradeable._upgradeToAndCallUUPS which checks
+     *      ERC1967 implementation slot consistency.
      * @param newImplementation Address of new implementation contract
      */
     function _authorizeUpgrade(
-        address newImplementation
+        address newImplementation // solhint-disable-line no-unused-vars
     )
         internal
         override

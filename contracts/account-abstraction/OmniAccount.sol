@@ -32,8 +32,12 @@ contract OmniAccount is IAccount, Initializable, ReentrancyGuard {
     struct SessionKey {
         /// @notice Whether this session key is active
         bool active;
-        /// @notice Unix timestamp when session expires
+        /// @notice Unix timestamp when session expires (0 = no expiry)
         uint48 validUntil;
+        /// @notice Unix timestamp when session becomes valid (0 = immediately)
+        /// @dev M-01: Enables pre-provisioned session keys that activate
+        ///      in the future (e.g., "valid starting tomorrow at 9am").
+        uint48 validAfter;
         /// @notice Authorized signer address
         address signer;
         /// @notice Allowed target contract (address(0) = any target)
@@ -166,6 +170,14 @@ contract OmniAccount is IAccount, Initializable, ReentrancyGuard {
     /// @param initiatedBy Guardian who started recovery
     event RecoveryInitiated(address indexed newOwner, address indexed initiatedBy);
 
+    /// @notice Emitted when a guardian approves a pending recovery request
+    /// @param guardian The guardian who approved
+    /// @param approvalCount Total number of approvals after this one
+    event RecoveryApproved(
+        address indexed guardian,
+        uint256 indexed approvalCount
+    );
+
     /// @notice Emitted when recovery is completed
     /// @param newOwner The new account owner
     event RecoveryCompleted(address indexed newOwner);
@@ -234,6 +246,9 @@ contract OmniAccount is IAccount, Initializable, ReentrancyGuard {
 
     /// @notice Invalid address (zero address)
     error InvalidAddress();
+
+    /// @notice Session key validUntil is in the past
+    error SessionKeyAlreadyExpired();
 
     /// @notice Guardian management is frozen during active recovery
     error GuardiansFrozenDuringRecovery();
@@ -348,8 +363,12 @@ contract OmniAccount is IAccount, Initializable, ReentrancyGuard {
                 return SIG_VALIDATION_FAILED;
             }
 
-            // Pack validUntil into validation data (bits 160-207)
-            return uint256(sk.validUntil) << 160;
+            // M-01: Pack both validUntil and validAfter into
+            // validation data per ERC-4337 spec:
+            //   bits 160-207: validUntil (uint48)
+            //   bits 208-255: validAfter (uint48)
+            return (uint256(sk.validUntil) << 160)
+                | (uint256(sk.validAfter) << 208);
         }
 
         return SIG_VALIDATION_FAILED;
@@ -394,7 +413,10 @@ contract OmniAccount is IAccount, Initializable, ReentrancyGuard {
 
     /**
      * @notice Execute a batch of calls from this account
-     * @dev Atomic — reverts entirely if any call fails. Useful for approve+swap patterns.
+     * @dev Atomic -- reverts entirely if any call fails.
+     *      M-02: Spending limits are enforced for EntryPoint calls
+     *      (session key path) by summing all values and checking
+     *      each ERC-20 transfer/approve against the daily limit.
      * @param targets Array of contracts to call
      * @param values Array of native token values
      * @param datas Array of calldatas
@@ -405,11 +427,26 @@ contract OmniAccount is IAccount, Initializable, ReentrancyGuard {
         bytes[] calldata datas
     ) external onlyOwnerOrEntryPoint nonReentrant {
         uint256 len = targets.length;
-        if (len != values.length || len != datas.length) revert BatchLengthMismatch();
+        if (len != values.length || len != datas.length) {
+            revert BatchLengthMismatch();
+        }
 
         for (uint256 i; i < len; ++i) {
+            // M-02: Enforce spending limits for EntryPoint calls
+            if (msg.sender == entryPoint) {
+                if (values[i] > 0) {
+                    _checkAndUpdateSpendingLimit(
+                        address(0), values[i]
+                    );
+                }
+                if (datas[i].length > 3) {
+                    _checkERC20SpendingLimit(targets[i], datas[i]);
+                }
+            }
             // solhint-disable-next-line avoid-low-level-calls
-            (bool success,) = targets[i].call{value: values[i]}(datas[i]);
+            (bool success,) = targets[i].call{value: values[i]}(
+                datas[i]
+            );
             if (!success) revert ExecutionFailed(targets[i]);
             emit Executed(targets[i], values[i], datas[i]);
         }
@@ -509,7 +546,8 @@ contract OmniAccount is IAccount, Initializable, ReentrancyGuard {
 
     /**
      * @notice Approve a pending recovery request
-     * @dev Each guardian can approve once. Recovery auto-executes when threshold is met.
+     * @dev Each guardian can approve once. L-01: Emits RecoveryApproved
+     *      event for off-chain monitoring of recovery progress.
      */
     function approveRecovery() external onlyGuardianRole {
         if (recoveryRequest.initiatedAt == 0) revert NoActiveRecovery();
@@ -517,6 +555,10 @@ contract OmniAccount is IAccount, Initializable, ReentrancyGuard {
 
         recoveryRequest.approvals[msg.sender] = true;
         ++recoveryRequest.approvalCount;
+
+        emit RecoveryApproved(
+            msg.sender, recoveryRequest.approvalCount
+        );
     }
 
     /**
@@ -558,19 +600,31 @@ contract OmniAccount is IAccount, Initializable, ReentrancyGuard {
 
     /**
      * @notice Add a session key with scoped permissions
+     * @dev M-01: Accepts validAfter for future-activation session keys.
+     *      L-02: Rejects validUntil values that are in the past
+     *      (validUntil == 0 means no expiry and is allowed).
      * @param signer Session key signer address
-     * @param validUntil Expiration timestamp
+     * @param validUntil Expiration timestamp (0 = no expiry)
+     * @param validAfter Activation timestamp (0 = immediately valid)
      * @param allowedTarget Scoped contract (address(0) = any)
      * @param maxValue Maximum native value per call
      */
     function addSessionKey(
         address signer,
         uint48 validUntil,
+        uint48 validAfter,
         address allowedTarget,
         uint256 maxValue
     ) external onlyOwner {
         if (signer == address(0)) revert InvalidAddress();
-        if (sessionKeyList.length > MAX_SESSION_KEYS - 1) revert TooManySessionKeys();
+        // L-02: Reject past expiration (0 = no expiry, allowed)
+        // solhint-disable-next-line not-rely-on-time
+        if (validUntil != 0 && validUntil < block.timestamp) {
+            revert SessionKeyAlreadyExpired();
+        }
+        if (sessionKeyList.length > MAX_SESSION_KEYS - 1) {
+            revert TooManySessionKeys();
+        }
 
         // If replacing, don't increment list
         if (!sessionKeys[signer].active) {
@@ -580,6 +634,7 @@ contract OmniAccount is IAccount, Initializable, ReentrancyGuard {
         sessionKeys[signer] = SessionKey({
             signer: signer,
             validUntil: validUntil,
+            validAfter: validAfter,
             allowedTarget: allowedTarget,
             maxValue: maxValue,
             active: true
