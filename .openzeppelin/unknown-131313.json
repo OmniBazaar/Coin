@@ -29,6 +29,10 @@
       "address": "0x02835C667F646D97dAf632BDDdf682Fb1753e7ad",
       "txHash": "0xb8da064b9e70e0f133c8dd75ccf04a5afc60d5dbe0f5209a58e0fede3843d3a6",
       "kind": "uups"
+    },
+    {
+      "address": "0x6136A40Ea03586aCA976FA2bbe9deC072EA75869",
+      "kind": "uups"
     }
   ],
   "impls": {
@@ -2933,6 +2937,397 @@
           ]
         }
       }
+    },
+    "81e22a6c59bbbb321b07d4ce8bd2c2e5e1627506f5df7cadb0d890b4a897c439": {
+      "address": "0x83220171d1c4A26574B01e36a713C9Ced5c083FD",
+      "layout": {
+        "solcVersion": "0.8.24",
+        "storage": [
+          {
+            "label": "xomToken",
+            "offset": 0,
+            "slot": "0",
+            "type": "t_contract(IERC20)7223",
+            "contract": "OmniValidatorRewards",
+            "src": "contracts/OmniValidatorRewards.sol:305"
+          },
+          {
+            "label": "participation",
+            "offset": 0,
+            "slot": "1",
+            "type": "t_contract(IOmniParticipation)45894",
+            "contract": "OmniValidatorRewards",
+            "src": "contracts/OmniValidatorRewards.sol:306"
+          },
+          {
+            "label": "omniCore",
+            "offset": 0,
+            "slot": "2",
+            "type": "t_contract(IOmniCore)45932",
+            "contract": "OmniValidatorRewards",
+            "src": "contracts/OmniValidatorRewards.sol:309"
+          },
+          {
+            "label": "genesisTimestamp",
+            "offset": 0,
+            "slot": "3",
+            "type": "t_uint256",
+            "contract": "OmniValidatorRewards",
+            "src": "contracts/OmniValidatorRewards.sol:311"
+          },
+          {
+            "label": "lastProcessedEpoch",
+            "offset": 0,
+            "slot": "4",
+            "type": "t_uint256",
+            "contract": "OmniValidatorRewards",
+            "src": "contracts/OmniValidatorRewards.sol:312"
+          },
+          {
+            "label": "totalBlocksProduced",
+            "offset": 0,
+            "slot": "5",
+            "type": "t_uint256",
+            "contract": "OmniValidatorRewards",
+            "src": "contracts/OmniValidatorRewards.sol:318"
+          },
+          {
+            "label": "accumulatedRewards",
+            "offset": 0,
+            "slot": "6",
+            "type": "t_mapping(t_address,t_uint256)",
+            "contract": "OmniValidatorRewards",
+            "src": "contracts/OmniValidatorRewards.sol:319"
+          },
+          {
+            "label": "totalClaimed",
+            "offset": 0,
+            "slot": "7",
+            "type": "t_mapping(t_address,t_uint256)",
+            "contract": "OmniValidatorRewards",
+            "src": "contracts/OmniValidatorRewards.sol:322"
+          },
+          {
+            "label": "lastHeartbeat",
+            "offset": 0,
+            "slot": "8",
+            "type": "t_mapping(t_address,t_uint256)",
+            "contract": "OmniValidatorRewards",
+            "src": "contracts/OmniValidatorRewards.sol:324"
+          },
+          {
+            "label": "transactionsProcessed",
+            "offset": 0,
+            "slot": "9",
+            "type": "t_mapping(t_address,t_mapping(t_uint256,t_uint256))",
+            "contract": "OmniValidatorRewards",
+            "src": "contracts/OmniValidatorRewards.sol:327"
+          },
+          {
+            "label": "epochTotalTransactions",
+            "offset": 0,
+            "slot": "10",
+            "type": "t_mapping(t_uint256,t_uint256)",
+            "contract": "OmniValidatorRewards",
+            "src": "contracts/OmniValidatorRewards.sol:330"
+          },
+          {
+            "label": "epochActiveValidators",
+            "offset": 0,
+            "slot": "11",
+            "type": "t_mapping(t_uint256,t_uint256)",
+            "contract": "OmniValidatorRewards",
+            "src": "contracts/OmniValidatorRewards.sol:333"
+          },
+          {
+            "label": "pendingContracts",
+            "offset": 0,
+            "slot": "12",
+            "type": "t_struct(PendingContractsUpdate)45955_storage",
+            "contract": "OmniValidatorRewards",
+            "src": "contracts/OmniValidatorRewards.sol:335"
+          },
+          {
+            "label": "_ossified",
+            "offset": 0,
+            "slot": "16",
+            "type": "t_bool",
+            "contract": "OmniValidatorRewards",
+            "src": "contracts/OmniValidatorRewards.sol:336"
+          },
+          {
+            "label": "totalOutstandingRewards",
+            "offset": 0,
+            "slot": "17",
+            "type": "t_uint256",
+            "contract": "OmniValidatorRewards",
+            "src": "contracts/OmniValidatorRewards.sol:342"
+          },
+          {
+            "label": "pendingUpgrade",
+            "offset": 0,
+            "slot": "18",
+            "type": "t_struct(PendingUpgrade)45961_storage",
+            "contract": "OmniValidatorRewards",
+            "src": "contracts/OmniValidatorRewards.sol:347"
+          },
+          {
+            "label": "rewardMultiplier",
+            "offset": 0,
+            "slot": "20",
+            "type": "t_mapping(t_address,t_uint256)",
+            "contract": "OmniValidatorRewards",
+            "src": "contracts/OmniValidatorRewards.sol:353"
+          },
+          {
+            "label": "roleMultiplier",
+            "offset": 0,
+            "slot": "21",
+            "type": "t_mapping(t_address,t_uint256)",
+            "contract": "OmniValidatorRewards",
+            "src": "contracts/OmniValidatorRewards.sol:365"
+          },
+          {
+            "label": "__gap",
+            "offset": 0,
+            "slot": "22",
+            "type": "t_array(t_uint256)34_storage",
+            "contract": "OmniValidatorRewards",
+            "src": "contracts/OmniValidatorRewards.sol:372"
+          }
+        ],
+        "types": {
+          "t_address": {
+            "label": "address",
+            "numberOfBytes": "20"
+          },
+          "t_bool": {
+            "label": "bool",
+            "numberOfBytes": "1"
+          },
+          "t_bytes32": {
+            "label": "bytes32",
+            "numberOfBytes": "32"
+          },
+          "t_mapping(t_address,t_bool)": {
+            "label": "mapping(address => bool)",
+            "numberOfBytes": "32"
+          },
+          "t_mapping(t_bytes32,t_struct(RoleData)26_storage)": {
+            "label": "mapping(bytes32 => struct AccessControlUpgradeable.RoleData)",
+            "numberOfBytes": "32"
+          },
+          "t_struct(AccessControlStorage)36_storage": {
+            "label": "struct AccessControlUpgradeable.AccessControlStorage",
+            "members": [
+              {
+                "label": "_roles",
+                "type": "t_mapping(t_bytes32,t_struct(RoleData)26_storage)",
+                "offset": 0,
+                "slot": "0"
+              }
+            ],
+            "numberOfBytes": "32"
+          },
+          "t_struct(InitializableStorage)147_storage": {
+            "label": "struct Initializable.InitializableStorage",
+            "members": [
+              {
+                "label": "_initialized",
+                "type": "t_uint64",
+                "offset": 0,
+                "slot": "0"
+              },
+              {
+                "label": "_initializing",
+                "type": "t_bool",
+                "offset": 8,
+                "slot": "0"
+              }
+            ],
+            "numberOfBytes": "32"
+          },
+          "t_struct(PausableStorage)555_storage": {
+            "label": "struct PausableUpgradeable.PausableStorage",
+            "members": [
+              {
+                "label": "_paused",
+                "type": "t_bool",
+                "offset": 0,
+                "slot": "0"
+              }
+            ],
+            "numberOfBytes": "32"
+          },
+          "t_struct(ReentrancyGuardStorage)619_storage": {
+            "label": "struct ReentrancyGuardUpgradeable.ReentrancyGuardStorage",
+            "members": [
+              {
+                "label": "_status",
+                "type": "t_uint256",
+                "offset": 0,
+                "slot": "0"
+              }
+            ],
+            "numberOfBytes": "32"
+          },
+          "t_struct(RoleData)26_storage": {
+            "label": "struct AccessControlUpgradeable.RoleData",
+            "members": [
+              {
+                "label": "hasRole",
+                "type": "t_mapping(t_address,t_bool)",
+                "offset": 0,
+                "slot": "0"
+              },
+              {
+                "label": "adminRole",
+                "type": "t_bytes32",
+                "offset": 0,
+                "slot": "1"
+              }
+            ],
+            "numberOfBytes": "64"
+          },
+          "t_uint256": {
+            "label": "uint256",
+            "numberOfBytes": "32"
+          },
+          "t_uint64": {
+            "label": "uint64",
+            "numberOfBytes": "8"
+          },
+          "t_array(t_uint256)34_storage": {
+            "label": "uint256[34]",
+            "numberOfBytes": "1088"
+          },
+          "t_contract(IERC20)7223": {
+            "label": "contract IERC20",
+            "numberOfBytes": "20"
+          },
+          "t_contract(IOmniCore)45932": {
+            "label": "contract IOmniCore",
+            "numberOfBytes": "20"
+          },
+          "t_contract(IOmniParticipation)45894": {
+            "label": "contract IOmniParticipation",
+            "numberOfBytes": "20"
+          },
+          "t_mapping(t_address,t_mapping(t_uint256,t_uint256))": {
+            "label": "mapping(address => mapping(uint256 => uint256))",
+            "numberOfBytes": "32"
+          },
+          "t_mapping(t_address,t_uint256)": {
+            "label": "mapping(address => uint256)",
+            "numberOfBytes": "32"
+          },
+          "t_mapping(t_uint256,t_uint256)": {
+            "label": "mapping(uint256 => uint256)",
+            "numberOfBytes": "32"
+          },
+          "t_struct(PendingContractsUpdate)45955_storage": {
+            "label": "struct OmniValidatorRewards.PendingContractsUpdate",
+            "members": [
+              {
+                "label": "xomToken",
+                "type": "t_address",
+                "offset": 0,
+                "slot": "0"
+              },
+              {
+                "label": "participation",
+                "type": "t_address",
+                "offset": 0,
+                "slot": "1"
+              },
+              {
+                "label": "omniCore",
+                "type": "t_address",
+                "offset": 0,
+                "slot": "2"
+              },
+              {
+                "label": "effectiveTimestamp",
+                "type": "t_uint256",
+                "offset": 0,
+                "slot": "3"
+              }
+            ],
+            "numberOfBytes": "128"
+          },
+          "t_struct(PendingUpgrade)45961_storage": {
+            "label": "struct OmniValidatorRewards.PendingUpgrade",
+            "members": [
+              {
+                "label": "newImplementation",
+                "type": "t_address",
+                "offset": 0,
+                "slot": "0"
+              },
+              {
+                "label": "effectiveTimestamp",
+                "type": "t_uint256",
+                "offset": 0,
+                "slot": "1"
+              }
+            ],
+            "numberOfBytes": "64"
+          }
+        },
+        "namespaces": {
+          "erc7201:openzeppelin.storage.Pausable": [
+            {
+              "contract": "PausableUpgradeable",
+              "label": "_paused",
+              "type": "t_bool",
+              "src": "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol:21",
+              "offset": 0,
+              "slot": "0"
+            }
+          ],
+          "erc7201:openzeppelin.storage.ReentrancyGuard": [
+            {
+              "contract": "ReentrancyGuardUpgradeable",
+              "label": "_status",
+              "type": "t_uint256",
+              "src": "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol:43",
+              "offset": 0,
+              "slot": "0"
+            }
+          ],
+          "erc7201:openzeppelin.storage.AccessControl": [
+            {
+              "contract": "AccessControlUpgradeable",
+              "label": "_roles",
+              "type": "t_mapping(t_bytes32,t_struct(RoleData)26_storage)",
+              "src": "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol:62",
+              "offset": 0,
+              "slot": "0"
+            }
+          ],
+          "erc7201:openzeppelin.storage.Initializable": [
+            {
+              "contract": "Initializable",
+              "label": "_initialized",
+              "type": "t_uint64",
+              "src": "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol:69",
+              "offset": 0,
+              "slot": "0"
+            },
+            {
+              "contract": "Initializable",
+              "label": "_initializing",
+              "type": "t_bool",
+              "src": "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol:73",
+              "offset": 8,
+              "slot": "0"
+            }
+          ]
+        }
+      },
+      "allAddresses": [
+        "0x83220171d1c4A26574B01e36a713C9Ced5c083FD"
+      ]
     }
   }
 }

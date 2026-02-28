@@ -801,6 +801,156 @@ describe('OmniValidatorRewards', function () {
         });
     });
 
+    describe('Penalty System (PENALTY_ROLE + setRewardMultiplier)', function () {
+        const PENALTY_ROLE = keccak256(toUtf8Bytes('PENALTY_ROLE'));
+        let penaltyAdmin: any;
+
+        beforeEach(async function () {
+            penaltyAdmin = blockchainRole; // reuse signer
+            await validatorRewards.grantRole(PENALTY_ROLE, penaltyAdmin.address);
+        });
+
+        it('should have PENALTY_ROLE constant', async function () {
+            const role = await validatorRewards.PENALTY_ROLE();
+            expect(role).to.equal(PENALTY_ROLE);
+        });
+
+        it('should set reward multiplier for a validator', async function () {
+            const tx = await validatorRewards.connect(penaltyAdmin).setRewardMultiplier(
+                validator1.address, 50, 'Downtime penalty'
+            );
+
+            await expect(tx)
+                .to.emit(validatorRewards, 'RewardMultiplierChanged')
+                .withArgs(validator1.address, 0, 50, 'Downtime penalty');
+
+            expect(await validatorRewards.rewardMultiplier(validator1.address)).to.equal(50);
+        });
+
+        it('should reduce rewards proportionally when multiplier < 100', async function () {
+            // Need two active validators so weight actually matters for distribution
+            await validatorRewards.connect(validator1).submitHeartbeat();
+            await validatorRewards.connect(validator2).submitHeartbeat();
+
+            // Set equal participation so we can measure penalty effect
+            await mockParticipation.setTotalScore(validator1.address, 50);
+            await mockParticipation.setTotalScore(validator2.address, 50);
+
+            // Process one epoch without penalty to get baseline
+            await time.increase(EPOCH_DURATION + 1);
+            await processNextEpoch();
+            const fullRewards = await validatorRewards.accumulatedRewards(validator1.address);
+            expect(fullRewards).to.be.gt(0);
+
+            // Claim and reset
+            await validatorRewards.connect(validator1).claimRewards();
+            await validatorRewards.connect(validator2).claimRewards();
+
+            // Set 50% penalty on validator1
+            await validatorRewards.connect(penaltyAdmin).setRewardMultiplier(
+                validator1.address, 50, 'Test penalty'
+            );
+
+            // Process another epoch
+            await validatorRewards.connect(validator1).submitHeartbeat();
+            await validatorRewards.connect(validator2).submitHeartbeat();
+            await time.increase(EPOCH_DURATION + 1);
+            await processNextEpoch();
+            const penalizedRewards = await validatorRewards.accumulatedRewards(validator1.address);
+
+            // Validator1 should receive less than before (50% weight penalty)
+            expect(penalizedRewards).to.be.lt(fullRewards);
+        });
+
+        it('should restore full rewards when multiplier reset to 0', async function () {
+            // Set penalty
+            await validatorRewards.connect(penaltyAdmin).setRewardMultiplier(
+                validator1.address, 25, 'Severe penalty'
+            );
+            expect(await validatorRewards.rewardMultiplier(validator1.address)).to.equal(25);
+
+            // Restore (0 = default/100%)
+            await validatorRewards.connect(penaltyAdmin).setRewardMultiplier(
+                validator1.address, 0, 'Penalty restored'
+            );
+            expect(await validatorRewards.rewardMultiplier(validator1.address)).to.equal(0);
+        });
+
+        it('should reject multiplier > 100', async function () {
+            await expect(
+                validatorRewards.connect(penaltyAdmin).setRewardMultiplier(
+                    validator1.address, 101, 'Too high'
+                )
+            ).to.be.revertedWithCustomError(validatorRewards, 'MultiplierTooHigh');
+        });
+
+        it('should reject unauthorized caller', async function () {
+            await expect(
+                validatorRewards.connect(unauthorized).setRewardMultiplier(
+                    validator1.address, 50, 'Unauthorized'
+                )
+            ).to.be.reverted;
+        });
+
+        it('should return multiplier via getRewardMultiplier', async function () {
+            await validatorRewards.connect(penaltyAdmin).setRewardMultiplier(
+                validator1.address, 75, 'Mild penalty'
+            );
+
+            expect(await validatorRewards.getRewardMultiplier(validator1.address)).to.equal(75);
+        });
+
+        it('should return 0 (default) for unpenalized validators', async function () {
+            expect(await validatorRewards.getRewardMultiplier(validator2.address)).to.equal(0);
+        });
+
+        it('should affect getEffectiveWeight', async function () {
+            await validatorRewards.connect(validator1).submitHeartbeat();
+
+            const weightBefore = await validatorRewards.getEffectiveWeight(validator1.address);
+
+            // Apply 50% penalty
+            await validatorRewards.connect(penaltyAdmin).setRewardMultiplier(
+                validator1.address, 50, 'Weight test'
+            );
+
+            const weightAfter = await validatorRewards.getEffectiveWeight(validator1.address);
+            expect(weightAfter).to.be.lt(weightBefore);
+            // Should be approximately half
+            expect(weightAfter).to.be.closeTo(weightBefore / BigInt(2), BigInt(1));
+        });
+
+        it('should allow setting multiplier to 1 (near-zero rewards)', async function () {
+            await validatorRewards.connect(validator1).submitHeartbeat();
+            const weightBefore = await validatorRewards.getEffectiveWeight(validator1.address);
+            expect(weightBefore).to.be.gt(0);
+
+            await validatorRewards.connect(penaltyAdmin).setRewardMultiplier(
+                validator1.address, 1, 'Maximum penalty'
+            );
+
+            const weightAfter = await validatorRewards.getEffectiveWeight(validator1.address);
+            // 1% of original — may round to 0 for small weights (integer math)
+            expect(weightAfter).to.be.lte(weightBefore / BigInt(50));
+        });
+
+        it('should emit correct old and new multiplier values', async function () {
+            // Set first penalty
+            await validatorRewards.connect(penaltyAdmin).setRewardMultiplier(
+                validator1.address, 75, 'First penalty'
+            );
+
+            // Update penalty
+            const tx = await validatorRewards.connect(penaltyAdmin).setRewardMultiplier(
+                validator1.address, 50, 'Increased penalty'
+            );
+
+            await expect(tx)
+                .to.emit(validatorRewards, 'RewardMultiplierChanged')
+                .withArgs(validator1.address, 75, 50, 'Increased penalty');
+        });
+    });
+
     describe('Edge Cases', function () {
         it('should handle zero staking amount', async function () {
             // Validator3 has no stake set

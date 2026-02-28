@@ -1,6 +1,7 @@
 /**
  * @file grant-roles.ts
- * @description Script to grant roles on OmniRegistration and OmniSybilGuard contracts
+ * @description Script to grant roles on OmniRegistration, OmniSybilGuard,
+ *   and OmniValidatorRewards contracts
  *
  * Usage:
  *   npx hardhat run scripts/grant-roles.ts --network fuji
@@ -8,6 +9,8 @@
  * This script grants:
  *   - VALIDATOR_ROLE and KYC_ATTESTOR_ROLE on OmniRegistration
  *   - REPORTER_ROLE and JUDGE_ROLE on OmniSybilGuard
+ *   - PENALTY_ROLE on OmniValidatorRewards (for reward penalty enforcement)
+ *   - VERIFIER_ROLE on OmniParticipation (for trustless claim verification)
  *
  * The roles are granted to the deployer address (which acts as the gateway validator)
  * In production, these would be granted to actual validator addresses.
@@ -21,6 +24,8 @@ interface DeploymentConfig {
     contracts: {
         OmniRegistration: string;
         OmniSybilGuard: string;
+        OmniValidatorRewards: string;
+        OmniParticipation: string;
         [key: string]: string;
     };
 }
@@ -124,37 +129,95 @@ async function main(): Promise<void> {
         }
     }
 
-    console.log('\n--- Granting OmniSybilGuard Roles ---');
+    // SybilGuard roles (may fail if contract was redeployed/deprecated)
+    try {
+        console.log('\n--- Granting OmniSybilGuard Roles ---');
 
-    // Get role constants
-    const REPORTER_ROLE = await sybilGuard.REPORTER_ROLE();
-    const JUDGE_ROLE = await sybilGuard.JUDGE_ROLE();
+        const REPORTER_ROLE = await sybilGuard.REPORTER_ROLE();
+        const JUDGE_ROLE = await sybilGuard.JUDGE_ROLE();
 
-    console.log(`REPORTER_ROLE: ${REPORTER_ROLE}`);
-    console.log(`JUDGE_ROLE: ${JUDGE_ROLE}`);
+        console.log(`REPORTER_ROLE: ${REPORTER_ROLE}`);
+        console.log(`JUDGE_ROLE: ${JUDGE_ROLE}`);
 
-    for (const validatorAddr of validatorAddresses) {
-        // Check if already has REPORTER_ROLE
-        const hasReporterRole = await sybilGuard.hasRole(REPORTER_ROLE, validatorAddr);
-        if (hasReporterRole) {
-            console.log(`${validatorAddr} already has REPORTER_ROLE`);
-        } else {
-            console.log(`Granting REPORTER_ROLE to ${validatorAddr}...`);
-            const tx3 = await sybilGuard.grantRole(REPORTER_ROLE, validatorAddr);
-            await tx3.wait();
-            console.log(`  Tx: ${tx3.hash}`);
+        for (const validatorAddr of validatorAddresses) {
+            const hasReporterRole = await sybilGuard.hasRole(REPORTER_ROLE, validatorAddr);
+            if (hasReporterRole) {
+                console.log(`${validatorAddr} already has REPORTER_ROLE`);
+            } else {
+                console.log(`Granting REPORTER_ROLE to ${validatorAddr}...`);
+                const tx3 = await sybilGuard.grantRole(REPORTER_ROLE, validatorAddr);
+                await tx3.wait();
+                console.log(`  Tx: ${tx3.hash}`);
+            }
+
+            const hasJudgeRole = await sybilGuard.hasRole(JUDGE_ROLE, validatorAddr);
+            if (hasJudgeRole) {
+                console.log(`${validatorAddr} already has JUDGE_ROLE`);
+            } else {
+                console.log(`Granting JUDGE_ROLE to ${validatorAddr}...`);
+                const tx4 = await sybilGuard.grantRole(JUDGE_ROLE, validatorAddr);
+                await tx4.wait();
+                console.log(`  Tx: ${tx4.hash}`);
+            }
         }
+    } catch (sgError) {
+        console.log(`OmniSybilGuard role granting failed (contract may be deprecated): ${sgError}`);
+    }
 
-        // Check if already has JUDGE_ROLE
-        const hasJudgeRole = await sybilGuard.hasRole(JUDGE_ROLE, validatorAddr);
-        if (hasJudgeRole) {
-            console.log(`${validatorAddr} already has JUDGE_ROLE`);
-        } else {
-            console.log(`Granting JUDGE_ROLE to ${validatorAddr}...`);
-            const tx4 = await sybilGuard.grantRole(JUDGE_ROLE, validatorAddr);
-            await tx4.wait();
-            console.log(`  Tx: ${tx4.hash}`);
+    // --- OmniValidatorRewards PENALTY_ROLE ---
+    const rewardsAddress = config.contracts.OmniValidatorRewards;
+
+    if (rewardsAddress && rewardsAddress !== '0x0000000000000000000000000000000000000000') {
+        console.log('\n--- Granting OmniValidatorRewards Roles ---');
+        console.log(`OmniValidatorRewards: ${rewardsAddress}`);
+
+        const OmniValidatorRewards = await ethers.getContractFactory('OmniValidatorRewards');
+        const rewards = OmniValidatorRewards.attach(rewardsAddress);
+
+        const PENALTY_ROLE = await rewards.PENALTY_ROLE();
+        console.log(`PENALTY_ROLE: ${PENALTY_ROLE}`);
+
+        for (const validatorAddr of validatorAddresses) {
+            const hasPenaltyRole = await rewards.hasRole(PENALTY_ROLE, validatorAddr);
+            if (hasPenaltyRole) {
+                console.log(`${validatorAddr} already has PENALTY_ROLE`);
+            } else {
+                console.log(`Granting PENALTY_ROLE to ${validatorAddr}...`);
+                const tx = await rewards.grantRole(PENALTY_ROLE, validatorAddr);
+                await tx.wait();
+                console.log(`  Tx: ${tx.hash}`);
+            }
         }
+    } else {
+        console.log('\n--- OmniValidatorRewards: Not deployed, skipping PENALTY_ROLE ---');
+    }
+
+    // --- OmniParticipation VERIFIER_ROLE ---
+    const participationAddress = config.contracts.OmniParticipation;
+
+    if (participationAddress && participationAddress !== '0x0000000000000000000000000000000000000000') {
+        console.log('\n--- Granting OmniParticipation Roles ---');
+        console.log(`OmniParticipation: ${participationAddress}`);
+
+        const OmniParticipation = await ethers.getContractFactory('OmniParticipation');
+        const participation = OmniParticipation.attach(participationAddress);
+
+        const VERIFIER_ROLE = await participation.VERIFIER_ROLE();
+        console.log(`VERIFIER_ROLE: ${VERIFIER_ROLE}`);
+
+        for (const validatorAddr of validatorAddresses) {
+            const hasVerifierRole = await participation.hasRole(VERIFIER_ROLE, validatorAddr);
+            if (hasVerifierRole) {
+                console.log(`${validatorAddr} already has VERIFIER_ROLE`);
+            } else {
+                console.log(`Granting VERIFIER_ROLE to ${validatorAddr}...`);
+                const tx = await participation.grantRole(VERIFIER_ROLE, validatorAddr);
+                await tx.wait();
+                console.log(`  Tx: ${tx.hash}`);
+            }
+        }
+    } else {
+        console.log('\n--- OmniParticipation: Not deployed, skipping VERIFIER_ROLE ---');
     }
 
     // Verify roles
@@ -173,14 +236,32 @@ async function main(): Promise<void> {
             console.log(`  OmniRegistration.${role.name}: ${hasRole ? '✅' : '❌'}`);
         }
 
-        const sgRoles = [
-            { name: 'REPORTER_ROLE', value: REPORTER_ROLE },
-            { name: 'JUDGE_ROLE', value: JUDGE_ROLE },
-        ];
+        // SybilGuard verification (may fail if deprecated)
+        try {
+            const sgReporterRole = await sybilGuard.REPORTER_ROLE();
+            const sgJudgeRole = await sybilGuard.JUDGE_ROLE();
+            const hasReporter = await sybilGuard.hasRole(sgReporterRole, validatorAddr);
+            const hasJudge = await sybilGuard.hasRole(sgJudgeRole, validatorAddr);
+            console.log(`  OmniSybilGuard.REPORTER_ROLE: ${hasReporter ? '✅' : '❌'}`);
+            console.log(`  OmniSybilGuard.JUDGE_ROLE: ${hasJudge ? '✅' : '❌'}`);
+        } catch {
+            console.log('  OmniSybilGuard: Verification skipped (contract deprecated)');
+        }
 
-        for (const role of sgRoles) {
-            const hasRole = await sybilGuard.hasRole(role.value, validatorAddr);
-            console.log(`  OmniSybilGuard.${role.name}: ${hasRole ? '✅' : '❌'}`);
+        if (rewardsAddress && rewardsAddress !== '0x0000000000000000000000000000000000000000') {
+            const OmniValidatorRewards = await ethers.getContractFactory('OmniValidatorRewards');
+            const rewards = OmniValidatorRewards.attach(rewardsAddress);
+            const PENALTY_ROLE = await rewards.PENALTY_ROLE();
+            const hasPenalty = await rewards.hasRole(PENALTY_ROLE, validatorAddr);
+            console.log(`  OmniValidatorRewards.PENALTY_ROLE: ${hasPenalty ? '✅' : '❌'}`);
+        }
+
+        if (participationAddress && participationAddress !== '0x0000000000000000000000000000000000000000') {
+            const OmniParticipation = await ethers.getContractFactory('OmniParticipation');
+            const participation = OmniParticipation.attach(participationAddress);
+            const VERIFIER_ROLE = await participation.VERIFIER_ROLE();
+            const hasVerifier = await participation.hasRole(VERIFIER_ROLE, validatorAddr);
+            console.log(`  OmniParticipation.VERIFIER_ROLE: ${hasVerifier ? '✅' : '❌'}`);
         }
     }
 
