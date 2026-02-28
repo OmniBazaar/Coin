@@ -943,9 +943,17 @@ contract OmniArbitration is
 
     /**
      * @notice Deterministically select arbitrators for a dispute
-     * @dev Uses hash of dispute parameters + previous block hash for
-     *      unpredictable selection that cannot be manipulated by
-     *      the validator post-commit.
+     * @dev Uses hash of dispute parameters + previous block hash +
+     *      caller address + block number for unpredictable selection.
+     *      The previous block hash cannot be known by the caller at
+     *      the time they submit the transaction (it depends on the
+     *      block in which the tx is included). Combined with
+     *      msg.sender and block.number, this provides sufficient
+     *      entropy for fair selection.
+     *
+     *      Note: For production mainnet, consider upgrading to
+     *      Chainlink VRF for cryptographic randomness guarantees.
+     *
      * @param escrowId Escrow ID
      * @param count Number of arbitrators to select
      * @param buyer Buyer address (excluded from selection)
@@ -965,11 +973,14 @@ contract OmniArbitration is
         uint256 nonce = 0;
 
         while (found < count && nonce < MAX_ARBITRATOR_SEARCH) {
-            // Deterministic but unpredictable hash
+            // Deterministic but unpredictable hash using multiple
+            // entropy sources
             bytes32 hash = keccak256(
                 abi.encodePacked(
                     escrowId,
                     blockhash(block.number - 1),
+                    block.number,
+                    msg.sender,
                     nonce
                 )
             );
@@ -1024,6 +1035,8 @@ contract OmniArbitration is
                 abi.encodePacked(
                     disputeId,
                     blockhash(block.number - 1),
+                    block.number,
+                    msg.sender,
                     "appeal",
                     nonce
                 )

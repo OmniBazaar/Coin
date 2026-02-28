@@ -1123,4 +1123,105 @@ describe("DEXSettlement - Trustless Architecture", function () {
             expect(takerNonceAfter).to.equal(takerNonceBefore + 1n);
         });
     });
+
+    // ════════════════════════════════════════════════════════════════════
+    //  INTENT SETTLEMENT — Fee-on-Transfer Guard (Security Fix 1B)
+    // ════════════════════════════════════════════════════════════════════
+
+    describe("Intent Settlement — Fee-on-Transfer Guard", function () {
+        let feeToken: any;
+        let feeTokenAddress: string;
+        let tokenAAddress: string;
+        let tokenBAddress: string;
+        let settlementAddress: string;
+
+        const TRADE_AMOUNT = ethers.parseUnits("1000", 18);
+        const ONE_HOUR = 3600;
+
+        beforeEach(async function () {
+            // Deploy a 1% fee-on-transfer token
+            const FeeToken = await ethers.getContractFactory("MockFeeOnTransferToken");
+            feeToken = await FeeToken.deploy("Fee Token", "FEE", 100); // 100 bps = 1%
+            await feeToken.waitForDeployment();
+            feeTokenAddress = await feeToken.getAddress();
+
+            tokenAAddress = await tokenA.getAddress();
+            tokenBAddress = await tokenB.getAddress();
+            settlementAddress = await dexSettlement.getAddress();
+
+            // Mint fee tokens to maker and taker
+            await feeToken.mint(makerAddress, INITIAL_BALANCE);
+            await feeToken.mint(takerAddress, INITIAL_BALANCE);
+
+            // Approve settlement contract for fee token
+            await feeToken.connect(maker).approve(settlementAddress, ethers.MaxUint256);
+            await feeToken.connect(taker).approve(settlementAddress, ethers.MaxUint256);
+        });
+
+        it("should revert lockIntentCollateral with fee-on-transfer token", async function () {
+            const intentId = ethers.keccak256(ethers.toUtf8Bytes("fot-lock-test-1"));
+            const deadline = Math.floor(Date.now() / 1000) + ONE_HOUR;
+
+            // Attempt to lock collateral using fee-on-transfer token as tokenIn
+            await expect(
+                dexSettlement.connect(maker).lockIntentCollateral(
+                    intentId,
+                    takerAddress,       // solver
+                    feeTokenAddress,    // tokenIn (fee-on-transfer)
+                    tokenBAddress,      // tokenOut (standard)
+                    TRADE_AMOUNT,       // traderAmount
+                    TRADE_AMOUNT,       // solverAmount
+                    deadline
+                )
+            ).to.be.revertedWithCustomError(dexSettlement, "FeeOnTransferNotSupported");
+        });
+
+        it("should allow lockIntentCollateral with standard ERC20", async function () {
+            const intentId = ethers.keccak256(ethers.toUtf8Bytes("standard-lock-test-1"));
+            const deadline = Math.floor(Date.now() / 1000) + ONE_HOUR;
+
+            // Lock collateral using standard tokenA — should succeed
+            await expect(
+                dexSettlement.connect(maker).lockIntentCollateral(
+                    intentId,
+                    takerAddress,       // solver
+                    tokenAAddress,      // tokenIn (standard ERC20)
+                    tokenBAddress,      // tokenOut (standard)
+                    TRADE_AMOUNT,       // traderAmount
+                    TRADE_AMOUNT,       // solverAmount
+                    deadline
+                )
+            ).to.emit(dexSettlement, "IntentCollateralLocked")
+                .withArgs(intentId, makerAddress, takerAddress, TRADE_AMOUNT, TRADE_AMOUNT);
+
+            // Verify the contract actually holds the escrowed tokens
+            const contractBalance = await tokenA.balanceOf(settlementAddress);
+            expect(contractBalance).to.be.gte(TRADE_AMOUNT);
+        });
+
+        it("should revert settleIntent when solver uses fee-on-transfer token", async function () {
+            const intentId = ethers.keccak256(ethers.toUtf8Bytes("fot-settle-test-1"));
+            const deadline = Math.floor(Date.now() / 1000) + ONE_HOUR;
+
+            // Step 1: Lock collateral with standard tokenA as tokenIn
+            //         and fee-on-transfer token as tokenOut
+            await dexSettlement.connect(maker).lockIntentCollateral(
+                intentId,
+                takerAddress,       // solver
+                tokenAAddress,      // tokenIn (standard — lock succeeds)
+                feeTokenAddress,    // tokenOut (fee-on-transfer)
+                TRADE_AMOUNT,       // traderAmount
+                TRADE_AMOUNT,       // solverAmount
+                deadline
+            );
+
+            // Step 2: Solver (taker) tries to settle — solver must
+            //         provide fee-on-transfer tokenOut to the trader.
+            //         The balance-before/after check in settleIntent
+            //         should detect the discrepancy and revert.
+            await expect(
+                dexSettlement.connect(taker).settleIntent(intentId)
+            ).to.be.revertedWithCustomError(dexSettlement, "FeeOnTransferNotSupported");
+        });
+    });
 });

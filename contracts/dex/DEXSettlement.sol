@@ -1051,11 +1051,21 @@ contract DEXSettlement is
         });
 
         // H-03: Actually escrow trader's tokens
+        // M-07: Balance check guards against fee-on-transfer tokens
+        uint256 balBefore = IERC20(tokenIn).balanceOf(
+            address(this)
+        );
         IERC20(tokenIn).safeTransferFrom(
             msg.sender,
             address(this),
             traderAmount
         );
+        uint256 balAfter = IERC20(tokenIn).balanceOf(
+            address(this)
+        );
+        if (balAfter - balBefore != traderAmount) {
+            revert FeeOnTransferNotSupported();
+        }
 
         emit IntentCollateralLocked(
             intentId,
@@ -1104,11 +1114,21 @@ contract DEXSettlement is
         );
 
         // Transfer solver tokens to trader
+        // M-07: Balance check guards against fee-on-transfer tokens
+        uint256 traderBalBefore = IERC20(coll.tokenOut).balanceOf(
+            coll.trader
+        );
         IERC20(coll.tokenOut).safeTransferFrom(
             coll.solver,
             coll.trader,
             coll.solverAmount
         );
+        uint256 traderBalAfter = IERC20(coll.tokenOut).balanceOf(
+            coll.trader
+        );
+        if (traderBalAfter - traderBalBefore != coll.solverAmount) {
+            revert FeeOnTransferNotSupported();
+        }
 
         coll.settled = true;
 

@@ -210,6 +210,11 @@ contract OmniPriceOracle is
     mapping(address => mapping(uint256 => uint256[]))
         private _roundSubmissions;
 
+    /// @notice Submitter addresses per token per round (parallel to
+    ///         _roundSubmissions — shares indices before sorting)
+    mapping(address => mapping(uint256 => address[]))
+        private _roundSubmitters;
+
     /// @notice Latest consensus price per token
     mapping(address => uint256) public latestConsensusPrice;
 
@@ -406,6 +411,7 @@ contract OmniPriceOracle is
         // Record submission
         hasSubmitted[token][round][msg.sender] = true;
         _roundSubmissions[token][round].push(price);
+        _roundSubmitters[token][round].push(msg.sender);
 
         emit PriceSubmitted(token, msg.sender, price, round);
 
@@ -461,6 +467,7 @@ contract OmniPriceOracle is
 
             hasSubmitted[token][round][msg.sender] = true;
             _roundSubmissions[token][round].push(price);
+            _roundSubmitters[token][round].push(msg.sender);
 
             emit PriceSubmitted(token, msg.sender, price, round);
 
@@ -694,7 +701,15 @@ contract OmniPriceOracle is
         uint256 round
     ) internal {
         uint256[] storage submissions = _roundSubmissions[token][round];
+        address[] storage submitters = _roundSubmitters[token][round];
         uint256 count = submissions.length;
+
+        // Snapshot unsorted submissions+submitters before sorting
+        // (sorting destroys index-to-address correspondence)
+        uint256[] memory unsortedPrices = new uint256[](count);
+        for (uint256 i = 0; i < count; ++i) {
+            unsortedPrices[i] = submissions[i];
+        }
 
         // Sort submissions for median calculation
         _sortArray(submissions);
@@ -729,7 +744,8 @@ contract OmniPriceOracle is
         emit RoundFinalized(token, median, round, count);
 
         // Flag outlier validators (>20% from consensus)
-        _flagOutliers(token, submissions, median);
+        // Uses unsorted price/submitter arrays so addresses are correct
+        _flagOutliers(token, unsortedPrices, submitters, median);
     }
 
     /**
@@ -760,32 +776,32 @@ contract OmniPriceOracle is
     /**
      * @notice Flag validators whose submissions deviate >20% from
      *         consensus
+     * @dev Uses unsorted price/submitter arrays to correctly
+     *      attribute outlier prices to their submitting validators.
      * @param token Token address (for event)
-     * @param submissions Sorted submission array
+     * @param prices Unsorted submission prices (pre-sort snapshot)
+     * @param submitters Parallel array of submitter addresses
      * @param median Consensus median price
      */
     function _flagOutliers(
         address token,
-        uint256[] storage submissions,
+        uint256[] memory prices,
+        address[] storage submitters,
         uint256 median
     ) internal {
-        // We only have prices, not addresses in the sorted array.
-        // Flag any price >20% from median (2000 bps)
-        uint256 flagThreshold = 2000;
-        for (uint256 i = 0; i < submissions.length; ++i) {
-            uint256 dev = _calculateDeviation(
-                submissions[i],
-                median
-            );
+        uint256 flagThreshold = 2000; // 20% in bps
+        for (uint256 i = 0; i < prices.length; ++i) {
+            uint256 dev = _calculateDeviation(prices[i], median);
             if (dev > flagThreshold) {
-                // Violation recorded; slashing handled off-chain
-                // via ValidatorFlagged event indexing
+                address flagged = submitters[i];
+                violationCount[flagged] += 1;
+
                 emit ValidatorFlagged(
                     token,
-                    address(0), // Cannot track address in sorted array
-                    submissions[i],
+                    flagged,
+                    prices[i],
                     median,
-                    0
+                    violationCount[flagged]
                 );
             }
         }

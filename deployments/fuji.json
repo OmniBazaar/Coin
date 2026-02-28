@@ -62,12 +62,20 @@
     "UpdateRegistry": "0x3A396c75573f1F3c2C45456600cc950605d8Fa02",
     "UnifiedFeeVault": "0x45dB9304a5124d3cD6d646900b1c4C0cA6A89658",
     "UnifiedFeeVaultImplementation": "0xbbeb10150563c3016067c713702c8a7b41BbFE8E",
-    "FeeSwapAdapter": "0x6Bce2b309b6C0107a8eB48d865ea52F858B9C865"
+    "FeeSwapAdapter": "0x6Bce2b309b6C0107a8eB48d865ea52F858B9C865",
+    "OmniPriceOracle": "0xF0D0595F760895F04fe17c1fCA55e4E6D7714677",
+    "OmniPriceOracleImplementation": "0xaD888Edf541ceD44eE55C553336F01061Af711D3",
+    "OmniArbitration": "0x1af7FDbB1dcD37b39F3B1C7d79F8fBD5238E3BC3",
+    "OmniArbitrationImplementation": "0x51d598755142d79D584e2FEeDeA6Fe1b3f7448ea",
+    "OmniMarketplace": "0x02835C667F646D97dAf632BDDdf682Fb1753e7ad",
+    "OmniMarketplaceImplementation": "0xC55D303A99b7522bdA7e12b7e2dB5CFfb0D98EC0",
+    "OmniENS": "0x0c553f1B3C121e2A583A97044aE02fe1654AB55e",
+    "OmniChatFee": "0x5Fac9435D844729c858e6a0B411bbcE044eFD38F"
   },
   "validatorManager": {
     "type": "AvalanchePoSValidatorManager",
     "precompileAddress": "0x0FEEDC0DE0000000000000000000000000000000",
     "note": "Using standard Avalanche PoS Validator Manager precompile instead of deprecated OmniValidatorManager"
   },
-  "upgradedAt": "2026-02-27T20:02:39.478Z"
+  "upgradedAt": "2026-02-28T13:43:03.381Z"
 }

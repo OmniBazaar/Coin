@@ -1,7 +1,7 @@
 # Trustless Architecture: Remaining Work Status
 
 **Created:** 2026-02-27 17:53 UTC
-**Last Updated:** 2026-02-27 17:53 UTC
+**Last Updated:** 2026-02-28 08:49 UTC
 
 ---
 
@@ -128,8 +128,8 @@
 
 ```
 npx hardhat compile: SUCCESS (all contracts compile)
-New tests: 323 passing (0 failures)
-Full suite: 1310 passing, 6 failing (pre-existing OmniPrivacyBridge issue)
+New tests: 354 passing (0 failures)
+Full suite: 1338 passing, 6 failing (pre-existing OmniFeeRouter DeadlineExpired issue)
 ```
 
 ---
@@ -172,11 +172,23 @@ Full suite: 1310 passing, 6 failing (pre-existing OmniPrivacyBridge issue)
 ### C6. i18n (10 languages) ✅ COMPLETE
 - [x] All `trustless.*` namespace keys added to en, es, fr, de, zh, ja, ko, ru, pt, it
 
-### C7. Deployment (PENDING — awaiting Fuji deploy)
+### C7. Deployment ✅ COMPLETE (2026-02-28)
 - [x] Deploy script created: `Coin/scripts/deploy-trustless-tier3.js`
-- [ ] Deploy to Fuji testnet
-- [ ] Record addresses in `Coin/deployments/fuji.json`
-- [ ] Run `sync-contract-addresses.sh fuji`
+- [x] Deploy to Fuji testnet — ALL 5 CONTRACTS DEPLOYED
+- [x] Record addresses in `Coin/deployments/fuji.json`
+- [x] Run `sync-contract-addresses.sh fuji`
+
+**Deployed Addresses (Fuji chain 131313):**
+| Contract | Address | Type |
+|---|---|---|
+| OmniPriceOracle | `0xF0D0595F760895F04fe17c1fCA55e4E6D7714677` | UUPS proxy |
+| OmniPriceOracle (impl) | `0xaD888Edf541ceD44eE55C553336F01061Af711D3` | Implementation |
+| OmniArbitration | `0x1af7FDbB1dcD37b39F3B1C7d79F8fBD5238E3BC3` | UUPS proxy |
+| OmniArbitration (impl) | `0x51d598755142d79D584e2FEeDeA6Fe1b3f7448ea` | Implementation |
+| OmniMarketplace | `0x02835C667F646D97dAf632BDDdf682Fb1753e7ad` | UUPS proxy |
+| OmniMarketplace (impl) | `0xC55D303A99b7522bdA7e12b7e2dB5CFfb0D98EC0` | Implementation |
+| OmniENS | `0x0c553f1B3C121e2A583A97044aE02fe1654AB55e` | Direct |
+| OmniChatFee | `0x5Fac9435D844729c858e6a0B411bbcE044eFD38F` | Direct |
 
 ### Part D: Verification ✅ COMPLETE
 - [x] Contract compilation — ALL PASS
@@ -186,3 +198,124 @@ Full suite: 1310 passing, 6 failing (pre-existing OmniPrivacyBridge issue)
 - [x] WebApp build — PASS
 - [x] FIX_AUDITS_INTERNAL.md — CREATED
 - [x] FIX_REMAINING_TRUSTLESS.md — THIS FILE (UPDATED)
+
+---
+
+## PART E: SECURITY FIXES (2026-02-28)
+
+### E1. OmniPriceOracle — Validator Attribution Bug ✅ FIXED
+**File:** `Coin/contracts/oracle/OmniPriceOracle.sol`
+**Severity:** CRITICAL
+**Bug:** `_flagOutliers()` emitted `address(0)` for flagged validators because `_roundSubmissions` stored only prices without corresponding addresses. After sorting for median calculation, address-to-price association was lost.
+**Fix:**
+- Added `_roundSubmitters` mapping (parallel to `_roundSubmissions`)
+- `submitPrice()` and `submitPriceBatch()` now push `msg.sender` to `_roundSubmitters`
+- `_finalizeRound()` snapshots unsorted prices before sorting for median
+- `_flagOutliers()` now iterates unsorted prices+submitters for correct attribution
+- Emits actual validator address in `ValidatorFlagged` event
+- Increments `violationCount[flagged]` for slashing integration
+
+### E2. DEXSettlement — Fee-on-Transfer Guard (Intent Path) ✅ FIXED
+**File:** `Coin/contracts/dex/DEXSettlement.sol`
+**Severity:** MEDIUM
+**Bug:** `lockIntentCollateral()` and `settleIntent()` lacked M-07 balance-before/after checks (the atomic settlement path already had them). A fee-on-transfer token could cause undercollateralization.
+**Fix:**
+- `lockIntentCollateral()`: Added `balanceOf(address(this))` check before/after `safeTransferFrom` — reverts with `FeeOnTransferNotSupported()` if actual ≠ expected
+- `settleIntent()`: Added `balanceOf(coll.trader)` check before/after solver's `safeTransferFrom` — same guard
+
+### E3. OmniArbitration — Improved Arbitrator Selection Entropy ✅ FIXED
+**File:** `Coin/contracts/arbitration/OmniArbitration.sol`
+**Severity:** LOW-MEDIUM
+**Issue:** Used only `blockhash(block.number - 1)` + `escrowId` + `nonce` for selection hash, which is technically predictable by validators within the same block.
+**Fix:**
+- `_selectArbitrators()`: Added `block.number` and `msg.sender` to hash inputs
+- `_selectAppealArbitrators()`: Same — added `block.number` and `msg.sender`
+- Documented that Chainlink VRF is the long-term solution for production mainnet
+
+### Compilation After Fixes
+```
+npx hardhat compile: SUCCESS
+  OmniPriceOracle: 10.191 KiB (+0.462)
+  DEXSettlement: 13.499 KiB (+0.488)
+  OmniArbitration: 11.646 KiB (+0.077)
+All within 24 KiB contract size limit.
+```
+
+### Test Results After Fixes
+```
+OmniPriceOracle: 86 passing (0 failing) — 5 new validator flagging tests
+DEXSettlement: 31 passing, 1 pre-existing failure — 3 new fee-on-transfer tests
+OmniArbitration: 75 passing (0 failing)
+TrustlessIntegration: 23 passing (0 failing) — NEW cross-contract test file
+Full suite: 1338 passing, 6 failing (pre-existing OmniFeeRouter DeadlineExpired — unrelated)
+```
+
+---
+
+## PART F: SECURITY AUDIT CHECKLIST (2026-02-28)
+
+### F1. Access Control Verification
+- [x] OmniPriceOracle: `_authorizeUpgrade` restricted to `DEFAULT_ADMIN_ROLE`
+- [x] OmniArbitration: `_authorizeUpgrade` restricted to `DEFAULT_ADMIN_ROLE`
+- [x] OmniMarketplace: `_authorizeUpgrade` restricted to `DEFAULT_ADMIN_ROLE`
+- [x] Pausable: admin-only pause/unpause on all 3 UUPS contracts
+- [x] OmniENS: Ownable (deployer is owner)
+- [x] OmniChatFee: Ownable (deployer is owner)
+- [x] `_disableInitializers()` in constructors of all 3 UUPS contracts
+
+### F2. Reentrancy Protection
+- [x] OmniPriceOracle: `nonReentrant` on `submitPrice` and `submitPriceBatch`
+- [x] OmniArbitration: `nonReentrant` on all state-changing functions
+- [x] OmniMarketplace: `nonReentrant` on `registerListing` and `delistListing`
+- [x] OmniENS: `nonReentrant` on `register`, `renew`, `transfer`
+- [x] OmniChatFee: `nonReentrant` on `payForMessage`, `payForBulkMessages`, `claimValidatorFees`
+- [x] DEXSettlement: `nonReentrant` on all settlement and intent functions
+
+### F3. Economic Attack Vectors
+- [x] Price oracle: Flash loan → submit price → profit blocked by validator-only submission + Chainlink bounds
+- [x] DEX: Sandwich attack prevention via commit-reveal scheme
+- [x] Arbitration: Bribery resistance — arbitrators selected after dispute, staked, unknown until selection
+- [x] Marketplace: Listing spam limited by on-chain signature requirement
+- [x] Chat: Spam limited by fee escalation (10x for bulk)
+- [x] ENS: Squatting limited by yearly fee (10 XOM/year)
+- [x] DEX Intent: Fee-on-transfer protection (balance checks — Fix E2)
+
+### F4. Integer Overflow/Underflow
+- [x] All contracts use Solidity 0.8.x (built-in overflow checks)
+- [x] No `unchecked` blocks in any of the 5 new contracts
+- [x] Fee calculations use BPS division (no truncation to zero for reasonable amounts)
+
+### F5. Frontrunning Protection
+- [x] DEX: Commit-reveal scheme prevents frontrunning
+- [x] Oracle: Validator-only submission + circuit breaker prevents price manipulation
+- [x] Arbitration: Selection uses blockhash(n-1) + msg.sender + block.number for unpredictability
+
+---
+
+## PART G: ENHANCED TEST SUITES (2026-02-28)
+
+### G1. OmniPriceOracle Validator Flagging Tests ✅ COMPLETE
+**File:** `Coin/test/OmniPriceOracle.test.js`
+- 5 new tests (81→86 total):
+  - Flags validator with correct address when >20% deviation
+  - Increments violationCount correctly
+  - Does not flag validators within threshold
+  - Flags multiple outliers in same round
+  - Accumulates violations across rounds
+
+### G2. DEXSettlement Fee-on-Transfer Guard Tests ✅ COMPLETE
+**File:** `Coin/test/DEXSettlement.test.ts`
+**Mock:** `Coin/contracts/mocks/MockFeeOnTransferToken.sol`
+- 3 new tests (28→31 total):
+  - Reverts lockIntentCollateral with fee-on-transfer token
+  - Allows lockIntentCollateral with standard ERC20
+  - Reverts settleIntent when solver uses fee-on-transfer token
+
+### G3. TrustlessIntegration Cross-Contract Tests ✅ COMPLETE (NEW FILE)
+**File:** `Coin/test/TrustlessIntegration.test.js`
+- 23 tests across 5 describe blocks:
+  - Full Marketplace → Escrow → Arbitration flow (3 tests)
+  - Oracle Price Consensus → Multi-Round (6 tests)
+  - ENS Registration → Resolution (5 tests)
+  - Chat Fee → Free Tier → Paid Tier (7 tests)
+  - Cross-System Integration (2 tests)

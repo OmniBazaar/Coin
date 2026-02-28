@@ -892,4 +892,134 @@ describe("OmniPriceOracle", function () {
       ).to.be.reverted;
     });
   });
+
+  // ════════════════════════════════════════════════════════════════════
+  //                   13. VALIDATOR FLAGGING (Security Fix 1A)
+  // ════════════════════════════════════════════════════════════════════
+
+  describe("Validator Flagging", function () {
+    /** Price constants for flagging tests */
+    const PRICE_790 = ethers.parseEther("790");
+    const PRICE_750 = ethers.parseEther("750");
+    const PRICE_1400 = ethers.parseEther("1400");
+
+    it("should flag validator with correct address when submission deviates >20% from consensus", async function () {
+      // Set minValidators=4 and circuitBreaker=30% (3000 bps) so that
+      // the outlier price passes circuit-breaker but exceeds the 20% flag threshold.
+      await oracle.updateParameters(4, 200, 3600, 3000);
+
+      // v1, v2, v3 submit $1000 — mainstream consensus
+      await oracle.connect(validator1).submitPrice(tokenA.target, PRICE_1000);
+      await oracle.connect(validator2).submitPrice(tokenA.target, PRICE_1000);
+      await oracle.connect(validator3).submitPrice(tokenA.target, PRICE_1000);
+
+      // v4 submits $790 (21% below median of $1000 → deviation 2100 bps > 2000 bps threshold)
+      // This 4th submission triggers finalization and outlier flagging.
+      const tx = oracle.connect(validator4).submitPrice(tokenA.target, PRICE_790);
+
+      // Median of sorted [790, 1000, 1000, 1000] = (1000 + 1000) / 2 = $1000
+      await expect(tx)
+        .to.emit(oracle, "ValidatorFlagged")
+        .withArgs(tokenA.target, validator4.address, PRICE_790, PRICE_1000, 1);
+    });
+
+    it("should increment violationCount for flagged validator", async function () {
+      await oracle.updateParameters(4, 200, 3600, 3000);
+
+      await oracle.connect(validator1).submitPrice(tokenA.target, PRICE_1000);
+      await oracle.connect(validator2).submitPrice(tokenA.target, PRICE_1000);
+      await oracle.connect(validator3).submitPrice(tokenA.target, PRICE_1000);
+      await oracle.connect(validator4).submitPrice(tokenA.target, PRICE_790);
+
+      // After finalization, v4 should have exactly 1 violation
+      expect(await oracle.violationCount(validator4.address)).to.equal(1);
+
+      // Other validators should have zero violations
+      expect(await oracle.violationCount(validator1.address)).to.equal(0);
+      expect(await oracle.violationCount(validator2.address)).to.equal(0);
+      expect(await oracle.violationCount(validator3.address)).to.equal(0);
+    });
+
+    it("should not flag validators within 20% threshold", async function () {
+      // Default minValidators=3. Submit prices within 20% of each other.
+      // $950, $1000, $1050 → median $1000.
+      // Max deviation: $950 from $1000 = 500 bps (5%), well below 2000 bps threshold.
+      await oracle.connect(validator1).submitPrice(tokenA.target, PRICE_950);
+      await oracle.connect(validator2).submitPrice(tokenA.target, PRICE_1000);
+
+      // Third submission triggers finalization — no ValidatorFlagged expected
+      const tx = oracle.connect(validator3).submitPrice(tokenA.target, PRICE_1050);
+      await expect(tx).to.not.emit(oracle, "ValidatorFlagged");
+
+      // Confirm all violation counts are zero
+      expect(await oracle.violationCount(validator1.address)).to.equal(0);
+      expect(await oracle.violationCount(validator2.address)).to.equal(0);
+      expect(await oracle.violationCount(validator3.address)).to.equal(0);
+    });
+
+    it("should flag multiple outlier validators in same round", async function () {
+      // Deploy and register a 5th validator
+      const signers = await ethers.getSigners();
+      const validator5 = signers[7]; // Use the next available signer
+      await mockOmniCore.setValidator(validator5.address, true);
+
+      // Set minValidators=5 and circuitBreaker=50% (5000 bps) to allow
+      // extreme submissions through the circuit breaker.
+      await oracle.updateParameters(5, 200, 3600, 5000);
+
+      // v1, v2, v3 submit $1000 — majority consensus
+      await oracle.connect(validator1).submitPrice(tokenA.target, PRICE_1000);
+      await oracle.connect(validator2).submitPrice(tokenA.target, PRICE_1000);
+      await oracle.connect(validator3).submitPrice(tokenA.target, PRICE_1000);
+
+      // v4 submits $750 (25% below median)
+      await oracle.connect(validator4).submitPrice(tokenA.target, PRICE_750);
+
+      // v5 submits $1400 (40% above median) — triggers finalization
+      // Sorted: [750, 1000, 1000, 1000, 1400] → median = 1000
+      const tx = oracle.connect(validator5).submitPrice(tokenA.target, PRICE_1400);
+
+      // v4: deviation = |750-1000|/1000 * 10000 = 2500 bps > 2000 bps → flagged
+      await expect(tx)
+        .to.emit(oracle, "ValidatorFlagged")
+        .withArgs(tokenA.target, validator4.address, PRICE_750, PRICE_1000, 1);
+
+      // v5: deviation = |1400-1000|/1000 * 10000 = 4000 bps > 2000 bps → flagged
+      await expect(tx)
+        .to.emit(oracle, "ValidatorFlagged")
+        .withArgs(tokenA.target, validator5.address, PRICE_1400, PRICE_1000, 1);
+
+      // Verify violation counts
+      expect(await oracle.violationCount(validator4.address)).to.equal(1);
+      expect(await oracle.violationCount(validator5.address)).to.equal(1);
+      expect(await oracle.violationCount(validator1.address)).to.equal(0);
+    });
+
+    it("should accumulate violationCount across multiple rounds", async function () {
+      // Set minValidators=4 and circuitBreaker=30% (3000 bps)
+      await oracle.updateParameters(4, 200, 3600, 3000);
+
+      // ── Round 0 ──
+      await oracle.connect(validator1).submitPrice(tokenA.target, PRICE_1000);
+      await oracle.connect(validator2).submitPrice(tokenA.target, PRICE_1000);
+      await oracle.connect(validator3).submitPrice(tokenA.target, PRICE_1000);
+      await oracle.connect(validator4).submitPrice(tokenA.target, PRICE_790);
+      // Median = $1000, v4 flagged → violationCount = 1
+
+      expect(await oracle.currentRound(tokenA.target)).to.equal(1);
+      expect(await oracle.violationCount(validator4.address)).to.equal(1);
+
+      // ── Round 1 ──
+      // Previous consensus = $1000. v4 submits $790 again.
+      // Circuit breaker: |790-1000|/1000 = 21% < 30% (3000 bps) → passes.
+      await oracle.connect(validator1).submitPrice(tokenA.target, PRICE_1000);
+      await oracle.connect(validator2).submitPrice(tokenA.target, PRICE_1000);
+      await oracle.connect(validator3).submitPrice(tokenA.target, PRICE_1000);
+      await oracle.connect(validator4).submitPrice(tokenA.target, PRICE_790);
+      // Median = $1000 again, v4 flagged again → violationCount = 2
+
+      expect(await oracle.currentRound(tokenA.target)).to.equal(2);
+      expect(await oracle.violationCount(validator4.address)).to.equal(2);
+    });
+  });
 });
