@@ -2169,86 +2169,8 @@ contract OmniRegistration is
      * @param user The address of the user to unregister
      */
     function adminUnregister(address user) external onlyRole(DEFAULT_ADMIN_ROLE) {
-        Registration storage reg = registrations[user];
-
-        // Check user is actually registered
-        if (reg.timestamp == 0) {
-            revert NotRegistered();
-        }
-
-        // Store hashes before clearing (needed to clear the usedHashes mappings)
-        bytes32 emailHash = reg.emailHash;
-        bytes32 phoneHash = reg.phoneHash;
-
-        // Decrement referrer's referral count if applicable
-        if (reg.referrer != address(0) && referralCounts[reg.referrer] > 0) {
-            --referralCounts[reg.referrer];
-        }
-
-        // Clear email hash reservation (allows re-use)
-        if (emailHash != bytes32(0)) {
-            usedEmailHashes[emailHash] = false;
-        }
-
-        // Clear phone hash reservation (allows re-use)
-        if (phoneHash != bytes32(0)) {
-            usedPhoneHashes[phoneHash] = false;
-        }
-
-        // Clear social hash reservation (allows re-use)
-        bytes32 socialHash = userSocialHashes[user];
-        if (socialHash != bytes32(0)) {
-            usedSocialHashes[socialHash] = false;
-            delete userSocialHashes[user];
-        }
-
-        // Clear separate email hash mapping
-        delete userEmailHashes[user];
-
-        // Clear ID hash reservation (allows re-use of government ID)
-        bytes32 idHash = userIDHashes[user];
-        if (idHash != bytes32(0)) {
-            usedIDHashes[idHash] = false;
-            delete userIDHashes[user];
-        }
-
-        // Clear address hash reservation (allows re-use of address docs)
-        bytes32 addrHash = userAddressHashes[user];
-        if (addrHash != bytes32(0)) {
-            usedAddressHashes[addrHash] = false;
-            delete userAddressHashes[user];
-        }
-
-        // Clear selfie and video verification
-        delete selfieVerified[user];
-        delete videoSessionHashes[user];
-
-        // Clear all KYC tier completion timestamps
-        delete kycTier1CompletedAt[user];
-        delete kycTier2CompletedAt[user];
-        delete kycTier3CompletedAt[user];
-        delete kycTier4CompletedAt[user];
-
-        // Clear KYC provider and country data
-        delete userKYCProvider[user];
-        delete userCountries[user];
-
-        // Clear volume tracking
-        delete userVolumes[user];
-
-        // M-01: Clear firstSaleCompleted to prevent stale bonus state
-        // on re-registration. Without this, a re-registered user could
-        // claim the first sale bonus without completing a new sale.
-        delete firstSaleCompleted[user];
-
-        // Clear the registration struct
-        delete registrations[user];
-
-        // Decrement total registrations count
-        --totalRegistrations;
-
-        // solhint-disable-next-line not-rely-on-time
-        emit UserUnregistered(user, msg.sender, block.timestamp);
+        if (registrations[user].timestamp == 0) revert NotRegistered();
+        _unregisterUser(user);
     }
 
     /**
@@ -2266,72 +2188,9 @@ contract OmniRegistration is
         if (length > 100) revert BatchTooLarge();
 
         for (uint256 i = 0; i < length; ) {
-            address user = users[i];
-            Registration storage reg = registrations[user];
-
             // Skip users who aren't registered
-            if (reg.timestamp != 0) {
-                // Decrement referrer's referral count
-                if (reg.referrer != address(0) && referralCounts[reg.referrer] > 0) {
-                    --referralCounts[reg.referrer];
-                }
-
-                // Clear email hash reservation
-                if (reg.emailHash != bytes32(0)) {
-                    usedEmailHashes[reg.emailHash] = false;
-                }
-
-                // Clear phone hash reservation
-                if (reg.phoneHash != bytes32(0)) {
-                    usedPhoneHashes[reg.phoneHash] = false;
-                }
-
-                // Clear social hash reservation
-                bytes32 socialHash = userSocialHashes[user];
-                if (socialHash != bytes32(0)) {
-                    usedSocialHashes[socialHash] = false;
-                    delete userSocialHashes[user];
-                }
-
-                // Clear separate email hash mapping
-                delete userEmailHashes[user];
-
-                // Clear ID hash reservation
-                bytes32 idHash = userIDHashes[user];
-                if (idHash != bytes32(0)) {
-                    usedIDHashes[idHash] = false;
-                    delete userIDHashes[user];
-                }
-
-                // Clear address hash reservation
-                bytes32 addrHash = userAddressHashes[user];
-                if (addrHash != bytes32(0)) {
-                    usedAddressHashes[addrHash] = false;
-                    delete userAddressHashes[user];
-                }
-
-                // Clear selfie, video, KYC timestamps, provider, country
-                delete selfieVerified[user];
-                delete videoSessionHashes[user];
-                delete kycTier1CompletedAt[user];
-                delete kycTier2CompletedAt[user];
-                delete kycTier3CompletedAt[user];
-                delete kycTier4CompletedAt[user];
-                delete userKYCProvider[user];
-                delete userCountries[user];
-                delete userVolumes[user];
-
-                // M-01: Clear firstSaleCompleted to prevent stale bonus state
-                delete firstSaleCompleted[user];
-
-                // Clear the registration struct
-                delete registrations[user];
-
-                // L-04: Use prefix decrement for gas efficiency
-                --totalRegistrations;
-
-                // solhint-disable-next-line not-rely-on-time
-                emit UserUnregistered(user, msg.sender, block.timestamp);
+            if (registrations[users[i]].timestamp != 0) {
+                _unregisterUser(users[i]);
             }
 
             unchecked {
@@ -2420,25 +2279,25 @@ contract OmniRegistration is
 
         // Check per-transaction limit
         if (limits.perTransactionLimit > 0 && amount > limits.perTransactionLimit) {
-            return (false, "Transaction exceeds per-transaction limit for your KYC tier");
+            return (false, "per-transaction limit exceeded");
         }
 
         // Check daily limit
         uint256 dailyVol = (volume.lastTransactionDay == today) ? volume.dailyVolume : 0;
         if (limits.dailyLimit > 0 && dailyVol + amount > limits.dailyLimit) {
-            return (false, "Transaction would exceed daily limit for your KYC tier");
+            return (false, "daily limit exceeded");
         }
 
         // Check monthly limit
         uint256 monthlyVol = (volume.lastTransactionMonth == thisMonth) ? volume.monthlyVolume : 0;
         if (limits.monthlyLimit > 0 && monthlyVol + amount > limits.monthlyLimit) {
-            return (false, "Transaction would exceed monthly limit for your KYC tier");
+            return (false, "monthly limit exceeded");
         }
 
         // Check annual limit
         uint256 annualVol = (volume.lastTransactionYear == thisYear) ? volume.annualVolume : 0;
         if (limits.annualLimit > 0 && annualVol + amount > limits.annualLimit) {
-            return (false, "Transaction would exceed annual limit for your KYC tier");
+            return (false, "annual limit exceeded");
         }
 
         return (true, "");
@@ -2625,6 +2484,65 @@ contract OmniRegistration is
     // ═══════════════════════════════════════════════════════════════════════
     //                            INTERNAL
     // ═══════════════════════════════════════════════════════════════════════
+
+    /**
+     * @notice Internal cleanup for user unregistration
+     * @param user Address to unregister
+     * @dev Clears ALL registration data: email/phone/social/ID/address hashes,
+     *      KYC tier timestamps, provider data, volume tracking, referral counts,
+     *      and firstSaleCompleted. Ensures clean re-registration.
+     */
+    function _unregisterUser(address user) internal {
+        Registration storage reg = registrations[user];
+        bytes32 emailHash = reg.emailHash;
+        bytes32 phoneHash = reg.phoneHash;
+
+        // Decrement referrer's referral count
+        if (reg.referrer != address(0) && referralCounts[reg.referrer] > 0) {
+            --referralCounts[reg.referrer];
+        }
+
+        // Clear hash reservations (allows re-use)
+        if (emailHash != bytes32(0)) usedEmailHashes[emailHash] = false;
+        if (phoneHash != bytes32(0)) usedPhoneHashes[phoneHash] = false;
+
+        bytes32 socialHash = userSocialHashes[user];
+        if (socialHash != bytes32(0)) {
+            usedSocialHashes[socialHash] = false;
+            delete userSocialHashes[user];
+        }
+        delete userEmailHashes[user];
+
+        bytes32 idHash = userIDHashes[user];
+        if (idHash != bytes32(0)) {
+            usedIDHashes[idHash] = false;
+            delete userIDHashes[user];
+        }
+
+        bytes32 addrHash = userAddressHashes[user];
+        if (addrHash != bytes32(0)) {
+            usedAddressHashes[addrHash] = false;
+            delete userAddressHashes[user];
+        }
+
+        // Clear verification state
+        delete selfieVerified[user];
+        delete videoSessionHashes[user];
+        delete kycTier1CompletedAt[user];
+        delete kycTier2CompletedAt[user];
+        delete kycTier3CompletedAt[user];
+        delete kycTier4CompletedAt[user];
+        delete userKYCProvider[user];
+        delete userCountries[user];
+        delete userVolumes[user];
+        delete firstSaleCompleted[user];
+        delete registrations[user];
+
+        --totalRegistrations;
+
+        // solhint-disable-next-line not-rely-on-time
+        emit UserUnregistered(user, msg.sender, block.timestamp);
+    }
 
     /**
      * @notice Check and update KYC Tier 2 status if all requirements met

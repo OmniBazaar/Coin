@@ -1018,7 +1018,21 @@ contract MinimalEscrow is ReentrancyGuard, Pausable {
         escrow.amount = 0;
 
         totalEscrowed[address(PRIVATE_OMNI_COIN)] -= amount;
-        PRIVATE_OMNI_COIN.safeTransfer(recipient, amount);
+
+        uint256 recipientAmount = amount;
+
+        // H-02: Marketplace fee on seller releases (matching public escrow behavior)
+        if (recipient == escrow.seller) {
+            uint256 feeAmount = (amount * MARKETPLACE_FEE_BPS) / BASIS_POINTS;
+            recipientAmount = amount - feeAmount;
+            if (feeAmount > 0) {
+                PRIVATE_OMNI_COIN.safeTransfer(FEE_COLLECTOR, feeAmount);
+                totalMarketplaceFees[address(PRIVATE_OMNI_COIN)] += feeAmount;
+                emit MarketplaceFeeCollected(escrowId, FEE_COLLECTOR, feeAmount);
+            }
+        }
+
+        PRIVATE_OMNI_COIN.safeTransfer(recipient, recipientAmount);
 
         // Return dispute stakes (always in XOM) to both parties
         _returnDisputeStake(escrowId, escrow.buyer);
