@@ -257,8 +257,8 @@ describe("OmniMarketplace", function () {
 
       await expect(
         marketplace
-          .connect(creator)
-          .registerListing(ipfsCID, contentHash, PRICE, expiry, sig)
+          .connect(owner) // relayer submits on behalf of creator
+          .registerListing(creator.address, ipfsCID, contentHash, PRICE, expiry, sig)
       )
         .to.emit(marketplace, "ListingRegistered")
         .withArgs(1, creator.address, ipfsCID, contentHash, PRICE, expiry);
@@ -273,7 +273,7 @@ describe("OmniMarketplace", function () {
       const contentHash = randomBytes32();
       const expiry = (await time.latest()) + SIXTY_DAYS;
 
-      // creator2 signs but creator submits
+      // creator2 signs but we claim creator is the creator
       const domain = await getDomain();
       const nonce = await marketplace.getNonce(creator.address);
       const sig = await creator2.signTypedData(domain, LISTING_TYPES, {
@@ -286,8 +286,8 @@ describe("OmniMarketplace", function () {
 
       await expect(
         marketplace
-          .connect(creator)
-          .registerListing(ipfsCID, contentHash, PRICE, expiry, sig)
+          .connect(owner)
+          .registerListing(creator.address, ipfsCID, contentHash, PRICE, expiry, sig)
       ).to.be.revertedWithCustomError(marketplace, "InvalidSignature");
     });
 
@@ -300,8 +300,8 @@ describe("OmniMarketplace", function () {
 
       const sig = await signListing(creator, ipfsCID, contentHash, PRICE, expiry);
       await marketplace
-        .connect(creator)
-        .registerListing(ipfsCID, contentHash, PRICE, expiry, sig);
+        .connect(owner)
+        .registerListing(creator.address, ipfsCID, contentHash, PRICE, expiry, sig);
 
       expect(await marketplace.getNonce(creator.address)).to.equal(1);
     });
@@ -321,54 +321,36 @@ describe("OmniMarketplace", function () {
       );
 
       await marketplace
-        .connect(creator)
-        .registerListing(ipfsCID1, contentHash, PRICE, expiry, sig);
+        .connect(owner)
+        .registerListing(creator.address, ipfsCID1, contentHash, PRICE, expiry, sig);
 
       // Attempt to replay the same signature with a different CID
       await expect(
         marketplace
-          .connect(creator)
-          .registerListing(ipfsCID2, contentHash, PRICE, expiry, sig)
+          .connect(owner)
+          .registerListing(creator.address, ipfsCID2, contentHash, PRICE, expiry, sig)
       ).to.be.revertedWithCustomError(marketplace, "InvalidSignature");
     });
 
     it("Should apply defaultExpiry when expiry is 0 (signed)", async function () {
       const ipfsCID = randomBytes32();
       const contentHash = randomBytes32();
-      // Sign with expiry=0 — the contract will compute actual expiry
-      // but the signature must match what the contract uses *before* replacement
-      // Actually the contract replaces expiry=0 BEFORE building the struct hash,
-      // so the signer must sign with 0 and the contract replaces then signs with the computed value...
-      // Let me re-read the contract logic to be precise.
 
-      // Looking at the contract: expiry is modified in-place BEFORE the struct hash,
-      // so the struct hash uses the COMPUTED expiry. The signer must sign the computed expiry.
-      // But the signer cannot know block.timestamp ahead of time for an unsigned tx.
-      //
-      // Actually looking again more carefully:
-      // The contract does:
-      //   if (expiry == 0) expiry = block.timestamp + defaultExpiry;
-      //   ... then later checks cap and builds structHash with the (possibly modified) expiry
-      // So when expiry=0 is passed, the contract replaces it, then verifies the sig
-      // with the replaced expiry. The signer would need to sign with the exact computed expiry.
-      //
-      // This means for EIP-712 with expiry=0, the signer cannot predict block.timestamp.
-      // The registerListingDirect function handles this case fine (no sig needed).
-      // For registerListing, the signer should pass the actual desired expiry, not 0.
-      //
-      // Let me test that passing expiry=0 with a signature that signed 0 fails
-      // (because the contract replaces 0 with a computed value before hashing).
-
-      // Sign with expiry=0
+      // M-02 fix: The contract now preserves the original expiry (0) for
+      // signature verification, then substitutes the default expiry AFTER
+      // the signature check passes. So signing with expiry=0 now works.
       const sig = await signListing(creator, ipfsCID, contentHash, PRICE, 0);
 
-      // The contract will replace 0 with block.timestamp + defaultExpiry,
-      // then hash with that new value. The signature signed with expiry=0 will not match.
-      await expect(
-        marketplace
-          .connect(creator)
-          .registerListing(ipfsCID, contentHash, PRICE, 0, sig)
-      ).to.be.revertedWithCustomError(marketplace, "InvalidSignature");
+      const tx = await marketplace
+        .connect(owner)
+        .registerListing(creator.address, ipfsCID, contentHash, PRICE, 0, sig);
+      const block = await tx.getBlock();
+
+      const listing = await marketplace.listings(1);
+      // Verify that default expiry was applied
+      expect(listing.expiry).to.equal(block.timestamp + SIXTY_DAYS);
+      expect(listing.creator).to.equal(creator.address);
+      expect(listing.active).to.be.true;
     });
   });
 
@@ -730,8 +712,8 @@ describe("OmniMarketplace", function () {
 
       await expect(
         marketplace
-          .connect(creator)
-          .registerListing(ipfsCID, contentHash, PRICE, expiry, sig)
+          .connect(owner)
+          .registerListing(creator.address, ipfsCID, contentHash, PRICE, expiry, sig)
       ).to.be.revertedWithCustomError(marketplace, "EnforcedPause");
     });
 
@@ -854,8 +836,8 @@ describe("OmniMarketplace", function () {
       const expiry1 = (await time.latest()) + SIXTY_DAYS;
       const sig1 = await signListing(creator, cid1, hash1, PRICE, expiry1);
       await marketplace
-        .connect(creator)
-        .registerListing(cid1, hash1, PRICE, expiry1, sig1);
+        .connect(owner)
+        .registerListing(creator.address, cid1, hash1, PRICE, expiry1, sig1);
 
       expect(await marketplace.getNonce(creator.address)).to.equal(1);
 
@@ -865,8 +847,8 @@ describe("OmniMarketplace", function () {
       const expiry2 = (await time.latest()) + SIXTY_DAYS;
       const sig2 = await signListing(creator, cid2, hash2, PRICE, expiry2);
       await marketplace
-        .connect(creator)
-        .registerListing(cid2, hash2, PRICE, expiry2, sig2);
+        .connect(owner)
+        .registerListing(creator.address, cid2, hash2, PRICE, expiry2, sig2);
 
       expect(await marketplace.getNonce(creator.address)).to.equal(2);
       expect(await marketplace.nextListingId()).to.equal(3);

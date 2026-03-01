@@ -299,33 +299,47 @@ describe('OmniParticipation', function () {
 
     describe('Service Node Heartbeat', function () {
         it('should submit heartbeat', async function () {
-            const tx = await participation.connect(user1).submitServiceNodeHeartbeat();
+            // ATK-M22: Only validators can submit service node heartbeats
+            const tx = await participation.connect(validator1).submitServiceNodeHeartbeat();
 
             await expect(tx).to.emit(participation, 'ServiceNodeHeartbeat');
         });
 
         it('should update publisher activity to 4', async function () {
             // M-02: Graduated scoring requires >= 100,000 listings for 4 points
-            await participation.connect(verifier).setPublisherListingCount(user1.address, 100000);
-            await participation.connect(user1).submitServiceNodeHeartbeat();
+            // ATK-H04: Must increment in steps of MAX_LISTING_COUNT_DELTA (1000)
+            // ATK-H04: Daily limit is 50 verifier changes, so we need multiple days
+            // Day 1: set count from 0 -> 50,000 (50 increments of 1000)
+            for (let i = 1; i <= 50; i++) {
+                await participation.connect(verifier).setPublisherListingCount(validator1.address, i * 1000);
+            }
+            // Advance to next day to reset daily limit
+            await time.increase(86401);
+            // Day 2: set count from 50,000 -> 100,000 (50 increments of 1000)
+            for (let i = 51; i <= 100; i++) {
+                await participation.connect(verifier).setPublisherListingCount(validator1.address, i * 1000);
+            }
+            await participation.connect(validator1).submitServiceNodeHeartbeat();
 
-            const comp = await participation.components(user1.address);
+            const comp = await participation.components(validator1.address);
             expect(comp.publisherActivity).to.equal(4);
         });
 
         it('should mark service node as operational', async function () {
-            await participation.connect(user1).submitServiceNodeHeartbeat();
+            // ATK-M22: Only validators can submit service node heartbeats
+            await participation.connect(validator1).submitServiceNodeHeartbeat();
 
-            expect(await participation.isServiceNodeOperational(user1.address)).to.be.true;
+            expect(await participation.isServiceNodeOperational(validator1.address)).to.be.true;
         });
 
         it('should become non-operational after timeout', async function () {
-            await participation.connect(user1).submitServiceNodeHeartbeat();
+            // ATK-M22: Only validators can submit service node heartbeats
+            await participation.connect(validator1).submitServiceNodeHeartbeat();
 
             // Advance time past timeout (300 seconds + 1)
             await time.increase(301);
 
-            expect(await participation.isServiceNodeOperational(user1.address)).to.be.false;
+            expect(await participation.isServiceNodeOperational(validator1.address)).to.be.false;
         });
 
         it('should reject unregistered user', async function () {
@@ -334,16 +348,24 @@ describe('OmniParticipation', function () {
             ).to.be.revertedWithCustomError(participation, 'NotRegistered');
         });
 
+        it('should reject non-validator registered user (ATK-M22)', async function () {
+            // user1 is registered but not a validator
+            await expect(
+                participation.connect(user1).submitServiceNodeHeartbeat()
+            ).to.be.revertedWithCustomError(participation, 'NotServiceNode');
+        });
+
         it('should update publisher activity based on operational status', async function () {
-            await participation.connect(user1).submitServiceNodeHeartbeat();
+            // ATK-M22: Only validators can submit service node heartbeats
+            await participation.connect(validator1).submitServiceNodeHeartbeat();
 
             // Wait for timeout
             await time.increase(301);
 
             // Update publisher activity
-            await participation.updatePublisherActivity(user1.address);
+            await participation.updatePublisherActivity(validator1.address);
 
-            const comp = await participation.components(user1.address);
+            const comp = await participation.components(validator1.address);
             expect(comp.publisherActivity).to.equal(0);
         });
     });
@@ -809,6 +831,134 @@ describe('OmniParticipation', function () {
                     participation.connect(unauthorized).setContracts(user1.address, user2.address)
                 ).to.be.reverted;
             });
+        });
+    });
+
+    // ═══════════════════════════════════════════════════════════════════
+    //  ATK-H04: Verifier Rate Limit & Delta Check Tests
+    // ═══════════════════════════════════════════════════════════════════
+
+    describe('ATK-H04: Verifier Rate Limits', function () {
+        it('should enforce daily verifier limit (50 changes/day)', async function () {
+            // Use up the 50 daily allowance with verifyTransactionClaim calls
+            for (let i = 0; i < 50; i++) {
+                await participation.connect(user1).claimMarketplaceTransactions([generateTxHash()]);
+                await participation.connect(verifier).verifyTransactionClaim(user1.address, i);
+            }
+
+            // The 51st call should revert
+            await participation.connect(user1).claimMarketplaceTransactions([generateTxHash()]);
+            await expect(
+                participation.connect(verifier).verifyTransactionClaim(user1.address, 50)
+            ).to.be.revertedWithCustomError(participation, 'DailyVerifierLimitExceeded');
+        });
+
+        it('should reset verifier limit after day boundary', async function () {
+            // Use up 50 changes
+            for (let i = 0; i < 50; i++) {
+                await participation.connect(user1).claimMarketplaceTransactions([generateTxHash()]);
+                await participation.connect(verifier).verifyTransactionClaim(user1.address, i);
+            }
+
+            // Advance time past day boundary
+            await time.increase(86401);
+
+            // Should succeed after day rolls over
+            await participation.connect(user2).claimMarketplaceTransactions([generateTxHash()]);
+            await expect(
+                participation.connect(verifier).verifyTransactionClaim(user2.address, 0)
+            ).not.to.be.reverted;
+        });
+
+        it('should enforce listing count delta check', async function () {
+            // Try to jump from 0 to 5000 (delta = 5000 > MAX_LISTING_COUNT_DELTA = 1000)
+            await expect(
+                participation.connect(verifier).setPublisherListingCount(user1.address, 5000)
+            ).to.be.revertedWithCustomError(participation, 'ListingCountDeltaTooLarge');
+        });
+
+        it('should allow listing count increment within delta', async function () {
+            // Jump from 0 to 1000 (delta = 1000 = MAX_LISTING_COUNT_DELTA)
+            await expect(
+                participation.connect(verifier).setPublisherListingCount(user1.address, 1000)
+            ).not.to.be.reverted;
+
+            expect(await participation.publisherListingCount(user1.address)).to.equal(1000);
+        });
+
+        it('should emit PublisherListingCountUpdated event', async function () {
+            const tx = await participation.connect(verifier).setPublisherListingCount(user1.address, 500);
+
+            await expect(tx)
+                .to.emit(participation, 'PublisherListingCountUpdated')
+                .withArgs(user1.address, 0, 500, verifier.address);
+        });
+
+        it('should enforce delta check on decreases too', async function () {
+            // Set to 1000 first
+            await participation.connect(verifier).setPublisherListingCount(user1.address, 1000);
+
+            // Try to decrease by more than MAX_LISTING_COUNT_DELTA
+            await expect(
+                participation.connect(verifier).setPublisherListingCount(user1.address, 0)
+            ).not.to.be.reverted; // delta = 1000, exactly at limit
+
+            // Set back to 1000
+            await participation.connect(verifier).setPublisherListingCount(user1.address, 1000);
+
+            // Now set to 2000
+            await participation.connect(verifier).setPublisherListingCount(user1.address, 2000);
+
+            // Try to go from 2000 to 0 (delta 2000 > 1000)
+            await expect(
+                participation.connect(verifier).setPublisherListingCount(user1.address, 0)
+            ).to.be.revertedWithCustomError(participation, 'ListingCountDeltaTooLarge');
+        });
+    });
+
+    // ═══════════════════════════════════════════════════════════════════
+    //  ATK-H12/K01: Unbounded Array Cap Tests
+    // ═══════════════════════════════════════════════════════════════════
+
+    describe('ATK-H12/K01: Array Caps', function () {
+        it('should expose MAX_REVIEWS_PER_USER constant', async function () {
+            expect(await participation.MAX_REVIEWS_PER_USER()).to.equal(1000);
+        });
+
+        it('should expose MAX_CLAIMS_PER_USER constant', async function () {
+            expect(await participation.MAX_CLAIMS_PER_USER()).to.equal(1000);
+        });
+
+        it('should expose MAX_REPORTS_PER_USER constant', async function () {
+            expect(await participation.MAX_REPORTS_PER_USER()).to.equal(500);
+        });
+
+        it('should expose MAX_FORUM_CONTRIBUTIONS_PER_USER constant', async function () {
+            expect(await participation.MAX_FORUM_CONTRIBUTIONS_PER_USER()).to.equal(500);
+        });
+    });
+
+    // ═══════════════════════════════════════════════════════════════════
+    //  ATK-M22: Service Node Validator Check Tests
+    // ═══════════════════════════════════════════════════════════════════
+
+    describe('ATK-M22: Service Node Validator Check', function () {
+        it('should accept validator service node heartbeat', async function () {
+            await expect(
+                participation.connect(validator1).submitServiceNodeHeartbeat()
+            ).not.to.be.reverted;
+        });
+
+        it('should reject non-validator registered user', async function () {
+            await expect(
+                participation.connect(user1).submitServiceNodeHeartbeat()
+            ).to.be.revertedWithCustomError(participation, 'NotServiceNode');
+        });
+
+        it('should reject unregistered non-validator', async function () {
+            await expect(
+                participation.connect(unauthorized).submitServiceNodeHeartbeat()
+            ).to.be.revertedWithCustomError(participation, 'NotRegistered');
         });
     });
 });

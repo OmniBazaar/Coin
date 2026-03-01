@@ -10,6 +10,11 @@ pragma solidity 0.8.24;
  *      fee token into XOM before bridging to the ODDAO treasury.
  *      The concrete adapter (FeeSwapAdapter) translates this call
  *      into the OmniSwapRouter.swap(SwapParams) format.
+ *
+ *      Audit M-01 Round 4: Added `deadline` parameter for MEV
+ *      protection. Callers MUST pass a real future timestamp
+ *      (not block.timestamp) to prevent indefinite mempool
+ *      holding.
  */
 interface IFeeSwapRouter {
     /**
@@ -23,6 +28,7 @@ interface IFeeSwapRouter {
      * @param amountIn Exact amount of `tokenIn` to swap
      * @param amountOutMin Minimum acceptable output (slippage guard)
      * @param recipient Address to receive the output tokens
+     * @param deadline Timestamp after which the swap reverts
      * @return amountOut Actual amount of `tokenOut` delivered
      */
     function swapExactInput(
@@ -30,6 +36,7 @@ interface IFeeSwapRouter {
         address tokenOut,
         uint256 amountIn,
         uint256 amountOutMin,
-        address recipient
+        address recipient,
+        uint256 deadline
     ) external returns (uint256 amountOut);
 }

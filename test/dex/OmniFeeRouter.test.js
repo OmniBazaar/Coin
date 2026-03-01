@@ -108,8 +108,15 @@ describe("OmniFeeRouter", function () {
   // ---------------------------------------------------------------------------
 
   describe("swapWithFee — revert conditions", function () {
-    // Far-future deadline (M-01: deadline parameter added for MEV protection)
-    const FAR_FUTURE = Math.floor(Date.now() / 1000) + 86400 * 365;
+    /**
+     * Computes a far-future deadline from the current Hardhat block timestamp.
+     * Using Date.now() is unreliable because the Hardhat node's timestamp drifts
+     * after hundreds of preceding tests advance block time.
+     */
+    async function farFutureDeadline() {
+      const block = await ethers.provider.getBlock("latest");
+      return block.timestamp + 86400 * 365;
+    }
 
     it("Should revert with DeadlineExpired when deadline is in the past", async function () {
       // Use a deadline of 1 (already expired)
@@ -128,6 +135,7 @@ describe("OmniFeeRouter", function () {
     });
 
     it("Should revert with ZeroAmount when totalAmount is 0", async function () {
+      const deadline = await farFutureDeadline();
       await expect(
         feeRouter.connect(user).swapWithFee(
           inputToken.target,
@@ -137,12 +145,13 @@ describe("OmniFeeRouter", function () {
           dummyRouter.target,       // routerAddress (contract with code)
           "0x",                     // routerCalldata
           0,                        // minOutput
-          FAR_FUTURE                // deadline
+          deadline                  // deadline
         )
       ).to.be.revertedWithCustomError(feeRouter, "ZeroAmount");
     });
 
     it("Should revert with InvalidTokenAddress when inputToken is zero address", async function () {
+      const deadline = await farFutureDeadline();
       await expect(
         feeRouter.connect(user).swapWithFee(
           ethers.ZeroAddress,       // inputToken = zero
@@ -152,12 +161,13 @@ describe("OmniFeeRouter", function () {
           other.address,
           "0x",
           0,
-          FAR_FUTURE
+          deadline
         )
       ).to.be.revertedWithCustomError(feeRouter, "InvalidTokenAddress");
     });
 
     it("Should revert with InvalidTokenAddress when outputToken is zero address", async function () {
+      const deadline = await farFutureDeadline();
       await expect(
         feeRouter.connect(user).swapWithFee(
           inputToken.target,
@@ -167,12 +177,13 @@ describe("OmniFeeRouter", function () {
           other.address,
           "0x",
           0,
-          FAR_FUTURE
+          deadline
         )
       ).to.be.revertedWithCustomError(feeRouter, "InvalidTokenAddress");
     });
 
     it("Should revert with InvalidRouterAddress when routerAddress is zero address", async function () {
+      const deadline = await farFutureDeadline();
       await expect(
         feeRouter.connect(user).swapWithFee(
           inputToken.target,
@@ -182,12 +193,13 @@ describe("OmniFeeRouter", function () {
           ethers.ZeroAddress,       // routerAddress = zero
           "0x",
           0,
-          FAR_FUTURE
+          deadline
         )
       ).to.be.revertedWithCustomError(feeRouter, "InvalidRouterAddress");
     });
 
     it("Should revert with FeeExceedsTotal when feeAmount > totalAmount", async function () {
+      const deadline = await farFutureDeadline();
       const feeAmount = TOTAL_AMOUNT + 1n; // fee larger than total
       await expect(
         feeRouter.connect(user).swapWithFee(
@@ -198,12 +210,13 @@ describe("OmniFeeRouter", function () {
           dummyRouter.target,       // contract with code
           "0x",
           0,
-          FAR_FUTURE
+          deadline
         )
       ).to.be.revertedWithCustomError(feeRouter, "FeeExceedsTotal");
     });
 
     it("Should revert with FeeExceedsCap when fee exceeds maxFeeBps cap", async function () {
+      const deadline = await farFutureDeadline();
       // maxFeeBps = 100 = 1%, so max allowed fee on 1000 tokens = 10 tokens
       // Requesting anything above 10 tokens should exceed the cap
       const maxAllowed = (TOTAL_AMOUNT * BigInt(MAX_FEE_BPS)) / BigInt(BPS_DENOMINATOR);
@@ -218,7 +231,7 @@ describe("OmniFeeRouter", function () {
           dummyRouter.target,       // contract with code
           "0x",
           0,
-          FAR_FUTURE
+          deadline
         )
       ).to.be.revertedWithCustomError(feeRouter, "FeeExceedsCap");
     });

@@ -93,8 +93,16 @@ interface IOmniCore {
  * - Community Policing (0-5): Validated reports (with decay)
  * - Forum Activity (0-5): Verified contributions (with decay)
  * - Reliability (-5 to +5): Validator heartbeat tracking
+ *
+ * Attacker Review Fixes (2026-02-28):
+ * - ATK-H04: Verifier daily rate limit (50/day) + listing delta cap (1000)
+ * - ATK-H12/K01: Per-user array caps on reviews, claims, reports, contributions
+ * - ATK-M22: Service node heartbeat requires validator status
+ * - ATK-M23: Documented limitation (fabricated tx hashes require off-chain proof)
+ *
+ * @custom:security-contact security@omnibazaar.com
  */
-contract OmniParticipation is
+contract OmniParticipation is // solhint-disable-line max-states-count
     AccessControlUpgradeable,
     UUPSUpgradeable,
     ReentrancyGuardUpgradeable
@@ -172,8 +180,32 @@ contract OmniParticipation is
     /// @notice Validator heartbeat timeout (30 seconds)
     uint256 public constant VALIDATOR_TIMEOUT = 30;
 
-    /// @notice Maximum number of items in a batch operation.
+    /// @notice Maximum number of items in a batch operation
     uint256 public constant MAX_BATCH_SIZE = 100;
+
+    /// @notice ATK-H04: Maximum score changes a verifier can make per day
+    /// @dev Prevents a compromised verifier from mass-inflating sybil scores
+    uint256 public constant MAX_VERIFIER_CHANGES_PER_DAY = 50;
+
+    /// @notice ATK-H04: Maximum delta for listing count per call
+    /// @dev Prevents a verifier from instantly setting 100K listings
+    uint256 public constant MAX_LISTING_COUNT_DELTA = 1000;
+
+    /// @notice ATK-H12/K01: Maximum reviews per user (array cap)
+    /// @dev Prevents unbounded state bloat from fabricated reviews
+    uint256 public constant MAX_REVIEWS_PER_USER = 1000;
+
+    /// @notice ATK-H12/K01: Maximum transaction claims per user
+    /// @dev Prevents unbounded state bloat from mass claims
+    uint256 public constant MAX_CLAIMS_PER_USER = 1000;
+
+    /// @notice ATK-H12/K01: Maximum reports per user
+    /// @dev Prevents unbounded state bloat from report flooding
+    uint256 public constant MAX_REPORTS_PER_USER = 500;
+
+    /// @notice ATK-H12/K01: Maximum forum contributions per user
+    /// @dev Prevents unbounded state bloat from contribution spam
+    uint256 public constant MAX_FORUM_CONTRIBUTIONS_PER_USER = 500;
 
     // ═══════════════════════════════════════════════════════════════════════
     //                              STORAGE
@@ -246,6 +278,12 @@ contract OmniParticipation is
     /// @dev M-01: Declared with other storage variables (not at end of file)
     ///      to prevent future developers from accidentally shifting storage slots.
     bool private _ossified;
+
+    /// @notice ATK-H04: Daily change counter per verifier
+    /// @dev Maps verifier address => day number => changes made that day.
+    ///      Day number = block.timestamp / 1 days (86400 seconds).
+    mapping(address => mapping(uint256 => uint256))
+        private _verifierDailyChanges;
 
     /// @notice Score decay period (90 days of inactivity = 1 point decay)
     uint256 public constant DECAY_PERIOD = 90 days;
@@ -350,6 +388,18 @@ contract OmniParticipation is
         int256 newValue
     );
 
+    /// @notice ATK-H04: Emitted when publisher listing count is changed
+    /// @param user Address whose listing count was updated
+    /// @param oldCount Previous listing count
+    /// @param newCount New listing count
+    /// @param verifier Address of the verifier who made the change
+    event PublisherListingCountUpdated(
+        address indexed user,
+        uint256 indexed oldCount,
+        uint256 indexed newCount,
+        address verifier
+    );
+
     // ═══════════════════════════════════════════════════════════════════════
     //                              ERRORS
     // ═══════════════════════════════════════════════════════════════════════
@@ -408,6 +458,25 @@ contract OmniParticipation is
     /// @notice Thrown when contract is ossified and upgrade attempted
     error ContractIsOssified();
 
+    /// @notice ATK-H04: Verifier exceeded daily score change limit
+    error DailyVerifierLimitExceeded();
+
+    /// @notice ATK-H04: Listing count change exceeds max delta per call
+    /// @param delta The attempted change amount
+    /// @param maxDelta The maximum allowed delta
+    error ListingCountDeltaTooLarge(
+        uint256 delta,
+        uint256 maxDelta
+    );
+
+    /// @notice ATK-H12/K01: Per-user array has reached its maximum size
+    /// @param current Current array length
+    /// @param maximum Maximum allowed length
+    error ArrayCapExceeded(uint256 current, uint256 maximum);
+
+    /// @notice ATK-M22: Caller is not a service node (not a validator)
+    error NotServiceNode();
+
     // ═══════════════════════════════════════════════════════════════════════
     //                           INITIALIZATION
     // ═══════════════════════════════════════════════════════════════════════
@@ -449,9 +518,10 @@ contract OmniParticipation is
      * @param reviewed Address being reviewed
      * @param stars Star rating (1-5)
      * @param transactionHash Hash proving transaction occurred
-     * @dev This IS a reputation claim - submitting review updates scores
+     * @dev This IS a reputation claim - submitting review updates scores.
+     *      ATK-H12/K01: Enforces MAX_REVIEWS_PER_USER array cap.
      */
-    function submitReview(
+    function submitReview( // solhint-disable-line code-complexity
         address reviewed,
         uint8 stars,
         bytes32 transactionHash
@@ -462,6 +532,15 @@ contract OmniParticipation is
         if (usedTransactions[transactionHash]) revert TransactionAlreadyUsed();
         if (!registration.isRegistered(msg.sender)) revert NotRegistered();
         if (!registration.isRegistered(reviewed)) revert NotRegistered();
+
+        // ATK-H12/K01: Enforce per-user array cap
+        uint256 currentLen = reviewHistory[reviewed].length;
+        // solhint-disable-next-line gas-strict-inequalities
+        if (currentLen >= MAX_REVIEWS_PER_USER) {
+            revert ArrayCapExceeded(
+                currentLen, MAX_REVIEWS_PER_USER
+            );
+        }
 
         // Mark as used
         usedTransactions[transactionHash] = true;
@@ -491,6 +570,9 @@ contract OmniParticipation is
         address reviewed,
         uint256 reviewIndex
     ) external onlyRole(VERIFIER_ROLE) {
+        // ATK-H04: Enforce daily rate limit for verifier
+        _enforceVerifierRateLimit();
+
         // solhint-disable-next-line gas-strict-inequalities
         if (reviewIndex >= reviewHistory[reviewed].length) revert InvalidReviewIndex();
 
@@ -562,6 +644,9 @@ contract OmniParticipation is
      */
     function submitServiceNodeHeartbeat() external {
         if (!registration.isRegistered(msg.sender)) revert NotRegistered();
+        // ATK-M22: Only validators can submit service node heartbeats.
+        // Prevents any registered user from inflating publisher score.
+        if (!omniCore.isValidator(msg.sender)) revert NotServiceNode();
 
         lastServiceNodeHeartbeat[msg.sender] = block.timestamp; // solhint-disable-line not-rely-on-time
 
@@ -609,6 +694,9 @@ contract OmniParticipation is
      *      Service node must also be operational.
      */
     function updatePublisherActivity(address user) public onlyRole(VERIFIER_ROLE) {
+        // ATK-H04: Enforce daily rate limit for verifier
+        _enforceVerifierRateLimit();
+
         if (!isServiceNodeOperational(user)) {
             components[user].publisherActivity = 0;
             components[user].lastUpdate = block.timestamp; // solhint-disable-line not-rely-on-time
@@ -641,12 +729,33 @@ contract OmniParticipation is
      * @param user Address to update
      * @param count Number of listings served
      * @dev Only callable by VERIFIER_ROLE. Used for M-04 graduated scoring.
+     *      ATK-H04: Enforces maximum delta per call (MAX_LISTING_COUNT_DELTA)
+     *      and daily rate limit to prevent instant score inflation.
+     *      Emits PublisherListingCountUpdated for audit trail.
      */
     function setPublisherListingCount(
         address user,
         uint256 count
     ) external onlyRole(VERIFIER_ROLE) {
+        // ATK-H04: Enforce daily rate limit for verifier
+        _enforceVerifierRateLimit();
+
+        // ATK-H04: Enforce maximum delta per call
+        uint256 currentCount = publisherListingCount[user];
+        uint256 delta = count > currentCount
+            ? count - currentCount
+            : currentCount - count;
+        if (delta > MAX_LISTING_COUNT_DELTA) {
+            revert ListingCountDeltaTooLarge(
+                delta, MAX_LISTING_COUNT_DELTA
+            );
+        }
+
         publisherListingCount[user] = count;
+
+        emit PublisherListingCountUpdated(
+            user, currentCount, count, msg.sender
+        );
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -665,6 +774,15 @@ contract OmniParticipation is
 
         uint256 hashLen = transactionHashes.length;
         if (hashLen == 0 || hashLen > MAX_BATCH_SIZE) revert InvalidBatchSize();
+
+        // ATK-H12/K01: Enforce per-user array cap
+        uint256 currentLen = transactionClaims[msg.sender].length;
+        if (currentLen + hashLen > MAX_CLAIMS_PER_USER) {
+            revert ArrayCapExceeded(
+                currentLen + hashLen, MAX_CLAIMS_PER_USER
+            );
+        }
+
         for (uint256 i = 0; i < hashLen;) {
             if (usedTransactions[transactionHashes[i]]) revert TransactionAlreadyUsed();
             usedTransactions[transactionHashes[i]] = true;
@@ -693,6 +811,9 @@ contract OmniParticipation is
         address user,
         uint256 claimIndex
     ) external onlyRole(VERIFIER_ROLE) {
+        // ATK-H04: Enforce daily rate limit for verifier
+        _enforceVerifierRateLimit();
+
         // solhint-disable-next-line gas-strict-inequalities
         if (claimIndex >= transactionClaims[user].length) revert InvalidClaimIndex();
 
@@ -765,6 +886,15 @@ contract OmniParticipation is
         if (usedReportHashes[msg.sender][listingHash]) revert ReportAlreadySubmitted();
         usedReportHashes[msg.sender][listingHash] = true;
 
+        // ATK-H12/K01: Enforce per-user array cap
+        uint256 currentLen = reportHistory[msg.sender].length;
+        // solhint-disable-next-line gas-strict-inequalities
+        if (currentLen >= MAX_REPORTS_PER_USER) {
+            revert ArrayCapExceeded(
+                currentLen, MAX_REPORTS_PER_USER
+            );
+        }
+
         reportHistory[msg.sender].push(Report({
             reporter: msg.sender,
             listingHash: listingHash,
@@ -788,6 +918,9 @@ contract OmniParticipation is
         uint256 reportIndex,
         bool isValid
     ) external onlyRole(VERIFIER_ROLE) {
+        // ATK-H04: Enforce daily rate limit for verifier
+        _enforceVerifierRateLimit();
+
         // solhint-disable-next-line gas-strict-inequalities
         if (reportIndex >= reportHistory[reporter].length) revert InvalidReportIndex();
 
@@ -871,6 +1004,17 @@ contract OmniParticipation is
             revert InvalidContributionType();
         }
 
+        // ATK-H12/K01: Enforce per-user array cap
+        uint256 currentLen =
+            forumContributions[msg.sender].length;
+        // solhint-disable-next-line gas-strict-inequalities
+        if (currentLen >= MAX_FORUM_CONTRIBUTIONS_PER_USER) {
+            revert ArrayCapExceeded(
+                currentLen,
+                MAX_FORUM_CONTRIBUTIONS_PER_USER
+            );
+        }
+
         forumContributions[msg.sender].push(ForumContribution({
             contributionType: contributionType,
             contentHash: contentHash,
@@ -890,6 +1034,9 @@ contract OmniParticipation is
         address user,
         uint256 contributionIndex
     ) external onlyRole(VERIFIER_ROLE) {
+        // ATK-H04: Enforce daily rate limit for verifier
+        _enforceVerifierRateLimit();
+
         // solhint-disable-next-line gas-strict-inequalities
         if (contributionIndex >= forumContributions[user].length) {
             revert InvalidContributionIndex();
@@ -1208,6 +1355,26 @@ contract OmniParticipation is
     // ═══════════════════════════════════════════════════════════════════════
 
     /**
+     * @notice Enforce per-verifier daily rate limit on score changes
+     * @dev ATK-H04: Prevents a compromised VERIFIER_ROLE holder from
+     *      mass-inflating sybil accounts' scores in a single day.
+     *      Tracks changes per verifier per calendar day (UTC).
+     *      Reverts with DailyVerifierLimitExceeded if limit reached.
+     */
+    function _enforceVerifierRateLimit() internal {
+        // solhint-disable-next-line not-rely-on-time
+        uint256 today = block.timestamp / 1 days;
+        uint256 dailyCount =
+            _verifierDailyChanges[msg.sender][today];
+        // solhint-disable-next-line gas-strict-inequalities
+        if (dailyCount >= MAX_VERIFIER_CHANGES_PER_DAY) {
+            revert DailyVerifierLimitExceeded();
+        }
+        _verifierDailyChanges[msg.sender][today] =
+            dailyCount + 1;
+    }
+
+    /**
      * @notice Calculate complete score breakdown for a user
      * @dev L-01: Internal view function shared by getScore(),
      *      getTotalScore(), canBeValidator(), and canBeListingNode().
@@ -1387,8 +1554,9 @@ contract OmniParticipation is
      * @dev Prevents storage collisions when new state variables are
      *      added in future implementations. Follows the OpenZeppelin
      *      upgradeable contract pattern.
-     *      Reduced from 50 to 49 to accommodate _ossified (declared in
-     *      the STORAGE section above, alongside other state variables).
+     *      Reduced from 50 to 48 to accommodate:
+     *      - _ossified (bool, 1 slot)
+     *      - _verifierDailyChanges (mapping, 1 slot) [ATK-H04]
      */
-    uint256[49] private __gap;
+    uint256[48] private __gap;
 }

@@ -753,13 +753,19 @@ describe("UnifiedFeeVault", function () {
   // ─────────────────────────────────────────────────────────────────────
 
   describe("Ossification", function () {
-    it("should ossify the contract", async function () {
-      await vault.connect(admin).ossify();
-      expect(await vault.isOssified()).to.be.true;
-    });
+    it("should ossify the contract via propose/confirm",
+      async function () {
+        await vault.connect(admin).proposeOssification();
+        await time.increase(48 * 3600); // 48 hours
+        await vault.connect(admin).confirmOssification();
+        expect(await vault.isOssified()).to.be.true;
+      }
+    );
 
     it("should emit ContractOssified event", async function () {
-      await expect(vault.connect(admin).ossify())
+      await vault.connect(admin).proposeOssification();
+      await time.increase(48 * 3600);
+      await expect(vault.connect(admin).confirmOssification())
         .to.emit(vault, "ContractOssified")
         .withArgs(admin.address);
     });
@@ -767,7 +773,9 @@ describe("UnifiedFeeVault", function () {
     it("should revert ossify for non-DEFAULT_ADMIN_ROLE",
       async function () {
         const DEFAULT_ADMIN_ROLE = await vault.DEFAULT_ADMIN_ROLE();
-        await expect(vault.connect(attacker).ossify())
+        await expect(
+          vault.connect(attacker).proposeOssification()
+        )
           .to.be.revertedWithCustomError(
             vault,
             "AccessControlUnauthorizedAccount"
@@ -776,8 +784,31 @@ describe("UnifiedFeeVault", function () {
       }
     );
 
+    it("should revert confirmOssification before timelock",
+      async function () {
+        await vault.connect(admin).proposeOssification();
+        await expect(
+          vault.connect(admin).confirmOssification()
+        ).to.be.revertedWithCustomError(
+          vault, "TimelockNotExpired"
+        );
+      }
+    );
+
+    it("should revert confirmOssification with no proposal",
+      async function () {
+        await expect(
+          vault.connect(admin).confirmOssification()
+        ).to.be.revertedWithCustomError(
+          vault, "NoPendingChange"
+        );
+      }
+    );
+
     it("should block UUPS upgrade when ossified", async function () {
-      await vault.connect(admin).ossify();
+      await vault.connect(admin).proposeOssification();
+      await time.increase(48 * 3600);
+      await vault.connect(admin).confirmOssification();
 
       const VaultV2 = await ethers.getContractFactory("UnifiedFeeVault");
       await expect(
@@ -942,19 +973,27 @@ describe("UnifiedFeeVault", function () {
       }
     );
 
-    it("should handle 1 wei deposit correctly", async function () {
-      await xom.mint(depositor.address, 1n);
-      await xom.connect(depositor).approve(vault.target, 1n);
-      await vault.connect(depositor).deposit(xom.target, 1n);
+    it("should skip dust amounts below 10 wei (L-03 fix)",
+      async function () {
+        // L-03 audit fix: distribute() skips amounts < 10 to avoid
+        // broken 70/20/10 splits from integer rounding.
+        await xom.mint(depositor.address, 1n);
+        await xom.connect(depositor).approve(vault.target, 1n);
+        await vault.connect(depositor).deposit(xom.target, 1n);
 
-      await vault.connect(user).distribute(xom.target);
+        // distribute() should silently return for dust (< 10 wei)
+        await vault.connect(user).distribute(xom.target);
 
-      // 1 * 7000 / 10000 = 0, 1 * 2000 / 10000 = 0
-      // protocol = 1 - 0 - 0 = 1 (all dust goes to protocol)
-      expect(await vault.pendingBridge(xom.target)).to.equal(0n);
-      expect(await xom.balanceOf(stakingPool.address)).to.equal(0n);
-      expect(await xom.balanceOf(protocolTreasury.address)).to.equal(1n);
-    });
+        // Nothing distributed: funds remain in vault
+        expect(await vault.pendingBridge(xom.target)).to.equal(0n);
+        expect(await xom.balanceOf(stakingPool.address)).to.equal(0n);
+        expect(
+          await xom.balanceOf(protocolTreasury.address)
+        ).to.equal(0n);
+        // 1 wei still sits in the vault
+        expect(await xom.balanceOf(vault.target)).to.equal(1n);
+      }
+    );
   });
 
   // ─────────────────────────────────────────────────────────────────────
@@ -1034,22 +1073,40 @@ describe("UnifiedFeeVault", function () {
   //  14. Swap Router Configuration
   // ─────────────────────────────────────────────────────────────────────
 
-  describe("Swap Router Config", function () {
-    it("should allow ADMIN_ROLE to set swap router", async function () {
-      await vault.connect(admin).setSwapRouter(user.address);
-      expect(await vault.swapRouter()).to.equal(user.address);
-    });
+  describe("Swap Router Config (timelocked)", function () {
+    it("should propose and apply swap router after timelock",
+      async function () {
+        await vault.connect(admin).proposeSwapRouter(user.address);
+        await time.increase(48 * 3600); // 48 hours
+        await vault.connect(admin).applySwapRouter();
+        expect(await vault.swapRouter()).to.equal(user.address);
+      }
+    );
 
-    it("should emit SwapRouterUpdated event", async function () {
-      await expect(vault.connect(admin).setSwapRouter(user.address))
-        .to.emit(vault, "SwapRouterUpdated")
-        .withArgs(user.address);
+    it("should emit SwapRouterProposed and SwapRouterUpdated",
+      async function () {
+        await expect(
+          vault.connect(admin).proposeSwapRouter(user.address)
+        ).to.emit(vault, "SwapRouterProposed");
+
+        await time.increase(48 * 3600);
+        await expect(
+          vault.connect(admin).applySwapRouter()
+        ).to.emit(vault, "SwapRouterUpdated");
+      }
+    );
+
+    it("should revert apply before timelock", async function () {
+      await vault.connect(admin).proposeSwapRouter(user.address);
+      await expect(
+        vault.connect(admin).applySwapRouter()
+      ).to.be.revertedWithCustomError(vault, "TimelockNotExpired");
     });
 
     it("should revert for non-ADMIN_ROLE", async function () {
       const ADMIN_ROLE = await vault.ADMIN_ROLE();
       await expect(
-        vault.connect(attacker).setSwapRouter(user.address)
+        vault.connect(attacker).proposeSwapRouter(user.address)
       )
         .to.be.revertedWithCustomError(
           vault,
@@ -1060,8 +1117,14 @@ describe("UnifiedFeeVault", function () {
 
     it("should revert on zero address", async function () {
       await expect(
-        vault.connect(admin).setSwapRouter(ethers.ZeroAddress)
+        vault.connect(admin).proposeSwapRouter(ethers.ZeroAddress)
       ).to.be.revertedWithCustomError(vault, "ZeroAddress");
+    });
+
+    it("should revert apply with no pending change", async function () {
+      await expect(
+        vault.connect(admin).applySwapRouter()
+      ).to.be.revertedWithCustomError(vault, "NoPendingChange");
     });
   });
 
@@ -1092,25 +1155,41 @@ describe("UnifiedFeeVault", function () {
   //  16. Privacy Bridge Configuration
   // ─────────────────────────────────────────────────────────────────────
 
-  describe("Privacy Bridge Config", function () {
-    it("should allow ADMIN_ROLE to set privacy bridge",
+  describe("Privacy Bridge Config (timelocked)", function () {
+    it("should propose and apply privacy bridge after timelock",
       async function () {
         await vault
           .connect(admin)
-          .setPrivacyBridge(user.address, attacker.address);
+          .proposePrivacyBridge(user.address, attacker.address);
+        await time.increase(48 * 3600);
+        await vault.connect(admin).applyPrivacyBridge();
         expect(await vault.privacyBridge()).to.equal(user.address);
         expect(await vault.pxomToken()).to.equal(attacker.address);
       }
     );
 
-    it("should emit PrivacyBridgeUpdated event", async function () {
+    it("should emit PrivacyBridgeProposed and PrivacyBridgeUpdated",
+      async function () {
+        await expect(
+          vault
+            .connect(admin)
+            .proposePrivacyBridge(user.address, attacker.address)
+        ).to.emit(vault, "PrivacyBridgeProposed");
+
+        await time.increase(48 * 3600);
+        await expect(
+          vault.connect(admin).applyPrivacyBridge()
+        ).to.emit(vault, "PrivacyBridgeUpdated");
+      }
+    );
+
+    it("should revert apply before timelock", async function () {
+      await vault
+        .connect(admin)
+        .proposePrivacyBridge(user.address, attacker.address);
       await expect(
-        vault
-          .connect(admin)
-          .setPrivacyBridge(user.address, attacker.address)
-      )
-        .to.emit(vault, "PrivacyBridgeUpdated")
-        .withArgs(user.address, attacker.address);
+        vault.connect(admin).applyPrivacyBridge()
+      ).to.be.revertedWithCustomError(vault, "TimelockNotExpired");
     });
 
     it("should revert for non-ADMIN_ROLE", async function () {
@@ -1118,7 +1197,7 @@ describe("UnifiedFeeVault", function () {
       await expect(
         vault
           .connect(attacker)
-          .setPrivacyBridge(user.address, attacker.address)
+          .proposePrivacyBridge(user.address, attacker.address)
       )
         .to.be.revertedWithCustomError(
           vault,
@@ -1131,7 +1210,9 @@ describe("UnifiedFeeVault", function () {
       await expect(
         vault
           .connect(admin)
-          .setPrivacyBridge(ethers.ZeroAddress, attacker.address)
+          .proposePrivacyBridge(
+            ethers.ZeroAddress, attacker.address
+          )
       ).to.be.revertedWithCustomError(vault, "ZeroAddress");
     });
 
@@ -1139,8 +1220,16 @@ describe("UnifiedFeeVault", function () {
       await expect(
         vault
           .connect(admin)
-          .setPrivacyBridge(user.address, ethers.ZeroAddress)
+          .proposePrivacyBridge(
+            user.address, ethers.ZeroAddress
+          )
       ).to.be.revertedWithCustomError(vault, "ZeroAddress");
+    });
+
+    it("should revert apply with no pending change", async function () {
+      await expect(
+        vault.connect(admin).applyPrivacyBridge()
+      ).to.be.revertedWithCustomError(vault, "NoPendingChange");
     });
   });
 
@@ -1149,7 +1238,7 @@ describe("UnifiedFeeVault", function () {
   // ─────────────────────────────────────────────────────────────────────
 
   describe("swapAndBridge", function () {
-    let mockSwapRouter, oddaoShare;
+    let mockSwapRouter, oddaoShare, deadline;
 
     beforeEach(async function () {
       // Deploy mock swap router (1:1 exchange rate = 1e18)
@@ -1162,8 +1251,12 @@ describe("UnifiedFeeVault", function () {
       );
       await mockSwapRouter.waitForDeployment();
 
-      // Configure vault: set swap router and XOM token
-      await vault.connect(admin).setSwapRouter(mockSwapRouter.target);
+      // Configure vault: propose+apply swap router, set XOM token
+      await vault
+        .connect(admin)
+        .proposeSwapRouter(mockSwapRouter.target);
+      await time.increase(48 * 3600);
+      await vault.connect(admin).applySwapRouter();
       await vault.connect(admin).setXomToken(xom.target);
 
       // Deposit USDC fees and distribute to build pendingBridge
@@ -1173,15 +1266,18 @@ describe("UnifiedFeeVault", function () {
       await vault.connect(user).distribute(usdc.target);
       oddaoShare =
         (DEPOSIT_AMOUNT * ODDAO_BPS) / BPS_DENOMINATOR;
+
+      // M-03 audit fix: deadline = 1 hour from now
+      deadline = (await time.latest()) + 3600;
     });
 
     it("should swap USDC to XOM and transfer to receiver",
       async function () {
         const receiverBefore = await xom.balanceOf(user.address);
 
-        await vault
-          .connect(bridger)
-          .swapAndBridge(usdc.target, oddaoShare, 0, user.address);
+        await vault.connect(bridger).swapAndBridge(
+          usdc.target, oddaoShare, 0, user.address, deadline
+        );
 
         const receiverAfter = await xom.balanceOf(user.address);
         expect(receiverAfter - receiverBefore).to.equal(oddaoShare);
@@ -1189,17 +1285,17 @@ describe("UnifiedFeeVault", function () {
     );
 
     it("should deduct pendingBridge[token]", async function () {
-      await vault
-        .connect(bridger)
-        .swapAndBridge(usdc.target, oddaoShare, 0, user.address);
+      await vault.connect(bridger).swapAndBridge(
+        usdc.target, oddaoShare, 0, user.address, deadline
+      );
 
       expect(await vault.pendingBridge(usdc.target)).to.equal(0n);
     });
 
     it("should update totalBridged[token]", async function () {
-      await vault
-        .connect(bridger)
-        .swapAndBridge(usdc.target, oddaoShare, 0, user.address);
+      await vault.connect(bridger).swapAndBridge(
+        usdc.target, oddaoShare, 0, user.address, deadline
+      );
 
       expect(await vault.totalBridged(usdc.target)).to.equal(
         oddaoShare
@@ -1208,9 +1304,9 @@ describe("UnifiedFeeVault", function () {
 
     it("should emit FeesSwappedAndBridged event", async function () {
       await expect(
-        vault
-          .connect(bridger)
-          .swapAndBridge(usdc.target, oddaoShare, 0, user.address)
+        vault.connect(bridger).swapAndBridge(
+          usdc.target, oddaoShare, 0, user.address, deadline
+        )
       )
         .to.emit(vault, "FeesSwappedAndBridged")
         .withArgs(usdc.target, oddaoShare, oddaoShare, user.address);
@@ -1219,9 +1315,9 @@ describe("UnifiedFeeVault", function () {
     it("should revert for non-BRIDGE_ROLE", async function () {
       const BRIDGE_ROLE = await vault.BRIDGE_ROLE();
       await expect(
-        vault
-          .connect(attacker)
-          .swapAndBridge(usdc.target, oddaoShare, 0, user.address)
+        vault.connect(attacker).swapAndBridge(
+          usdc.target, oddaoShare, 0, user.address, deadline
+        )
       )
         .to.be.revertedWithCustomError(
           vault,
@@ -1230,8 +1326,16 @@ describe("UnifiedFeeVault", function () {
         .withArgs(attacker.address, BRIDGE_ROLE);
     });
 
+    it("should revert when deadline has passed", async function () {
+      const pastDeadline = (await time.latest()) - 1;
+      await expect(
+        vault.connect(bridger).swapAndBridge(
+          usdc.target, oddaoShare, 0, user.address, pastDeadline
+        )
+      ).to.be.revertedWithCustomError(vault, "DeadlineExpired");
+    });
+
     it("should revert when swap router not set", async function () {
-      // Deploy a fresh vault without swap router configured
       const Vault = await ethers.getContractFactory("UnifiedFeeVault");
       const freshVault = await upgrades.deployProxy(
         Vault,
@@ -1245,9 +1349,9 @@ describe("UnifiedFeeVault", function () {
       await freshVault.connect(admin).setXomToken(xom.target);
 
       await expect(
-        freshVault
-          .connect(bridger)
-          .swapAndBridge(usdc.target, 1, 0, user.address)
+        freshVault.connect(bridger).swapAndBridge(
+          usdc.target, 1, 0, user.address, deadline
+        )
       ).to.be.revertedWithCustomError(freshVault, "SwapRouterNotSet");
     });
 
@@ -1262,23 +1366,27 @@ describe("UnifiedFeeVault", function () {
 
       const BR = await freshVault.BRIDGE_ROLE();
       await freshVault.connect(admin).grantRole(BR, bridger.address);
+      // Need to propose+apply swap router through timelock
       await freshVault
         .connect(admin)
-        .setSwapRouter(mockSwapRouter.target);
+        .proposeSwapRouter(mockSwapRouter.target);
+      await time.increase(48 * 3600);
+      await freshVault.connect(admin).applySwapRouter();
 
+      const dl = (await time.latest()) + 3600;
       await expect(
-        freshVault
-          .connect(bridger)
-          .swapAndBridge(usdc.target, 1, 0, user.address)
+        freshVault.connect(bridger).swapAndBridge(
+          usdc.target, 1, 0, user.address, dl
+        )
       ).to.be.revertedWithCustomError(freshVault, "XOMTokenNotSet");
     });
 
     it("should revert when amount exceeds pending", async function () {
       const excessive = oddaoShare + 1n;
       await expect(
-        vault
-          .connect(bridger)
-          .swapAndBridge(usdc.target, excessive, 0, user.address)
+        vault.connect(bridger).swapAndBridge(
+          usdc.target, excessive, 0, user.address, deadline
+        )
       )
         .to.be.revertedWithCustomError(
           vault,
@@ -1288,14 +1396,12 @@ describe("UnifiedFeeVault", function () {
     });
 
     it("should enforce slippage protection", async function () {
-      // Set a very high minXOMOut that cannot be met
       const impossibleMin = oddaoShare * 10n;
       await expect(
-        vault
-          .connect(bridger)
-          .swapAndBridge(
-            usdc.target, oddaoShare, impossibleMin, user.address
-          )
+        vault.connect(bridger).swapAndBridge(
+          usdc.target, oddaoShare, impossibleMin,
+          user.address, deadline
+        )
       ).to.be.revertedWithCustomError(
         vault,
         "InsufficientSwapOutput"
@@ -1305,9 +1411,9 @@ describe("UnifiedFeeVault", function () {
     it("should revert when paused", async function () {
       await vault.connect(admin).pause();
       await expect(
-        vault
-          .connect(bridger)
-          .swapAndBridge(usdc.target, oddaoShare, 0, user.address)
+        vault.connect(bridger).swapAndBridge(
+          usdc.target, oddaoShare, 0, user.address, deadline
+        )
       ).to.be.revertedWithCustomError(vault, "EnforcedPause");
     });
   });
@@ -1332,11 +1438,13 @@ describe("UnifiedFeeVault", function () {
       mockBridge = await MockBridge.deploy(pxom.target, xom.target);
       await mockBridge.waitForDeployment();
 
-      // Configure vault
+      // Configure vault: propose+apply privacy bridge via timelock
       await vault.connect(admin).setXomToken(xom.target);
       await vault
         .connect(admin)
-        .setPrivacyBridge(mockBridge.target, pxom.target);
+        .proposePrivacyBridge(mockBridge.target, pxom.target);
+      await time.increase(48 * 3600);
+      await vault.connect(admin).applyPrivacyBridge();
 
       // Grant DEPOSITOR_ROLE and setup pXOM fees
       const DEPOSITOR_ROLE = await vault.DEPOSITOR_ROLE();
@@ -1363,9 +1471,10 @@ describe("UnifiedFeeVault", function () {
       async function () {
         const receiverBefore = await xom.balanceOf(user.address);
 
+        // M-04 audit fix: minXOMOut = 0 (no slippage check)
         await vault
           .connect(bridger)
-          .convertPXOMAndBridge(oddaoShare, user.address);
+          .convertPXOMAndBridge(oddaoShare, user.address, 0);
 
         const receiverAfter = await xom.balanceOf(user.address);
         expect(receiverAfter - receiverBefore).to.equal(oddaoShare);
@@ -1375,7 +1484,7 @@ describe("UnifiedFeeVault", function () {
     it("should deduct pendingBridge[pxom]", async function () {
       await vault
         .connect(bridger)
-        .convertPXOMAndBridge(oddaoShare, user.address);
+        .convertPXOMAndBridge(oddaoShare, user.address, 0);
 
       expect(await vault.pendingBridge(pxom.target)).to.equal(0n);
     });
@@ -1383,7 +1492,7 @@ describe("UnifiedFeeVault", function () {
     it("should update totalBridged[pxom]", async function () {
       await vault
         .connect(bridger)
-        .convertPXOMAndBridge(oddaoShare, user.address);
+        .convertPXOMAndBridge(oddaoShare, user.address, 0);
 
       expect(await vault.totalBridged(pxom.target)).to.equal(
         oddaoShare
@@ -1394,7 +1503,7 @@ describe("UnifiedFeeVault", function () {
       async function () {
         const tx = vault
           .connect(bridger)
-          .convertPXOMAndBridge(oddaoShare, user.address);
+          .convertPXOMAndBridge(oddaoShare, user.address, 0);
 
         await expect(tx)
           .to.emit(vault, "PXOMConverted")
@@ -1411,7 +1520,7 @@ describe("UnifiedFeeVault", function () {
       await expect(
         vault
           .connect(attacker)
-          .convertPXOMAndBridge(oddaoShare, user.address)
+          .convertPXOMAndBridge(oddaoShare, user.address, 0)
       )
         .to.be.revertedWithCustomError(
           vault,
@@ -1419,6 +1528,22 @@ describe("UnifiedFeeVault", function () {
         )
         .withArgs(attacker.address, BRIDGE_ROLE);
     });
+
+    it("should enforce minXOMOut slippage protection",
+      async function () {
+        const impossibleMin = oddaoShare * 10n;
+        await expect(
+          vault
+            .connect(bridger)
+            .convertPXOMAndBridge(
+              oddaoShare, user.address, impossibleMin
+            )
+        ).to.be.revertedWithCustomError(
+          vault,
+          "InsufficientSwapOutput"
+        );
+      }
+    );
 
     it("should revert when privacy bridge not set",
       async function () {
@@ -1445,7 +1570,7 @@ describe("UnifiedFeeVault", function () {
         await expect(
           freshVault
             .connect(bridger)
-            .convertPXOMAndBridge(1, user.address)
+            .convertPXOMAndBridge(1, user.address, 0)
         ).to.be.revertedWithCustomError(
           freshVault,
           "PrivacyBridgeNotSet"
@@ -1458,7 +1583,7 @@ describe("UnifiedFeeVault", function () {
       await expect(
         vault
           .connect(bridger)
-          .convertPXOMAndBridge(excessive, user.address)
+          .convertPXOMAndBridge(excessive, user.address, 0)
       )
         .to.be.revertedWithCustomError(
           vault,
@@ -1472,7 +1597,7 @@ describe("UnifiedFeeVault", function () {
       await expect(
         vault
           .connect(bridger)
-          .convertPXOMAndBridge(oddaoShare, user.address)
+          .convertPXOMAndBridge(oddaoShare, user.address, 0)
       ).to.be.revertedWithCustomError(vault, "EnforcedPause");
     });
   });
@@ -1530,7 +1655,7 @@ describe("UnifiedFeeVault", function () {
 
     it("should handle mixed: in-kind for one token, swap for another",
       async function () {
-        // Setup swap router for USDC→XOM
+        // Setup swap router for USDC->XOM via timelock
         const MockFeeSwapRouter = await ethers.getContractFactory(
           "MockFeeSwapRouter"
         );
@@ -1539,7 +1664,11 @@ describe("UnifiedFeeVault", function () {
           xom.target
         );
         await mockRouter.waitForDeployment();
-        await vault.connect(admin).setSwapRouter(mockRouter.target);
+        await vault
+          .connect(admin)
+          .proposeSwapRouter(mockRouter.target);
+        await time.increase(48 * 3600);
+        await vault.connect(admin).applySwapRouter();
         await vault.connect(admin).setXomToken(xom.target);
 
         // Deposit and distribute both tokens
@@ -1560,10 +1689,11 @@ describe("UnifiedFeeVault", function () {
           .connect(bridger)
           .bridgeToTreasury(xom.target, oddaoShare, user.address);
 
-        // Swap USDC to XOM and bridge
-        await vault
-          .connect(bridger)
-          .swapAndBridge(usdc.target, oddaoShare, 0, user.address);
+        // Swap USDC to XOM and bridge (with deadline)
+        const dl = (await time.latest()) + 3600;
+        await vault.connect(bridger).swapAndBridge(
+          usdc.target, oddaoShare, 0, user.address, dl
+        );
 
         // Both should be fully bridged
         expect(await vault.pendingBridge(xom.target)).to.equal(0n);

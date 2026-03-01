@@ -27,8 +27,24 @@ describe("OmniArbitration", function () {
   // VoteType enum values
   const VoteType = { None: 0, Release: 1, Refund: 2 };
 
-  // DisputeStatus enum values
-  const DisputeStatus = { Active: 0, Resolved: 1, Appealed: 2, DefaultResolved: 3 };
+  // DisputeStatus enum values (must match contract enum order)
+  const DisputeStatus = { Active: 0, Resolved: 1, Appealed: 2, DefaultResolved: 3, PendingSelection: 4 };
+
+  /**
+   * Helper: create a dispute AND finalize arbitrator selection.
+   * The contract uses two-phase commit: createDispute() sets status to
+   * PendingSelection, then finalizeArbitratorSelection() (2+ blocks later)
+   * assigns arbitrators and sets status to Active.
+   */
+  async function createAndFinalizeDispute(caller, escrowId) {
+    await arbitration.connect(caller).createDispute(escrowId);
+    // Mine 2 blocks so finalizeArbitratorSelection passes the block check
+    await ethers.provider.send("evm_mine", []);
+    await ethers.provider.send("evm_mine", []);
+    const disputeId = (await arbitration.nextDisputeId()) - 1n;
+    await arbitration.connect(caller).finalizeArbitratorSelection(disputeId);
+    return disputeId;
+  }
 
   // ─────────────────────────────────────────────────────────────────────
   //                      SETUP (runs before each test)
@@ -238,8 +254,14 @@ describe("OmniArbitration", function () {
       ).to.be.revertedWithCustomError(arbitration, "NotEscrowParty");
     });
 
-    it("should select exactly 3 arbitrators for the dispute", async function () {
+    it("should set dispute status to PendingSelection after createDispute", async function () {
       await arbitration.connect(buyer).createDispute(1);
+      const dispute = await arbitration.getDispute(1);
+      expect(dispute.status).to.equal(DisputeStatus.PendingSelection);
+    });
+
+    it("should select exactly 3 arbitrators after finalization", async function () {
+      await createAndFinalizeDispute(buyer, 1);
 
       const dispute = await arbitration.getDispute(1);
       const selectedArbs = dispute.arbitrators;
@@ -252,14 +274,14 @@ describe("OmniArbitration", function () {
       }
     });
 
-    it("should set dispute status to Active", async function () {
-      await arbitration.connect(buyer).createDispute(1);
+    it("should set dispute status to Active after finalization", async function () {
+      await createAndFinalizeDispute(buyer, 1);
       const dispute = await arbitration.getDispute(1);
       expect(dispute.status).to.equal(DisputeStatus.Active);
     });
 
-    it("should set deadline to now + 7 days", async function () {
-      await arbitration.connect(buyer).createDispute(1);
+    it("should set deadline to now + 7 days after finalization", async function () {
+      await createAndFinalizeDispute(buyer, 1);
       const dispute = await arbitration.getDispute(1);
       const latest = await time.latest();
       expect(dispute.deadline).to.be.closeTo(latest + SEVEN_DAYS, 5);
@@ -287,7 +309,7 @@ describe("OmniArbitration", function () {
     let disputeArbs;
 
     beforeEach(async function () {
-      await arbitration.connect(buyer).createDispute(1);
+      await createAndFinalizeDispute(buyer, 1);
       const dispute = await arbitration.getDispute(1);
       disputeArbs = dispute.arbitrators;
     });
@@ -353,7 +375,7 @@ describe("OmniArbitration", function () {
     let arbSigners;
 
     beforeEach(async function () {
-      await arbitration.connect(buyer).createDispute(1);
+      await createAndFinalizeDispute(buyer, 1);
       const dispute = await arbitration.getDispute(1);
       disputeArbs = dispute.arbitrators;
 
@@ -461,7 +483,7 @@ describe("OmniArbitration", function () {
     let arbSigners;
 
     beforeEach(async function () {
-      await arbitration.connect(buyer).createDispute(1);
+      await createAndFinalizeDispute(buyer, 1);
       const dispute = await arbitration.getDispute(1);
       arbSigners = dispute.arbitrators.map((addr) =>
         arbitrators.find((a) => a.address === addr)
@@ -491,7 +513,7 @@ describe("OmniArbitration", function () {
     it("should reject appeal on non-resolved dispute", async function () {
       // Create a new dispute (escrowId=2) that stays active
       await mockEscrow.setEscrow(2, buyer.address, seller.address, ESCROW_AMOUNT);
-      await arbitration.connect(buyer).createDispute(2);
+      await createAndFinalizeDispute(buyer, 2);
 
       await expect(
         arbitration.connect(buyer).fileAppeal(2)
@@ -661,7 +683,7 @@ describe("OmniArbitration", function () {
   // ═══════════════════════════════════════════════════════════════════════
   describe("Default Resolution", function () {
     beforeEach(async function () {
-      await arbitration.connect(buyer).createDispute(1);
+      await createAndFinalizeDispute(buyer, 1);
     });
 
     it("should allow default resolution after deadline", async function () {
@@ -849,7 +871,7 @@ describe("OmniArbitration", function () {
     });
 
     it("should reject evidence submission when paused", async function () {
-      await arbitration.connect(buyer).createDispute(1);
+      await createAndFinalizeDispute(buyer, 1);
       await arbitration.connect(owner).pause();
       const cid = ethers.id("evidence-paused");
       await expect(
@@ -858,7 +880,7 @@ describe("OmniArbitration", function () {
     });
 
     it("should reject casting vote when paused", async function () {
-      await arbitration.connect(buyer).createDispute(1);
+      await createAndFinalizeDispute(buyer, 1);
       const dispute = await arbitration.getDispute(1);
       const arbSigner = arbitrators.find((a) => a.address === dispute.arbitrators[0]);
 
@@ -872,8 +894,8 @@ describe("OmniArbitration", function () {
       // Create second escrow
       await mockEscrow.setEscrow(2, buyer.address, seller.address, ethers.parseEther("500"));
 
-      await arbitration.connect(buyer).createDispute(1);
-      await arbitration.connect(seller).createDispute(2);
+      await createAndFinalizeDispute(buyer, 1);
+      await createAndFinalizeDispute(seller, 2);
 
       expect(await arbitration.nextDisputeId()).to.equal(3);
 
@@ -893,7 +915,7 @@ describe("OmniArbitration", function () {
     });
 
     it("should reject evidence after dispute is resolved", async function () {
-      await arbitration.connect(buyer).createDispute(1);
+      await createAndFinalizeDispute(buyer, 1);
       const dispute = await arbitration.getDispute(1);
       const arbSigners = dispute.arbitrators.map((addr) =>
         arbitrators.find((a) => a.address === addr)
@@ -910,7 +932,7 @@ describe("OmniArbitration", function () {
     });
 
     it("should still allow evidence during appeal phase", async function () {
-      await arbitration.connect(buyer).createDispute(1);
+      await createAndFinalizeDispute(buyer, 1);
       const dispute = await arbitration.getDispute(1);
       const arbSigners = dispute.arbitrators.map((addr) =>
         arbitrators.find((a) => a.address === addr)

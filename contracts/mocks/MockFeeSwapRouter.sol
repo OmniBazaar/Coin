@@ -18,6 +18,12 @@ import {IFeeSwapRouter} from "../interfaces/IFeeSwapRouter.sol";
 contract MockFeeSwapRouter is IFeeSwapRouter {
     using SafeERC20 for IERC20;
 
+    /// @notice Thrown when shouldRevert is true
+    error ForcedRevert();
+
+    /// @notice Thrown when output token mint fails
+    error MintFailed();
+
     /// @notice Exchange rate numerator (output = input * rate / 1e18)
     uint256 public exchangeRate;
 
@@ -56,16 +62,18 @@ contract MockFeeSwapRouter is IFeeSwapRouter {
     /**
      * @inheritdoc IFeeSwapRouter
      * @dev Pulls tokenIn, mints outputToken to recipient at the
-     *      configured exchange rate.
+     *      configured exchange rate. Deadline parameter accepted
+     *      but not enforced in mock.
      */
     function swapExactInput(
         address tokenIn,
         address, /* tokenOut */
         uint256 amountIn,
         uint256, /* amountOutMin */
-        address recipient
+        address recipient,
+        uint256 /* deadline */
     ) external override returns (uint256 amountOut) {
-        require(!shouldRevert, "MockFeeSwapRouter: forced revert");
+        if (shouldRevert) revert ForcedRevert();
 
         // Pull input tokens from caller
         IERC20(tokenIn).safeTransferFrom(
@@ -84,6 +92,6 @@ contract MockFeeSwapRouter is IFeeSwapRouter {
                 amountOut
             )
         );
-        require(success, "MockFeeSwapRouter: mint failed");
+        if (!success) revert MintFailed();
     }
 }

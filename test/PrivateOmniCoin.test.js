@@ -1,6 +1,7 @@
 const { expect } = require("chai");
 const { ethers, upgrades } = require("hardhat");
 const { loadFixture } = require("@nomicfoundation/hardhat-network-helpers");
+const { time } = require("@nomicfoundation/hardhat-network-helpers");
 
 /**
  * @title PrivateOmniCoin Test Suite
@@ -32,6 +33,17 @@ describe("PrivateOmniCoin", function () {
         await token.transfer(user2.address, transferAmount);
 
         return { token, owner, user1, user2, feeRecipient, bridge };
+    }
+
+    /**
+     * Helper: disable privacy through the 7-day timelock pattern.
+     * Calls proposePrivacyDisable(), advances time by 7 days, then
+     * calls executePrivacyDisable().
+     */
+    async function disablePrivacyViaTimelock(token) {
+        await token.proposePrivacyDisable();
+        await time.increase(7 * 24 * 60 * 60); // 7 days
+        await token.executePrivacyDisable();
     }
 
     // ========================================================================
@@ -109,31 +121,45 @@ describe("PrivateOmniCoin", function () {
             expect(isAvailable).to.be.false;
         });
 
-        it("Should allow admin to enable/disable privacy", async function () {
+        it("Should allow admin to enable/disable privacy via timelock", async function () {
             const { token } = await loadFixture(deployPrivateOmniCoinFixture);
 
-            // Disable privacy
-            await token.setPrivacyEnabled(false);
+            // First enable privacy (instant)
+            await token.enablePrivacy();
+            expect(await token.privacyAvailable()).to.be.true;
+
+            // Disable privacy requires 7-day timelock
+            await disablePrivacyViaTimelock(token);
             expect(await token.privacyAvailable()).to.be.false;
 
-            // Re-enable privacy
-            await token.setPrivacyEnabled(true);
+            // Re-enable privacy (instant)
+            await token.enablePrivacy();
             expect(await token.privacyAvailable()).to.be.true;
         });
 
-        it("Should emit PrivacyStatusChanged event", async function () {
+        it("Should emit PrivacyDisableProposed and PrivacyDisabled events", async function () {
             const { token } = await loadFixture(deployPrivateOmniCoinFixture);
 
-            await expect(token.setPrivacyEnabled(false))
-                .to.emit(token, "PrivacyStatusChanged")
-                .withArgs(false);
+            // Enable privacy first so we can test the disable flow
+            await token.enablePrivacy();
+
+            // Propose should emit PrivacyDisableProposed
+            await expect(token.proposePrivacyDisable())
+                .to.emit(token, "PrivacyDisableProposed");
+
+            // Advance past the 7-day timelock
+            await time.increase(7 * 24 * 60 * 60);
+
+            // Execute should emit PrivacyDisabled
+            await expect(token.executePrivacyDisable())
+                .to.emit(token, "PrivacyDisabled");
         });
 
-        it("Should not allow non-admin to change privacy status", async function () {
+        it("Should not allow non-admin to propose privacy disable", async function () {
             const { token, user1 } = await loadFixture(deployPrivateOmniCoinFixture);
 
             await expect(
-                token.connect(user1).setPrivacyEnabled(false)
+                token.connect(user1).proposePrivacyDisable()
             ).to.be.reverted; // Will revert with AccessControl error
         });
     });
@@ -182,8 +208,8 @@ describe("PrivateOmniCoin", function () {
         it("Should revert on zero amount when privacy enabled", async function () {
             const { token, user1 } = await loadFixture(deployPrivateOmniCoinFixture);
 
-            // Enable privacy for this test
-            await token.setPrivacyEnabled(true);
+            // Enable privacy for this test (instant)
+            await token.enablePrivacy();
 
             await expect(
                 token.connect(user1).convertToPrivate(0)
@@ -193,8 +219,8 @@ describe("PrivateOmniCoin", function () {
         it("Should revert on amount too large for uint64 when privacy enabled", async function () {
             const { token, user1 } = await loadFixture(deployPrivateOmniCoinFixture);
 
-            // Enable privacy for this test
-            await token.setPrivacyEnabled(true);
+            // Enable privacy for this test (instant)
+            await token.enablePrivacy();
 
             // After scaling by 1e12, amount must fit in uint64
             // uint64 max = 18,446,744,073,709,551,615
@@ -211,7 +237,9 @@ describe("PrivateOmniCoin", function () {
         it("Should revert when privacy is disabled", async function () {
             const { token, user1 } = await loadFixture(deployPrivateOmniCoinFixture);
 
-            await token.setPrivacyEnabled(false);
+            // Privacy starts disabled on Hardhat (no MPC), so no need to
+            // explicitly disable. Just verify it's off and test the revert.
+            expect(await token.privacyAvailable()).to.be.false;
 
             await expect(
                 token.connect(user1).convertToPrivate(ethers.parseEther("100"))
@@ -287,14 +315,18 @@ describe("PrivateOmniCoin", function () {
             expect(receipt.status).to.equal(1);
         });
 
-        it("Should allow admin to decrypt any balance", async function () {
+        it("Should reject admin decrypting another user's balance (ATK-H05)", async function () {
             const { token, owner, user1 } = await loadFixture(deployPrivateOmniCoinFixture);
 
-            // Admin can query any user's decrypted balance
-            const tx = await token.connect(owner).decryptedPrivateBalanceOf(user1.address);
-            const receipt = await tx.wait();
+            // Enable privacy so the function reaches the OnlyAccountOwner
+            // check (when privacy is disabled, it returns 0 early).
+            await token.enablePrivacy();
 
-            expect(receipt.status).to.equal(1);
+            // ATK-H05: Only the account owner can decrypt their own
+            // balance. Admin override was removed for privacy.
+            await expect(
+                token.connect(owner).decryptedPrivateBalanceOf(user1.address)
+            ).to.be.revertedWithCustomError(token, "OnlyAccountOwner");
         });
 
         it("Should return zero when privacy is disabled", async function () {
@@ -338,7 +370,8 @@ describe("PrivateOmniCoin", function () {
         it("Should revert when privacy is disabled", async function () {
             const { token, user1 } = await loadFixture(deployPrivateOmniCoinFixture);
 
-            await token.setPrivacyEnabled(false);
+            // Privacy starts disabled on Hardhat (no MPC)
+            expect(await token.privacyAvailable()).to.be.false;
 
             // Function should exist and revert
             expect(typeof token.connect(user1).privateTransfer).to.equal("function");
@@ -452,7 +485,8 @@ describe("PrivateOmniCoin", function () {
         it("Should revert recovery when privacy is enabled", async function () {
             const { token, owner, user1 } = await loadFixture(deployPrivateOmniCoinFixture);
 
-            await token.setPrivacyEnabled(true);
+            // Enable privacy (instant)
+            await token.enablePrivacy();
 
             await expect(
                 token.connect(owner).emergencyRecoverPrivateBalance(user1.address)
@@ -462,7 +496,8 @@ describe("PrivateOmniCoin", function () {
         it("Should revert recovery for zero address", async function () {
             const { token, owner } = await loadFixture(deployPrivateOmniCoinFixture);
 
-            await token.setPrivacyEnabled(false);
+            // Privacy starts disabled on Hardhat
+            expect(await token.privacyAvailable()).to.be.false;
 
             await expect(
                 token.connect(owner).emergencyRecoverPrivateBalance(ethers.ZeroAddress)
@@ -472,7 +507,8 @@ describe("PrivateOmniCoin", function () {
         it("Should revert recovery when no balance to recover", async function () {
             const { token, owner, user1 } = await loadFixture(deployPrivateOmniCoinFixture);
 
-            await token.setPrivacyEnabled(false);
+            // Privacy starts disabled on Hardhat
+            expect(await token.privacyAvailable()).to.be.false;
 
             await expect(
                 token.connect(owner).emergencyRecoverPrivateBalance(user1.address)
@@ -482,7 +518,8 @@ describe("PrivateOmniCoin", function () {
         it("Should not allow non-admin to recover", async function () {
             const { token, user1 } = await loadFixture(deployPrivateOmniCoinFixture);
 
-            await token.setPrivacyEnabled(false);
+            // Privacy starts disabled on Hardhat
+            expect(await token.privacyAvailable()).to.be.false;
 
             await expect(
                 token.connect(user1).emergencyRecoverPrivateBalance(user1.address)

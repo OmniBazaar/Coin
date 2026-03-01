@@ -956,18 +956,22 @@ contract OmniGovernance is
 
     /**
      * @notice Get staked XOM amount at a specific past block from OmniCore
-     * @dev Uses OmniCore.getStakedAt() for checkpoint-based snapshot.
-     *      Falls back to current staking amount if getStakedAt() is not
-     *      available (backward compatibility with older OmniCore versions).
+     * @dev ATK-H02 fix: Uses OmniCore.getStakedAt() for checkpoint-based
+     *      snapshot. Returns 0 if getStakedAt() is not available or reverts.
+     *      The previous fallback to current staking amount was REMOVED because
+     *      it enabled vote inflation: an attacker could stake XOM after a
+     *      proposal's snapshot block and still have their current (post-snapshot)
+     *      stake counted as voting power. Without historical snapshots, the
+     *      only safe default is zero.
      * @param account Address to query
      * @param blockNumber Block number to query
-     * @return amount Staked XOM amount at the given block
+     * @return amount Staked XOM amount at the given block (0 if unavailable)
      */
     function _getStakedAmountAt(
         address account,
         uint256 blockNumber
     ) internal view returns (uint256 amount) {
-        // Try snapshot-based query first (OmniCore with checkpoints)
+        // Try snapshot-based query (OmniCore with checkpoints)
         // solhint-disable-next-line avoid-low-level-calls
         (bool success, bytes memory data) = omniCore.staticcall(
             abi.encodeWithSignature(
@@ -981,8 +985,9 @@ contract OmniGovernance is
             return abi.decode(data, (uint256));
         }
 
-        // Fallback to current amount if getStakedAt not available
-        return _getStakedAmount(account);
+        // ATK-H02: No fallback to current balance — prevents
+        // post-snapshot stake inflation from inflating vote weight
+        return 0;
     }
 
     /**

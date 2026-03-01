@@ -87,6 +87,9 @@ interface IOmniCoreStaking {
  * - M-04: APR changes use 24h timelock
  * - M-05: Duration tier range-based (documented design)
  *
+ * Attacker Review Fixes (2026-02-28):
+ * - ATK-H01: MIN_STAKE_AGE (24h) prevents flash-stake reward extraction
+ *
  * @custom:security-contact security@omnibazaar.com
  */
 contract StakingRewardPool is
@@ -167,6 +170,13 @@ contract StakingRewardPool is
     /// @notice Maximum combined APR in basis points (12% = 1200 bps)
     /// @dev Per tokenomics: max 9% base (tier 5) + 3% duration = 12%
     uint256 public constant MAX_TOTAL_APR = 1200;
+
+    /// @notice Minimum time a stake must be active before accruing rewards
+    /// @dev ATK-H01: Prevents flash-stake attacks where an attacker
+    ///      borrows XOM, stakes with duration=0, waits one block (2s),
+    ///      claims rewards, unlocks, and repays the flash loan.
+    ///      24 hours ensures meaningful stake commitment before rewards.
+    uint256 public constant MIN_STAKE_AGE = 1 days;
 
     /// @notice Timelock delay for contract reference changes
     /// @dev 48 hours protects against instant oracle replacement
@@ -871,6 +881,8 @@ contract StakingRewardPool is
      *      Validates declared tier against actual staked amount
      *      using _clampTier() to prevent tier inflation (H-07).
      *      Guards against underflow if lockTime < duration (M-07).
+     *      ATK-H01: Returns 0 if stake is younger than MIN_STAKE_AGE
+     *      (24 hours) to prevent flash-stake reward extraction.
      * @param user Address of the staker
      * @param stakeData Stake data from OmniCore
      * @return Accrued reward amount in XOM (18 decimals)
@@ -887,6 +899,14 @@ contract StakingRewardPool is
         // Stake start time = lockTime - duration
         uint256 stakeStart =
             stakeData.lockTime - stakeData.duration;
+
+        // ATK-H01: Enforce minimum stake age to prevent flash-stake
+        // reward extraction. Stakers must hold for at least
+        // MIN_STAKE_AGE (24h) before any rewards accrue.
+        // solhint-disable-next-line not-rely-on-time
+        if (stakeStart + MIN_STAKE_AGE > block.timestamp) {
+            return 0;
+        }
 
         // Determine the effective start of accrual
         uint256 accrualStart = lastClaimTime[user];

@@ -164,10 +164,23 @@ contract OmniCoin is
     }
 
     /**
-     * @notice Burn tokens from an address
-     * @dev SECURITY: Intentionally bypasses allowance. BURNER_ROLE must only be
-     *      granted to audited contracts (PrivateOmniCoin), never to EOAs (M-01).
-     *      Only BURNER_ROLE can burn from others.
+     * @notice Burn tokens from an account. BURNER_ROLE bypasses allowance.
+     * @dev SECURITY: BURNER_ROLE has unrestricted burn power. This role
+     *      MUST ONLY be granted to trusted, audited contracts (currently:
+     *      PrivateOmniCoin). Granting BURNER_ROLE to ANY new contract
+     *      requires a CRITICAL governance proposal with 7-day timelock.
+     *      A compromised BURNER_ROLE holder can destroy any user's entire
+     *      balance.
+     *
+     *      ATK-H03: This allowance bypass is BY DESIGN — PrivateOmniCoin
+     *      needs to burn XOM during privacy conversions without requiring
+     *      user approval for each conversion. The role-based guard
+     *      (onlyRole(BURNER_ROLE)) replaces the allowance guard. The
+     *      DEFAULT_ADMIN_ROLE holder (TimelockController) controls who
+     *      receives BURNER_ROLE.
+     *
+     *      NEVER grant BURNER_ROLE to an EOA in production.
+     *
      * @param from Address to burn from
      * @param amount Amount to burn
      */

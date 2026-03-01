@@ -66,6 +66,17 @@ interface IOmniPrivacyBridge {
  * - Overflow-safe math via Solidity 0.8.x defaults
  * - Ossification support for permanent finalization
  * - UUPS upgrade restricted to DEFAULT_ADMIN_ROLE
+ *
+ * @custom:security-contact security@omnibazaar.com
+ * @custom:deployment-note ADMIN_ROLE and DEFAULT_ADMIN_ROLE
+ *      should be transferred to a multi-sig (e.g., Gnosis Safe)
+ *      before mainnet launch to mitigate centralization risk.
+ *      Single-key admin control is acceptable only during testnet
+ *      and initial deployment phases.
+ * @custom:upgrade-note For future upgrades, consider migrating
+ *      DEFAULT_ADMIN_ROLE management to
+ *      AccessControlDefaultAdminRulesUpgradeable to enforce
+ *      two-step admin transfers with a built-in timelock.
  */
 contract UnifiedFeeVault is
     AccessControlUpgradeable,
@@ -167,6 +178,13 @@ contract UnifiedFeeVault is
     mapping(address => mapping(address => uint256))
         public pendingClaims;
 
+    /// @notice Total pending claims per token across all recipients
+    /// @dev C-01 audit fix: tracks sum of all pendingClaims for
+    ///      each token so rescueToken() and distribute() can
+    ///      accurately calculate committed funds.
+    ///      token address => total claimable amount
+    mapping(address => uint256) public totalPendingClaims;
+
     // ── In-Kind / Swap-to-XOM Bridge Mode ────────────────────────
 
     /// @notice Per-token bridge strategy: in-kind (default) or swap
@@ -185,10 +203,41 @@ contract UnifiedFeeVault is
     /// @notice PrivateOmniCoin (pXOM) token address
     address public pxomToken;
 
+    // ── Timelock: Swap Router ─────────────────────────────────────
+
+    /// @notice Proposed swap router awaiting timelock expiry
+    /// @dev H-03 audit fix: timelock on critical configuration
+    address public pendingSwapRouter;
+
+    /// @notice Timestamp when proposed swap router can be applied
+    /// @dev Zero means no pending change
+    uint256 public swapRouterChangeTimestamp;
+
+    // ── Timelock: Privacy Bridge ──────────────────────────────────
+
+    /// @notice Proposed privacy bridge awaiting timelock expiry
+    /// @dev H-03 audit fix: timelock on critical configuration
+    address public pendingPrivacyBridgeAddr;
+
+    /// @notice Proposed pXOM token for pending privacy bridge change
+    /// @dev H-03 audit fix: paired with pendingPrivacyBridgeAddr
+    address public pendingPXOMToken;
+
+    /// @notice Timestamp when proposed privacy bridge can be applied
+    /// @dev Zero means no pending change
+    uint256 public privacyBridgeChangeTimestamp;
+
+    // ── Timelock: Ossification ────────────────────────────────────
+
+    /// @notice Timestamp when ossification can be confirmed
+    /// @dev L-01 audit fix: 48-hour propose/confirm pattern.
+    ///      Zero means no pending ossification.
+    uint256 public ossificationScheduledAt;
+
     /// @notice Storage gap for future upgrades
-    /// @dev Budget: 10 original + 5 new = 15 slots used. Gap = 35.
+    /// @dev Budget: 15 original + 7 new = 22 slots used. Gap = 28.
     ///      Reduce by N when adding N new state variables.
-    uint256[35] private __gap;
+    uint256[28] private __gap;
 
     // ════════════════════════════════════════════════════════════════════
     //                             EVENTS
@@ -319,21 +368,61 @@ contract UnifiedFeeVault is
         BridgeMode indexed mode
     );
 
+    /// @notice Emitted when a new swap router is proposed
+    /// @param router Proposed IFeeSwapRouter adapter address
+    /// @param effectiveTimestamp When the change can be applied
+    event SwapRouterProposed(
+        address indexed router,
+        uint256 indexed effectiveTimestamp
+    );
+
     /// @notice Emitted when the swap router is updated
+    /// @param oldRouter Previous IFeeSwapRouter adapter address
     /// @param newRouter New IFeeSwapRouter adapter address
-    event SwapRouterUpdated(address indexed newRouter);
+    event SwapRouterUpdated(
+        address indexed oldRouter,
+        address indexed newRouter
+    );
+
+    /// @notice Emitted when a new privacy bridge config is proposed
+    /// @param bridge Proposed OmniPrivacyBridge address
+    /// @param pxom Proposed PrivateOmniCoin address
+    /// @param effectiveTimestamp When the change can be applied
+    event PrivacyBridgeProposed(
+        address indexed bridge,
+        address indexed pxom,
+        uint256 indexed effectiveTimestamp
+    );
 
     /// @notice Emitted when the privacy bridge config is updated
-    /// @param bridge New OmniPrivacyBridge address
+    /// @param oldBridge Previous OmniPrivacyBridge address
+    /// @param newBridge New OmniPrivacyBridge address
     /// @param pxom New PrivateOmniCoin address
     event PrivacyBridgeUpdated(
-        address indexed bridge,
+        address indexed oldBridge,
+        address indexed newBridge,
         address indexed pxom
     );
 
     /// @notice Emitted when the XOM token address is set
     /// @param xom New XOM token address
     event XOMTokenUpdated(address indexed xom);
+
+    /// @notice Emitted when ossification is proposed
+    /// @param effectiveTimestamp When ossification can be confirmed
+    event OssificationProposed(uint256 indexed effectiveTimestamp);
+
+    /// @notice Emitted when a pending claim is redirected by admin
+    /// @param originalClaimant Address that originally held the claim
+    /// @param newRecipient Address receiving the redirected claim
+    /// @param token ERC20 token address
+    /// @param amount Amount redirected
+    event ClaimRedirected(
+        address indexed originalClaimant,
+        address indexed newRecipient,
+        address indexed token,
+        uint256 amount
+    );
 
     // ════════════════════════════════════════════════════════════════════
     //                          CUSTOM ERRORS
@@ -395,6 +484,15 @@ contract UnifiedFeeVault is
 
     /// @notice Thrown when pXOM→XOM conversion fails
     error PXOMConversionFailed();
+
+    /// @notice Thrown when a swap/conversion deadline has expired
+    error DeadlineExpired();
+
+    /// @notice Thrown when the timelock delay has not yet expired
+    error TimelockNotExpired();
+
+    /// @notice Thrown when no pending claim exists for redirect
+    error NoPendingClaim();
 
     /// @notice Thrown when privacy bridge is not configured
     error PrivacyBridgeNotSet();
@@ -458,7 +556,7 @@ contract UnifiedFeeVault is
     function deposit(
         address token,
         uint256 amount
-    ) external onlyRole(DEPOSITOR_ROLE) nonReentrant whenNotPaused {
+    ) external nonReentrant onlyRole(DEPOSITOR_ROLE) whenNotPaused {
         if (token == address(0)) revert ZeroAddress();
         if (amount == 0) revert ZeroAmount();
 
@@ -477,16 +575,16 @@ contract UnifiedFeeVault is
      * @notice Notify the vault that fees arrived via direct transfer
      * @dev M-01 audit fix: RWAAMM sends fees via direct safeTransfer
      *      bypassing deposit(). This function emits FeesNotified so
-     *      off-chain indexers can track all fee inflows. Callable
-     *      by anyone; the distribute() function uses balanceOf()
-     *      regardless, so this is purely for audit trail purposes.
+     *      off-chain indexers can track all fee inflows. Restricted
+     *      to DEPOSITOR_ROLE to prevent spoofed notifications from
+     *      polluting the audit trail.
      * @param token ERC20 token address that was transferred
      * @param amount Amount that was transferred
      */
     function notifyDeposit(
         address token,
         uint256 amount
-    ) external {
+    ) external onlyRole(DEPOSITOR_ROLE) {
         if (token == address(0)) revert ZeroAddress();
         if (amount == 0) revert ZeroAmount();
 
@@ -519,9 +617,17 @@ contract UnifiedFeeVault is
         if (token == address(0)) revert ZeroAddress();
 
         uint256 balance = IERC20(token).balanceOf(address(this));
-        uint256 distributable = balance - pendingBridge[token];
+        // H-01 audit fix: subtract totalPendingClaims to avoid
+        // double-counting claimable amounts as distributable.
+        uint256 distributable = balance
+            - pendingBridge[token]
+            - totalPendingClaims[token];
 
         if (distributable == 0) revert NothingToDistribute();
+
+        // L-03 audit fix: skip dust amounts that would break
+        // the 70/20/10 split due to integer rounding.
+        if (distributable < 10) return;
 
         // Calculate shares
         uint256 oddaoShare =
@@ -568,7 +674,10 @@ contract UnifiedFeeVault is
         uint256 amount = pendingClaims[msg.sender][token];
         if (amount == 0) revert NothingToClaim();
 
+        // C-01 audit fix: decrement global tracker before transfer
         pendingClaims[msg.sender][token] = 0;
+        totalPendingClaims[token] -= amount;
+
         IERC20(token).safeTransfer(msg.sender, amount);
 
         emit PendingClaimWithdrawn(msg.sender, token, amount);
@@ -607,7 +716,7 @@ contract UnifiedFeeVault is
         address referrerL2,
         address listingNode,
         address sellingNode
-    ) external onlyRole(DEPOSITOR_ROLE) nonReentrant whenNotPaused {
+    ) external nonReentrant onlyRole(DEPOSITOR_ROLE) whenNotPaused {
         if (token == address(0)) revert ZeroAddress();
         if (saleAmount == 0) revert ZeroAmount();
 
@@ -615,60 +724,70 @@ contract UnifiedFeeVault is
         uint256 totalFee = saleAmount / 100;
         if (totalFee == 0) revert ZeroAmount();
 
-        // Transfer total fee from caller
+        // M-02 audit fix: balance-before/after for fee-on-transfer
+        uint256 balBefore =
+            IERC20(token).balanceOf(address(this));
         IERC20(token).safeTransferFrom(
             msg.sender, address(this), totalFee
         );
+        uint256 actualFee =
+            IERC20(token).balanceOf(address(this)) - balBefore;
 
+        // Use actualFee for all subsequent splits
         // Split 1: Transaction fee (0.50% = half of total fee)
-        uint256 txFee = totalFee / 2;
+        uint256 txFee = actualFee / 2;
         uint256 txOddao = (txFee * 7000) / 10000; // 70% ODDAO
         uint256 txValidator = (txFee * 2000) / 10000; // 20% validator
         uint256 txStaking = txFee - txOddao - txValidator; // 10%
 
         pendingBridge[token] += txOddao;
         pendingClaims[validator][token] += txValidator;
+        totalPendingClaims[token] += txValidator;
         _safePushOrQuarantine(token, stakingPool, txStaking);
 
-        // Split 2: Referral fee (0.25% = quarter of total fee)
-        uint256 refFee = totalFee / 4;
-        uint256 refPrimary = (refFee * 7000) / 10000; // 70% referrer
+        // Split 2: Referral fee (0.25% = quarter of actual fee)
+        uint256 refFee = actualFee / 4;
+        uint256 refPrimary = (refFee * 7000) / 10000; // 70%
         uint256 refSecondary = (refFee * 2000) / 10000; // 20% L2
-        uint256 refOddao = refFee - refPrimary - refSecondary; // 10%
+        uint256 refOddao = refFee - refPrimary - refSecondary;
 
         if (referrer != address(0)) {
             pendingClaims[referrer][token] += refPrimary;
+            totalPendingClaims[token] += refPrimary;
         } else {
             pendingBridge[token] += refPrimary;
         }
         if (referrerL2 != address(0)) {
             pendingClaims[referrerL2][token] += refSecondary;
+            totalPendingClaims[token] += refSecondary;
         } else {
             pendingBridge[token] += refSecondary;
         }
         pendingBridge[token] += refOddao;
 
-        // Split 3: Listing fee (0.25% = quarter of total fee)
-        uint256 listFee = totalFee - txFee - refFee; // remainder
+        // Split 3: Listing fee (0.25% = remainder of actual fee)
+        uint256 listFee = actualFee - txFee - refFee;
         uint256 listNode = (listFee * 7000) / 10000; // 70%
         uint256 sellNode = (listFee * 2000) / 10000; // 20%
         uint256 listOddao = listFee - listNode - sellNode; // 10%
 
         if (listingNode != address(0)) {
             pendingClaims[listingNode][token] += listNode;
+            totalPendingClaims[token] += listNode;
         } else {
             pendingBridge[token] += listNode;
         }
         if (sellingNode != address(0)) {
             pendingClaims[sellingNode][token] += sellNode;
+            totalPendingClaims[token] += sellNode;
         } else {
             pendingBridge[token] += sellNode;
         }
         pendingBridge[token] += listOddao;
 
-        totalDistributed[token] += totalFee;
+        totalDistributed[token] += actualFee;
 
-        emit FeesDeposited(token, totalFee, msg.sender);
+        emit FeesDeposited(token, actualFee, msg.sender);
     }
 
     /**
@@ -686,28 +805,35 @@ contract UnifiedFeeVault is
         uint256 disputeAmount,
         address arbitrator,
         address validator
-    ) external onlyRole(DEPOSITOR_ROLE) nonReentrant whenNotPaused {
+    ) external nonReentrant onlyRole(DEPOSITOR_ROLE) whenNotPaused {
         if (token == address(0)) revert ZeroAddress();
         if (disputeAmount == 0) revert ZeroAmount();
 
         uint256 totalFee = (disputeAmount * 500) / 10000; // 5%
         if (totalFee == 0) revert ZeroAmount();
 
+        // M-02 audit fix: balance-before/after for fee-on-transfer
+        uint256 balBefore =
+            IERC20(token).balanceOf(address(this));
         IERC20(token).safeTransferFrom(
             msg.sender, address(this), totalFee
         );
+        uint256 actualFee =
+            IERC20(token).balanceOf(address(this)) - balBefore;
 
-        uint256 arbShare = (totalFee * 7000) / 10000; // 70%
-        uint256 valShare = (totalFee * 2000) / 10000; // 20%
-        uint256 oddaoShare = totalFee - arbShare - valShare; // 10%
+        uint256 arbShare = (actualFee * 7000) / 10000; // 70%
+        uint256 valShare = (actualFee * 2000) / 10000; // 20%
+        uint256 oddaoShare = actualFee - arbShare - valShare; // 10%
 
         pendingClaims[arbitrator][token] += arbShare;
         pendingClaims[validator][token] += valShare;
+        // C-01 audit fix: track total pending claims
+        totalPendingClaims[token] += arbShare + valShare;
         pendingBridge[token] += oddaoShare;
 
-        totalDistributed[token] += totalFee;
+        totalDistributed[token] += actualFee;
 
-        emit FeesDeposited(token, totalFee, msg.sender);
+        emit FeesDeposited(token, actualFee, msg.sender);
     }
 
     // ════════════════════════════════════════════════════════════════════
@@ -780,7 +906,7 @@ contract UnifiedFeeVault is
         address token,
         uint256 amount,
         address bridgeReceiver
-    ) external onlyRole(BRIDGE_ROLE) nonReentrant whenNotPaused {
+    ) external nonReentrant onlyRole(BRIDGE_ROLE) whenNotPaused {
         if (token == address(0)) revert ZeroAddress();
         if (bridgeReceiver == address(0)) revert ZeroAddress();
         if (amount == 0) revert ZeroAmount();
@@ -896,15 +1022,17 @@ contract UnifiedFeeVault is
         address token,
         uint256 amount,
         address recipient
-    ) external onlyRole(DEFAULT_ADMIN_ROLE) nonReentrant {
+    ) external nonReentrant onlyRole(DEFAULT_ADMIN_ROLE) {
         if (token == address(0)) revert ZeroAddress();
         if (recipient == address(0)) revert ZeroAddress();
         if (amount == 0) revert ZeroAmount();
 
-        // Prevent rescuing tokens committed for ODDAO bridging
+        // C-01 audit fix: include totalPendingClaims in committed
+        // funds so admin cannot drain user-claimable balances.
         uint256 vaultBalance =
             IERC20(token).balanceOf(address(this));
-        uint256 committed = pendingBridge[token];
+        uint256 committed =
+            pendingBridge[token] + totalPendingClaims[token];
         if (vaultBalance < committed + amount) {
             revert CannotRescueCommittedFunds(token, committed);
         }
@@ -931,13 +1059,41 @@ contract UnifiedFeeVault is
     }
 
     /**
-     * @notice Permanently freeze the contract against upgrades
-     * @dev Cannot be undone. Use only when the fee vault logic
-     *      has been battle-tested and no further changes are needed.
-     *      Only DEFAULT_ADMIN_ROLE can ossify.
+     * @notice Propose permanent ossification of the contract
+     * @dev L-01 audit fix: ossification now requires a 48-hour
+     *      delay between proposal and confirmation to prevent
+     *      accidental or malicious irreversible freezes.
+     *      Only DEFAULT_ADMIN_ROLE can propose.
      */
-    function ossify() external onlyRole(DEFAULT_ADMIN_ROLE) {
+    function proposeOssification()
+        external
+        onlyRole(DEFAULT_ADMIN_ROLE)
+    {
+        // solhint-disable-next-line not-rely-on-time
+        ossificationScheduledAt = block.timestamp + 48 hours;
+        emit OssificationProposed(ossificationScheduledAt);
+    }
+
+    /**
+     * @notice Confirm and execute permanent ossification
+     * @dev Cannot be undone. The 48-hour timelock must have
+     *      elapsed since proposeOssification() was called.
+     *      Only DEFAULT_ADMIN_ROLE can confirm.
+     */
+    function confirmOssification()
+        external
+        onlyRole(DEFAULT_ADMIN_ROLE)
+    {
+        if (ossificationScheduledAt == 0) {
+            revert NoPendingChange();
+        }
+        // solhint-disable-next-line not-rely-on-time
+        if (block.timestamp < ossificationScheduledAt) {
+            revert TimelockNotExpired();
+        }
+
         _ossified = true;
+        delete ossificationScheduledAt;
         emit ContractOssified(msg.sender);
     }
 
@@ -961,16 +1117,50 @@ contract UnifiedFeeVault is
     }
 
     /**
-     * @notice Set the IFeeSwapRouter adapter used for token→XOM swaps
-     * @param _swapRouter FeeSwapAdapter contract address
+     * @notice Propose a new IFeeSwapRouter adapter address
+     * @dev H-03 audit fix: swap router changes are timelocked to
+     *      prevent instant diversion of swap proceeds from a
+     *      compromised ADMIN_ROLE key. After RECIPIENT_CHANGE_DELAY
+     *      (48h), call applySwapRouter() to finalize.
+     * @param _router Proposed FeeSwapAdapter contract address
      */
-    function setSwapRouter(
-        address _swapRouter
+    function proposeSwapRouter(
+        address _router
     ) external onlyRole(ADMIN_ROLE) {
-        if (_swapRouter == address(0)) revert ZeroAddress();
+        if (_router == address(0)) revert ZeroAddress();
 
-        swapRouter = _swapRouter;
-        emit SwapRouterUpdated(_swapRouter);
+        pendingSwapRouter = _router;
+        /* solhint-disable not-rely-on-time */
+        swapRouterChangeTimestamp =
+            block.timestamp + RECIPIENT_CHANGE_DELAY;
+        /* solhint-enable not-rely-on-time */
+        emit SwapRouterProposed(
+            _router, swapRouterChangeTimestamp
+        );
+    }
+
+    /**
+     * @notice Apply the pending swap router change after timelock
+     * @dev Reverts if timelock has not elapsed or no pending change
+     *      exists. Only ADMIN_ROLE can execute.
+     */
+    function applySwapRouter()
+        external
+        onlyRole(ADMIN_ROLE)
+    {
+        if (pendingSwapRouter == address(0)) {
+            revert NoPendingChange();
+        }
+        // solhint-disable-next-line not-rely-on-time
+        if (block.timestamp < swapRouterChangeTimestamp) {
+            revert TimelockNotExpired();
+        }
+
+        address old = swapRouter;
+        swapRouter = pendingSwapRouter;
+        delete pendingSwapRouter;
+        delete swapRouterChangeTimestamp;
+        emit SwapRouterUpdated(old, swapRouter);
     }
 
     /**
@@ -987,20 +1177,58 @@ contract UnifiedFeeVault is
     }
 
     /**
-     * @notice Set the OmniPrivacyBridge and pXOM token addresses
-     * @param _bridge OmniPrivacyBridge contract address
-     * @param _pxom PrivateOmniCoin (pXOM) ERC20 address
+     * @notice Propose new OmniPrivacyBridge and pXOM addresses
+     * @dev H-03 audit fix: privacy bridge changes are timelocked
+     *      to prevent instant diversion of pXOM conversion flow.
+     *      After RECIPIENT_CHANGE_DELAY (48h), call
+     *      applyPrivacyBridge() to finalize.
+     * @param _bridge Proposed OmniPrivacyBridge contract address
+     * @param _pxom Proposed PrivateOmniCoin (pXOM) ERC20 address
      */
-    function setPrivacyBridge(
+    function proposePrivacyBridge(
         address _bridge,
         address _pxom
     ) external onlyRole(ADMIN_ROLE) {
         if (_bridge == address(0)) revert ZeroAddress();
         if (_pxom == address(0)) revert ZeroAddress();
 
-        privacyBridge = _bridge;
-        pxomToken = _pxom;
-        emit PrivacyBridgeUpdated(_bridge, _pxom);
+        pendingPrivacyBridgeAddr = _bridge;
+        pendingPXOMToken = _pxom;
+        /* solhint-disable not-rely-on-time */
+        privacyBridgeChangeTimestamp =
+            block.timestamp + RECIPIENT_CHANGE_DELAY;
+        /* solhint-enable not-rely-on-time */
+        emit PrivacyBridgeProposed(
+            _bridge, _pxom, privacyBridgeChangeTimestamp
+        );
+    }
+
+    /**
+     * @notice Apply the pending privacy bridge change after timelock
+     * @dev Reverts if timelock has not elapsed or no pending change
+     *      exists. Only ADMIN_ROLE can execute.
+     */
+    function applyPrivacyBridge()
+        external
+        onlyRole(ADMIN_ROLE)
+    {
+        if (pendingPrivacyBridgeAddr == address(0)) {
+            revert NoPendingChange();
+        }
+        // solhint-disable-next-line not-rely-on-time
+        if (block.timestamp < privacyBridgeChangeTimestamp) {
+            revert TimelockNotExpired();
+        }
+
+        address oldBridge = privacyBridge;
+        privacyBridge = pendingPrivacyBridgeAddr;
+        pxomToken = pendingPXOMToken;
+        delete pendingPrivacyBridgeAddr;
+        delete pendingPXOMToken;
+        delete privacyBridgeChangeTimestamp;
+        emit PrivacyBridgeUpdated(
+            oldBridge, privacyBridge, pxomToken
+        );
     }
 
     // ── Swap-and-Bridge Functions ────────────────────────────────
@@ -1010,22 +1238,28 @@ contract UnifiedFeeVault is
      * @dev Deducts from pendingBridge[token], swaps via the
      *      IFeeSwapRouter adapter, and transfers XOM to receiver.
      *      Uses balance-before/after to verify received amount.
+     *      M-03 audit fix: deadline parameter prevents stale
+     *      transactions from executing at unfavorable prices.
      * @param token ERC20 fee token to swap
      * @param amount Amount of token to swap (must be <= pending)
      * @param minXOMOut Minimum XOM output (slippage protection)
      * @param bridgeReceiver Address to receive the XOM
+     * @param deadline Timestamp by which the swap must execute
      */
     function swapAndBridge(
         address token,
         uint256 amount,
         uint256 minXOMOut,
-        address bridgeReceiver
+        address bridgeReceiver,
+        uint256 deadline
     )
         external
-        onlyRole(BRIDGE_ROLE)
         nonReentrant
+        onlyRole(BRIDGE_ROLE)
         whenNotPaused
     {
+        // solhint-disable-next-line not-rely-on-time
+        if (block.timestamp > deadline) revert DeadlineExpired();
         _validateSwapBridge(token, bridgeReceiver, amount);
 
         // Effects (CEI)
@@ -1039,7 +1273,8 @@ contract UnifiedFeeVault is
             IERC20(xomToken).balanceOf(address(this));
 
         IFeeSwapRouter(swapRouter).swapExactInput(
-            token, xomToken, amount, minXOMOut, address(this)
+            token, xomToken, amount, minXOMOut,
+            address(this), deadline
         );
 
         uint256 xomReceived =
@@ -1062,16 +1297,20 @@ contract UnifiedFeeVault is
      * @dev Burns pXOM via OmniPrivacyBridge.convertPXOMtoXOM(),
      *      which releases XOM to this contract, then transfers
      *      the received XOM to bridgeReceiver.
+     *      M-04 audit fix: minXOMOut parameter provides slippage
+     *      protection against unfavorable pXOM→XOM conversion.
      * @param amount Amount of pXOM to convert (must be <= pending)
      * @param bridgeReceiver Address to receive the XOM
+     * @param minXOMOut Minimum XOM output (slippage protection)
      */
     function convertPXOMAndBridge(
         uint256 amount,
-        address bridgeReceiver
+        address bridgeReceiver,
+        uint256 minXOMOut
     )
         external
-        onlyRole(BRIDGE_ROLE)
         nonReentrant
+        onlyRole(BRIDGE_ROLE)
         whenNotPaused
     {
         _validatePXOMBridge(bridgeReceiver, amount);
@@ -1092,6 +1331,10 @@ contract UnifiedFeeVault is
             IERC20(xomToken).balanceOf(address(this)) - xomBefore;
 
         if (xomReceived == 0) revert PXOMConversionFailed();
+        // M-04 audit fix: enforce minimum output
+        if (xomReceived < minXOMOut) {
+            revert InsufficientSwapOutput(xomReceived, minXOMOut);
+        }
 
         // Transfer received XOM to bridge receiver
         IERC20(xomToken).safeTransfer(bridgeReceiver, xomReceived);
@@ -1106,9 +1349,10 @@ contract UnifiedFeeVault is
 
     /**
      * @notice Get the undistributed balance for a token
-     * @dev This is the amount available for the next distribute() call.
-     *      Equals the vault's token balance minus the ODDAO share
-     *      that has already been split but not yet bridged.
+     * @dev This is the amount available for the next distribute()
+     *      call. Equals the vault's token balance minus the ODDAO
+     *      share (pendingBridge) and user-claimable amounts
+     *      (totalPendingClaims) that are already committed.
      * @param token ERC20 token address to query
      * @return Undistributed token balance
      */
@@ -1116,9 +1360,10 @@ contract UnifiedFeeVault is
         address token
     ) external view returns (uint256) {
         uint256 balance = IERC20(token).balanceOf(address(this));
-        uint256 pending = pendingBridge[token];
-        if (balance < pending) return 0;
-        return balance - pending;
+        uint256 committed =
+            pendingBridge[token] + totalPendingClaims[token];
+        if (balance < committed) return 0;
+        return balance - committed;
     }
 
     /**
@@ -1154,6 +1399,36 @@ contract UnifiedFeeVault is
         return pendingClaims[recipient][token];
     }
 
+    /**
+     * @notice Redirect a stuck pending claim to a new recipient
+     * @dev L-04 audit fix: if a claimant is blacklisted by a token
+     *      (e.g., USDC) and cannot receive transfers, an admin can
+     *      redirect the claim to a new address so the funds are not
+     *      permanently stuck.
+     *      Only DEFAULT_ADMIN_ROLE can call.
+     * @param originalClaimant Address that currently holds the claim
+     * @param newRecipient Address to receive the redirected claim
+     * @param token ERC20 token address of the claim
+     */
+    function redirectStuckClaim(
+        address originalClaimant,
+        address newRecipient,
+        address token
+    ) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        if (newRecipient == address(0)) revert ZeroAddress();
+
+        uint256 amount =
+            pendingClaims[originalClaimant][token];
+        if (amount == 0) revert NoPendingClaim();
+
+        pendingClaims[originalClaimant][token] = 0;
+        pendingClaims[newRecipient][token] += amount;
+
+        emit ClaimRedirected(
+            originalClaimant, newRecipient, token, amount
+        );
+    }
+
     // ════════════════════════════════════════════════════════════════════
     //                       INTERNAL FUNCTIONS
     // ════════════════════════════════════════════════════════════════════
@@ -1173,19 +1448,28 @@ contract UnifiedFeeVault is
         address recipient,
         uint256 amount
     ) internal {
-        // Use low-level call wrapping safeTransfer to catch reverts
+        // H-02 audit fix: decode return data and check boolean.
+        // Some ERC20 tokens return false instead of reverting.
         // solhint-disable-next-line avoid-low-level-calls
-        (bool success, ) = address(token).call(
-            abi.encodeWithSelector(
-                IERC20.transfer.selector,
-                recipient,
-                amount
-            )
-        );
+        (bool success, bytes memory returndata) = address(token)
+            .call(
+                abi.encodeWithSelector(
+                    IERC20.transfer.selector,
+                    recipient,
+                    amount
+                )
+            );
 
-        if (!success) {
-            // solhint-disable-next-line reentrancy
+        bool transferred = success
+            && (returndata.length == 0
+                || abi.decode(returndata, (bool)));
+
+        if (!transferred) {
+            // C-01 audit fix: track global pending claims total
+            /* solhint-disable reentrancy */
             pendingClaims[recipient][token] += amount;
+            totalPendingClaims[token] += amount;
+            /* solhint-enable reentrancy */
             emit TransferQuarantined(recipient, token, amount);
         }
     }

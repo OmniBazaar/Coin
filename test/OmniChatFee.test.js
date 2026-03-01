@@ -521,16 +521,12 @@ describe("OmniChatFee", function () {
       expect(await chatFee.oddaoTreasury()).to.equal(user2.address);
     });
 
-    it("should not update address when zero is passed", async function () {
-      await chatFee
-        .connect(owner)
-        .updateRecipients(ethers.ZeroAddress, ethers.ZeroAddress);
-      expect(await chatFee.stakingPool()).to.equal(
-        stakingPool.address
-      );
-      expect(await chatFee.oddaoTreasury()).to.equal(
-        oddaoTreasury.address
-      );
+    it("should revert when both zero addresses passed", async function () {
+      await expect(
+        chatFee
+          .connect(owner)
+          .updateRecipients(ethers.ZeroAddress, ethers.ZeroAddress)
+      ).to.be.revertedWithCustomError(chatFee, "NoRecipientsProvided");
     });
 
     it("should reject updateRecipients from non-owner", async function () {

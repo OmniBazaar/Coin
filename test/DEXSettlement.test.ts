@@ -1171,7 +1171,8 @@ describe("DEXSettlement - Trustless Architecture", function () {
                     tokenBAddress,      // tokenOut (standard)
                     TRADE_AMOUNT,       // traderAmount
                     TRADE_AMOUNT,       // solverAmount
-                    deadline
+                    deadline,
+                    matchingValidatorAddress // matchingValidator
                 )
             ).to.be.revertedWithCustomError(dexSettlement, "FeeOnTransferNotSupported");
         });
@@ -1189,7 +1190,8 @@ describe("DEXSettlement - Trustless Architecture", function () {
                     tokenBAddress,      // tokenOut (standard)
                     TRADE_AMOUNT,       // traderAmount
                     TRADE_AMOUNT,       // solverAmount
-                    deadline
+                    deadline,
+                    matchingValidatorAddress // matchingValidator
                 )
             ).to.emit(dexSettlement, "IntentCollateralLocked")
                 .withArgs(intentId, makerAddress, takerAddress, TRADE_AMOUNT, TRADE_AMOUNT);
@@ -1212,7 +1214,8 @@ describe("DEXSettlement - Trustless Architecture", function () {
                 feeTokenAddress,    // tokenOut (fee-on-transfer)
                 TRADE_AMOUNT,       // traderAmount
                 TRADE_AMOUNT,       // solverAmount
-                deadline
+                deadline,
+                matchingValidatorAddress // matchingValidator
             );
 
             // Step 2: Solver (taker) tries to settle — solver must

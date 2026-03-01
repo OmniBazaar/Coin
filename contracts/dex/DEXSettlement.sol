@@ -133,6 +133,7 @@ contract DEXSettlement is
      * @param solver Designated solver address (H-01)
      * @param tokenIn Token the trader is selling (H-02)
      * @param tokenOut Token the trader is buying (H-02)
+     * @param matchingValidator Validator who matched (H-03)
      * @param traderAmount Amount trader provides (escrowed)
      * @param solverAmount Amount solver must provide
      * @param deadline Settlement deadline timestamp
@@ -144,9 +145,10 @@ contract DEXSettlement is
         address solver; // 20 bytes (slot 2)
         address tokenIn; // 20 bytes (slot 3)
         address tokenOut; // 20 bytes (slot 4)
-        uint256 traderAmount; // 32 bytes (slot 5)
-        uint256 solverAmount; // 32 bytes (slot 6)
-        uint256 deadline; // 32 bytes (slot 7)
+        address matchingValidator; // 20 bytes (slot 5)
+        uint256 traderAmount; // 32 bytes (slot 6)
+        uint256 solverAmount; // 32 bytes (slot 7)
+        uint256 deadline; // 32 bytes (slot 8)
     }
 
     // ================================================================
@@ -416,13 +418,33 @@ contract DEXSettlement is
      * @notice Emitted when trading limits change is scheduled (M-04)
      * @param newMaxTradeSize Proposed max trade size
      * @param newDailyVolumeLimit Proposed daily volume limit
-     * @param effectiveAt Timestamp when the change can be applied
+     * @param newMaxSlippageBps Proposed max slippage in bps (L-07)
+     * @param effectiveAt Timestamp when change can be applied
      */
     event TradingLimitsChangeScheduled(
         uint256 indexed newMaxTradeSize,
         uint256 indexed newDailyVolumeLimit,
-        uint256 indexed effectiveAt
+        uint256 newMaxSlippageBps,
+        uint256 effectiveAt
     );
+
+    /**
+     * @notice Emitted when a scheduled fee recipients change
+     *         is cancelled (M-04)
+     */
+    event FeeRecipientsChangeCancelled();
+
+    /**
+     * @notice Emitted when a scheduled trading limits change
+     *         is cancelled (M-04)
+     */
+    event TradingLimitsChangeCancelled();
+
+    /**
+     * @notice Emitted when a fee token is removed from tracking
+     * @param token Address of the removed token
+     */
+    event FeeTokenRemoved(address indexed token);
 
     /**
      * @notice Emitted when intent collateral is locked
@@ -578,6 +600,18 @@ contract DEXSettlement is
     /// @notice Thrown when slippage exceeds the configured max (M-06)
     error SlippageTooHigh();
 
+    /// @notice Thrown when a pending timelocked change already exists (M-04)
+    error PendingChangeExists();
+
+    /// @notice Thrown when function parameters are invalid
+    error InvalidParameters();
+
+    /// @notice Thrown when an order has invalid token configuration
+    error InvalidOrder();
+
+    /// @notice Thrown when fee token is not found in the array
+    error FeeTokenNotFound();
+
     // ================================================================
     // CONSTRUCTOR
     // ================================================================
@@ -692,6 +726,8 @@ contract DEXSettlement is
      * @dev Verifies signatures, matching, and executes
      *      atomic swap. Fees are deducted from input token
      *      amounts (H-04 fix).
+     *      Note: Commit-reveal is opt-in; MEV protection is
+     *      not guaranteed without it (M-03).
      */
     function settleTrade(
         Order calldata makerOrder,
@@ -747,8 +783,11 @@ contract DEXSettlement is
         _useNonce(makerOrder.trader, makerOrder.nonce);
         _useNonce(takerOrder.trader, takerOrder.nonce);
 
-        totalTradingVolume += makerOrder.amountIn;
-        dailyVolumeUsed += makerOrder.amountIn;
+        // M-01: Track both sides of the trade
+        totalTradingVolume +=
+            makerOrder.amountIn + takerOrder.amountIn;
+        dailyVolumeUsed +=
+            makerOrder.amountIn + takerOrder.amountIn;
 
         // H-04: Fees now come from tokenIn (input token)
         _distributeFees(
@@ -828,6 +867,9 @@ contract DEXSettlement is
         address _oddao,
         address _stakingPool
     ) external onlyOwner {
+        if (feeRecipientsTimelockExpiry != 0) {
+            revert PendingChangeExists();
+        }
         if (
             _oddao == address(0)
                 || _stakingPool == address(0)
@@ -854,7 +896,11 @@ contract DEXSettlement is
      * @dev Force-claims all pending fees to old recipients
      *      before updating addresses.
      */
-    function applyFeeRecipients() external onlyOwner {
+    function applyFeeRecipients()
+        external
+        nonReentrant
+        onlyOwner
+    {
         if (feeRecipientsTimelockExpiry == 0) {
             revert NoPendingChange();
         }
@@ -877,18 +923,42 @@ contract DEXSettlement is
     }
 
     /**
+     * @notice Cancel a pending fee recipients change (M-04)
+     * @dev Only callable by owner. Resets the pending state.
+     */
+    function cancelScheduledFeeRecipients()
+        external
+        onlyOwner
+    {
+        if (feeRecipientsTimelockExpiry == 0) {
+            revert NoPendingChange();
+        }
+        feeRecipientsTimelockExpiry = 0;
+        delete pendingFeeRecipients;
+        emit FeeRecipientsChangeCancelled();
+    }
+
+    /**
      * @notice Schedule trading limits change (M-04)
      * @param _maxTradeSize Maximum trade size
      * @param _dailyVolumeLimit Daily volume limit
      * @param _maxSlippageBps Maximum slippage in bps
      * @dev Queues the change with a 48-hour timelock. Call
      *      `applyTradingLimits()` after the delay to apply.
+     *      Reverts if a pending change already exists.
      */
     function scheduleTradingLimits(
         uint256 _maxTradeSize,
         uint256 _dailyVolumeLimit,
         uint256 _maxSlippageBps
     ) external onlyOwner {
+        if (tradingLimitsTimelockExpiry != 0) {
+            revert PendingChangeExists();
+        }
+        // L-01: Reject zero values
+        if (_maxTradeSize == 0 || _dailyVolumeLimit == 0) {
+            revert InvalidParameters();
+        }
         if (_maxSlippageBps > MAX_SLIPPAGE_BPS) {
             revert SlippageExceedsMaximum();
         }
@@ -898,9 +968,11 @@ contract DEXSettlement is
         pendingMaxSlippageBps = _maxSlippageBps;
         tradingLimitsTimelockExpiry = block.timestamp + TIMELOCK_DELAY; // solhint-disable-line not-rely-on-time
 
+        // L-07: Include slippage parameter in event
         emit TradingLimitsChangeScheduled(
             _maxTradeSize,
             _dailyVolumeLimit,
+            _maxSlippageBps,
             tradingLimitsTimelockExpiry
         );
     }
@@ -927,6 +999,24 @@ contract DEXSettlement is
             dailyVolumeLimit,
             maxSlippageBps
         );
+    }
+
+    /**
+     * @notice Cancel a pending trading limits change (M-04)
+     * @dev Only callable by owner. Resets the pending state.
+     */
+    function cancelScheduledTradingLimits()
+        external
+        onlyOwner
+    {
+        if (tradingLimitsTimelockExpiry == 0) {
+            revert NoPendingChange();
+        }
+        tradingLimitsTimelockExpiry = 0;
+        pendingMaxTradeSize = 0;
+        pendingDailyVolumeLimit = 0;
+        pendingMaxSlippageBps = 0;
+        emit TradingLimitsChangeCancelled();
     }
 
     /**
@@ -964,6 +1054,32 @@ contract DEXSettlement is
      */
     function unpause() external onlyOwner {
         _unpause();
+    }
+
+    /**
+     * @notice Remove a fee token from the feeTokens array
+     *         using swap-and-pop (H-02 remediation)
+     * @param token Address of the token to remove
+     * @dev Only callable by owner. Allows recovery when a
+     *      reverting token permanently blocks fee operations.
+     */
+    function removeFeeToken(
+        address token
+    ) external onlyOwner {
+        if (!isFeeToken[token]) revert FeeTokenNotFound();
+
+        uint256 len = feeTokens.length;
+        for (uint256 i; i < len; ++i) {
+            if (feeTokens[i] == token) {
+                feeTokens[i] = feeTokens[len - 1];
+                feeTokens.pop();
+                isFeeToken[token] = false;
+                emit FeeTokenRemoved(token);
+                return;
+            }
+        }
+        // Should not reach here due to isFeeToken guard
+        revert FeeTokenNotFound();
     }
 
     // ================================================================
@@ -1005,9 +1121,12 @@ contract DEXSettlement is
      * @param traderAmount Amount trader is providing
      * @param solverAmount Amount solver must provide
      * @param deadline Settlement deadline timestamp
+     * @param matchingValidator Validator who matched (H-03)
      * @dev Trader's tokens are actually escrowed into this
      *      contract via safeTransferFrom. Trader must have
      *      approved this contract for tokenIn beforehand.
+     *      Rebasing tokens (stETH, AMPL) are not supported
+     *      for intent settlement (M-06).
      */
     function lockIntentCollateral(
         bytes32 intentId,
@@ -1016,8 +1135,12 @@ contract DEXSettlement is
         address tokenOut,
         uint256 traderAmount,
         uint256 solverAmount,
-        uint256 deadline
+        uint256 deadline,
+        address matchingValidator
     ) external nonReentrant whenNotPaused {
+        // L-03/L-05: Enforce emergencyStop
+        if (emergencyStop) revert EmergencyStopActive();
+
         if (intentCollateral[intentId].locked) {
             revert CollateralAlreadyLocked();
         }
@@ -1037,6 +1160,9 @@ contract DEXSettlement is
         ) {
             revert InvalidAddress();
         }
+        if (matchingValidator == address(0)) {
+            revert InvalidMatchingValidator();
+        }
 
         intentCollateral[intentId] = IntentCollateral({
             trader: msg.sender,
@@ -1045,6 +1171,7 @@ contract DEXSettlement is
             solver: solver,
             tokenIn: tokenIn,
             tokenOut: tokenOut,
+            matchingValidator: matchingValidator,
             traderAmount: traderAmount,
             solverAmount: solverAmount,
             deadline: deadline
@@ -1077,12 +1204,15 @@ contract DEXSettlement is
     }
 
     /**
-     * @notice Settle intent with bilateral swap (H-01)
+     * @notice Settle intent with bilateral swap (H-01, C-01)
      * @param intentId Intent identifier
      * @dev Only the trader or designated solver may call.
      *      Token addresses are validated against the locked
      *      intent record (H-02). Trader's escrowed tokens
      *      go to solver; solver's tokens go to trader.
+     *      C-01: Fees are calculated and distributed via
+     *      the standard fee split mechanism.
+     *      M-05: CEI pattern - state updated before transfers.
      */
     function settleIntent(
         bytes32 intentId
@@ -1107,30 +1237,73 @@ contract DEXSettlement is
             revert UnauthorizedSettler();
         }
 
-        // Transfer escrowed trader tokens to solver
+        // M-05: CEI - mark settled before external calls
+        coll.settled = true;
+
+        // C-01: Calculate fees on both sides
+        uint256 traderFee = (coll.traderAmount
+            * SPOT_MAKER_FEE) / BASIS_POINTS_DIVISOR;
+        uint256 solverFee = (coll.solverAmount
+            * SPOT_TAKER_FEE) / BASIS_POINTS_DIVISOR;
+
+        uint256 traderNet = coll.traderAmount - traderFee;
+        uint256 solverNet = coll.solverAmount - solverFee;
+
+        // C-01: Accrue fee splits
+        if (traderFee > 0) {
+            _accrueFeeSplit(
+                traderFee,
+                coll.tokenIn,
+                coll.matchingValidator
+            );
+            _trackFeeToken(coll.tokenIn);
+            totalFeesCollected += traderFee;
+        }
+        if (solverFee > 0) {
+            _accrueFeeSplit(
+                solverFee,
+                coll.tokenOut,
+                coll.matchingValidator
+            );
+            _trackFeeToken(coll.tokenOut);
+            totalFeesCollected += solverFee;
+        }
+
+        // Transfer escrowed trader tokens: net to solver,
+        // fee stays in contract for claiming
         IERC20(coll.tokenIn).safeTransfer(
             coll.solver,
-            coll.traderAmount
+            traderNet
         );
+        // NOTE: traderFee portion stays in contract (was
+        // escrowed during lockIntentCollateral). No transfer
+        // needed — it remains here for fee recipients to claim.
 
-        // Transfer solver tokens to trader
-        // M-07: Balance check guards against fee-on-transfer tokens
-        uint256 traderBalBefore = IERC20(coll.tokenOut).balanceOf(
-            coll.trader
-        );
+        // Transfer solver tokens to trader (minus fee)
+        // M-07: Balance check for fee-on-transfer tokens
+        uint256 traderBalBefore =
+            IERC20(coll.tokenOut).balanceOf(coll.trader);
         IERC20(coll.tokenOut).safeTransferFrom(
             coll.solver,
             coll.trader,
-            coll.solverAmount
+            solverNet
         );
-        uint256 traderBalAfter = IERC20(coll.tokenOut).balanceOf(
-            coll.trader
-        );
-        if (traderBalAfter - traderBalBefore != coll.solverAmount) {
+        uint256 traderBalAfter =
+            IERC20(coll.tokenOut).balanceOf(coll.trader);
+        if (
+            traderBalAfter - traderBalBefore != solverNet
+        ) {
             revert FeeOnTransferNotSupported();
         }
 
-        coll.settled = true;
+        // Solver fee: transfer from solver to contract
+        if (solverFee > 0) {
+            IERC20(coll.tokenOut).safeTransferFrom(
+                coll.solver,
+                address(this),
+                solverFee
+            );
+        }
 
         emit IntentSettled(
             intentId,
@@ -1550,11 +1723,13 @@ contract DEXSettlement is
 
     /**
      * @notice Force-claim all accrued fees for a recipient
-     *         across all tracked tokens (H-05)
+     *         across all tracked tokens (H-05, H-02)
      * @param recipient Address to claim fees for
      * @dev Called internally before updating fee recipients
      *      to prevent orphaned fee balances. Silently skips
-     *      tokens with zero balance.
+     *      tokens with zero balance. Uses try/catch so a
+     *      reverting token does not block fee recipient
+     *      changes (H-02). Re-credits the amount on failure.
      */
     function _claimAllPendingFees(
         address recipient
@@ -1566,15 +1741,21 @@ contract DEXSettlement is
                 accruedFees[recipient][token];
             if (amount > 0) {
                 accruedFees[recipient][token] = 0;
-                IERC20(token).safeTransfer(
+                // solhint-disable-next-line no-empty-blocks
+                try IERC20(token).transfer(
                     recipient,
                     amount
-                );
-                emit FeesClaimed(
-                    recipient,
-                    token,
-                    amount
-                );
+                ) {
+                    emit FeesClaimed(
+                        recipient,
+                        token,
+                        amount
+                    );
+                } catch {
+                    // Re-credit on failure (H-02)
+                    accruedFees[recipient][token] =
+                        amount;
+                }
             }
         }
     }
@@ -1676,10 +1857,11 @@ contract DEXSettlement is
     }
 
     /**
-     * @notice Check volume limits for orders
+     * @notice Check volume limits for orders (M-01)
      * @param makerOrder Maker's order
      * @param takerOrder Taker's order
-     * @dev Reverts if trade size or daily volume exceeded
+     * @dev Reverts if trade size or daily volume exceeded.
+     *      M-01: Tracks both sides of the trade.
      */
     function _checkVolumeLimits(
         Order calldata makerOrder,
@@ -1691,8 +1873,11 @@ contract DEXSettlement is
         ) {
             revert TradeSizeExceedsLimit();
         }
+        // M-01: Check both sides against daily limit
         if (
-            dailyVolumeUsed + makerOrder.amountIn
+            dailyVolumeUsed
+                + makerOrder.amountIn
+                + takerOrder.amountIn
                 > dailyVolumeLimit
         ) {
             revert DailyVolumeLimitExceeded();
@@ -1798,12 +1983,18 @@ contract DEXSettlement is
      * @notice Verify that two orders match
      * @param makerOrder Maker's order
      * @param takerOrder Taker's order
-     * @dev Checks sides, token pairs, amounts, and price
+     * @dev Checks sides, token pairs, amounts, price, and
+     *      L-06: validates tokenIn != tokenOut.
      */
     function _verifyOrdersMatch(
         Order calldata makerOrder,
         Order calldata takerOrder
     ) internal pure {
+        // L-06: tokenIn must differ from tokenOut
+        if (makerOrder.tokenIn == makerOrder.tokenOut) {
+            revert InvalidOrder();
+        }
+
         // Opposite sides
         if (makerOrder.isBuy == takerOrder.isBuy) {
             revert OrdersDontMatch();

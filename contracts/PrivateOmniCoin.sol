@@ -134,6 +134,12 @@ contract PrivateOmniCoin is
     ///      compromised minter from inflating pXOM beyond intended limits.
     uint256 public constant MAX_SUPPLY = 16_600_000_000 * 10 ** 18;
 
+    /// @notice Timelock delay for privacy disable (7 days)
+    /// @dev ATK-H07: Gives users time to exit private positions
+    ///      before privacy is disabled and emergency recovery
+    ///      becomes possible.
+    uint256 public constant PRIVACY_DISABLE_DELAY = 7 days;
+
     // ====================================================================
     // STATE VARIABLES
     // ====================================================================
@@ -170,25 +176,31 @@ contract PrivateOmniCoin is
     ///         non-upgradeable)
     bool private _ossified;
 
+    /// @notice Timestamp when privacy disable becomes executable
+    /// @dev ATK-H07: Requires 7-day delay before privacy can be
+    ///      disabled, giving users time to exit private positions.
+    ///      Zero means no disable is pending.
+    uint256 public privacyDisableScheduledAt;
+
     /**
      * @dev Storage gap for future upgrades.
      * @notice Reserves storage slots for adding new variables in
      *         upgrades without shifting inherited contract storage.
      *
      * Current named sequential state variables:
-     *   - encryptedBalances    (mapping, does not consume seq. slot)
-     *   - totalPrivateSupply   (1 slot)
-     *   - feeRecipient         (1 slot)
-     *   - privacyEnabled       (1 slot)
-     *   - privateDepositLedger (mapping, does not consume seq. slot)
-     *   - _ossified            (1 slot)
+     *   - encryptedBalances        (mapping, no seq. slot)
+     *   - totalPrivateSupply       (1 slot)
+     *   - feeRecipient             (1 slot)
+     *   - privacyEnabled           (1 slot)
+     *   - privateDepositLedger     (mapping, no seq. slot)
+     *   - _ossified                (1 slot)
+     *   - privacyDisableScheduledAt (1 slot)
      *
-     * Sequential slots used: 4 (totalPrivateSupply, feeRecipient,
-     *   privacyEnabled, _ossified)
-     * Gap = 50 - 4 = 46 slots reserved
+     * Sequential slots used: 5
+     * Gap = 50 - 5 = 45 slots reserved
      * (mappings excluded per OZ convention)
      */
-    uint256[46] private __gap;
+    uint256[45] private __gap;
 
     // ====================================================================
     // EVENTS
@@ -216,7 +228,14 @@ contract PrivateOmniCoin is
     /// @notice Emitted when a private transfer occurs
     /// @param from Sender address
     /// @param to Recipient address
-    /// @dev Amount is not revealed for privacy
+    /// @dev ATK-H06 PRIVACY LIMITATION: PrivateTransfer events expose
+    ///      sender and receiver addresses on-chain. While amounts are
+    ///      encrypted via COTI MPC garbled circuits, the transaction
+    ///      graph (who transacts with whom) is publicly visible. For
+    ///      full relationship privacy, use the relayer service
+    ///      (RelayerSelectionService) which adds an intermediary
+    ///      layer. Future versions may use COTI's encrypted events
+    ///      when available on COTI L2.
     event PrivateTransfer(
         address indexed from,
         address indexed to
@@ -242,6 +261,26 @@ contract PrivateOmniCoin is
     /// @notice Emitted when the contract is permanently ossified
     /// @param contractAddress Address of this contract
     event ContractOssified(address indexed contractAddress);
+
+    /// @notice Emitted when privacy disable is proposed (7-day delay)
+    /// @param executeAfter Timestamp after which disable can execute
+    event PrivacyDisableProposed(uint256 executeAfter);
+
+    /// @notice Emitted when privacy is disabled after timelock
+    event PrivacyDisabled();
+
+    /// @notice Emitted when a pending privacy disable is cancelled
+    event PrivacyDisableCancelled();
+
+    /// @notice Emitted when shadow ledger is updated during transfer
+    /// @param from Sender whose ledger was debited
+    /// @param to Recipient whose ledger was credited
+    /// @param scaledAmount Amount transferred (6-decimal scaled)
+    event PrivateLedgerUpdated(
+        address indexed from,
+        address indexed to,
+        uint256 scaledAmount
+    );
 
     // ====================================================================
     // CUSTOM ERRORS
@@ -282,6 +321,15 @@ contract PrivateOmniCoin is
 
     /// @notice Thrown when contract is ossified and upgrade attempted
     error ContractIsOssified();
+
+    /// @notice Thrown when caller is not the account owner
+    error OnlyAccountOwner();
+
+    /// @notice Thrown when no privacy disable has been proposed
+    error NoPendingChange();
+
+    /// @notice Thrown when the timelock delay has not elapsed
+    error TimelockActive();
 
     // ====================================================================
     // CONSTRUCTOR & INITIALIZATION
@@ -486,11 +534,18 @@ contract PrivateOmniCoin is
     /**
      * @notice Transfer private tokens to another address
      * @dev Transfers encrypted balance without revealing amount.
-     *      Updates shadow ledgers for both sender and recipient.
      *
      *      M-01 fix: Uses MpcCore.checkedSub() and
      *      MpcCore.checkedAdd() for defense-in-depth overflow/
      *      underflow protection.
+     *
+     *      ATK-H08 fix: Shadow ledger is now updated during
+     *      private transfers by decrypting the transfer amount.
+     *      This ensures emergency recovery correctly reflects all
+     *      balances, including those received via privateTransfer.
+     *      Note: The decrypt call reveals the amount to the
+     *      contract/node but not to external observers (amount
+     *      is not emitted in events).
      *
      * @param to Recipient address
      * @param encryptedAmount Encrypted amount to transfer (6-decimal
@@ -531,14 +586,25 @@ contract PrivateOmniCoin is
         encryptedBalances[to] =
             MpcCore.offBoard(gtNewRecipientBalance);
 
-        // Note: Shadow ledger is NOT updated for private transfers
-        // because the amount is encrypted. The ledger only tracks
-        // deposits/withdrawals for emergency recovery purposes.
-        // In emergency recovery, users who received private transfers
-        // would not have their received amounts in the ledger; only
-        // their own deposits are recoverable. This is documented
-        // behavior and an acceptable trade-off for emergency recovery.
+        // ATK-H08: Update shadow ledger so emergency recovery
+        // correctly reflects transferred balances. We must decrypt
+        // the amount to update the plaintext ledger.
+        uint64 plainAmount = MpcCore.decrypt(encryptedAmount);
+        uint256 transferAmount = uint256(plainAmount);
 
+        if (privateDepositLedger[msg.sender] >= transferAmount) {
+            privateDepositLedger[msg.sender] -= transferAmount;
+        } else {
+            // Edge case: ledger may be less than transfer amount
+            // (e.g., partial deposits). Zero it out rather than
+            // underflow.
+            privateDepositLedger[msg.sender] = 0;
+        }
+        privateDepositLedger[to] += transferAmount;
+
+        emit PrivateLedgerUpdated(
+            msg.sender, to, transferAmount
+        );
         emit PrivateTransfer(msg.sender, to);
     }
 
@@ -563,16 +629,68 @@ contract PrivateOmniCoin is
     }
 
     /**
-     * @notice Enable or disable privacy features
-     * @dev Only admin can change. Disabling privacy is required
-     * before emergency recovery can be used.
-     * @param enabled Whether to enable privacy
+     * @notice Instantly enable privacy features
+     * @dev Only admin can enable. Enabling privacy does not require
+     *      a timelock because it does not put user funds at risk.
+     *      Disabling privacy requires the timelock flow below.
      */
-    function setPrivacyEnabled(
-        bool enabled
-    ) external onlyRole(DEFAULT_ADMIN_ROLE) {
-        privacyEnabled = enabled;
-        emit PrivacyStatusChanged(enabled);
+    function enablePrivacy()
+        external
+        onlyRole(DEFAULT_ADMIN_ROLE)
+    {
+        privacyEnabled = true;
+        emit PrivacyStatusChanged(true);
+    }
+
+    /**
+     * @notice Propose disabling privacy (starts 7-day timelock)
+     * @dev ATK-H07 fix: Privacy cannot be disabled instantly.
+     *      Admin must propose, wait 7 days, then execute. This
+     *      gives users time to convertToPublic() and exit their
+     *      private positions before emergency recovery becomes
+     *      possible. Enabling privacy remains instant.
+     */
+    function proposePrivacyDisable()
+        external
+        onlyRole(DEFAULT_ADMIN_ROLE)
+    {
+        privacyDisableScheduledAt = // solhint-disable-line not-rely-on-time
+            block.timestamp + PRIVACY_DISABLE_DELAY;
+        emit PrivacyDisableProposed(privacyDisableScheduledAt);
+    }
+
+    /**
+     * @notice Execute privacy disable after timelock delay
+     * @dev Can only be called after PRIVACY_DISABLE_DELAY has
+     *      elapsed since proposePrivacyDisable() was called.
+     */
+    function executePrivacyDisable()
+        external
+        onlyRole(DEFAULT_ADMIN_ROLE)
+    {
+        if (privacyDisableScheduledAt == 0) {
+            revert NoPendingChange();
+        }
+        // solhint-disable-next-line not-rely-on-time
+        if (block.timestamp < privacyDisableScheduledAt) {
+            revert TimelockActive();
+        }
+        privacyEnabled = false;
+        delete privacyDisableScheduledAt;
+        emit PrivacyDisabled();
+    }
+
+    /**
+     * @notice Cancel a pending privacy disable proposal
+     * @dev Allows admin to abort the privacy disable before the
+     *      timelock expires.
+     */
+    function cancelPrivacyDisable()
+        external
+        onlyRole(DEFAULT_ADMIN_ROLE)
+    {
+        delete privacyDisableScheduledAt;
+        emit PrivacyDisableCancelled();
     }
 
     /**
@@ -673,23 +791,26 @@ contract PrivateOmniCoin is
     // ====================================================================
 
     /**
-     * @notice Get decrypted private balance (owner or admin only)
-     * @dev Only the account owner or admin can decrypt the balance.
-     * Not a view function due to MPC decrypt operations.
-     * Returns the 18-decimal public-equivalent amount.
-     * @param account Address to query
+     * @notice Get decrypted private balance (account owner only)
+     * @dev ATK-H05 fix: Only the account owner can decrypt their own
+     *      balance. The previous admin override was REMOVED because it
+     *      allowed any admin to silently view any user's private
+     *      balance, defeating the purpose of privacy. Admins who need
+     *      to verify balances for compliance should use off-chain
+     *      processes with user consent.
+     *
+     *      Not a view function due to MPC decrypt operations.
+     *      Returns the 18-decimal public-equivalent amount.
+     *
+     * @param account Address to query (must equal msg.sender)
      * @return balance Decrypted balance scaled to 18 decimals
      */
     function decryptedPrivateBalanceOf(
         address account
     ) external returns (uint256 balance) {
         if (!privacyEnabled) return 0;
-        if (
-            msg.sender != account &&
-            !hasRole(DEFAULT_ADMIN_ROLE, msg.sender)
-        ) {
-            revert Unauthorized();
-        }
+        // ATK-H05: Only the account owner can decrypt
+        if (msg.sender != account) revert OnlyAccountOwner();
 
         gtUint64 gtBalance =
             MpcCore.onBoard(encryptedBalances[account]);

@@ -1,6 +1,6 @@
 const { expect } = require("chai");
 const { ethers, upgrades } = require("hardhat");
-const { time } = require("@nomicfoundation/hardhat-network-helpers");
+const { time, mine } = require("@nomicfoundation/hardhat-network-helpers");
 
 /**
  * @title Trustless Architecture — Cross-Contract Integration Tests
@@ -29,6 +29,43 @@ describe("Trustless Architecture — Cross-Contract Integration", function () {
   /** Generate a random bytes32 value */
   function randomBytes32() {
     return ethers.hexlify(ethers.randomBytes(32));
+  }
+
+  /**
+   * Commit-reveal helper for OmniENS registration.
+   * The register() function now requires a 3-step commit-reveal:
+   *   1. makeCommitment(name, sender, secret) — returns commitment hash
+   *   2. commit(commitment) — stores on-chain
+   *   3. Wait MIN_COMMITMENT_AGE (60 seconds)
+   *   4. register(name, duration, secret) — reveal phase
+   */
+  async function commitAndRegister(ens, caller, name, duration) {
+    const secret = ethers.id("test-secret-" + name);
+    const commitment = await ens.makeCommitment(name, caller.address, secret);
+    await ens.connect(caller).commit(commitment);
+    // Advance time past MIN_COMMITMENT_AGE (60 seconds)
+    await time.increase(61);
+    return ens.connect(caller).register(name, duration, secret);
+  }
+
+  /**
+   * Two-phase dispute helper for OmniArbitration.
+   * After createDispute(), must mine 2+ blocks then call
+   * finalizeArbitratorSelection(disputeId) before dispute becomes Active.
+   */
+  async function createAndFinalizeDispute(arbitration, caller, escrowId) {
+    const tx = await arbitration.connect(caller).createDispute(escrowId);
+    const receipt = await tx.wait();
+    // Extract disputeId from DisputeCreated event
+    const createEvent = receipt.logs.find(
+      (log) => log.fragment && log.fragment.name === "DisputeCreated"
+    );
+    const disputeId = createEvent.args.disputeId;
+    // Mine 2 blocks so finalizeArbitratorSelection can use blockhash
+    await mine(2);
+    // Finalize arbitrator selection (anyone can call)
+    await arbitration.finalizeArbitratorSelection(disputeId);
+    return { tx, receipt, createEvent, disputeId };
   }
 
   // ════════════════════════════════════════════════════════════════════════
@@ -147,7 +184,7 @@ describe("Trustless Architecture — Cross-Contract Integration", function () {
 
       const listingTx = await marketplace
         .connect(seller)
-        .registerListing(ipfsCID, contentHash, LISTING_PRICE, expiry, sig);
+        .registerListing(seller.address, ipfsCID, contentHash, LISTING_PRICE, expiry, sig);
       await expect(listingTx)
         .to.emit(marketplace, "ListingRegistered")
         .withArgs(1, seller.address, ipfsCID, contentHash, LISTING_PRICE, expiry);
@@ -166,7 +203,7 @@ describe("Trustless Architecture — Cross-Contract Integration", function () {
       const escrowId = 1;
       await mockEscrow.setEscrow(escrowId, buyer.address, seller.address, ESCROW_AMOUNT);
 
-      // ── Step 3: Buyer creates a dispute ──
+      // ── Step 3: Buyer creates a dispute (phase 1 — PendingSelection) ──
       const disputeTx = await arbitration.connect(buyer).createDispute(escrowId);
       const disputeReceipt = await disputeTx.wait();
 
@@ -178,6 +215,10 @@ describe("Trustless Architecture — Cross-Contract Integration", function () {
       expect(createEvent.args.buyer).to.equal(buyer.address);
       expect(createEvent.args.seller).to.equal(seller.address);
       expect(createEvent.args.amount).to.equal(ESCROW_AMOUNT);
+
+      // ── Step 3b: Finalize arbitrator selection (phase 2 — mine 2 blocks first) ──
+      await mine(2);
+      await arbitration.finalizeArbitratorSelection(1);
 
       // ── Step 4: Retrieve assigned arbitrators ──
       const dispute = await arbitration.getDispute(1);
@@ -236,8 +277,10 @@ describe("Trustless Architecture — Cross-Contract Integration", function () {
       const escrowId = 42;
       await mockEscrow.setEscrow(escrowId, buyer.address, seller.address, ESCROW_AMOUNT);
 
-      // ── Buyer opens dispute ──
+      // ── Buyer opens dispute (two-phase: create + finalize) ──
       await arbitration.connect(buyer).createDispute(escrowId);
+      await mine(2);
+      await arbitration.finalizeArbitratorSelection(1);
       const dispute = await arbitration.getDispute(1);
       const arbSigners = dispute.arbitrators.map((addr) =>
         arbitrators.find((a) => a.address === addr)
@@ -288,9 +331,11 @@ describe("Trustless Architecture — Cross-Contract Integration", function () {
     });
 
     it("should handle default resolution after timeout when no arbitrators vote", async function () {
-      // ── Simulate escrow and create dispute ──
+      // ── Simulate escrow and create dispute (two-phase) ──
       await mockEscrow.setEscrow(5, buyer.address, seller.address, ESCROW_AMOUNT);
       await arbitration.connect(buyer).createDispute(5);
+      await mine(2);
+      await arbitration.finalizeArbitratorSelection(1);
 
       // Verify deadline is ~7 days from now
       const dispute = await arbitration.getDispute(1);
@@ -321,7 +366,7 @@ describe("Trustless Architecture — Cross-Contract Integration", function () {
 
   describe("Oracle Price Consensus → Multi-Round", function () {
     let oracle, mockOmniCore, tokenA;
-    let owner, validator1, validator2, validator3, nonValidator;
+    let owner, validator1, validator2, validator3, validator4, validator5, nonValidator;
 
     const PRICE_1000 = ethers.parseEther("1000");
     const PRICE_1010 = ethers.parseEther("1010");
@@ -331,7 +376,7 @@ describe("Trustless Architecture — Cross-Contract Integration", function () {
     const PRICE_1025 = ethers.parseEther("1025");
 
     beforeEach(async function () {
-      [owner, validator1, validator2, validator3, nonValidator] =
+      [owner, validator1, validator2, validator3, validator4, validator5, nonValidator] =
         await ethers.getSigners();
 
       // ── Deploy MockOmniCore ──
@@ -340,6 +385,8 @@ describe("Trustless Architecture — Cross-Contract Integration", function () {
       await mockOmniCore.setValidator(validator1.address, true);
       await mockOmniCore.setValidator(validator2.address, true);
       await mockOmniCore.setValidator(validator3.address, true);
+      await mockOmniCore.setValidator(validator4.address, true);
+      await mockOmniCore.setValidator(validator5.address, true);
 
       // ── Deploy OmniPriceOracle (UUPS proxy) ──
       const OracleFactory = await ethers.getContractFactory("OmniPriceOracle");
@@ -357,27 +404,29 @@ describe("Trustless Architecture — Cross-Contract Integration", function () {
       await oracle.registerToken(await tokenA.getAddress());
     });
 
-    it("should reach consensus after 3 validators submit and finalize the round", async function () {
+    it("should reach consensus after 5 validators submit and finalize the round", async function () {
       const tokenAddr = await tokenA.getAddress();
 
       // Verify token is registered
       expect(await oracle.isRegisteredToken(tokenAddr)).to.be.true;
       expect(await oracle.currentRound(tokenAddr)).to.equal(0);
 
-      // ── Validators submit prices ──
+      // ── 5 Validators submit prices (minValidators = 5) ──
       await expect(oracle.connect(validator1).submitPrice(tokenAddr, PRICE_1000))
         .to.emit(oracle, "PriceSubmitted")
         .withArgs(tokenAddr, validator1.address, PRICE_1000, 0);
 
-      await oracle.connect(validator2).submitPrice(tokenAddr, PRICE_1010);
+      await oracle.connect(validator2).submitPrice(tokenAddr, PRICE_1005);
+      await oracle.connect(validator3).submitPrice(tokenAddr, PRICE_1010);
+      await oracle.connect(validator4).submitPrice(tokenAddr, PRICE_1015);
 
-      // Third submission triggers auto-finalization (minValidators = 3)
-      const finalizeTx = await oracle.connect(validator3).submitPrice(tokenAddr, PRICE_1020);
+      // Fifth submission triggers auto-finalization (minValidators = 5)
+      const finalizeTx = await oracle.connect(validator5).submitPrice(tokenAddr, PRICE_1020);
 
       await expect(finalizeTx)
         .to.emit(oracle, "RoundFinalized");
 
-      // ── Verify consensus price (median of 1000, 1010, 1020 = 1010) ──
+      // ── Verify consensus price (median of 1000, 1005, 1010, 1015, 1020 = 1010) ──
       expect(await oracle.latestConsensusPrice(tokenAddr)).to.equal(PRICE_1010);
 
       // Round advanced to 1
@@ -410,10 +459,12 @@ describe("Trustless Architecture — Cross-Contract Integration", function () {
     it("should compute a different TWAP after a second round with shifted prices", async function () {
       const tokenAddr = await tokenA.getAddress();
 
-      // ── Round 0: prices around 1000-1020, median = 1010 ──
+      // ── Round 0: 5 prices around 1000-1020, median = 1010 ──
       await oracle.connect(validator1).submitPrice(tokenAddr, PRICE_1000);
-      await oracle.connect(validator2).submitPrice(tokenAddr, PRICE_1010);
-      await oracle.connect(validator3).submitPrice(tokenAddr, PRICE_1020);
+      await oracle.connect(validator2).submitPrice(tokenAddr, PRICE_1005);
+      await oracle.connect(validator3).submitPrice(tokenAddr, PRICE_1010);
+      await oracle.connect(validator4).submitPrice(tokenAddr, PRICE_1015);
+      await oracle.connect(validator5).submitPrice(tokenAddr, PRICE_1020);
 
       const twapAfterRound0 = await oracle.getTWAP(tokenAddr);
       expect(twapAfterRound0).to.equal(PRICE_1010);
@@ -421,10 +472,12 @@ describe("Trustless Architecture — Cross-Contract Integration", function () {
       // Advance time slightly so the TWAP window catches both observations
       await time.increase(60);
 
-      // ── Round 1: prices around 1005-1025, median = 1015 ──
+      // ── Round 1: 5 prices around 1005-1025, median = 1015 ──
       await oracle.connect(validator1).submitPrice(tokenAddr, PRICE_1005);
-      await oracle.connect(validator2).submitPrice(tokenAddr, PRICE_1015);
-      await oracle.connect(validator3).submitPrice(tokenAddr, PRICE_1025);
+      await oracle.connect(validator2).submitPrice(tokenAddr, PRICE_1010);
+      await oracle.connect(validator3).submitPrice(tokenAddr, PRICE_1015);
+      await oracle.connect(validator4).submitPrice(tokenAddr, PRICE_1020);
+      await oracle.connect(validator5).submitPrice(tokenAddr, PRICE_1025);
 
       // Latest consensus should be the round 1 median
       expect(await oracle.latestConsensusPrice(tokenAddr)).to.equal(PRICE_1015);
@@ -447,10 +500,12 @@ describe("Trustless Architecture — Cross-Contract Integration", function () {
       // No price submitted yet — should be stale
       expect(await oracle.isStale(tokenAddr)).to.be.true;
 
-      // Submit prices to finalize a round
+      // Submit prices to finalize a round (need 5 validators)
       await oracle.connect(validator1).submitPrice(tokenAddr, PRICE_1000);
-      await oracle.connect(validator2).submitPrice(tokenAddr, PRICE_1010);
-      await oracle.connect(validator3).submitPrice(tokenAddr, PRICE_1020);
+      await oracle.connect(validator2).submitPrice(tokenAddr, PRICE_1005);
+      await oracle.connect(validator3).submitPrice(tokenAddr, PRICE_1010);
+      await oracle.connect(validator4).submitPrice(tokenAddr, PRICE_1015);
+      await oracle.connect(validator5).submitPrice(tokenAddr, PRICE_1020);
 
       // Now should not be stale
       expect(await oracle.isStale(tokenAddr)).to.be.false;
@@ -515,8 +570,8 @@ describe("Trustless Architecture — Cross-Contract Integration", function () {
       // Record ODDAO balance before
       const oddaoBalanceBefore = await xom.balanceOf(oddaoTreasury.address);
 
-      // ── Register name ──
-      const tx = await ens.connect(user1).register(name, duration);
+      // ── Register name (commit-reveal) ──
+      const tx = await commitAndRegister(ens, user1, name, duration);
       await expect(tx).to.emit(ens, "NameRegistered");
 
       // ── Forward resolution (name → address) ──
@@ -535,14 +590,19 @@ describe("Trustless Architecture — Cross-Contract Integration", function () {
     it("should prevent duplicate name registration until expiry", async function () {
       const name = "bob";
 
-      await ens.connect(user1).register(name, MIN_DURATION);
+      await commitAndRegister(ens, user1, name, MIN_DURATION);
 
-      // Second user tries same name — should fail
+      // Second user tries same name — should fail at register phase
+      // (commit succeeds since it only stores a hash, but register will revert)
+      const secret2 = ethers.id("test-secret-" + name + "-user2");
+      const commitment2 = await ens.makeCommitment(name, user2.address, secret2);
+      await ens.connect(user2).commit(commitment2);
+      await time.increase(61);
       await expect(
-        ens.connect(user2).register(name, MIN_DURATION)
+        ens.connect(user2).register(name, MIN_DURATION, secret2)
       ).to.be.revertedWithCustomError(ens, "NameTaken");
 
-      // Fast-forward past expiry
+      // Fast-forward past expiry (MIN_DURATION from the original registration)
       await time.increase(MIN_DURATION + 1);
 
       // Name should now resolve to address(0)
@@ -551,9 +611,10 @@ describe("Trustless Architecture — Cross-Contract Integration", function () {
       // Should be available
       expect(await ens.isAvailable(name)).to.be.true;
 
-      // Second user can now register
+      // Second user can now register (new commit-reveal cycle needed
+      // since old commitment expired beyond MAX_COMMITMENT_AGE)
       await expect(
-        ens.connect(user2).register(name, MIN_DURATION)
+        commitAndRegister(ens, user2, name, MIN_DURATION)
       ).to.not.be.reverted;
 
       expect(await ens.resolve(name)).to.equal(user2.address);
@@ -561,7 +622,7 @@ describe("Trustless Architecture — Cross-Contract Integration", function () {
 
     it("should support name transfer and update reverse records", async function () {
       const name = "charlie";
-      await ens.connect(user1).register(name, MIN_DURATION);
+      await commitAndRegister(ens, user1, name, MIN_DURATION);
 
       // ── Transfer from user1 to user2 ──
       await expect(ens.connect(user1).transfer(name, user2.address))
@@ -579,37 +640,40 @@ describe("Trustless Architecture — Cross-Contract Integration", function () {
     });
 
     it("should enforce name validation rules", async function () {
-      // Too short (< 3 chars)
+      // Dummy secret for calls that will revert at validation (before commitment check)
+      const dummySecret = ethers.id("dummy-secret");
+
+      // Too short (< 3 chars) — reverts at _validateName before _consumeCommitment
       await expect(
-        ens.connect(user1).register("ab", MIN_DURATION)
+        ens.connect(user1).register("ab", MIN_DURATION, dummySecret)
       ).to.be.revertedWithCustomError(ens, "InvalidNameLength");
 
       // Invalid character (uppercase)
       await expect(
-        ens.connect(user1).register("Alice", MIN_DURATION)
+        ens.connect(user1).register("Alice", MIN_DURATION, dummySecret)
       ).to.be.revertedWithCustomError(ens, "InvalidNameCharacter");
 
       // Leading hyphen
       await expect(
-        ens.connect(user1).register("-alice", MIN_DURATION)
+        ens.connect(user1).register("-alice", MIN_DURATION, dummySecret)
       ).to.be.revertedWithCustomError(ens, "InvalidNameCharacter");
 
       // Trailing hyphen
       await expect(
-        ens.connect(user1).register("alice-", MIN_DURATION)
+        ens.connect(user1).register("alice-", MIN_DURATION, dummySecret)
       ).to.be.revertedWithCustomError(ens, "InvalidNameCharacter");
 
-      // Valid name with hyphen in middle
+      // Valid name with hyphen in middle (needs full commit-reveal)
       await expect(
-        ens.connect(user1).register("alice-bob", MIN_DURATION)
+        commitAndRegister(ens, user1, "alice-bob", MIN_DURATION)
       ).to.not.be.reverted;
     });
 
     it("should correctly calculate proportional fees for different durations", async function () {
       const oddaoBalanceBefore = await xom.balanceOf(oddaoTreasury.address);
 
-      // Register for full year (365 days)
-      await ens.connect(user1).register("yearlong", MAX_DURATION);
+      // Register for full year (365 days) using commit-reveal
+      await commitAndRegister(ens, user1, "yearlong", MAX_DURATION);
 
       const oddaoBalanceAfter = await xom.balanceOf(oddaoTreasury.address);
       const feeCollected = oddaoBalanceAfter - oddaoBalanceBefore;
@@ -846,7 +910,7 @@ describe("Trustless Architecture — Cross-Contract Integration", function () {
   describe("Cross-System Integration: Multiple Trustless Contracts", function () {
     let marketplace, oracle, ens, chatFee, xom, mockOmniCore;
     let owner, oddaoTreasury, stakingPool;
-    let validator1, validator2, validator3;
+    let validator1, validator2, validator3, validator4, validator5;
     let user1, user2;
 
     const BASE_FEE = ethers.parseEther("0.001");
@@ -861,19 +925,23 @@ describe("Trustless Architecture — Cross-Contract Integration", function () {
       validator1 = signers[3];
       validator2 = signers[4];
       validator3 = signers[5];
-      user1 = signers[6];
-      user2 = signers[7];
+      validator4 = signers[6];
+      validator5 = signers[7];
+      user1 = signers[8];
+      user2 = signers[9];
 
       // ── Deploy MockERC20 (XOM) ──
       const MockERC20 = await ethers.getContractFactory("MockERC20");
       xom = await MockERC20.deploy("OmniCoin", "XOM");
 
-      // ── Deploy MockOmniCore ──
+      // ── Deploy MockOmniCore (5 validators for oracle minValidators=5) ──
       const MockOmniCore = await ethers.getContractFactory("MockOmniCore");
       mockOmniCore = await MockOmniCore.deploy();
       await mockOmniCore.setValidator(validator1.address, true);
       await mockOmniCore.setValidator(validator2.address, true);
       await mockOmniCore.setValidator(validator3.address, true);
+      await mockOmniCore.setValidator(validator4.address, true);
+      await mockOmniCore.setValidator(validator5.address, true);
 
       // ── Deploy OmniMarketplace ──
       const MarketplaceFactory = await ethers.getContractFactory("OmniMarketplace");
@@ -919,8 +987,8 @@ describe("Trustless Architecture — Cross-Contract Integration", function () {
     });
 
     it("should support user registering an ENS name, creating a listing, chatting about it, and receiving an oracle price", async function () {
-      // ── Step 1: User1 registers an ENS name ──
-      await ens.connect(user1).register("seller-alice", MIN_DURATION);
+      // ── Step 1: User1 registers an ENS name (commit-reveal) ──
+      await commitAndRegister(ens, user1, "seller-alice", MIN_DURATION);
       expect(await ens.resolve("seller-alice")).to.equal(user1.address);
       expect(await ens.reverseResolve(user1.address)).to.equal("seller-alice");
 
@@ -946,18 +1014,22 @@ describe("Trustless Architecture — Cross-Contract Integration", function () {
       const xomAddr = await xom.getAddress();
       await oracle.registerToken(xomAddr);
 
-      // 3 validators submit prices
-      const price1 = ethers.parseEther("0.05");
-      const price2 = ethers.parseEther("0.051");
-      const price3 = ethers.parseEther("0.049");
+      // 5 validators submit prices (minValidators = 5)
+      const price1 = ethers.parseEther("0.049");
+      const price2 = ethers.parseEther("0.0495");
+      const price3 = ethers.parseEther("0.05");
+      const price4 = ethers.parseEther("0.0505");
+      const price5 = ethers.parseEther("0.051");
 
       await oracle.connect(validator1).submitPrice(xomAddr, price1);
       await oracle.connect(validator2).submitPrice(xomAddr, price2);
       await oracle.connect(validator3).submitPrice(xomAddr, price3);
+      await oracle.connect(validator4).submitPrice(xomAddr, price4);
+      await oracle.connect(validator5).submitPrice(xomAddr, price5);
 
-      // Consensus should be median = 0.05
+      // Consensus should be median = 0.05 (middle of 5 sorted prices)
       const consensus = await oracle.latestConsensusPrice(xomAddr);
-      expect(consensus).to.equal(price1); // median of [0.049, 0.05, 0.051] = 0.05
+      expect(consensus).to.equal(price3); // median of [0.049, 0.0495, 0.05, 0.0505, 0.051] = 0.05
 
       // ── Step 5: Verify all systems report consistent state ──
       expect(await ens.resolve("seller-alice")).to.equal(user1.address);
@@ -970,9 +1042,9 @@ describe("Trustless Architecture — Cross-Contract Integration", function () {
       // Pause marketplace
       await marketplace.connect(owner).pause();
 
-      // ENS should still work
+      // ENS should still work (commit-reveal)
       await expect(
-        ens.connect(user1).register("still-works", MIN_DURATION)
+        commitAndRegister(ens, user1, "still-works", MIN_DURATION)
       ).to.not.be.reverted;
 
       // Chat should still work

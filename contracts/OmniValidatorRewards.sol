@@ -157,13 +157,28 @@ interface IOmniCore {
  *   (active heartbeat within 20s). Offline = no bonus.
  * - Max cap: 20000 bps (2.0x) to prevent abuse.
  * - Access: ROLE_MANAGER_ROLE (granted to deployer + validators).
+ *
+ * Audit Fixes (2026-02-28 Round 4):
+ * - H-01: emergencyWithdraw checks both current and original XOM
+ * - M-01: roleMultiplier capped at MAX_ROLE_MULTIPLIER (15000)
+ * - M-02: Penalty decay with MAX_PENALTY_DURATION (30 days)
+ * - M-03: Stale validator state documented as accepted behavior
+ * - M-04: Per-epoch per-validator transaction count cap (1000)
+ * - M-05: claimRewards() available during pause (withdrawal)
+ * - L-01: Rounding dust documented as acceptable
+ * - L-02: Sub-base roleMultiplier values rejected
+ * - L-03: getActiveNodes memory allocation documented
+ * - I-01: nonReentrant modifier placed first
+ * - I-03: Activity component uses single division for precision
  */
+// solhint-disable max-states-count
 contract OmniValidatorRewards is
     AccessControlUpgradeable,
     UUPSUpgradeable,
     ReentrancyGuardUpgradeable,
     PausableUpgradeable
 {
+// solhint-enable max-states-count
     using SafeERC20 for IERC20;
 
     // ══════════════════════════════════════════════════════════════════
@@ -201,6 +216,26 @@ contract OmniValidatorRewards is
     /// @notice Role for managing gateway/service-node role multipliers
     bytes32 public constant ROLE_MANAGER_ROLE =
         keccak256("ROLE_MANAGER_ROLE");
+
+    /// @notice Maximum role multiplier in basis points (1.5x cap)
+    /// @dev Audit H-01 Round 4: Prevents ROLE_MANAGER from
+    ///      concentrating rewards via unbounded multipliers.
+    ///      Reduced from 20000 (2.0x) to 15000 (1.5x).
+    uint256 public constant MAX_ROLE_MULTIPLIER = 15000;
+
+    /// @notice Maximum penalty duration before auto-reset
+    /// @dev Audit M-02 Round 4: Prevents indefinite reward
+    ///      suppression by PENALTY_ROLE. After 30 days the
+    ///      penalty automatically expires and multiplier
+    ///      resets to default (100%).
+    uint256 public constant MAX_PENALTY_DURATION = 30 days;
+
+    /// @notice Maximum transactions per epoch per validator
+    /// @dev Audit M-04 Round 4: Prevents BLOCKCHAIN_ROLE from
+    ///      inflating a single validator's transaction count
+    ///      within one epoch. 1000 txns at 2s epochs is generous.
+    uint256 public constant MAX_TXN_PER_EPOCH_PER_VALIDATOR =
+        1000;
 
     /// @notice Epoch duration in seconds (2 second blocks)
     uint256 public constant EPOCH_DURATION = 2;
@@ -338,10 +373,28 @@ contract OmniValidatorRewards is
     ///      preventing offline nodes from claiming the bonus.
     mapping(address => uint256) public roleMultiplier;
 
+    /// @notice Original XOM token address set at initialization
+    /// @dev Audit H-01 Round 4: Prevents emergencyWithdraw bypass
+    ///      via proposeContracts/applyContracts swapping xomToken.
+    ///      Set once in initialize(), never changed thereafter.
+    address private _originalXomToken;
+
+    /// @notice Penalty expiration timestamp per validator
+    /// @dev Audit M-02 Round 4: Penalties auto-expire after
+    ///      MAX_PENALTY_DURATION (30 days). After expiry, the
+    ///      rewardMultiplier resets to 0 (default = 100%).
+    mapping(address => uint256) public penaltyExpiresAt;
+
+    /// @notice Per-epoch per-validator transaction count cap
+    /// @dev Audit M-04 Round 4: Prevents BLOCKCHAIN_ROLE from
+    ///      inflating a single validator's tx count unboundedly.
+    mapping(uint256 => mapping(address => uint256))
+        private _epochTxnCount;
+
     /// @dev Storage gap for future upgrades.
-    ///      Slots used: 16 explicit + mappings (7 slot headers).
-    ///      Gap = 34 to leave headroom.
-    uint256[34] private __gap;
+    ///      Slots used: 18 explicit + mappings (9 slot headers).
+    ///      Gap = 30 to leave headroom.
+    uint256[30] private __gap;
 
     // ══════════════════════════════════════════════════════════════════
     //                              EVENTS
@@ -481,10 +534,28 @@ contract OmniValidatorRewards is
 
     /// @notice Emitted when a validator's role multiplier is changed
     /// @param validator Address of the validator
-    /// @param multiplierBps New multiplier in basis points
+    /// @param oldMultiplierBps Previous multiplier in basis points
+    /// @param newMultiplierBps New multiplier in basis points
     event RoleMultiplierUpdated(
         address indexed validator,
-        uint256 indexed multiplierBps
+        uint256 indexed oldMultiplierBps,
+        uint256 indexed newMultiplierBps
+    );
+
+    /// @notice Emitted when a penalty is applied with an expiration
+    /// @param validator Address of the penalized validator
+    /// @param multiplier Penalty multiplier (1-99)
+    /// @param expiresAt Timestamp when penalty auto-expires
+    event PenaltyApplied(
+        address indexed validator,
+        uint256 indexed multiplier,
+        uint256 indexed expiresAt
+    );
+
+    /// @notice Emitted when an expired penalty is auto-reset
+    /// @param validator Address whose penalty was reset
+    event PenaltyExpired(
+        address indexed validator
     );
 
     // ══════════════════════════════════════════════════════════════════
@@ -508,9 +579,6 @@ contract OmniValidatorRewards is
 
     /// @notice Insufficient contract balance
     error InsufficientBalance();
-
-    /// @notice Thrown when trying to withdraw reward tokens
-    error CannotWithdrawRewardToken();
 
     /// @notice Thrown when batch size exceeds maximum
     error BatchTooLarge();
@@ -544,8 +612,21 @@ contract OmniValidatorRewards is
     /// @notice Thrown when reward multiplier exceeds 100
     error MultiplierTooHigh();
 
-    /// @notice Thrown when role multiplier exceeds 20000 bps (2.0x)
+    /// @notice Thrown when role multiplier exceeds MAX_ROLE_MULTIPLIER
     error RoleMultiplierTooHigh();
+
+    /// @notice Thrown when reward multiplier is below base (1-9999)
+    /// @dev Audit L-02 Round 4: Values 1-9999 for roleMultiplier
+    ///      silently reduce rewards. Must be 0 (default) or >= 10000.
+    error MultiplierBelowBase();
+
+    /// @notice Thrown when per-epoch per-validator txn cap exceeded
+    /// @dev Audit M-04 Round 4
+    error TxnCapExceeded();
+
+    /// @notice Thrown when trying to withdraw XOM via emergency
+    /// @dev Audit H-01 Round 4: checks both current and original
+    error CannotWithdrawXOM();
 
     // ══════════════════════════════════════════════════════════════════
     //                           INITIALIZATION
@@ -589,6 +670,10 @@ contract OmniValidatorRewards is
             IOmniParticipation(participationAddr);
         omniCore = IOmniCore(omniCoreAddr);
 
+        // H-01 Round 4: Store original XOM address to prevent
+        // emergencyWithdraw bypass via contract reference swap
+        _originalXomToken = xomTokenAddr;
+
         // solhint-disable-next-line not-rely-on-time
         genesisTimestamp = block.timestamp;
         lastProcessedEpoch = 0;
@@ -623,7 +708,9 @@ contract OmniValidatorRewards is
     /**
      * @notice Record transaction processing by validator
      * @dev Called by BLOCKCHAIN_ROLE when validator processes
-     *      a transaction.
+     *      a transaction. M-04 Round 4: Per-epoch per-validator
+     *      cap prevents BLOCKCHAIN_ROLE from inflating any
+     *      single validator's transaction count.
      * @param validator Address of processing validator
      */
     function recordTransactionProcessing(
@@ -634,6 +721,15 @@ contract OmniValidatorRewards is
         }
 
         uint256 currentEpoch = getCurrentEpoch();
+        // M-04 Round 4: Per-epoch per-validator txn cap
+        if (
+            _epochTxnCount[currentEpoch][validator]
+                > MAX_TXN_PER_EPOCH_PER_VALIDATOR - 1
+        ) {
+            revert TxnCapExceeded();
+        }
+        ++_epochTxnCount[currentEpoch][validator];
+
         ++transactionsProcessed[validator][currentEpoch];
         ++epochTotalTransactions[currentEpoch];
 
@@ -645,7 +741,8 @@ contract OmniValidatorRewards is
     /**
      * @notice Record multiple transaction processing
      * @dev Capped at MAX_TX_BATCH (1000) per call to prevent
-     *      unbounded gas consumption.
+     *      unbounded gas consumption. M-04 Round 4: Also
+     *      enforces per-epoch per-validator cap.
      * @param validator Address of processing validator
      * @param count Number of transactions processed
      */
@@ -661,6 +758,18 @@ contract OmniValidatorRewards is
         }
 
         uint256 currentEpoch = getCurrentEpoch();
+        // M-04 Round 4: Per-epoch per-validator txn cap
+        uint256 current =
+            _epochTxnCount[currentEpoch][validator];
+        if (
+            current + count
+                > MAX_TXN_PER_EPOCH_PER_VALIDATOR
+        ) {
+            revert TxnCapExceeded();
+        }
+        _epochTxnCount[currentEpoch][validator] =
+            current + count;
+
         transactionsProcessed[validator][currentEpoch] += count;
         epochTotalTransactions[currentEpoch] += count;
 
@@ -680,8 +789,8 @@ contract OmniValidatorRewards is
         uint256 epoch
     )
         external
-        onlyRole(BLOCKCHAIN_ROLE)
         nonReentrant
+        onlyRole(BLOCKCHAIN_ROLE)
         whenNotPaused
     {
         uint256 currentEpoch = getCurrentEpoch();
@@ -698,6 +807,9 @@ contract OmniValidatorRewards is
         // Get active nodes (validators)
         address[] memory validators =
             omniCore.getActiveNodes();
+
+        // M-02 Round 4: Reset expired penalties
+        _resetExpiredPenalties(validators);
 
         // Count and distribute in single pass
         (
@@ -744,14 +856,35 @@ contract OmniValidatorRewards is
      *      of catch-up) to limit gas and reduce stale-state
      *      drift when processing historical epochs with
      *      current state (M-03 fix).
+     *
+     *      M-03 Round 4: Stale validator state during batch
+     *      processing is accepted behavior. The staleness
+     *      window is bounded to 100 seconds (50 epochs x 2s
+     *      blocks), which is negligible for weight calculation
+     *      accuracy. Validator heartbeats, stakes, and
+     *      participation scores change slowly relative to
+     *      this window.
+     *
+     *      L-03 Round 4: Memory allocation for getActiveNodes()
+     *      is uncapped but processing is capped at
+     *      MAX_VALIDATORS_PER_EPOCH (200). The memory cost is
+     *      O(n) where n = total validators, which is bounded
+     *      by the on-chain validator registration limit.
+     *
+     *      L-01 Round 4: Rounding dust from integer division
+     *      in _distributeRewards is a known acceptable behavior.
+     *      The dust is negligible (< 1 wei per validator per
+     *      epoch) and accumulates in the contract as surplus
+     *      balance, improving solvency over time.
+     *
      * @param count Number of epochs to process
      */
     function processMultipleEpochs(
         uint256 count
     )
         external
-        onlyRole(BLOCKCHAIN_ROLE)
         nonReentrant
+        onlyRole(BLOCKCHAIN_ROLE)
         whenNotPaused
     {
         // M-03: Cap batch size to limit state drift
@@ -772,6 +905,9 @@ contract OmniValidatorRewards is
                 MAX_VALIDATORS_PER_EPOCH
             );
         }
+
+        // M-02 Round 4: Reset expired penalties once per batch
+        _resetExpiredPenalties(validators);
 
         for (uint256 i = 0; i < count;) {
             nextEpoch = lastProcessedEpoch + 1;
@@ -820,11 +956,13 @@ contract OmniValidatorRewards is
      *      (H-04 fix).
      *      Updates totalOutstandingRewards for solvency
      *      tracking (M-02 Round 3 fix).
+     *      M-05 Round 4: Removed whenNotPaused. Rewards are
+     *      already earned; claiming is a withdrawal that should
+     *      always be available even during emergency pauses.
      */
     function claimRewards()
         external
         nonReentrant
-        whenNotPaused
     {
         uint256 amount = accumulatedRewards[msg.sender];
         if (amount == 0) revert NoRewardsToClaim();
@@ -991,8 +1129,12 @@ contract OmniValidatorRewards is
     /**
      * @notice Emergency withdraw stuck tokens (non-XOM only)
      * @dev Cannot withdraw XOM to prevent draining validator
-     *      rewards. SECURITY: Admin MUST be a multi-sig
-     *      wallet with timelock.
+     *      rewards. H-01 Round 4: checks both current xomToken
+     *      AND _originalXomToken to prevent bypass via
+     *      proposeContracts/applyContracts swapping xomToken
+     *      to a different address.
+     *      SECURITY: Admin MUST be a multi-sig wallet with
+     *      timelock.
      * @param token Token address to withdraw (must NOT be XOM)
      * @param amount Amount to withdraw
      * @param recipient Recipient address
@@ -1003,8 +1145,12 @@ contract OmniValidatorRewards is
         address recipient
     ) external onlyRole(DEFAULT_ADMIN_ROLE) {
         if (recipient == address(0)) revert ZeroAddress();
-        if (token == address(xomToken)) {
-            revert CannotWithdrawRewardToken();
+        // H-01 Round 4: Check both current and original XOM
+        if (
+            token == address(xomToken)
+                || token == _originalXomToken
+        ) {
+            revert CannotWithdrawXOM();
         }
         IERC20(token).safeTransfer(recipient, amount);
         emit EmergencyWithdrawal(token, amount, recipient);
@@ -1016,6 +1162,9 @@ contract OmniValidatorRewards is
      *      A multiplier of 0 is treated as 100% (default/full rewards).
      *      Values 1-100 set the explicit reward percentage.
      *      Setting to 1 effectively zeroes rewards (1% of normal).
+     *      M-02 Round 4: Penalty multipliers below 100 (i.e. penalties)
+     *      auto-expire after MAX_PENALTY_DURATION (30 days). Setting
+     *      multiplier to 0 or 100 (restoring) clears the expiry.
      * @param validator Address of the validator
      * @param multiplier Reward percentage (0=default/100%, 1-100)
      * @param reason Human-readable reason for the change
@@ -1029,6 +1178,18 @@ contract OmniValidatorRewards is
 
         uint256 oldMultiplier = rewardMultiplier[validator];
         rewardMultiplier[validator] = multiplier;
+
+        // M-02 Round 4: Set penalty expiration for actual penalties
+        if (multiplier != 0 && multiplier < 100) {
+            // solhint-disable-next-line not-rely-on-time
+            uint256 expiry = block.timestamp
+                + MAX_PENALTY_DURATION;
+            penaltyExpiresAt[validator] = expiry;
+            emit PenaltyApplied(validator, multiplier, expiry);
+        } else {
+            // Restoring to default or full — clear expiry
+            delete penaltyExpiresAt[validator];
+        }
 
         emit RewardMultiplierChanged(
             validator,
@@ -1046,7 +1207,9 @@ contract OmniValidatorRewards is
      *      10000 (1.0x). The bonus only applies when the validator
      *      has an active heartbeat (heartbeat score > 0), preventing
      *      offline nodes from earning the gateway premium.
-     *      Maximum 20000 (2.0x) to prevent abuse.
+     *      M-01 Round 4: Max capped to MAX_ROLE_MULTIPLIER (1.5x).
+     *      L-02 Round 4: Values 1-9999 rejected (silent no-ops that
+     *      would reduce rewards). Must be 0 (default) or >= 10000.
      * @param validator Address of the validator
      * @param multiplierBps Multiplier in basis points (10000 = 1.0x)
      */
@@ -1054,13 +1217,23 @@ contract OmniValidatorRewards is
         address validator,
         uint256 multiplierBps
     ) external onlyRole(ROLE_MANAGER_ROLE) {
-        if (multiplierBps > 20000) {
+        if (multiplierBps > MAX_ROLE_MULTIPLIER) {
             revert RoleMultiplierTooHigh();
         }
+        // L-02: Reject sub-base values (1-9999) which silently
+        // reduce rewards — must be 0 (default) or >= 10000
+        if (
+            multiplierBps != 0 && multiplierBps < 10000
+        ) {
+            revert MultiplierBelowBase();
+        }
 
+        uint256 oldMultiplier = roleMultiplier[validator];
         roleMultiplier[validator] = multiplierBps;
 
-        emit RoleMultiplierUpdated(validator, multiplierBps);
+        emit RoleMultiplierUpdated(
+            validator, oldMultiplier, multiplierBps
+        );
     }
 
     /**
@@ -1213,10 +1386,17 @@ contract OmniValidatorRewards is
         uint256 weight = _calculateValidatorWeight(
             validator, getCurrentEpoch()
         );
-        // Apply penalty multiplier
+        // Apply penalty multiplier (with expiry check)
         uint256 mult = rewardMultiplier[validator];
         if (mult != 0) {
-            weight = (weight * mult) / 100;
+            // M-02 R4: Check penalty expiry
+            uint256 expiry = penaltyExpiresAt[validator];
+            bool penaltyExpired = expiry != 0
+                // solhint-disable-next-line not-rely-on-time
+                && block.timestamp > expiry;
+            if (!penaltyExpired) {
+                weight = (weight * mult) / 100;
+            }
         }
         // Apply role bonus (heartbeat-gated)
         uint256 roleMul = roleMultiplier[validator];
@@ -1408,6 +1588,77 @@ contract OmniValidatorRewards is
     }
 
     /**
+     * @notice Reset expired penalties for validators
+     * @dev M-02 Round 4: Iterates validators and resets any
+     *      penalty whose expiry has passed. Called during epoch
+     *      processing to garbage-collect expired penalties.
+     * @param validators Array of validator addresses to check
+     */
+    function _resetExpiredPenalties(
+        address[] memory validators
+    ) internal {
+        uint256 len = validators.length;
+        uint256 cap = len > MAX_VALIDATORS_PER_EPOCH
+            ? MAX_VALIDATORS_PER_EPOCH
+            : len;
+
+        for (uint256 i = 0; i < cap;) {
+            address v = validators[i];
+            uint256 expiry = penaltyExpiresAt[v];
+            if (
+                expiry != 0
+                    // solhint-disable-next-line not-rely-on-time
+                    && block.timestamp > expiry
+            ) {
+                rewardMultiplier[v] = 0; // Reset to default
+                delete penaltyExpiresAt[v];
+                emit PenaltyExpired(v);
+            }
+            unchecked { ++i; }
+        }
+    }
+
+    /**
+     * @notice Distribute epoch rewards to validators
+     * @dev Updates totalOutstandingRewards for solvency
+     *      tracking (M-02 Round 3 fix). Emits per-validator
+     *      RewardDistributed events.
+     * @param validators Array of validator addresses
+     * @param weights Per-validator weight array
+     * @param totalWeight Sum of all weights
+     * @param epochReward Total reward for this epoch
+     * @param epoch Epoch number (for event emission)
+     */
+    function _distributeRewards(
+        address[] memory validators,
+        uint256[] memory weights,
+        uint256 totalWeight,
+        uint256 epochReward,
+        uint256 epoch
+    ) internal {
+        if (totalWeight == 0) return;
+
+        for (uint256 i = 0; i < validators.length;) {
+            if (weights[i] > 0) {
+                uint256 validatorReward =
+                    (epochReward * weights[i]) / totalWeight;
+                accumulatedRewards[validators[i]] +=
+                    validatorReward;
+                // M-02 R3: Track outstanding obligations
+                totalOutstandingRewards += validatorReward;
+
+                emit RewardDistributed(
+                    validators[i],
+                    epoch,
+                    validatorReward,
+                    weights[i]
+                );
+            }
+            unchecked { ++i; }
+        }
+    }
+
+    /**
      * @notice Compute active validator weights for an epoch
      * @dev Iterates at most MAX_VALIDATORS_PER_EPOCH
      *      validators to prevent gas DoS (H-03 fix).
@@ -1450,9 +1701,23 @@ contract OmniValidatorRewards is
                 uint256 mult =
                     rewardMultiplier[validators[i]];
                 if (mult != 0) {
-                    // Explicit multiplier set (1-100%)
-                    baseWeight =
-                        (baseWeight * mult) / 100;
+                    // M-02 R4: Check penalty expiry
+                    uint256 expiry =
+                        penaltyExpiresAt[validators[i]];
+                    if (
+                        expiry != 0
+                            // solhint-disable-next-line not-rely-on-time
+                            && block.timestamp > expiry
+                    ) {
+                        // Penalty expired: treat as default
+                        // (actual state reset in processEpoch
+                        // via _resetExpiredPenalties)
+                        // mult stays 0 logic = 100%
+                    } else {
+                        // Explicit multiplier set (1-100%)
+                        baseWeight =
+                            (baseWeight * mult) / 100;
+                    }
                 }
                 // else mult == 0 → default = 100%
 
@@ -1570,6 +1835,10 @@ contract OmniValidatorRewards is
      *      active/inactive (M-05 Round 1 fix). A validator
      *      who sent a heartbeat 1s ago scores higher than
      *      one whose heartbeat is 18s old.
+     *      I-03 Round 4: Accumulates full numerator before
+     *      dividing to minimize rounding precision loss.
+     *      Old: (hScore*60/100 + txScore*40/100) * 30/100
+     *      New: (hScore*60*30 + txScore*40*30) / 10000
      * @param validator Validator address
      * @param epoch Epoch being calculated
      * @return Activity component (0-30 points)
@@ -1580,60 +1849,24 @@ contract OmniValidatorRewards is
     ) internal view returns (uint256) {
         // M-05: Graduated heartbeat scoring
         uint256 hScore = _heartbeatScore(validator);
-        uint256 hComponent =
-            (hScore * HEARTBEAT_SUBWEIGHT) / 100;
 
         // Transaction processing component (40%)
         uint256 txScore = _txProcessingScore(
             validator, epoch
         );
-        uint256 txComponent =
-            (txScore * TX_PROCESSING_SUBWEIGHT) / 100;
 
-        // Combined activity score
-        uint256 activityScore = hComponent + txComponent;
+        // I-03 Round 4: Single division to preserve precision
+        // numerator = hScore * HEARTBEAT_SUBWEIGHT
+        //             * ACTIVITY_WEIGHT
+        //           + txScore * TX_PROCESSING_SUBWEIGHT
+        //             * ACTIVITY_WEIGHT
+        // denominator = 100 * 100 = 10000
+        uint256 numerator =
+            (hScore * HEARTBEAT_SUBWEIGHT * ACTIVITY_WEIGHT)
+            + (txScore * TX_PROCESSING_SUBWEIGHT
+                * ACTIVITY_WEIGHT);
 
-        return (activityScore * ACTIVITY_WEIGHT) / 100;
-    }
-
-    /**
-     * @notice Distribute epoch rewards to validators
-     * @dev Updates totalOutstandingRewards for solvency
-     *      tracking (M-02 Round 3 fix). Emits per-validator
-     *      RewardDistributed events.
-     * @param validators Array of validator addresses
-     * @param weights Per-validator weight array
-     * @param totalWeight Sum of all weights
-     * @param epochReward Total reward for this epoch
-     * @param epoch Epoch number (for event emission)
-     */
-    function _distributeRewards(
-        address[] memory validators,
-        uint256[] memory weights,
-        uint256 totalWeight,
-        uint256 epochReward,
-        uint256 epoch
-    ) internal {
-        if (totalWeight == 0) return;
-
-        for (uint256 i = 0; i < validators.length;) {
-            if (weights[i] > 0) {
-                uint256 validatorReward =
-                    (epochReward * weights[i]) / totalWeight;
-                accumulatedRewards[validators[i]] +=
-                    validatorReward;
-                // M-02 R3: Track outstanding obligations
-                totalOutstandingRewards += validatorReward;
-
-                emit RewardDistributed(
-                    validators[i],
-                    epoch,
-                    validatorReward,
-                    weights[i]
-                );
-            }
-            unchecked { ++i; }
-        }
+        return numerator / 10000;
     }
 
     /**
