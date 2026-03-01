@@ -83,10 +83,9 @@ module.exports = {
     fuji: {
       url: "http://127.0.0.1:40681/ext/bc/2TEeYGdsqvS3eLBk8vrd9bedJiPR7uyeUo1YChM75HtCf9TzFk/rpc",
       chainId: 131313,
-      accounts: [
-        // omnicoin-control-1 (from genesis, has funds)
-        "0x5145d2bcf3710ae4143b95aab6a7ff5cd954f78ddb9956b28ce86e4c7855e74b"
-      ],
+      accounts: process.env.DEPLOYER_PRIVATE_KEY
+        ? [process.env.DEPLOYER_PRIVATE_KEY]
+        : [],
       gasPrice: 25000000000,
       timeout: 60000
     },
@@ -94,10 +93,9 @@ module.exports = {
     omnicoinFuji: {
       url: "http://127.0.0.1:40681/ext/bc/2TEeYGdsqvS3eLBk8vrd9bedJiPR7uyeUo1YChM75HtCf9TzFk/rpc",
       chainId: 131313,
-      accounts: [
-        // omnicoin-control-1 (from genesis, has funds)
-        "0x5145d2bcf3710ae4143b95aab6a7ff5cd954f78ddb9956b28ce86e4c7855e74b"
-      ],
+      accounts: process.env.DEPLOYER_PRIVATE_KEY
+        ? [process.env.DEPLOYER_PRIVATE_KEY]
+        : [],
       gasPrice: 25000000000,
       timeout: 60000
     },
@@ -107,12 +105,31 @@ module.exports = {
     "fuji-c-chain": {
       url: "https://api.avax-test.network/ext/bc/C/rpc",
       chainId: 43113,
-      accounts: [
-        // omnicoin-control-1 (same deployer key as OmniCoin L1)
-        "0x5145d2bcf3710ae4143b95aab6a7ff5cd954f78ddb9956b28ce86e4c7855e74b"
-      ],
+      accounts: process.env.DEPLOYER_PRIVATE_KEY
+        ? [process.env.DEPLOYER_PRIVATE_KEY]
+        : [],
       gasPrice: 25000000000, // 25 Gwei
       timeout: 60000
+    },
+    // Avalanche Mainnet Subnet-EVM (Production)
+    mainnet: {
+      url: process.env.MAINNET_RPC_URL || "https://rpc.omnicoin.net",
+      chainId: 88008,
+      accounts: process.env.MAINNET_DEPLOYER_PRIVATE_KEY
+        ? [process.env.MAINNET_DEPLOYER_PRIVATE_KEY]
+        : [],
+      gasPrice: 25000000000,
+      timeout: 120000
+    },
+    // Avalanche Mainnet C-Chain (for Bootstrap.sol on mainnet)
+    "mainnet-c-chain": {
+      url: "https://api.avax.network/ext/bc/C/rpc",
+      chainId: 43114,
+      accounts: process.env.MAINNET_DEPLOYER_PRIVATE_KEY
+        ? [process.env.MAINNET_DEPLOYER_PRIVATE_KEY]
+        : [],
+      gasPrice: 25000000000,
+      timeout: 120000
     },
     cotiTestnet: {
       url: "https://testnet.coti.io/rpc",
