@@ -205,7 +205,7 @@ async function main() {
 
     if (configKey !== 'localhost' && configKey !== 'hardhat') {
         console.log('\n# Next Steps:');
-        console.log(`cd /home/rickc/OmniBazaar && ./scripts/sync-contract-addresses.sh ${configKey}`);
+        console.log(`cd ~/OmniBazaar && ./scripts/sync-contract-addresses.sh ${configKey}`);
     }
 }
 

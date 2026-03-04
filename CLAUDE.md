@@ -3,11 +3,11 @@
 ## 🚨 CRITICAL: BEFORE WRITING ANY CODE
 
 **MANDATORY STEPS:**
-1. **READ `/home/rickc/OmniBazaar/CURRENT_STATUS.md`** - Check what's already complete
+1. **READ `~/OmniBazaar/CURRENT_STATUS.md`** - Check what's already complete
 2. **SEARCH for existing implementations in this module** - Many features already exist!
 3. **VERIFY the task hasn't been done** - Don't duplicate work
-4. **UPDATE `/home/rickc/OmniBazaar/CURRENT_STATUS.md`** after completing work
-5. **UPDATE `/home/rickc/OmniBazaar/TODO.md`** to mark tasks complete
+4. **UPDATE `~/OmniBazaar/CURRENT_STATUS.md`** after completing work
+5. **UPDATE `~/OmniBazaar/TODO.md`** to mark tasks complete
 
 **COIN MODULE - ALREADY IMPLEMENTED:**
 - ✅ OmniCoin.sol with batchTransfer

@@ -4,7 +4,7 @@
  *              on the live Fuji (OmniCoin L1) deployment.
  *
  * Usage:
- *   cd /home/rickc/OmniBazaar/Coin
+ *   cd ~/OmniBazaar/Coin
  *   npx hardhat run scripts/e2e-fee-vault-fuji.js --network fuji
  *
  * Prerequisites:

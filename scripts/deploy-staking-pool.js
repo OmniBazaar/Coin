@@ -236,7 +236,7 @@ async function main() {
         console.log(`\n# Verify implementation contract:`);
         console.log(`npx hardhat verify --network ${saveNetworkName} ${implementationAddress}`);
         console.log(`\n# Sync addresses to all modules:`);
-        console.log(`cd /home/rickc/OmniBazaar && ./scripts/sync-contract-addresses.sh ${saveNetworkName}`);
+        console.log(`cd ~/OmniBazaar && ./scripts/sync-contract-addresses.sh ${saveNetworkName}`);
     }
 }
 

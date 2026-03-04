@@ -55,14 +55,14 @@
 
 **Option A: Interactive Terminal (Recommended for Development)**
 ```bash
-cd /home/rickc/OmniBazaar/Coin
+cd ~/OmniBazaar/Coin
 npx hardhat node
 # Leave this terminal running, open new terminal for next steps
 ```
 
 **Option B: Background Process (Automated)**
 ```bash
-cd /home/rickc/OmniBazaar/Coin
+cd ~/OmniBazaar/Coin
 nohup npx hardhat node > /tmp/hardhat.log 2>&1 &
 HARDHAT_PID=$!
 echo $HARDHAT_PID > /tmp/hardhat.pid
@@ -83,7 +83,7 @@ Expected: Should show process listening on port 8545, curl returns chain ID 1337
 **CRITICAL: Use `npx hardhat run` command, NOT `node`**
 
 ```bash
-cd /home/rickc/OmniBazaar/Coin
+cd ~/OmniBazaar/Coin
 npx hardhat run scripts/deploy-local.js --network localhost
 ```
 
@@ -108,7 +108,7 @@ OmniCore deployed to: 0xXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
 **CRITICAL: Run this after EVERY deployment**
 
 ```bash
-cd /home/rickc/OmniBazaar
+cd ~/OmniBazaar
 ./scripts/sync-contract-addresses.sh localhost
 ```
 
@@ -123,7 +123,7 @@ This script:
 
 **Check contract exists:**
 ```bash
-cd /home/rickc/OmniBazaar/Coin
+cd ~/OmniBazaar/Coin
 node scripts/query-validators.js
 ```
 
@@ -154,7 +154,7 @@ Should show blocks > 0 (deployments create blocks)
 Validators automatically load addresses from `Validator/src/config/omnicoin-integration.ts`
 
 ```bash
-cd /home/rickc/OmniBazaar/Validator
+cd ~/OmniBazaar/Validator
 
 # Start validators (addresses loaded from config automatically)
 npm run dev:validators 3
@@ -176,7 +176,7 @@ ENABLE_SYNTHETIC_TXS=true SYNTHETIC_TPS=5 npm run dev:validators 3
 
 ```bash
 # Stop validators first
-cd /home/rickc/OmniBazaar/Validator
+cd ~/OmniBazaar/Validator
 ./shutdown.sh --clean-registry
 
 # Stop Hardhat
@@ -193,7 +193,7 @@ pkill -f "hardhat node"
 
 ```bash
 # 1. Stop everything
-cd /home/rickc/OmniBazaar/Validator
+cd ~/OmniBazaar/Validator
 ./shutdown.sh --clean-registry
 pkill -f "hardhat node"
 sleep 2
@@ -203,7 +203,7 @@ lsof -i :8545 || echo "Port 8545 free"
 lsof -i :3001 || echo "Port 3001 free"
 
 # 3. Start Hardhat
-cd /home/rickc/OmniBazaar/Coin
+cd ~/OmniBazaar/Coin
 npx hardhat node > /tmp/hardhat.log 2>&1 &
 echo $! > /tmp/hardhat.pid
 sleep 5
@@ -212,15 +212,15 @@ sleep 5
 npx hardhat run scripts/deploy-local.js --network localhost
 
 # 5. Synchronize contract addresses (CRITICAL!)
-cd /home/rickc/OmniBazaar
+cd ~/OmniBazaar
 ./scripts/sync-contract-addresses.sh localhost
 
 # 6. Verify deployment
-cd /home/rickc/OmniBazaar/Coin
+cd ~/OmniBazaar/Coin
 node scripts/query-validators.js
 
 # 7. Start validators (addresses loaded from config automatically)
-cd /home/rickc/OmniBazaar/Validator
+cd ~/OmniBazaar/Validator
 npm run dev:validators 3
 ```
 
@@ -294,7 +294,7 @@ lsof -i :8545 || echo "Port clear"
 #!/bin/bash
 # Save as: test-deployment.sh
 
-COIN_DIR="/home/rickc/OmniBazaar/Coin"
+COIN_DIR="~/OmniBazaar/Coin"
 
 echo "=== Checking Hardhat ==="
 if lsof -i :8545 > /dev/null; then

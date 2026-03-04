@@ -16,7 +16,7 @@ This guide documents the exact steps to start Hardhat for the OmniCoin module. D
 ## Key Understanding: Workspace Setup
 
 The OmniBazaar project uses npm workspaces, which means:
-- All node_modules are hoisted to `/home/rickc/OmniBazaar/node_modules`
+- All node_modules are hoisted to `~/OmniBazaar/node_modules`
 - Individual modules (like Coin) do NOT have their own node_modules directories
 - This is why running `npx hardhat node` from Coin directory works - it finds hardhat in the parent
 
@@ -25,7 +25,7 @@ The OmniBazaar project uses npm workspaces, which means:
 ### 1. Navigate to the Coin Module
 
 ```bash
-cd /home/rickc/OmniBazaar/Coin
+cd ~/OmniBazaar/Coin
 ```
 
 ### 2. Start Hardhat Node
@@ -67,14 +67,14 @@ curl -X POST http://localhost:8545 \
 **Cause:** Trying to run hardhat from a location without access to node_modules
 
 **Solution:** 
-1. Ensure you're in the Coin directory: `/home/rickc/OmniBazaar/Coin`
+1. Ensure you're in the Coin directory: `~/OmniBazaar/Coin`
 2. Run `npx hardhat node` (npx will find hardhat in parent node_modules)
 
 ### Issue: "You are not inside a Hardhat project"
 
 **Cause:** Running hardhat from wrong directory
 
-**Solution:** Navigate to `/home/rickc/OmniBazaar/Coin` first
+**Solution:** Navigate to `~/OmniBazaar/Coin` first
 
 ### Issue: Port 8545 already in use
 
@@ -114,21 +114,21 @@ When starting the full test environment:
 
 1. **Start Hardhat** (this guide)
 2. **Deploy Contracts**: `npx hardhat run scripts/deploy.js --network localhost`
-3. **Start IPFS**: See `/home/rickc/OmniBazaar/Storage/IPFS_SETUP_GUIDE.md`
-4. **Start Validator**: See `/home/rickc/OmniBazaar/Validator/VALIDATOR_SETUP_GUIDE.md`
+3. **Start IPFS**: See `~/OmniBazaar/Storage/IPFS_SETUP_GUIDE.md`
+4. **Start Validator**: See `~/OmniBazaar/Validator/VALIDATOR_SETUP_GUIDE.md`
 
 ## Quick Start Script
 
-Create this helper script at `/home/rickc/OmniBazaar/start-hardhat.sh`:
+Create this helper script at `~/OmniBazaar/start-hardhat.sh`:
 
 ```bash
 #!/bin/bash
-cd /home/rickc/OmniBazaar/Coin
+cd ~/OmniBazaar/Coin
 echo "Starting Hardhat node..."
 npx hardhat node
 ```
 
-Make it executable: `chmod +x /home/rickc/OmniBazaar/start-hardhat.sh`
+Make it executable: `chmod +x ~/OmniBazaar/start-hardhat.sh`
 
 ## Troubleshooting Commands
 
@@ -154,4 +154,4 @@ npx hardhat console --network localhost
 - Default block gas limit is 30M, adjustable in hardhat.config.js
 
 ---
-**Remember:** Always start Hardhat from the `/home/rickc/OmniBazaar/Coin` directory!
+**Remember:** Always start Hardhat from the `~/OmniBazaar/Coin` directory!

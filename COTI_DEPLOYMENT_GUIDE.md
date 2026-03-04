@@ -187,7 +187,7 @@ npx hardhat run scripts/deploy-coti-mainnet-uups.ts --network cotiMainnet
 ### Method 1: Automated Workflow (Recommended)
 
 ```bash
-cd /home/rickc/OmniBazaar/Coin
+cd ~/OmniBazaar/Coin
 ./scripts/deploy-workflow.sh
 ```
 
@@ -201,7 +201,7 @@ cd /home/rickc/OmniBazaar/Coin
 ### Method 2: Manual Step-by-Step
 
 ```bash
-cd /home/rickc/OmniBazaar/Coin
+cd ~/OmniBazaar/Coin
 
 # 1. Check balance
 npx hardhat run scripts/check-balance.js --network cotiTestnet
@@ -210,7 +210,7 @@ npx hardhat run scripts/check-balance.js --network cotiTestnet
 npx hardhat run scripts/deploy-coti-privacy.ts --network cotiTestnet
 
 # 3. Sync addresses
-cd /home/rickc/OmniBazaar
+cd ~/OmniBazaar
 ./scripts/sync-contract-addresses.sh coti-testnet
 
 # 4. Verify
@@ -351,7 +351,7 @@ COTI_DEPLOYER_PRIVATE_KEY=0x6a0f8f2b1b862d4489df10b6699dfa06b4897f7ef66dede182b5
 
 1. **Start Validator with COTI support:**
    ```bash
-   cd /home/rickc/OmniBazaar/Validator
+   cd ~/OmniBazaar/Validator
    npm run launch:service-node 1
    ```
 
@@ -362,7 +362,7 @@ COTI_DEPLOYER_PRIVATE_KEY=0x6a0f8f2b1b862d4489df10b6699dfa06b4897f7ef66dede182b5
 
 3. **Test via WebApp:**
    ```bash
-   cd /home/rickc/OmniBazaar/WebApp
+   cd ~/OmniBazaar/WebApp
    npm run dev
    # Navigate to DEX page
    # Toggle "Private Trading" option
@@ -391,7 +391,7 @@ npx hardhat run scripts/check-balance.js --network cotiTestnet
 
 ```bash
 # Manually run sync
-cd /home/rickc/OmniBazaar
+cd ~/OmniBazaar
 ./scripts/sync-contract-addresses.sh coti-testnet --validate
 ```
 
@@ -444,7 +444,7 @@ timeout: 180000  // 3 minutes
 **Ready to Deploy?**
 
 ```bash
-cd /home/rickc/OmniBazaar/Coin
+cd ~/OmniBazaar/Coin
 ./scripts/deploy-workflow.sh
 ```
 

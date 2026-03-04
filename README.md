@@ -180,10 +180,10 @@ OmniBazaar follows a **trustless-by-default** design: validators handle off-chai
 
 ```bash
 # From OmniBazaar root directory
-cd /home/rickc/OmniBazaar
+cd ~/OmniBazaar
 npm install
 
-# Dependencies managed at root level in /home/rickc/OmniBazaar/node_modules
+# Dependencies managed at root level in ~/OmniBazaar/node_modules
 ```
 
 Create a `.env` file:
@@ -298,7 +298,7 @@ The Coin module integrates with the broader OmniBazaar stack:
 
 ```bash
 # Cross-module integration tests
-cd /home/rickc/OmniBazaar
+cd ~/OmniBazaar
 npm run test:integration
 ```
 

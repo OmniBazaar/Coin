@@ -358,7 +358,7 @@ All 258 Low/Informational findings individually verified (2026-02-24 22:23 UTC).
 ## Build & Test Commands
 
 ```bash
-cd /home/rickc/OmniBazaar/Coin
+cd ~/OmniBazaar/Coin
 
 # Compile
 npx hardhat compile
@@ -376,7 +376,7 @@ npx hardhat run scripts/deploy.js --network fuji
 npx hardhat run scripts/upgrade-omnicore.ts --network fuji
 
 # Sync addresses to all modules
-cd /home/rickc/OmniBazaar && ./scripts/sync-contract-addresses.sh fuji
+cd ~/OmniBazaar && ./scripts/sync-contract-addresses.sh fuji
 ```
 
 ---

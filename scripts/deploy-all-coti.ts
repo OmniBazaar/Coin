@@ -135,7 +135,7 @@ async function main() {
   console.log("\n" + "═".repeat(70));
   console.log("\n🎉 ALL CONTRACTS DEPLOYED!");
   console.log("\n📋 Next: Sync addresses to all modules");
-  console.log("   cd /home/rickc/OmniBazaar");
+  console.log("   cd ~/OmniBazaar");
   console.log("   ./scripts/sync-contract-addresses.sh coti-testnet");
   console.log("\n" + "═".repeat(70) + "\n");
 }

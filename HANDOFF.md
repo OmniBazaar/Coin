@@ -22,14 +22,14 @@ The Coin module contains all Solidity smart contracts for the OmniBazaar platfor
 - **LegacyBalanceClaim.sol** - Migration for legacy users
 
 ### Critical Paths
-- **Contracts:** `/home/rickc/OmniBazaar/Coin/contracts/`
-- **Tests:** `/home/rickc/OmniBazaar/Coin/test/`
-- **Scripts:** `/home/rickc/OmniBazaar/Coin/scripts/`
-- **Deployments:** `/home/rickc/OmniBazaar/Coin/deployments/`
+- **Contracts:** `~/OmniBazaar/Coin/contracts/`
+- **Tests:** `~/OmniBazaar/Coin/test/`
+- **Scripts:** `~/OmniBazaar/Coin/scripts/`
+- **Deployments:** `~/OmniBazaar/Coin/deployments/`
 
 ### Build & Test Commands
 ```bash
-cd /home/rickc/OmniBazaar/Coin
+cd ~/OmniBazaar/Coin
 npx hardhat compile          # Compile all contracts
 npx solhint contracts/*.sol  # Lint contracts
 npm test                     # Run all tests (26/27 passing)
@@ -47,7 +47,7 @@ npx hardhat run scripts/upgrade-omnicore.ts --network fuji
 npx hardhat run scripts/deploy-bootstrap.js --network fuji-c-chain
 
 # Sync addresses after deployment (REQUIRED)
-cd /home/rickc/OmniBazaar && ./scripts/sync-contract-addresses.sh fuji
+cd ~/OmniBazaar && ./scripts/sync-contract-addresses.sh fuji
 ```
 
 ### Network Configuration
@@ -153,8 +153,8 @@ This is unrelated to the changes made - the artifact doesn't exist in the projec
 
 ### Reference Documentation
 - Bootstrap.sol: `Coin/contracts/Bootstrap.sol` (node discovery)
-- Node discovery design: `/home/rickc/OmniBazaar/BOOTSTRAP_DISCOVERY_REFERENCE.md`
-- FIX_FAKES.md: `/home/rickc/OmniBazaar/Validator/FIX_FAKES.md`
+- Node discovery design: `~/OmniBazaar/BOOTSTRAP_DISCOVERY_REFERENCE.md`
+- FIX_FAKES.md: `~/OmniBazaar/Validator/FIX_FAKES.md`
 
 ---
 

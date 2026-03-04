@@ -111,7 +111,7 @@ async function main() {
 
   // Run contract address sync
   console.log('📝 Run this to sync addresses across modules:');
-  console.log('   cd /home/rickc/OmniBazaar && ./scripts/sync-contract-addresses.sh fuji\n');
+  console.log('   cd ~/OmniBazaar && ./scripts/sync-contract-addresses.sh fuji\n');
 }
 
 main()

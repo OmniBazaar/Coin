@@ -92,7 +92,7 @@ async function main() {
   }
   
   // TODO: Future production deployment tasks:
-  // - Load legacy users from /home/rickc/OmniBazaar/Users/omnicoin_usernames_balances.json
+  // - Load legacy users from ~/OmniBazaar/Users/omnicoin_usernames_balances.json
   // - Mint tokens according to legacy balances
   // - Register legacy usernames in UsernameRegistry
   // - Set up ODDAO treasury address

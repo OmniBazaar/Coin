@@ -263,7 +263,7 @@ async function main(): Promise<void> {
         console.log(`\n# Verify implementation contract:`);
         console.log(`npx hardhat verify --network ${networkName} ${implementationAddress}`);
         console.log(`\n# Sync addresses to all modules:`);
-        console.log(`cd /home/rickc/OmniBazaar && ./scripts/sync-contract-addresses.sh ${networkName}`);
+        console.log(`cd ~/OmniBazaar && ./scripts/sync-contract-addresses.sh ${networkName}`);
     }
 }
 

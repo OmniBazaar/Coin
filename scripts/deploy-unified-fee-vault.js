@@ -327,7 +327,7 @@ async function main() {
         );
         console.log('\n# Sync addresses to all modules:');
         console.log(
-            `cd /home/rickc/OmniBazaar && ` +
+            `cd ~/OmniBazaar && ` +
             `./scripts/sync-contract-addresses.sh ${configKey}`
         );
         console.log(
