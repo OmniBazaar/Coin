@@ -1,0 +1,223 @@
+OmniCoin Smart Contracts — Top 20 Priority for Human Security Audit
+====================================================================
+
+Ranked by what users and investors most need verified: fund safety,
+token integrity, governance soundness, and systemic risk.
+
+Criteria: direct fund custody, supply control, upgradeability risk,
+total value at risk, user-facing exposure, complexity/attack surface,
+and dependency (contracts other contracts rely on for security).
+
+--------------------------------------------------------------------
+
+ 1. OmniCoin.sol                                          (227 lines)
+    contracts/OmniCoin.sol
+
+    THE XOM TOKEN. Every user and investor holds it. MINTER_ROLE can
+    mint up to the 16.6B cap. BURNER_ROLE can burn from addresses.
+    Pausable freezes all transfers. This is the foundation — if it
+    has a flaw, everything built on top is compromised.
+
+ 2. OmniCore.sol                                        (1,055 lines)
+    contracts/OmniCore.sol
+
+    CENTRAL PROTOCOL HUB. UUPS-upgradeable. Validator registry,
+    XOM staking/unstaking, fee distribution (70/20/10), service
+    registry, merkle root submissions. An admin upgrade replaces
+    all core protocol logic. Holds all staked XOM.
+
+ 3. OmniRewardManager.sol                               (2,046 lines)
+    contracts/OmniRewardManager.sol
+
+    HIGHEST VALUE AT RISK. Custodies up to ~12.47 billion XOM across
+    four pre-minted reward pools (welcome bonus, referral, first sale,
+    validator rewards). UUPS-upgradeable — a malicious upgrade could
+    drain the largest single pool of XOM in the entire system.
+
+ 4. DEXSettlement.sol                                    (2,058 lines)
+    contracts/dex/DEXSettlement.sol
+
+    ALL DEX TRADES SETTLE HERE. IntentCollateral escrow locks real
+    tokens. Dual EIP-712 signature verification. Commit-reveal MEV
+    protection. Nonce bitmap for concurrent orders. Second-largest
+    contract. Every DEX user's funds flow through this.
+
+ 5. MinimalEscrow.sol                                   (1,148 lines)
+    contracts/MinimalEscrow.sol
+
+    MARKETPLACE ESCROW. Locks buyer XOM (or pXOM) for every
+    marketplace purchase. 2-of-3 multisig release (buyer, seller,
+    arbitrator). Supports both public and private (COTI MPC) escrow.
+    Direct custody of user funds for the duration of every trade.
+
+ 6. OmniBridge.sol                                        (925 lines)
+    contracts/OmniBridge.sol
+
+    CROSS-CHAIN BRIDGE. Burns XOM on source chain, mints on
+    destination via Avalanche Warp Messaging. Bridge hacks are
+    historically the #1 DeFi loss vector (Ronin, Wormhole, Nomad).
+    UUPS-upgradeable. Incorrect execution = permanent token loss.
+
+ 7. PrivateOmniCoin.sol                                   (968 lines)
+    contracts/PrivateOmniCoin.sol
+
+    PRIVACY TOKEN (pXOM). UUPS-upgradeable. COTI V2 MPC encrypted
+    balances. Dual public/private balance tracking. MINTER_ROLE
+    inflation risk. Shadow ledger for emergency recovery. Complex
+    cryptographic integration increases attack surface.
+
+ 8. OmniPrivacyBridge.sol                                 (642 lines)
+    contracts/OmniPrivacyBridge.sol
+
+    XOM-to-pXOM CONVERSION BRIDGE. Locks real XOM as collateral for
+    outstanding pXOM supply. UUPS-upgradeable. If the locked XOM can
+    be drained, pXOM becomes unbacked. Solvency tracking is critical.
+
+ 9. StakingRewardPool.sol                               (1,035 lines)
+    contracts/StakingRewardPool.sol
+
+    STAKING REWARDS. UUPS-upgradeable. Holds XOM reward pool. Users
+    claim accrued rewards (5-12% APR). Per-second drip calculation.
+    Users and investors care deeply that staking yields are calculated
+    correctly and funds cannot be drained.
+
+10. OmniGovernance.sol                                  (1,017 lines)
+    contracts/OmniGovernance.sol
+
+    DAO GOVERNANCE. UUPS-upgradeable (self-referential — governance
+    can upgrade itself). A successful malicious proposal can upgrade
+    ANY UUPS contract in the ecosystem. This is the master key.
+    Flash-loan protection, quorum rules, and voting power calculation
+    must be bulletproof.
+
+11. MintController.sol                                    (465 lines)
+    contracts/MintController.sol
+
+    SUPPLY GATE. Wraps OmniCoin's mint() with hard cap enforcement
+    and per-epoch rate limiting. If bypassed or miscalculated, XOM
+    supply can be inflated beyond 16.6B. Non-upgradeable (good), but
+    the epoch reduction math and rate limits must be verified.
+
+12. UnifiedFeeVault.sol                                 (1,542 lines)
+    contracts/UnifiedFeeVault.sol
+
+    ALL PROTOCOL FEES AGGREGATE HERE. UUPS-upgradeable. Multi-token
+    (XOM, USDC, any ERC-20). Pull-pattern distribution to ODDAO,
+    staking pool, protocol treasury. Deposit whitelist. 48-hour
+    timelock on recipient changes. Revenue integrity for investors.
+
+13. OmniValidatorRewards.sol                            (1,972 lines)
+    contracts/OmniValidatorRewards.sol
+
+    BLOCK REWARD DISTRIBUTION. UUPS-upgradeable. Distributes
+    15.228 XOM/block (decreasing 1%/epoch over 40 years) to
+    validators weighted by participation score. The economic backbone
+    that incentivizes network security.
+
+14. OmniTimelockController.sol                            (339 lines)
+    contracts/OmniTimelockController.sol
+
+    GOVERNANCE SAFETY GATE. Non-upgradeable. Enforces 48-hour delay
+    for routine operations and 7-day delay for critical operations
+    (upgrades, role changes, pause). If this has a bypass, all
+    timelock protections across the protocol are void.
+
+15. EmergencyGuardian.sol                                 (533 lines)
+    contracts/EmergencyGuardian.sol
+
+    LAST LINE OF DEFENSE. Non-upgradeable. 1-of-N guardian instant
+    pause. 3-of-N cancel of queued timelock operations. If guardians
+    can be circumvented, the emergency response system fails.
+    Epoch-based signature invalidation must be verified.
+
+16. OmniAccount.sol                                       (853 lines)
+    contracts/account-abstraction/OmniAccount.sol
+
+    ERC-4337 SMART WALLET. Every user's assets live here. Guardian
+    social recovery (48-hour delay). Session keys with scoped
+    permissions. Daily spending limits. If the signature validation
+    or recovery logic has a flaw, individual user funds are at risk.
+
+17. OmniParticipation.sol                               (1,562 lines)
+    contracts/OmniParticipation.sol
+
+    VALIDATOR ELIGIBILITY. UUPS-upgradeable. 100-point scoring
+    system across 9 components. Determines who can be a validator
+    (score >= 50). Score manipulation = governance capture =
+    control over the network. Investors need confidence this
+    cannot be gamed.
+
+18. OmniRegistration.sol                                (2,654 lines)
+    contracts/OmniRegistration.sol
+
+    USER ONBOARDING & SYBIL RESISTANCE. UUPS-upgradeable. Largest
+    contract (2,654 lines). Multi-validator KYC attestation (3-of-5).
+    Rate limiting. Bonus eligibility flags. If Sybil resistance
+    fails, welcome/referral bonuses (billions of XOM) get drained.
+
+19. OmniPriceOracle.sol                                 (1,440 lines)
+    contracts/oracle/OmniPriceOracle.sol
+
+    PRICE FEEDS. UUPS-upgradeable. Validator-submitted prices with
+    median consensus. Cross-validates against Chainlink. TWAP and
+    circuit breakers. Manipulated prices enable DEX exploitation,
+    under-collateralized borrows, and incorrect liquidations.
+
+20. LegacyBalanceClaim.sol                                (889 lines)
+    contracts/LegacyBalanceClaim.sol
+
+    MIGRATION OF REAL USER MONEY. 4,735 legacy OmniCoin V1 users
+    claim V2 balances (up to 4.13B XOM total). M-of-N validator
+    signatures per claim. Uses plain Ownable (not Ownable2Step) —
+    single-point-of-failure for owner key compromise. Time-limited
+    (2 years) but affects real people's real balances.
+
+--------------------------------------------------------------------
+
+Honorable Mentions (Next 5 — Strong Candidates for Audit Expansion)
+--------------------------------------------------------------------
+
+21. OmniArbitration.sol (1,827 lines) — UUPS. Dispute resolution
+    with real funds at stake. Arbitrator voting, appeal system.
+
+22. PrivateDEX.sol (1,132 lines) — UUPS. Encrypted order collateral
+    via COTI MPC. Novel cryptographic trading system.
+
+23. OmniBonding.sol (1,110 lines) — Uses plain Ownable (NOT
+    Ownable2Step). Contract explicitly warns owner MUST be multisig.
+    Single-EOA owner = critical risk. Holds stablecoins + XOM.
+
+24. OmniEntryPoint.sol (749 lines) — ERC-4337 singleton. Manages
+    deposit balances for all accounts and paymasters.
+
+25. PrivateWBTC.sol (722 lines) — UUPS. Holds real WBTC in custody
+    (~$90K+ per token). Highest dollar-value-per-token custody risk.
+
+--------------------------------------------------------------------
+
+Notes for Auditors
+--------------------------------------------------------------------
+
+- 15 of the top 20 are UUPS-upgradeable. Verify that upgrade
+  authority flows through OmniGovernance -> OmniTimelockController
+  with proper delays. Any contract where admin can upgrade without
+  timelock is a critical finding.
+
+- The governance chain is:
+  OmniGovernance (propose) -> OmniTimelockController (48h/7d delay)
+  -> target contract. EmergencyGuardian provides fast-path pause.
+
+- Three contracts use plain Ownable instead of Ownable2Step:
+  LegacyBalanceClaim (#20), OmniBonding (#23), OmniPaymaster.
+  Single-key compromise risk is elevated for these.
+
+- COTI V2 MPC contracts (PrivateOmniCoin, PrivateDEX,
+  PrivateDEXSettlement, PrivateWBTC/WETH/USDC) depend on the MPC
+  precompile at 0x...0064. Auditors should verify behavior when
+  MPC is unavailable or returns unexpected values.
+
+- Total Solidity across all 54 production contracts: ~55,000 lines.
+  The top 20 alone account for ~23,000 lines.
+
+--------------------------------------------------------------------
+Generated: 2026-03-05
