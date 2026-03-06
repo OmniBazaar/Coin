@@ -6,7 +6,8 @@ import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol
 import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
 import {ECDSA} from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 import {MessageHashUtils} from "@openzeppelin/contracts/utils/cryptography/MessageHashUtils.sol";
-import {OmniCoin} from "./OmniCoin.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 
 /**
  * @title LegacyBalanceClaim
@@ -17,10 +18,19 @@ import {OmniCoin} from "./OmniCoin.sol";
  *
  * Architecture:
  * - Stores 4,735 legacy user balances indexed by username hash
+ * - Contract is PRE-FUNDED with 4.13B XOM by the deployer at setup
+ * - Claims are fulfilled via transfer (NOT minting) from the contract's balance
  * - Backend validator validates username/password off-chain
  * - Validator signs a proof that is verified on-chain via ECDSA
  * - Each username can only claim once
  * - Reserved usernames cannot be used for new signups
+ *
+ * Trustless Design:
+ * - NO minting authority required — all tokens pre-funded at genesis
+ * - Eliminates infinite-mint attack vector entirely
+ * - Contract balance is transparently verifiable on-chain
+ * - Aligns with OmniCoin's pre-mint-everything architecture
+ *   (see OmniRewardManager for the same pattern)
  *
  * Security:
  * - Passwords NEVER sent to blockchain (validated off-chain)
@@ -38,6 +48,8 @@ import {OmniCoin} from "./OmniCoin.sol";
  * - Migration finalization requires a 2-year timelock
  */
 contract LegacyBalanceClaim is Ownable, ReentrancyGuard, Pausable {
+    using SafeERC20 for IERC20;
+
     // ──────────────────────────────────────────────────────────────
     // Constants
     // ──────────────────────────────────────────────────────────────
@@ -46,10 +58,10 @@ contract LegacyBalanceClaim is Ownable, ReentrancyGuard, Pausable {
     /// @dev 730 days = 2 years
     uint256 public constant MIGRATION_DURATION = 730 days;
 
-    /// @notice Maximum total XOM that can be minted through legacy migration
+    /// @notice Maximum total XOM that can be distributed through legacy migration
     /// @dev 4.13 billion XOM (genesis circulating supply) with 18 decimals.
-    ///      This caps total minting via this contract to prevent unbounded inflation
-    ///      even if the owner loads more balances than expected.
+    ///      This caps total distribution via this contract to prevent exceeding
+    ///      the pre-funded balance even if the owner loads more balances than expected.
     uint256 public constant MAX_MIGRATION_SUPPLY = 4_130_000_000e18;
 
     /// @notice Maximum number of validators allowed in the set
@@ -59,8 +71,8 @@ contract LegacyBalanceClaim is Ownable, ReentrancyGuard, Pausable {
     // Immutable variables
     // ──────────────────────────────────────────────────────────────
 
-    /// @notice Reference to OmniCoin token contract
-    OmniCoin public immutable OMNI_COIN;
+    /// @notice Reference to OmniCoin token contract (IERC20 — only transfers needed)
+    IERC20 public immutable OMNI_COIN;
 
     /// @notice Timestamp when this contract was deployed
     /// @dev Used to enforce the migration timelock
@@ -110,9 +122,9 @@ contract LegacyBalanceClaim is Ownable, ReentrancyGuard, Pausable {
     /// @notice Number of legacy usernames reserved
     uint256 public reservedCount;
 
-    /// @notice Total amount of XOM actually minted through this contract
+    /// @notice Total amount of XOM actually distributed through this contract
     /// @dev Tracked separately from totalClaimed to enforce MAX_MIGRATION_SUPPLY
-    uint256 public totalMinted;
+    uint256 public totalDistributed;
 
     // ──────────────────────────────────────────────────────────────
     // Events
@@ -243,9 +255,9 @@ contract LegacyBalanceClaim is Ownable, ReentrancyGuard, Pausable {
         uint256 deadline
     );
 
-    /// @notice Thrown when minting would exceed the migration supply cap
-    /// @param requested Amount of XOM requested to mint
-    /// @param remaining Remaining mintable amount under the cap
+    /// @notice Thrown when distribution would exceed the migration supply cap
+    /// @param requested Amount of XOM requested to distribute
+    /// @param remaining Remaining distributable amount under the cap
     error MigrationSupplyExceeded(
         uint256 requested,
         uint256 remaining
@@ -280,7 +292,7 @@ contract LegacyBalanceClaim is Ownable, ReentrancyGuard, Pausable {
 
         _validateValidatorSet(_validators, _requiredSignatures);
 
-        OMNI_COIN = OmniCoin(_omniCoin);
+        OMNI_COIN = IERC20(_omniCoin);
         DEPLOYED_AT = block.timestamp; // solhint-disable-line not-rely-on-time
 
         for (uint256 i = 0; i < _validators.length; ++i) {
@@ -374,7 +386,7 @@ contract LegacyBalanceClaim is Ownable, ReentrancyGuard, Pausable {
      *      validators. Each validator independently verifies the user's
      *      legacy credentials off-chain, then signs a proof. The signed
      *      message includes a per-user nonce to prevent replay attacks.
-     *      Uses CEI pattern: state updates before external mint call.
+     *      Uses CEI pattern: state updates before external transfer call.
      *      Protected by Pausable for emergency halting and ReentrancyGuard.
      * @param username Legacy username
      * @param ethAddress New Ethereum address to receive tokens
@@ -404,12 +416,12 @@ contract LegacyBalanceClaim is Ownable, ReentrancyGuard, Pausable {
 
         uint256 amount = legacyBalances[usernameHash];
 
-        // Enforce migration supply cap before minting
-        uint256 newTotalMinted = totalMinted + amount;
-        if (newTotalMinted > MAX_MIGRATION_SUPPLY) {
+        // Enforce migration supply cap before transfer
+        uint256 newTotalDistributed = totalDistributed + amount;
+        if (newTotalDistributed > MAX_MIGRATION_SUPPLY) {
             revert MigrationSupplyExceeded(
                 amount,
-                MAX_MIGRATION_SUPPLY - totalMinted
+                MAX_MIGRATION_SUPPLY - totalDistributed
             );
         }
 
@@ -417,12 +429,12 @@ contract LegacyBalanceClaim is Ownable, ReentrancyGuard, Pausable {
         claimedBy[usernameHash] = ethAddress;
         legacyBalances[usernameHash] = 0; // Gas refund
         totalClaimed += amount;
-        totalMinted = newTotalMinted;
+        totalDistributed = newTotalDistributed;
         ++uniqueClaimants;
         ++claimNonces[ethAddress]; // Consume the nonce
 
-        // Mint tokens to user's new Ethereum address
-        OMNI_COIN.mint(ethAddress, amount);
+        // Transfer pre-funded tokens to user's new Ethereum address
+        OMNI_COIN.safeTransfer(ethAddress, amount);
 
         emit BalanceClaimed(username, ethAddress, amount);
 
@@ -433,7 +445,7 @@ contract LegacyBalanceClaim is Ownable, ReentrancyGuard, Pausable {
      * @notice Finalize migration and handle unclaimed balances
      * @dev Can only be called by owner after the migration period
      *      (MIGRATION_DURATION from deployment). Unclaimed balances
-     *      are minted to the specified recipient (ODDAO or burn).
+     *      are transferred to the specified recipient (ODDAO or burn).
      * @param unclaimedRecipient Address to send unclaimed balances
      */
     function finalizeMigration(
@@ -456,18 +468,18 @@ contract LegacyBalanceClaim is Ownable, ReentrancyGuard, Pausable {
         migrationFinalized = true;
 
         if (unclaimed > 0) {
-            // M-01: Enforce migration supply cap on finalization mint
-            uint256 newTotalMinted = totalMinted + unclaimed;
-            if (newTotalMinted > MAX_MIGRATION_SUPPLY) {
+            // M-01: Enforce migration supply cap on finalization transfer
+            uint256 newTotalDistributed = totalDistributed + unclaimed;
+            if (newTotalDistributed > MAX_MIGRATION_SUPPLY) {
                 revert MigrationSupplyExceeded(
                     unclaimed,
-                    MAX_MIGRATION_SUPPLY - totalMinted
+                    MAX_MIGRATION_SUPPLY - totalDistributed
                 );
             }
-            totalMinted = newTotalMinted;
+            totalDistributed = newTotalDistributed;
 
-            // Mint unclaimed balance to specified recipient
-            OMNI_COIN.mint(unclaimedRecipient, unclaimed);
+            // Transfer unclaimed balance to specified recipient
+            OMNI_COIN.safeTransfer(unclaimedRecipient, unclaimed);
         }
 
         emit MigrationFinalized(

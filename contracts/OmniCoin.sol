@@ -25,7 +25,7 @@ import {
  * - Pausable for emergency stops
  * - ERC20Permit for gasless approvals (EIP-2612)
  * - ERC20Votes for on-chain governance delegation and checkpointed voting power
- * - Initial genesis supply of 4.13 billion tokens for legacy migration
+ * - Full genesis supply of 16.6 billion tokens (pre-minted to deployer for pool funding)
  *
  * Governance:
  * - Token holders must call delegate(self) to activate voting power
@@ -53,10 +53,14 @@ contract OmniCoin is
     /// @notice Role identifier for burning permissions
     bytes32 public constant BURNER_ROLE = keccak256("BURNER_ROLE");
 
-    /// @notice Initial token supply: 4.13 billion XOM genesis tokens for migration
-    uint256 public constant INITIAL_SUPPLY = 4_130_000_000 * 10 ** 18;
+    /// @notice Full genesis supply: 16.6 billion XOM pre-minted to deployer
+    /// @dev All tokens are created at genesis. The deployer distributes them
+    ///      to pool contracts (LegacyBalanceClaim, OmniRewardManager,
+    ///      StakingRewardPool) and then revokes MINTER_ROLE permanently.
+    ///      This eliminates infinite-mint attack vectors.
+    uint256 public constant INITIAL_SUPPLY = 16_600_000_000 * 10 ** 18;
 
-    /// @notice Maximum lifetime supply: 16.6 billion XOM (genesis + emissions over 40 years)
+    /// @notice Maximum lifetime supply: 16.6 billion XOM (all minted at genesis)
     uint256 public constant MAX_SUPPLY = 16_600_000_000 * 10 ** 18;
 
     // Immutable state variables

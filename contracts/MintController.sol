@@ -1,6 +1,34 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.24;
 
+// solhint-disable
+
+/**
+ * @title MintController
+ * @author OmniCoin Development Team
+ *
+ * @notice DEPRECATED — DO NOT DEPLOY
+ *
+ * @dev This contract was written under an incorrect architectural assumption
+ *      that XOM tokens would be minted gradually over 40 years by trusted
+ *      validators. OmniCoin's production architecture instead PRE-MINTS ALL
+ *      16.6 billion XOM at genesis and distributes them via transfers from
+ *      pre-funded pool contracts (OmniRewardManager, LegacyBalanceClaim,
+ *      StakingRewardPool). This eliminates infinite-mint attack vectors
+ *      and removes the need to trust any entity with minting authority.
+ *
+ *      After genesis deployment:
+ *        - MINTER_ROLE on OmniCoin is REVOKED from ALL addresses
+ *        - No MintController is deployed
+ *        - All reward distribution uses SafeERC20.safeTransfer()
+ *
+ *      See: FIX_REMAINING_TRUSTLESS.md for the full architectural rationale.
+ *      See: OmniRewardManager.sol for the correct pool-based distribution pattern.
+ *
+ *      This file is retained for reference only. It will be removed before
+ *      production deployment.
+ */
+
 import {AccessControlDefaultAdminRules} from
     "@openzeppelin/contracts/access/extensions/AccessControlDefaultAdminRules.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
@@ -12,8 +40,7 @@ import {ReentrancyGuard} from
  * @title IOmniCoinMintable
  * @author OmniCoin Development Team
  * @notice Typed interface for OmniCoin minting, extending IERC20
- * @dev Avoids unsafe low-level calls by providing compile-time
- *      function signature verification.
+ * @dev DEPRECATED — See MintController deprecation notice above.
  */
 interface IOmniCoinMintable is IERC20 {
     /// @notice Mint new tokens to a recipient
@@ -25,46 +52,9 @@ interface IOmniCoinMintable is IERC20 {
 /**
  * @title MintController
  * @author OmniCoin Development Team
- * @notice Enforces a hard supply cap on OmniCoin (XOM) minting
- * @dev Wraps OmniCoin's mint() function with an immutable
- *      MAX_SUPPLY check and per-epoch rate limiting.
- *
- * Deployment model:
- *   1. Deploy MintController with the OmniCoin token address
- *   2. Grant MINTER_ROLE on OmniCoin to this MintController
- *   3. Revoke MINTER_ROLE from the deployer on OmniCoin
- *   4. All future minting flows through this contract
- *
- * The MAX_SUPPLY constant (16.6 billion XOM) matches published
- * tokenomics. Once totalSupply() reaches this cap, no further
- * minting is possible -- there is no admin override, upgrade
- * path, or emergency bypass.
- *
- * Emission Schedule:
- *   - Total supply: 16.6 billion XOM
- *   - Genesis supply: ~4.13 billion XOM
- *   - Planned emissions: ~12.47 billion XOM over 40 years
- *   - Block rewards: 6.089 billion XOM (40 years)
- *   - Welcome bonuses: 1.383 billion XOM
- *   - Referral bonuses: 2.995 billion XOM
- *   - First sale bonuses: 2.000 billion XOM
- *
- * Epoch Reduction Schedule (1% per epoch):
- *   - Epoch 0 (blocks 0-6,311,519): 15.602 XOM/block
- *   - Epoch 1 (blocks 6,311,520-12,623,039): 15.446 XOM/block
- *   - Epoch 2 (blocks 12,623,040-18,934,559): 15.291 XOM/block
- *   - ...
- *   - Epoch 50 (~year 20): ~9.46 XOM/block
- *   - Epoch 99 (~year 40): ~5.79 XOM/block
- *   - Epoch 100+: 0 XOM/block (emissions exhausted)
- *
- * Security:
- *   - AccessControlDefaultAdminRules: 2-step admin transfer
- *     with 48-hour delay (M-01 audit fix)
- *   - Per-epoch rate limit: 100M XOM/hour max
- *   - Post-mint TOCTOU assertion
- *   - Pausable with asymmetric unpause (M-02 audit fix)
- *   - ReentrancyGuard on mint()
+ * @notice DEPRECATED — Enforces a hard supply cap on OmniCoin minting
+ * @dev DEPRECATED — See file-level deprecation notice above.
+ *      Retained for reference only. DO NOT DEPLOY.
  */
 contract MintController is
     AccessControlDefaultAdminRules,

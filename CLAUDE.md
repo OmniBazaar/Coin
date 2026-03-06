@@ -16,8 +16,24 @@
 - ✅ OmniBridge.sol with FULL AWM support
 - ✅ MinimalEscrow.sol with 2-of-3 multisig
 - ✅ OmniGovernance.sol with voting
+- ✅ OmniRewardManager.sol with pre-funded reward pools
+- ✅ LegacyBalanceClaim.sol with transfer-based distribution
 - ✅ 156 tests written and passing
 - ❌ OmniMarketplace.sol REMOVED (zero on-chain listings)
+- ❌ MintController.sol DEPRECATED (conflicts with trustless architecture)
+
+## CRITICAL: Trustless Tokenomics Architecture
+
+**ALL 16.6 billion XOM are pre-minted at genesis.** No entity retains minting
+authority after deployment. This is a firm architectural decision.
+
+**Key rules:**
+- `OmniCoin.initialize()` mints 16.6B XOM to the deployer
+- Deployer transfers tokens to pool contracts (LegacyBalanceClaim, OmniRewardManager)
+- After funding, MINTER_ROLE is permanently revoked from all addresses
+- All reward distribution uses `SafeERC20.safeTransfer()`, NEVER `mint()`
+- `MintController.sol` is DEPRECATED — do NOT deploy or reference it
+- See `LAUNCH_PLAN.md` Section 6.6 and `FIX_REMAINING_TRUSTLESS.md` for full rationale
 
 ## CRITICAL: Solidity Coding Standards
 

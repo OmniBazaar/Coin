@@ -90,10 +90,10 @@ interface IOmniCore {
  *
  * Relationship Between Block Rewards and Validator Rewards:
  *   Block rewards are the primary funding source for this contract.
- *   The MintController mints XOM per block at the emission schedule
- *   rate. A portion of each block reward is allocated to validator
- *   rewards and deposited into this contract. Validators earn
- *   rewards proportional to their weighted participation score.
+ *   The Validator Rewards pool is pre-funded at genesis with 6.089B XOM
+ *   (via OmniRewardManager). Rewards are distributed via transfer at the
+ *   emission schedule rate. Validators earn rewards proportional to
+ *   their weighted participation score.
  *   The per-epoch reward is calculated using the same emission
  *   schedule as block rewards (15.602 XOM initial, 1% reduction
  *   per 6,311,520 epochs).

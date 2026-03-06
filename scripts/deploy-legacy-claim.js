@@ -6,11 +6,15 @@
  *
  * This script:
  * 1. Deploys LegacyBalanceClaim contract
- * 2. Grants MINTER_ROLE to LegacyBalanceClaim in OmniCoin
- * 3. Mints 4.13B XOM to LegacyBalanceClaim for distribution
- * 4. Initializes with legacy user balances from CSV
- * 5. Sets validator backend address
- * 6. Saves deployment info to deployments file
+ * 2. Pre-funds LegacyBalanceClaim with 4.13B XOM via transfer from deployer
+ * 3. Initializes with legacy user balances from CSV
+ * 4. Sets validator backend address
+ * 5. Saves deployment info to deployments file
+ *
+ * Architecture note: LegacyBalanceClaim uses transfer (NOT mint) for all
+ * distributions. The contract must be pre-funded with sufficient XOM before
+ * any claims can be processed. This aligns with OmniCoin's trustless
+ * pre-mint-everything architecture — no minting authority is granted.
  */
 
 const hre = require("hardhat");
@@ -127,32 +131,36 @@ async function main() {
   console.log("✅ LegacyBalanceClaim deployed to:", legacyClaimAddress);
   deployments.contracts.LegacyBalanceClaim = legacyClaimAddress;
 
-  // Step 2: Grant MINTER_ROLE to LegacyBalanceClaim
+  // Step 2: Pre-fund LegacyBalanceClaim with XOM tokens
   console.log("\n" + "=".repeat(80));
-  console.log("STEP 2: Grant MINTER_ROLE to LegacyBalanceClaim");
+  console.log("STEP 2: Pre-fund LegacyBalanceClaim with XOM");
   console.log("=".repeat(80));
 
   const OmniCoin = await hre.ethers.getContractFactory("OmniCoin");
   const omniCoin = OmniCoin.attach(omniCoinAddress);
 
-  // Check if OmniCoin has AccessControl (MINTER_ROLE)
-  try {
-    const MINTER_ROLE = await omniCoin.MINTER_ROLE();
-    console.log("MINTER_ROLE:", MINTER_ROLE);
+  // Transfer MAX_MIGRATION_SUPPLY (4.13B XOM) from deployer to the contract
+  const MAX_MIGRATION_SUPPLY = hre.ethers.parseEther("4130000000");
+  const deployerBalance = await omniCoin.balanceOf(deployer.address);
+  console.log("Deployer XOM balance:", hre.ethers.formatEther(deployerBalance), "XOM");
 
-    // Check if already has role
-    const hasRole = await omniCoin.hasRole(MINTER_ROLE, legacyClaimAddress);
-    if (!hasRole) {
-      const tx = await omniCoin.grantRole(MINTER_ROLE, legacyClaimAddress);
-      await tx.wait();
-      console.log("✅ Granted MINTER_ROLE to LegacyBalanceClaim");
-    } else {
-      console.log("✅ LegacyBalanceClaim already has MINTER_ROLE");
-    }
-  } catch (error) {
-    // OmniCoin might use Ownable instead of AccessControl
-    console.log("⚠️  OmniCoin doesn't use AccessControl, using owner-based minting");
-    console.log("    Will need to call omniCoin.mint() from owner after initialization");
+  if (deployerBalance < MAX_MIGRATION_SUPPLY) {
+    throw new Error(
+      `Insufficient XOM: deployer has ${hre.ethers.formatEther(deployerBalance)} ` +
+      `but needs ${hre.ethers.formatEther(MAX_MIGRATION_SUPPLY)} XOM`
+    );
+  }
+
+  const contractBalance = await omniCoin.balanceOf(legacyClaimAddress);
+  if (contractBalance >= MAX_MIGRATION_SUPPLY) {
+    console.log("✅ LegacyBalanceClaim already funded with", hre.ethers.formatEther(contractBalance), "XOM");
+  } else {
+    const fundAmount = MAX_MIGRATION_SUPPLY - contractBalance;
+    console.log("Transferring", hre.ethers.formatEther(fundAmount), "XOM to LegacyBalanceClaim...");
+    const tx = await omniCoin.transfer(legacyClaimAddress, fundAmount);
+    await tx.wait();
+    const newBalance = await omniCoin.balanceOf(legacyClaimAddress);
+    console.log("✅ LegacyBalanceClaim funded with", hre.ethers.formatEther(newBalance), "XOM");
   }
 
   // Step 3: Load legacy balances

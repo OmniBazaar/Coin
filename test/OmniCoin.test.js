@@ -6,24 +6,26 @@ describe("OmniCoin", function () {
   let omniCoin;
   let owner, minter, burner, user1, user2, user3;
   
-  const INITIAL_SUPPLY = ethers.parseEther("4130000000"); // 4.13 billion (genesis migration)
-  
+  const INITIAL_SUPPLY = ethers.parseEther("16600000000"); // 16.6 billion (full pre-mint at genesis)
+  const USER_FUNDING = ethers.parseEther("100000"); // 100K per test user
+
   beforeEach(async function () {
     [owner, minter, burner, user1, user2, user3] = await ethers.getSigners();
-    
+
     // Deploy OmniCoin
     const OmniCoin = await ethers.getContractFactory("OmniCoin");
     omniCoin = await OmniCoin.deploy();
     await omniCoin.initialize();
-    
+
     // Grant roles
     await omniCoin.grantRole(await omniCoin.MINTER_ROLE(), minter.address);
     await omniCoin.grantRole(await omniCoin.BURNER_ROLE(), burner.address);
-    
-    // Mint some tokens to users for testing
-    await omniCoin.connect(minter).mint(user1.address, ethers.parseEther("100000"));
-    await omniCoin.connect(minter).mint(user2.address, ethers.parseEther("100000"));
-    await omniCoin.connect(minter).mint(user3.address, ethers.parseEther("100000"));
+
+    // Transfer tokens from deployer to users for testing
+    // (In production, no minting after genesis — all distribution via transfer)
+    await omniCoin.transfer(user1.address, USER_FUNDING);
+    await omniCoin.transfer(user2.address, USER_FUNDING);
+    await omniCoin.transfer(user3.address, USER_FUNDING);
   });
   
   describe("Deployment and Initialization", function () {
@@ -37,13 +39,14 @@ describe("OmniCoin", function () {
     });
     
     it("Should have correct initial supply", async function () {
-      // Initial supply + minted tokens
-      const expectedSupply = INITIAL_SUPPLY + ethers.parseEther("300000");
-      expect(await omniCoin.totalSupply()).to.equal(expectedSupply);
+      // All 16.6B minted at genesis, total supply unchanged (transfers don't change supply)
+      expect(await omniCoin.totalSupply()).to.equal(INITIAL_SUPPLY);
     });
-    
-    it("Should assign initial supply to owner", async function () {
-      expect(await omniCoin.balanceOf(owner.address)).to.equal(INITIAL_SUPPLY);
+
+    it("Should assign initial supply to owner minus transferred amounts", async function () {
+      // Owner started with full supply, then transferred 100K to each of 3 users
+      const expectedOwnerBalance = INITIAL_SUPPLY - USER_FUNDING * 3n;
+      expect(await omniCoin.balanceOf(owner.address)).to.equal(expectedOwnerBalance);
     });
     
     it("Should set up roles correctly", async function () {
@@ -93,36 +96,23 @@ describe("OmniCoin", function () {
   });
   
   describe("Minting", function () {
-    it("Should allow minter to mint tokens", async function () {
-      const amount = ethers.parseEther("10000");
-      const balanceBefore = await omniCoin.balanceOf(user1.address);
-      
-      await omniCoin.connect(minter).mint(user1.address, amount);
-      
-      const balanceAfter = await omniCoin.balanceOf(user1.address);
-      expect(balanceAfter - balanceBefore).to.equal(amount);
+    it("Should reject minting when supply is at MAX_SUPPLY", async function () {
+      // In production architecture, all 16.6B is pre-minted at genesis.
+      // Any further minting should fail with ExceedsMaxSupply.
+      const amount = ethers.parseEther("1");
+      await expect(
+        omniCoin.connect(minter).mint(user1.address, amount)
+      ).to.be.revertedWithCustomError(omniCoin, "ExceedsMaxSupply");
     });
-    
-    it("Should increase total supply when minting", async function () {
-      const amount = ethers.parseEther("10000");
-      const supplyBefore = await omniCoin.totalSupply();
-      
-      await omniCoin.connect(minter).mint(user1.address, amount);
-      
-      const supplyAfter = await omniCoin.totalSupply();
-      expect(supplyAfter - supplyBefore).to.equal(amount);
-    });
-    
+
     it("Should prevent non-minter from minting", async function () {
       await expect(
         omniCoin.connect(user1).mint(user2.address, ethers.parseEther("1000"))
       ).to.be.revertedWithCustomError(omniCoin, "AccessControlUnauthorizedAccount");
     });
-    
-    it("Should prevent minting to zero address", async function () {
-      await expect(
-        omniCoin.connect(minter).mint(ethers.ZeroAddress, ethers.parseEther("1000"))
-      ).to.be.revertedWithCustomError(omniCoin, "ERC20InvalidReceiver");
+
+    it("Should confirm INITIAL_SUPPLY equals MAX_SUPPLY", async function () {
+      expect(await omniCoin.INITIAL_SUPPLY()).to.equal(await omniCoin.MAX_SUPPLY());
     });
   });
   
@@ -317,16 +307,16 @@ describe("OmniCoin", function () {
     });
     
     it("Should handle role-based operations", async function () {
-      // Minter mints tokens
-      await omniCoin.connect(minter).mint(user1.address, ethers.parseEther("50000"));
-      
+      // Owner transfers additional tokens to user1 (simulating pool distribution)
+      await omniCoin.transfer(user1.address, ethers.parseEther("50000"));
+
       // User1 burns some of their tokens
       await omniCoin.connect(user1).burn(ethers.parseEther("25000"));
-      
-      // Burner burns from User1 (would need approval in real scenario)
+
+      // Burner burns from User1
       await omniCoin.connect(burner).burnFrom(user1.address, ethers.parseEther("25000"));
-      
-      // Check final balance
+
+      // Check final balance (started 100K + received 50K - burned 25K - burned 25K = 100K)
       expect(await omniCoin.balanceOf(user1.address)).to.equal(ethers.parseEther("100000"));
     });
   });
