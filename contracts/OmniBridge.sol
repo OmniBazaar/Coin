@@ -211,8 +211,11 @@ contract OmniBridge is
     /// @notice Whether contract is ossified (permanently non-upgradeable)
     bool private _ossified;
 
+    /// @notice Address of UnifiedFeeVault for fee distribution
+    address public feeVault;
+
     /// @notice Storage gap for future upgrades
-    uint256[44] private __gap;
+    uint256[43] private __gap;
 
     // Events
     /// @notice Emitted when transfer is initiated
@@ -593,26 +596,40 @@ contract OmniBridge is
     }
 
     /**
-     * @notice Distribute accumulated bridge fees to admin for 70/20/10 split
-     * @dev M-01 remediation: fees are tracked separately from bridge liquidity
-     *      and can be withdrawn without affecting locked user funds. The admin
-     *      (expected to be a TimelockController or multi-sig) distributes per
-     *      the OmniBazaar 70/20/10 fee structure off-chain or via a fee router.
+     * @notice Distribute accumulated bridge fees to UnifiedFeeVault
+     * @dev M-01 remediation: fees are tracked separately from bridge
+     *      liquidity and can be withdrawn without affecting locked
+     *      user funds. Permissionless — anyone can trigger distribution
+     *      since the vault handles the 70/20/10 split. Requires
+     *      feeVault to be set via setFeeVault().
      * @param token Token address to distribute fees for
      */
     function distributeFees(
         address token
     ) external nonReentrant {
-        if (!core.hasRole(core.ADMIN_ROLE(), msg.sender)) {
-            revert InvalidRecipient();
-        }
+        if (feeVault == address(0)) revert InvalidRecipient();
 
         uint256 fees = accumulatedFees[token];
         if (fees == 0) revert NoFeesToDistribute();
 
         accumulatedFees[token] = 0;
-        IERC20(token).safeTransfer(msg.sender, fees);
-        emit FeeDistributed(token, fees, msg.sender);
+        IERC20(token).safeTransfer(feeVault, fees);
+        emit FeeDistributed(token, fees, feeVault);
+    }
+
+    /**
+     * @notice Set the UnifiedFeeVault address for fee distribution
+     * @dev Only callable by admin. The vault handles 70/20/10 split.
+     * @param _feeVault Address of the UnifiedFeeVault contract
+     */
+    function setFeeVault(
+        address _feeVault
+    ) external {
+        if (!core.hasRole(core.ADMIN_ROLE(), msg.sender)) {
+            revert InvalidRecipient();
+        }
+        if (_feeVault == address(0)) revert InvalidRecipient();
+        feeVault = _feeVault;
     }
 
     /**

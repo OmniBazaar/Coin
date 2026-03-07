@@ -70,14 +70,14 @@ contract OmniChatFee is ReentrancyGuard, Ownable2Step {
     /// @notice Bulk message fee multiplier (10x)
     uint256 public constant BULK_FEE_MULTIPLIER = 10;
 
-    /// @notice Fee split: validator/host (7000 = 70%)
-    uint256 public constant VALIDATOR_SHARE = 7000;
+    /// @notice Fee split: ODDAO treasury (7000 = 70%)
+    uint256 public constant ODDAO_SHARE = 7000;
 
     /// @notice Fee split: staking pool (2000 = 20%)
     uint256 public constant STAKING_SHARE = 2000;
 
-    /// @notice Fee split: ODDAO (1000 = 10%)
-    uint256 public constant ODDAO_SHARE = 1000;
+    /// @notice Fee split: protocol treasury (1000 = 10%)
+    uint256 public constant PROTOCOL_SHARE = 1000;
 
     /// @notice Basis points denominator
     uint256 private constant BPS = 10_000;
@@ -99,8 +99,11 @@ contract OmniChatFee is ReentrancyGuard, Ownable2Step {
     /// @notice Staking pool address (receives 20%)
     address public stakingPool;
 
-    /// @notice ODDAO treasury (receives 10%)
+    /// @notice ODDAO treasury (receives 70%)
     address public oddaoTreasury;
+
+    /// @notice Protocol treasury (receives 10%)
+    address public protocolTreasury;
 
     /// @notice Base fee per message in XOM (18 decimals)
     uint256 public baseFee;
@@ -116,9 +119,6 @@ contract OmniChatFee is ReentrancyGuard, Ownable2Step {
 
     /// @notice Per-user total message index (monotonically increasing)
     mapping(address => uint256) public userMessageIndex;
-
-    /// @notice Accumulated fees per validator (pull pattern)
-    mapping(address => uint256) public pendingValidatorFees;
 
     /// @notice Total fees collected
     uint256 public totalFeesCollected;
@@ -153,14 +153,6 @@ contract OmniChatFee is ReentrancyGuard, Ownable2Step {
         uint256 remaining
     );
 
-    /// @notice Emitted when a validator claims fees
-    /// @param validator Address of the claiming validator
-    /// @param amount Amount of XOM claimed
-    event ValidatorFeesClaimed(
-        address indexed validator,
-        uint256 amount
-    );
-
     /// @notice Emitted when base fee is updated
     /// @param oldFee Previous base fee in XOM
     /// @param newFee New base fee in XOM
@@ -169,9 +161,11 @@ contract OmniChatFee is ReentrancyGuard, Ownable2Step {
     /// @notice Emitted when fee recipient addresses are updated
     /// @param stakingPool New staking pool address
     /// @param oddaoTreasury New ODDAO treasury address
+    /// @param protocolTreasury New protocol treasury address
     event RecipientsUpdated(
         address stakingPool,
-        address oddaoTreasury
+        address oddaoTreasury,
+        address protocolTreasury
     );
 
     // ══════════════════════════════════════════════════════════════════
@@ -183,24 +177,28 @@ contract OmniChatFee is ReentrancyGuard, Ownable2Step {
      * @dev Validates all addresses are non-zero and base fee meets
      *      minimum threshold.
      * @param _xomToken XOM token address
-     * @param _stakingPool Staking pool address
-     * @param _oddaoTreasury ODDAO treasury address
+     * @param _stakingPool Staking pool address (20%)
+     * @param _oddaoTreasury ODDAO treasury address (70%)
+     * @param _protocolTreasury Protocol treasury address (10%)
      * @param _baseFee Base fee per message in XOM (18 decimals)
      */
     constructor(
         address _xomToken,
         address _stakingPool,
         address _oddaoTreasury,
+        address _protocolTreasury,
         uint256 _baseFee
     ) Ownable(msg.sender) {
         if (_xomToken == address(0)) revert ZeroChatAddress();
         if (_stakingPool == address(0)) revert ZeroChatAddress();
         if (_oddaoTreasury == address(0)) revert ZeroChatAddress();
+        if (_protocolTreasury == address(0)) revert ZeroChatAddress();
         if (_baseFee == 0) revert ZeroBaseFee();
 
         xomToken = IERC20(_xomToken);
         stakingPool = _stakingPool;
         oddaoTreasury = _oddaoTreasury;
+        protocolTreasury = _protocolTreasury;
         baseFee = _baseFee;
     }
 
@@ -289,25 +287,6 @@ contract OmniChatFee is ReentrancyGuard, Ownable2Step {
     }
 
     // ══════════════════════════════════════════════════════════════════
-    //                      VALIDATOR FEE CLAIMS
-    // ══════════════════════════════════════════════════════════════════
-
-    /**
-     * @notice Validator claims accumulated fees
-     * @dev Pull-based pattern: validators call this to withdraw their
-     *      accumulated share. Returns silently if no fees pending.
-     */
-    function claimValidatorFees() external nonReentrant {
-        uint256 amount = pendingValidatorFees[msg.sender];
-        if (amount == 0) return;
-
-        pendingValidatorFees[msg.sender] = 0;
-        xomToken.safeTransfer(msg.sender, amount);
-
-        emit ValidatorFeesClaimed(msg.sender, amount);
-    }
-
-    // ══════════════════════════════════════════════════════════════════
     //                          VIEW FUNCTIONS
     // ══════════════════════════════════════════════════════════════════
 
@@ -383,26 +362,36 @@ contract OmniChatFee is ReentrancyGuard, Ownable2Step {
     /**
      * @notice Update fee recipient addresses
      * @dev L-02 fix: Emits RecipientsUpdated event on any change.
-     *      Reverts if both addresses are zero (no-op guard).
-     *      Pass address(0) for either param to leave it unchanged.
+     *      Reverts if all addresses are zero (no-op guard).
+     *      Pass address(0) for any param to leave it unchanged.
      * @param _stakingPool New staking pool address (0 = no change)
      * @param _oddaoTreasury New ODDAO treasury address (0 = no change)
+     * @param _protocolTreasury New protocol treasury (0 = no change)
      */
     function updateRecipients(
         address _stakingPool,
-        address _oddaoTreasury
+        address _oddaoTreasury,
+        address _protocolTreasury
     ) external onlyOwner {
         if (
             _stakingPool == address(0) &&
-            _oddaoTreasury == address(0)
+            _oddaoTreasury == address(0) &&
+            _protocolTreasury == address(0)
         ) {
             revert NoRecipientsProvided();
         }
-        if (_stakingPool != address(0)) stakingPool = _stakingPool;
+        if (_stakingPool != address(0)) {
+            stakingPool = _stakingPool;
+        }
         if (_oddaoTreasury != address(0)) {
             oddaoTreasury = _oddaoTreasury;
         }
-        emit RecipientsUpdated(stakingPool, oddaoTreasury);
+        if (_protocolTreasury != address(0)) {
+            protocolTreasury = _protocolTreasury;
+        }
+        emit RecipientsUpdated(
+            stakingPool, oddaoTreasury, protocolTreasury
+        );
     }
 
     // ══════════════════════════════════════════════════════════════════
@@ -413,15 +402,20 @@ contract OmniChatFee is ReentrancyGuard, Ownable2Step {
      * @notice Collect fee from user and distribute
      * @dev Enforces MIN_FEE floor on all splits to prevent
      *      precision loss from rounding the fee to zero.
+     *      70% ODDAO, 20% Staking Pool, 10% Protocol Treasury.
      * @param user User paying the fee
      * @param fee Total fee amount
-     * @param validator Validator to receive 70% share
+     * @param validator Validator hosting the channel (for event)
      */
     function _collectFee(
         address user,
         uint256 fee,
         address validator
     ) internal {
+        // Suppress unused variable warning — validator is used
+        // in the caller's event emission, not in fee distribution
+        validator;
+
         // M-01 (precision): Enforce minimum fee
         if (fee < MIN_FEE) fee = MIN_FEE;
 
@@ -429,14 +423,18 @@ contract OmniChatFee is ReentrancyGuard, Ownable2Step {
         xomToken.safeTransferFrom(user, address(this), fee);
 
         // Calculate splits
-        uint256 validatorAmount = (fee * VALIDATOR_SHARE) / BPS;
         uint256 stakingAmount = (fee * STAKING_SHARE) / BPS;
-        uint256 oddaoAmount = fee - validatorAmount - stakingAmount;
+        uint256 protocolAmount = (fee * PROTOCOL_SHARE) / BPS;
+        // ODDAO gets remainder (avoids rounding dust)
+        uint256 oddaoAmount =
+            fee - stakingAmount - protocolAmount;
 
-        // Distribute
-        pendingValidatorFees[validator] += validatorAmount;
-        xomToken.safeTransfer(stakingPool, stakingAmount);
+        // Distribute (push pattern — all immediate transfers)
         xomToken.safeTransfer(oddaoTreasury, oddaoAmount);
+        xomToken.safeTransfer(stakingPool, stakingAmount);
+        xomToken.safeTransfer(
+            protocolTreasury, protocolAmount
+        );
 
         totalFeesCollected += fee;
     }

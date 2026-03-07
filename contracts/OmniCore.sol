@@ -277,6 +277,22 @@ contract OmniCore is
     /// @param contractAddress Address of this contract
     event ContractOssified(address indexed contractAddress);
 
+    /// @notice Emitted when the ODDAO fee recipient address is updated
+    /// @param oldAddress Previous ODDAO address
+    /// @param newAddress New ODDAO address
+    event OddaoAddressUpdated(
+        address indexed oldAddress,
+        address indexed newAddress
+    );
+
+    /// @notice Emitted when the staking pool fee recipient address is updated
+    /// @param oldAddress Previous staking pool address
+    /// @param newAddress New staking pool address
+    event StakingPoolAddressUpdated(
+        address indexed oldAddress,
+        address indexed newAddress
+    );
+
     // Custom errors
     error InvalidAddress();
     error InvalidAmount();
@@ -424,6 +440,32 @@ contract OmniCore is
         if (count == 0 || count > MAX_REQUIRED_SIGNATURES) revert InvalidAmount();
         requiredSignatures = count;
         emit RequiredSignaturesUpdated(count);
+    }
+
+    /**
+     * @notice Update the ODDAO fee recipient address
+     * @dev Only admin can change. Used during Pioneer Phase to replace
+     *      temporary deployer address with real ODDAO treasury multisig.
+     * @param newOddaoAddress New ODDAO address (must be non-zero)
+     */
+    function setOddaoAddress(address newOddaoAddress) external onlyRole(ADMIN_ROLE) {
+        if (newOddaoAddress == address(0)) revert InvalidAddress();
+        address oldAddress = oddaoAddress;
+        oddaoAddress = newOddaoAddress;
+        emit OddaoAddressUpdated(oldAddress, newOddaoAddress);
+    }
+
+    /**
+     * @notice Update the staking pool fee recipient address
+     * @dev Only admin can change. Used during Pioneer Phase to set the
+     *      StakingRewardPool contract address after deployment.
+     * @param newStakingPoolAddress New staking pool address (must be non-zero)
+     */
+    function setStakingPoolAddress(address newStakingPoolAddress) external onlyRole(ADMIN_ROLE) {
+        if (newStakingPoolAddress == address(0)) revert InvalidAddress();
+        address oldAddress = stakingPoolAddress;
+        stakingPoolAddress = newStakingPoolAddress;
+        emit StakingPoolAddressUpdated(oldAddress, newStakingPoolAddress);
     }
 
     /**

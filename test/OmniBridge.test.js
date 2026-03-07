@@ -10,7 +10,7 @@ describe("OmniBridge", function () {
   let token;
   let privateToken;
   let core;
-  let owner, user1, user2, admin, validator;
+  let owner, user1, user2, admin, validator, feeVaultAddr;
   
   const CHAIN_ID_FUJI = 43113;
   const CHAIN_ID_CCHAIN = 43114;
@@ -23,7 +23,7 @@ describe("OmniBridge", function () {
   const TRANSFER_FEE = 50; // 0.5%
   
   beforeEach(async function () {
-    [owner, user1, user2, admin, validator] = await ethers.getSigners();
+    [owner, user1, user2, admin, validator, feeVaultAddr] = await ethers.getSigners();
     
     // Deploy and set up mock Warp Messenger FIRST
     const MockWarpMessenger = await ethers.getContractFactory("MockWarpMessenger");
@@ -81,8 +81,10 @@ describe("OmniBridge", function () {
     );
     
     // Setup: Give users tokens
-    await token.mint(user1.address, ethers.parseEther("100000"));
-    await token.mint(user2.address, ethers.parseEther("100000"));
+    // OmniCoin pre-mints full supply to deployer (owner) during initialize(),
+    // so use transfer instead of mint to distribute test tokens.
+    await token.transfer(user1.address, ethers.parseEther("100000"));
+    await token.transfer(user2.address, ethers.parseEther("100000"));
     await privateToken.mint(user1.address, ethers.parseEther("100000"));
     
     // Approve bridge
@@ -494,6 +496,120 @@ describe("OmniBridge", function () {
     });
   });
   
+  describe("Fee Vault Management", function () {
+    it("Should allow admin to set feeVault", async function () {
+      await bridge.connect(admin).setFeeVault(feeVaultAddr.address);
+      expect(await bridge.feeVault()).to.equal(feeVaultAddr.address);
+    });
+
+    it("Should reject non-admin callers", async function () {
+      await expect(
+        bridge.connect(user1).setFeeVault(feeVaultAddr.address)
+      ).to.be.revertedWithCustomError(bridge, "InvalidRecipient");
+    });
+
+    it("Should reject zero address", async function () {
+      await expect(
+        bridge.connect(admin).setFeeVault(ethers.ZeroAddress)
+      ).to.be.revertedWithCustomError(bridge, "InvalidRecipient");
+    });
+  });
+
+  describe("Fee Distribution", function () {
+    it("Should distribute accumulated fees to feeVault", async function () {
+      // Set feeVault first
+      await bridge.connect(admin).setFeeVault(feeVaultAddr.address);
+
+      // Initiate a transfer to accumulate fees
+      const amount = ethers.parseEther("1000");
+      await bridge.connect(user1).initiateTransfer(
+        user2.address,
+        amount,
+        CHAIN_ID_FUJI,
+        false
+      );
+
+      const expectedFee = (amount * BigInt(TRANSFER_FEE)) / 10000n;
+      const tokenAddress = await core.connect(admin).getService(ethers.id("OMNICOIN"));
+
+      // Check accumulated fees
+      expect(await bridge.accumulatedFees(tokenAddress)).to.equal(expectedFee);
+
+      // Record feeVault balance before
+      const vaultBalanceBefore = await token.balanceOf(feeVaultAddr.address);
+
+      // Distribute fees (permissionless - calling from user1)
+      const tx = await bridge.connect(user1).distributeFees(tokenAddress);
+      const receipt = await tx.wait();
+
+      // Verify fees sent to feeVault
+      const vaultBalanceAfter = await token.balanceOf(feeVaultAddr.address);
+      expect(vaultBalanceAfter - vaultBalanceBefore).to.equal(expectedFee);
+
+      // Verify accumulated fees are zeroed
+      expect(await bridge.accumulatedFees(tokenAddress)).to.equal(0);
+
+      // Verify FeeDistributed event emits feeVault as recipient
+      const event = receipt.logs.find(
+        log => log.fragment && log.fragment.name === "FeeDistributed"
+      );
+      expect(event).to.not.be.undefined;
+      expect(event.args.recipient).to.equal(feeVaultAddr.address);
+      expect(event.args.amount).to.equal(expectedFee);
+    });
+
+    it("Should allow anyone to call distributeFees (permissionless)", async function () {
+      // Set feeVault
+      await bridge.connect(admin).setFeeVault(feeVaultAddr.address);
+
+      // Accumulate fees via transfer
+      const amount = ethers.parseEther("500");
+      await bridge.connect(user1).initiateTransfer(
+        user2.address,
+        amount,
+        CHAIN_ID_FUJI,
+        false
+      );
+
+      const tokenAddress = await core.connect(admin).getService(ethers.id("OMNICOIN"));
+
+      // Non-admin user2 should be able to call distributeFees
+      await expect(
+        bridge.connect(user2).distributeFees(tokenAddress)
+      ).to.not.be.reverted;
+    });
+
+    it("Should revert when feeVault is not set (InvalidRecipient)", async function () {
+      // Accumulate fees via transfer (feeVault is not set by default)
+      const amount = ethers.parseEther("100");
+      await bridge.connect(user1).initiateTransfer(
+        user2.address,
+        amount,
+        CHAIN_ID_FUJI,
+        false
+      );
+
+      const tokenAddress = await core.connect(admin).getService(ethers.id("OMNICOIN"));
+
+      // distributeFees should revert because feeVault is address(0)
+      await expect(
+        bridge.connect(admin).distributeFees(tokenAddress)
+      ).to.be.revertedWithCustomError(bridge, "InvalidRecipient");
+    });
+
+    it("Should revert when no fees are accumulated", async function () {
+      // Set feeVault
+      await bridge.connect(admin).setFeeVault(feeVaultAddr.address);
+
+      const tokenAddress = await core.connect(admin).getService(ethers.id("OMNICOIN"));
+
+      // No transfers made, so no fees accumulated
+      await expect(
+        bridge.connect(user1).distributeFees(tokenAddress)
+      ).to.be.revertedWithCustomError(bridge, "NoFeesToDistribute");
+    });
+  });
+
   describe("View Functions", function () {
     it("Should return transfer details", async function () {
       const amount = ethers.parseEther("100");

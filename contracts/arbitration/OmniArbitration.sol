@@ -302,11 +302,11 @@ contract OmniArbitration is
     /// @notice Fee split: arbitrators (7000 = 70%)
     uint256 public constant ARBITRATOR_FEE_SHARE = 7000;
 
-    /// @notice Fee split: validator (2000 = 20%)
-    uint256 public constant VALIDATOR_FEE_SHARE = 2000;
+    /// @notice Fee split: ODDAO treasury (2000 = 20%)
+    uint256 public constant ODDAO_FEE_SHARE = 2000;
 
-    /// @notice Fee split: ODDAO (1000 = 10%)
-    uint256 public constant ODDAO_FEE_SHARE = 1000;
+    /// @notice Fee split: protocol treasury (1000 = 10%)
+    uint256 public constant PROTOCOL_FEE_SHARE = 1000;
 
     /// @notice Basis points denominator
     uint256 private constant BPS = 10_000;
@@ -342,6 +342,9 @@ contract OmniArbitration is
 
     /// @notice ODDAO treasury address
     address public oddaoTreasury;
+
+    /// @notice Protocol treasury address (receives 10% of fees)
+    address public protocolTreasury;
 
     /// @notice Dispute counter
     uint256 public nextDisputeId;
@@ -400,8 +403,8 @@ contract OmniArbitration is
     mapping(address => uint256) public arbitratorPoolIndex;
 
     /// @notice Reserved storage gap for future upgradeable variables
-    /// @dev 50 - 5 new state variables = 45 slots reserved
-    uint256[45] private __gap;
+    /// @dev 50 - 6 new state variables = 44 slots reserved
+    uint256[44] private __gap;
 
     // ══════════════════════════════════════════════════════════════════
     //                              EVENTS
@@ -518,13 +521,13 @@ contract OmniArbitration is
     /// @notice Emitted when dispute fees are distributed
     /// @param disputeId Dispute ID
     /// @param arbitratorShare Total amount sent to arbitrators
-    /// @param validatorShare Amount sent to resolving validator
     /// @param oddaoShare Amount sent to ODDAO treasury
+    /// @param protocolShare Amount sent to protocol treasury
     event FeesDistributed(
         uint256 indexed disputeId,
         uint256 arbitratorShare,
-        uint256 validatorShare,
-        uint256 oddaoShare
+        uint256 oddaoShare,
+        uint256 protocolShare
     );
 
     /// @notice Emitted when escrow resolution call fails
@@ -565,6 +568,14 @@ contract OmniArbitration is
         address indexed newTreasury
     );
 
+    /// @notice Emitted when protocol treasury address is updated
+    /// @param oldTreasury Previous protocol treasury address
+    /// @param newTreasury New protocol treasury address
+    event ProtocolTreasuryUpdated(
+        address indexed oldTreasury,
+        address indexed newTreasury
+    );
+
     /// @notice Emitted when minimum arbitrator stake is updated
     /// @param oldStake Previous minimum stake
     /// @param newStake New minimum stake
@@ -585,23 +596,26 @@ contract OmniArbitration is
     /**
      * @notice Initialize the arbitration contract
      * @dev Sets up roles, contract references, and default parameters.
-     *      All four addresses must be non-zero.
+     *      All five addresses must be non-zero.
      * @param _participation OmniParticipation contract address
      * @param _escrow MinimalEscrow contract address
      * @param _xomToken XOM token contract address
-     * @param _oddaoTreasury ODDAO treasury address
+     * @param _oddaoTreasury ODDAO treasury address (receives 20%)
+     * @param _protocolTreasury Protocol treasury address (receives 10%)
      */
     function initialize(
         address _participation,
         address _escrow,
         address _xomToken,
-        address _oddaoTreasury
+        address _oddaoTreasury,
+        address _protocolTreasury
     ) external initializer {
         // M-01: Zero-address validation for all parameters
         if (_participation == address(0)) revert ZeroAddress();
         if (_escrow == address(0)) revert ZeroAddress();
         if (_xomToken == address(0)) revert ZeroAddress();
         if (_oddaoTreasury == address(0)) revert ZeroAddress();
+        if (_protocolTreasury == address(0)) revert ZeroAddress();
 
         __AccessControl_init();
         __UUPSUpgradeable_init();
@@ -615,6 +629,7 @@ contract OmniArbitration is
         escrow = IArbitrationEscrow(_escrow);
         xomToken = IERC20(_xomToken);
         oddaoTreasury = _oddaoTreasury;
+        protocolTreasury = _protocolTreasury;
 
         nextDisputeId = 1;
         minArbitratorStake = 10_000 ether; // 10,000 XOM
@@ -1335,8 +1350,8 @@ contract OmniArbitration is
      * @param amount Disputed amount
      * @return totalFee Total fee
      * @return arbitratorShare Amount to arbitrators (70%)
-     * @return validatorShare Amount to validator (20%)
-     * @return oddaoShare Amount to ODDAO (10%)
+     * @return oddaoShare Amount to ODDAO (20%)
+     * @return protocolShare Amount to protocol treasury (10%)
      */
     function calculateFee(
         uint256 amount
@@ -1346,17 +1361,17 @@ contract OmniArbitration is
         returns (
             uint256 totalFee,
             uint256 arbitratorShare,
-            uint256 validatorShare,
-            uint256 oddaoShare
+            uint256 oddaoShare,
+            uint256 protocolShare
         )
     {
         totalFee = (amount * ARBITRATION_FEE_BPS) / BPS;
         arbitratorShare =
             (totalFee * ARBITRATOR_FEE_SHARE) / BPS;
-        validatorShare =
-            (totalFee * VALIDATOR_FEE_SHARE) / BPS;
+        protocolShare =
+            (totalFee * PROTOCOL_FEE_SHARE) / BPS;
         oddaoShare =
-            totalFee - arbitratorShare - validatorShare;
+            totalFee - arbitratorShare - protocolShare;
     }
 
     // ══════════════════════════════════════════════════════════════════
@@ -1433,6 +1448,25 @@ contract OmniArbitration is
         oddaoTreasury = _oddaoTreasury;
 
         emit OddaoTreasuryUpdated(oldTreasury, _oddaoTreasury);
+    }
+
+    /**
+     * @notice Update the protocol treasury address
+     * @dev Allows admin to update protocol treasury. Validates
+     *      non-zero address.
+     * @param _protocolTreasury New protocol treasury address
+     */
+    function setProtocolTreasury(
+        address _protocolTreasury
+    ) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        if (_protocolTreasury == address(0)) revert ZeroAddress();
+
+        address oldTreasury = protocolTreasury;
+        protocolTreasury = _protocolTreasury;
+
+        emit ProtocolTreasuryUpdated(
+            oldTreasury, _protocolTreasury
+        );
     }
 
     /**
@@ -1533,9 +1567,9 @@ contract OmniArbitration is
      * @notice Distribute the collected dispute fee per 70/20/10
      *         split
      * @dev C-01: Splits the fee stored in d.disputeFee among
-     *      arbitrators (70%), the resolving validator/msg.sender
-     *      (20%), and ODDAO treasury (10%). Uses XOM tokens already
-     *      held by this contract from dispute creation.
+     *      arbitrators (70%), ODDAO treasury (20%), and protocol
+     *      treasury (10%). Uses XOM tokens already held by this
+     *      contract from dispute creation.
      * @param disputeId Dispute ID whose fee to distribute
      */
     function _collectAndDistributeFee(
@@ -1550,10 +1584,11 @@ contract OmniArbitration is
 
         uint256 arbShare =
             (fee * ARBITRATOR_FEE_SHARE) / BPS;
-        uint256 valShare =
-            (fee * VALIDATOR_FEE_SHARE) / BPS;
+        uint256 protocolShare =
+            (fee * PROTOCOL_FEE_SHARE) / BPS;
+        // ODDAO gets remainder (avoids rounding dust)
         uint256 oddaoShare =
-            fee - arbShare - valShare;
+            fee - arbShare - protocolShare;
 
         // Distribute arbitrator share equally among panel members
         // Use initial panel (3 arbitrators) for fee split
@@ -1574,22 +1609,23 @@ contract OmniArbitration is
             }
         }
 
-        // Validator share goes to the transaction sender
-        // (the validator or party that triggered resolution)
-        if (valShare > 0) {
-            xomToken.safeTransfer(msg.sender, valShare);
-        }
-
-        // ODDAO share
+        // ODDAO share (20%)
         if (oddaoShare > 0) {
             xomToken.safeTransfer(oddaoTreasury, oddaoShare);
+        }
+
+        // Protocol treasury share (10%)
+        if (protocolShare > 0) {
+            xomToken.safeTransfer(
+                protocolTreasury, protocolShare
+            );
         }
 
         emit FeesDistributed(
             disputeId,
             arbShare,
-            valShare,
-            oddaoShare
+            oddaoShare,
+            protocolShare
         );
     }
 

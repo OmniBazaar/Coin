@@ -147,6 +147,18 @@ contract OmniENS is ReentrancyGuard, Ownable2Step {
     /// @dev L-03 audit fix: prevents excessive fee extraction
     uint256 public constant MAX_REGISTRATION_FEE = 1000 ether;
 
+    /// @notice ODDAO fee share (7000 = 70%)
+    uint256 public constant ODDAO_SHARE = 7000;
+
+    /// @notice Staking pool fee share (2000 = 20%)
+    uint256 public constant STAKING_SHARE = 2000;
+
+    /// @notice Protocol treasury fee share (1000 = 10%)
+    uint256 public constant PROTOCOL_SHARE = 1000;
+
+    /// @notice Basis points denominator
+    uint256 private constant BPS = 10_000;
+
     // ══════════════════════════════════════════════════════════════════
     //                          STATE VARIABLES
     // ══════════════════════════════════════════════════════════════════
@@ -155,8 +167,14 @@ contract OmniENS is ReentrancyGuard, Ownable2Step {
     /// @notice XOM token for registration fees
     IERC20 public immutable xomToken;
 
-    /// @notice ODDAO treasury (receives registration fees)
+    /// @notice ODDAO treasury (receives 70% of registration fees)
     address public immutable oddaoTreasury;
+
+    /// @notice Staking pool (receives 20% of registration fees)
+    address public immutable stakingPool;
+
+    /// @notice Protocol treasury (receives 10% of registration fees)
+    address public immutable protocolTreasury;
     /* solhint-enable immutable-vars-naming */
 
     /// @notice Annual registration fee in XOM (18 decimals)
@@ -250,22 +268,30 @@ contract OmniENS is ReentrancyGuard, Ownable2Step {
 
     /**
      * @notice Deploy the ENS registry
-     * @dev M-02 audit fix: validates both addresses are non-zero.
+     * @dev M-02 audit fix: validates all addresses are non-zero.
      *      L-02 audit fix: uses Ownable2Step for safe ownership
      *      transfer (prevents accidental loss via typo).
      * @param _xomToken XOM token address
-     * @param _oddaoTreasury ODDAO treasury address
+     * @param _oddaoTreasury ODDAO treasury address (70%)
+     * @param _stakingPool Staking pool address (20%)
+     * @param _protocolTreasury Protocol treasury address (10%)
      */
     constructor(
         address _xomToken,
-        address _oddaoTreasury
+        address _oddaoTreasury,
+        address _stakingPool,
+        address _protocolTreasury
     ) Ownable(msg.sender) {
         // M-02: Zero-address validation
         if (_xomToken == address(0)) revert ZeroAddress();
         if (_oddaoTreasury == address(0)) revert ZeroAddress();
+        if (_stakingPool == address(0)) revert ZeroAddress();
+        if (_protocolTreasury == address(0)) revert ZeroAddress();
 
         xomToken = IERC20(_xomToken);
         oddaoTreasury = _oddaoTreasury;
+        stakingPool = _stakingPool;
+        protocolTreasury = _protocolTreasury;
         registrationFeePerYear = 10 ether; // 10 XOM per year
     }
 
@@ -338,9 +364,7 @@ contract OmniENS is ReentrancyGuard, Ownable2Step {
 
         // L-04: External call AFTER state changes (CEI pattern)
         if (fee > 0) {
-            xomToken.safeTransferFrom(
-                msg.sender, oddaoTreasury, fee
-            );
+            _distributeFee(fee);
         }
 
         emit NameRegistered(
@@ -435,9 +459,7 @@ contract OmniENS is ReentrancyGuard, Ownable2Step {
 
         // L-04: External call AFTER state changes
         if (fee > 0) {
-            xomToken.safeTransferFrom(
-                msg.sender, oddaoTreasury, fee
-            );
+            _distributeFee(fee);
         }
 
         emit NameRenewed(name, msg.sender, newExpiry);
@@ -589,6 +611,44 @@ contract OmniENS is ReentrancyGuard, Ownable2Step {
     // ══════════════════════════════════════════════════════════════════
     //                       INTERNAL FUNCTIONS
     // ══════════════════════════════════════════════════════════════════
+
+    /**
+     * @notice Collect fee from user and distribute 70/20/10
+     * @dev Transfers total fee from msg.sender to this contract,
+     *      then splits: 70% ODDAO, 20% Staking Pool, 10% Protocol.
+     *      ODDAO gets remainder to avoid rounding dust.
+     * @param totalFee Total fee amount in XOM
+     */
+    function _distributeFee(uint256 totalFee) internal {
+        // Pull fee from user to this contract
+        xomToken.safeTransferFrom(
+            msg.sender, address(this), totalFee
+        );
+
+        uint256 stakingAmount =
+            (totalFee * STAKING_SHARE) / BPS;
+        uint256 protocolAmount =
+            (totalFee * PROTOCOL_SHARE) / BPS;
+        // ODDAO gets remainder (avoids rounding dust)
+        uint256 oddaoAmount =
+            totalFee - stakingAmount - protocolAmount;
+
+        if (oddaoAmount > 0) {
+            xomToken.safeTransfer(
+                oddaoTreasury, oddaoAmount
+            );
+        }
+        if (stakingAmount > 0) {
+            xomToken.safeTransfer(
+                stakingPool, stakingAmount
+            );
+        }
+        if (protocolAmount > 0) {
+            xomToken.safeTransfer(
+                protocolTreasury, protocolAmount
+            );
+        }
+    }
 
     /**
      * @notice Set reverse record with overwrite detection

@@ -44,7 +44,7 @@ import {
  * - Emergency circuit breakers
  * - Intent-based settlement with real token escrow
  *
- * Fee Distribution:
+ * Fee Distribution (push pattern — immediate transfer):
  * - 70% -> ODDAO (governance operations)
  * - 20% -> Staking Pool (incentivizes staking)
  * - 10% -> Matching Validator (processing the trade)
@@ -118,10 +118,12 @@ contract DEXSettlement is
      * @notice Fee distribution addresses
      * @param oddao Address of ODDAO treasury (70%)
      * @param stakingPool Address of staking pool (20%)
+     * @param protocolTreasury Address of protocol treasury (10%)
      */
     struct FeeRecipients {
         address oddao;
         address stakingPool;
+        address protocolTreasury;
     }
 
     /**
@@ -180,8 +182,8 @@ contract DEXSettlement is
     /// @notice Staking pool fee share (20%)
     uint256 public constant STAKING_POOL_SHARE = 2000;
 
-    /// @notice Validator fee share (10%)
-    uint256 public constant VALIDATOR_SHARE = 1000;
+    /// @notice Protocol treasury fee share (10%)
+    uint256 public constant PROTOCOL_SHARE = 1000;
 
     /// @notice Spot market maker fee (0.1%)
     uint256 public constant SPOT_MAKER_FEE = 10;
@@ -326,17 +328,17 @@ contract DEXSettlement is
 
     /**
      * @notice Emitted when fees are distributed
-     * @param matchingValidator Validator who matched
+     * @param matchingValidator Validator who matched the trade
      * @param oddaoAmount Amount to ODDAO (70%)
      * @param stakingPoolAmount Amount to staking pool (20%)
-     * @param validatorAmount Amount to validator (10%)
+     * @param protocolAmount Amount to protocol treasury (10%)
      * @param timestamp Distribution timestamp
      */
     event FeesDistributed(
         address indexed matchingValidator,
         uint256 indexed oddaoAmount,
         uint256 indexed stakingPoolAmount,
-        uint256 validatorAmount,
+        uint256 protocolAmount,
         uint256 timestamp
     );
 
@@ -384,10 +386,12 @@ contract DEXSettlement is
      * @notice Emitted when fee recipients are updated
      * @param newOddao New ODDAO address
      * @param newStakingPool New staking pool address
+     * @param newProtocolTreasury New protocol treasury address
      */
     event FeeRecipientsUpdated(
         address indexed newOddao,
-        address indexed newStakingPool
+        address indexed newStakingPool,
+        address newProtocolTreasury
     );
 
     /**
@@ -406,12 +410,14 @@ contract DEXSettlement is
      * @notice Emitted when fee recipient change is scheduled (M-04)
      * @param newOddao Proposed new ODDAO address
      * @param newStakingPool Proposed new staking pool address
-     * @param effectiveAt Timestamp when the change can be applied
+     * @param newProtocolTreasury Proposed new protocol treasury
+     * @param effectiveAt Timestamp when change can be applied
      */
     event FeeRecipientsChangeScheduled(
         address indexed newOddao,
         address indexed newStakingPool,
-        uint256 indexed effectiveAt
+        address newProtocolTreasury,
+        uint256 effectiveAt
     );
 
     /**
@@ -620,10 +626,12 @@ contract DEXSettlement is
      * @notice Initialize the DEXSettlement contract
      * @param _oddao ODDAO treasury address (70% of fees)
      * @param _stakingPool Staking pool address (20% of fees)
+     * @param _protocolTreasury Protocol treasury address (10% of fees)
      */
     constructor(
         address _oddao,
-        address _stakingPool
+        address _stakingPool,
+        address _protocolTreasury
     )
         EIP712("OmniCoin DEX Settlement", "1")
         Ownable(msg.sender)
@@ -631,13 +639,15 @@ contract DEXSettlement is
         if (
             _oddao == address(0)
                 || _stakingPool == address(0)
+                || _protocolTreasury == address(0)
         ) {
             revert InvalidAddress();
         }
 
         feeRecipients = FeeRecipients({
             oddao: _oddao,
-            stakingPool: _stakingPool
+            stakingPool: _stakingPool,
+            protocolTreasury: _protocolTreasury
         });
 
         // Initialize default limits
@@ -860,12 +870,14 @@ contract DEXSettlement is
      * @notice Schedule fee recipient address change (M-04)
      * @param _oddao New ODDAO address (receives 70%)
      * @param _stakingPool New staking pool address (20%)
+     * @param _protocolTreasury New protocol treasury address (10%)
      * @dev Queues the change with a 48-hour timelock. Call
      *      `applyFeeRecipients()` after the delay to apply.
      */
     function scheduleFeeRecipients(
         address _oddao,
-        address _stakingPool
+        address _stakingPool,
+        address _protocolTreasury
     ) external onlyOwner {
         if (feeRecipientsTimelockExpiry != 0) {
             revert PendingChangeExists();
@@ -873,19 +885,22 @@ contract DEXSettlement is
         if (
             _oddao == address(0)
                 || _stakingPool == address(0)
+                || _protocolTreasury == address(0)
         ) {
             revert InvalidAddress();
         }
 
         pendingFeeRecipients = FeeRecipients({
             oddao: _oddao,
-            stakingPool: _stakingPool
+            stakingPool: _stakingPool,
+            protocolTreasury: _protocolTreasury
         });
         feeRecipientsTimelockExpiry = block.timestamp + TIMELOCK_DELAY; // solhint-disable-line not-rely-on-time
 
         emit FeeRecipientsChangeScheduled(
             _oddao,
             _stakingPool,
+            _protocolTreasury,
             feeRecipientsTimelockExpiry
         );
     }
@@ -912,13 +927,15 @@ contract DEXSettlement is
         // H-05: Force-claim pending fees to old recipients
         _claimAllPendingFees(feeRecipients.oddao);
         _claimAllPendingFees(feeRecipients.stakingPool);
+        _claimAllPendingFees(feeRecipients.protocolTreasury);
 
         feeRecipients = pendingFeeRecipients;
         feeRecipientsTimelockExpiry = 0;
 
         emit FeeRecipientsUpdated(
             feeRecipients.oddao,
-            feeRecipients.stakingPool
+            feeRecipients.stakingPool,
+            feeRecipients.protocolTreasury
         );
     }
 
@@ -1087,9 +1104,10 @@ contract DEXSettlement is
     // ================================================================
 
     /**
-     * @notice Claim accrued fees for a specific token
-     * @dev Pull pattern: fee recipients call this to
-     *      withdraw their accrued fees.
+     * @notice Claim any residual accrued fees for a token
+     * @dev Retained for draining pre-migration accrued
+     *      balances. Normal fee flow uses push (direct
+     *      transfer) as of the push-pattern migration.
      * @param token ERC20 token to withdraw fees in
      */
     function claimFees(
@@ -1251,20 +1269,12 @@ contract DEXSettlement is
 
         // C-01: Accrue fee splits
         if (traderFee > 0) {
-            _accrueFeeSplit(
-                traderFee,
-                coll.tokenIn,
-                coll.matchingValidator
-            );
+            _accrueFeeSplit(traderFee, coll.tokenIn);
             _trackFeeToken(coll.tokenIn);
             totalFeesCollected += traderFee;
         }
         if (solverFee > 0) {
-            _accrueFeeSplit(
-                solverFee,
-                coll.tokenOut,
-                coll.matchingValidator
-            );
+            _accrueFeeSplit(solverFee, coll.tokenOut);
             _trackFeeToken(coll.tokenOut);
             totalFeesCollected += solverFee;
         }
@@ -1619,13 +1629,14 @@ contract DEXSettlement is
     }
 
     /**
-     * @notice Distribute trading fees using pull pattern
+     * @notice Distribute trading fees via direct transfer
      * @param makerFee Fee from maker
      * @param takerFee Fee from taker
      * @param makerFeeToken Token of maker fee
      * @param takerFeeToken Token of taker fee
-     * @param matchingValidator Validator who matched
-     * @dev 70% ODDAO, 20% Staking Pool, 10% Validator.
+     * @param matchingValidator Validator who matched (for event)
+     * @dev 70% ODDAO, 20% Staking Pool, 10% Protocol Treasury.
+     *      Push pattern: fees transferred immediately.
      *      Remainder from rounding goes to ODDAO.
      */
     function _distributeFees(
@@ -1641,20 +1652,12 @@ contract DEXSettlement is
         totalFeesCollected += totalFees;
 
         if (makerFee > 0) {
-            _accrueFeeSplit(
-                makerFee,
-                makerFeeToken,
-                matchingValidator
-            );
+            _accrueFeeSplit(makerFee, makerFeeToken);
             _trackFeeToken(makerFeeToken);
         }
 
         if (takerFee > 0) {
-            _accrueFeeSplit(
-                takerFee,
-                takerFeeToken,
-                matchingValidator
-            );
+            _accrueFeeSplit(takerFee, takerFeeToken);
             _trackFeeToken(takerFeeToken);
         }
 
@@ -1664,44 +1667,56 @@ contract DEXSettlement is
         uint256 stakingAmt =
             (totalFees * STAKING_POOL_SHARE)
                 / BASIS_POINTS_DIVISOR;
-        uint256 valAmt = (totalFees * VALIDATOR_SHARE)
+        uint256 protocolAmt = (totalFees * PROTOCOL_SHARE)
             / BASIS_POINTS_DIVISOR;
 
         emit FeesDistributed(
             matchingValidator,
             oddaoAmt,
             stakingAmt,
-            valAmt,
+            protocolAmt,
             // solhint-disable-next-line not-rely-on-time
             block.timestamp
         );
     }
 
     /**
-     * @notice Accrue a single fee amount to the three
-     *         recipients with remainder to ODDAO
+     * @notice Transfer a single fee amount directly to
+     *         the three recipients with remainder to ODDAO
      * @param fee Total fee amount
      * @param token Fee token address
-     * @param matchingValidator Validator address
-     * @dev Remainder from integer division goes to ODDAO
+     * @dev Push pattern: fees are transferred immediately
+     *      during settlement, not accrued for later claim.
+     *      70% ODDAO, 20% Staking Pool, 10% Protocol Treasury.
+     *      Remainder from integer division goes to ODDAO
      *      to prevent dust accumulation (M-02).
      */
     function _accrueFeeSplit(
         uint256 fee,
-        address token,
-        address matchingValidator
+        address token
     ) internal {
         uint256 sp = (fee * STAKING_POOL_SHARE)
             / BASIS_POINTS_DIVISOR;
-        uint256 vl = (fee * VALIDATOR_SHARE)
+        uint256 pt = (fee * PROTOCOL_SHARE)
             / BASIS_POINTS_DIVISOR;
         // ODDAO gets remainder (avoids rounding dust)
-        uint256 od = fee - sp - vl;
+        uint256 od = fee - sp - pt;
 
-        accruedFees[feeRecipients.oddao][token] += od;
-        accruedFees[feeRecipients.stakingPool][token]
-            += sp;
-        accruedFees[matchingValidator][token] += vl;
+        if (od > 0) {
+            IERC20(token).safeTransfer(
+                feeRecipients.oddao, od
+            );
+        }
+        if (sp > 0) {
+            IERC20(token).safeTransfer(
+                feeRecipients.stakingPool, sp
+            );
+        }
+        if (pt > 0) {
+            IERC20(token).safeTransfer(
+                feeRecipients.protocolTreasury, pt
+            );
+        }
     }
 
     /**

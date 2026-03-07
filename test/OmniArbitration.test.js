@@ -10,12 +10,13 @@ describe("OmniArbitration", function () {
   let participation;
   let mockEscrow;
   let xom;
-  let owner, oddao;
+  let owner, oddao, protocolTreasury;
 
-  // Arbitrators: signers[2..11]  (10 arbitrators)
-  // Buyer:  signers[12]
-  // Seller: signers[13]
-  // Other:  signers[14]
+  // protocolTreasury: signers[2]
+  // Arbitrators: signers[3..12]  (10 arbitrators)
+  // Buyer:  signers[13]
+  // Seller: signers[14]
+  // Other:  signers[15]
   let arbitrators;
   let buyer, seller, other;
 
@@ -53,10 +54,11 @@ describe("OmniArbitration", function () {
     const signers = await ethers.getSigners();
     owner = signers[0];
     oddao = signers[1];
-    arbitrators = signers.slice(2, 12); // 10 arbitrators
-    buyer = signers[12];
-    seller = signers[13];
-    other = signers[14];
+    protocolTreasury = signers[2];
+    arbitrators = signers.slice(3, 13); // 10 arbitrators
+    buyer = signers[13];
+    seller = signers[14];
+    other = signers[15];
 
     // ── Deploy MockERC20 (XOM) ──
     const MockERC20 = await ethers.getContractFactory("MockERC20");
@@ -78,7 +80,8 @@ describe("OmniArbitration", function () {
         await participation.getAddress(),
         await mockEscrow.getAddress(),
         await xom.getAddress(),
-        oddao.address
+        oddao.address,
+        protocolTreasury.address
       ],
       { initializer: "initialize", kind: "uups" }
     );
@@ -128,6 +131,10 @@ describe("OmniArbitration", function () {
       expect(await arbitration.oddaoTreasury()).to.equal(oddao.address);
     });
 
+    it("should set protocol treasury address correctly", async function () {
+      expect(await arbitration.protocolTreasury()).to.equal(protocolTreasury.address);
+    });
+
     it("should set contract references correctly", async function () {
       expect(await arbitration.participation()).to.equal(await participation.getAddress());
       expect(await arbitration.escrow()).to.equal(await mockEscrow.getAddress());
@@ -142,7 +149,7 @@ describe("OmniArbitration", function () {
     it("should register a qualified arbitrator with sufficient stake", async function () {
       // Use a fresh signer to test registration from scratch
       const signers = await ethers.getSigners();
-      const newArb = signers[15];
+      const newArb = signers[16];
       await participation.setCanBeValidator(newArb.address, true);
       await xom.mint(newArb.address, ethers.parseEther("20000"));
       await xom.connect(newArb).approve(await arbitration.getAddress(), ethers.parseEther("20000"));
@@ -157,7 +164,7 @@ describe("OmniArbitration", function () {
 
     it("should reject registration from non-qualified address", async function () {
       const signers = await ethers.getSigners();
-      const unqualified = signers[16];
+      const unqualified = signers[17];
       await xom.mint(unqualified.address, ethers.parseEther("20000"));
       await xom.connect(unqualified).approve(await arbitration.getAddress(), ethers.parseEther("20000"));
 
@@ -168,7 +175,7 @@ describe("OmniArbitration", function () {
 
     it("should reject registration with insufficient stake", async function () {
       const signers = await ethers.getSigners();
-      const newArb = signers[17];
+      const newArb = signers[18];
       await participation.setCanBeValidator(newArb.address, true);
       const lowStake = ethers.parseEther("5000");
       await xom.mint(newArb.address, lowStake);
@@ -751,21 +758,21 @@ describe("OmniArbitration", function () {
       const result = await arbitration.calculateFee(amount);
 
       const totalFee = result.totalFee;
-      const expectedArb = (totalFee * 7000n) / 10000n;       // 70%
-      const expectedValidator = (totalFee * 2000n) / 10000n;  // 20%
-      const expectedOddao = totalFee - expectedArb - expectedValidator; // 10%
+      const expectedArb = (totalFee * 7000n) / 10000n;        // 70%
+      const expectedProtocol = (totalFee * 1000n) / 10000n;   // 10%
+      const expectedOddao = totalFee - expectedArb - expectedProtocol; // 20%
 
       expect(result.arbitratorShare).to.equal(expectedArb);
-      expect(result.validatorShare).to.equal(expectedValidator);
       expect(result.oddaoShare).to.equal(expectedOddao);
+      expect(result.protocolShare).to.equal(expectedProtocol);
     });
 
     it("should return zero fees for zero amount", async function () {
       const result = await arbitration.calculateFee(0);
       expect(result.totalFee).to.equal(0);
       expect(result.arbitratorShare).to.equal(0);
-      expect(result.validatorShare).to.equal(0);
       expect(result.oddaoShare).to.equal(0);
+      expect(result.protocolShare).to.equal(0);
     });
 
     it("should handle large amounts correctly", async function () {
@@ -784,7 +791,7 @@ describe("OmniArbitration", function () {
       await arbitration.connect(owner).pause();
       // Registering should fail while paused
       const signers = await ethers.getSigners();
-      const newArb = signers[18];
+      const newArb = signers[19];
       await participation.setCanBeValidator(newArb.address, true);
       await xom.mint(newArb.address, ethers.parseEther("20000"));
       await xom.connect(newArb).approve(await arbitration.getAddress(), ethers.parseEther("20000"));
@@ -800,7 +807,7 @@ describe("OmniArbitration", function () {
 
       // Should work again after unpause
       const signers = await ethers.getSigners();
-      const newArb = signers[18];
+      const newArb = signers[19];
       await participation.setCanBeValidator(newArb.address, true);
       await xom.mint(newArb.address, ethers.parseEther("20000"));
       await xom.connect(newArb).approve(await arbitration.getAddress(), ethers.parseEther("20000"));
@@ -850,6 +857,27 @@ describe("OmniArbitration", function () {
       await expect(
         arbitration.connect(other).setMinArbitratorStake(ethers.parseEther("1"))
       ).to.be.reverted;
+    });
+
+    it("should allow admin to update protocolTreasury", async function () {
+      const signers = await ethers.getSigners();
+      const newTreasury = signers[19];
+      await arbitration.connect(owner).setProtocolTreasury(newTreasury.address);
+      expect(await arbitration.protocolTreasury()).to.equal(newTreasury.address);
+    });
+
+    it("should reject setProtocolTreasury from non-admin", async function () {
+      const signers = await ethers.getSigners();
+      const newTreasury = signers[19];
+      await expect(
+        arbitration.connect(other).setProtocolTreasury(newTreasury.address)
+      ).to.be.reverted;
+    });
+
+    it("should reject setProtocolTreasury with zero address", async function () {
+      await expect(
+        arbitration.connect(owner).setProtocolTreasury(ethers.ZeroAddress)
+      ).to.be.revertedWithCustomError(arbitration, "ZeroAddress");
     });
   });
 
