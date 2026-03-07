@@ -70,6 +70,21 @@
       "address": "0xa47dC07a3608646605DFAaC392eaE90bfc750a7B",
       "txHash": "0x7ccb49817df535af0112d53bea27e7d574fd30116d567d77ce85d5bbcecb002e",
       "kind": "uups"
+    },
+    {
+      "address": "0xa605141A21BA93C4d2B2A09B45a67a492B630c83",
+      "txHash": "0xb7c0c67db565d2398db8b83f9ce41302d153710cbe4ca1bfd9b7dab24e573df9",
+      "kind": "uups"
+    },
+    {
+      "address": "0xCEb5D84444f545706bE445a1D66Af9a141018922",
+      "txHash": "0x8ed53917609ab354be46703e14485c109f7cbbdfe4e20360cfd5fe91d50e5797",
+      "kind": "uups"
+    },
+    {
+      "address": "0x166439CE6d91973B672De12E5a4991B177D39414",
+      "txHash": "0xfa1c656476547c23b140f725504dcb55a40169f4c55c5acc40e47ed113ac8d39",
+      "kind": "uups"
     }
   ],
   "impls": {
@@ -5336,6 +5351,1285 @@
               "label": "_status",
               "type": "t_uint256",
               "src": "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol:43",
+              "offset": 0,
+              "slot": "0"
+            }
+          ],
+          "erc7201:openzeppelin.storage.AccessControl": [
+            {
+              "contract": "AccessControlUpgradeable",
+              "label": "_roles",
+              "type": "t_mapping(t_bytes32,t_struct(RoleData)26_storage)",
+              "src": "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol:62",
+              "offset": 0,
+              "slot": "0"
+            }
+          ],
+          "erc7201:openzeppelin.storage.Initializable": [
+            {
+              "contract": "Initializable",
+              "label": "_initialized",
+              "type": "t_uint64",
+              "src": "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol:69",
+              "offset": 0,
+              "slot": "0"
+            },
+            {
+              "contract": "Initializable",
+              "label": "_initializing",
+              "type": "t_bool",
+              "src": "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol:73",
+              "offset": 8,
+              "slot": "0"
+            }
+          ]
+        }
+      }
+    },
+    "01962806a0225ddca808bf1b3d3336dc602ba0370404b547f718aa269a8e3d4c": {
+      "address": "0xb375E886501D892fA24E00160b731812B9070580",
+      "txHash": "0x7100945e2dbf81d6878c032a2ea195814462c97a9b2b161f165e60cde8a04dd8",
+      "layout": {
+        "solcVersion": "0.8.24",
+        "storage": [
+          {
+            "label": "participation",
+            "offset": 0,
+            "slot": "0",
+            "type": "t_contract(IArbitrationParticipation)57980",
+            "contract": "OmniArbitration",
+            "src": "contracts/arbitration/OmniArbitration.sol:378"
+          },
+          {
+            "label": "escrow",
+            "offset": 0,
+            "slot": "1",
+            "type": "t_contract(IArbitrationEscrow)58014",
+            "contract": "OmniArbitration",
+            "src": "contracts/arbitration/OmniArbitration.sol:381"
+          },
+          {
+            "label": "xomToken",
+            "offset": 0,
+            "slot": "2",
+            "type": "t_contract(IERC20)7223",
+            "contract": "OmniArbitration",
+            "src": "contracts/arbitration/OmniArbitration.sol:384"
+          },
+          {
+            "label": "oddaoTreasury",
+            "offset": 0,
+            "slot": "3",
+            "type": "t_address",
+            "contract": "OmniArbitration",
+            "src": "contracts/arbitration/OmniArbitration.sol:385"
+          },
+          {
+            "label": "protocolTreasury",
+            "offset": 0,
+            "slot": "4",
+            "type": "t_address",
+            "contract": "OmniArbitration",
+            "src": "contracts/arbitration/OmniArbitration.sol:388"
+          },
+          {
+            "label": "nextDisputeId",
+            "offset": 0,
+            "slot": "5",
+            "type": "t_uint256",
+            "contract": "OmniArbitration",
+            "src": "contracts/arbitration/OmniArbitration.sol:389"
+          },
+          {
+            "label": "disputes",
+            "offset": 0,
+            "slot": "6",
+            "type": "t_mapping(t_uint256,t_struct(Dispute)58193_storage)",
+            "contract": "OmniArbitration",
+            "src": "contracts/arbitration/OmniArbitration.sol:390"
+          },
+          {
+            "label": "appeals",
+            "offset": 0,
+            "slot": "7",
+            "type": "t_mapping(t_uint256,t_struct(Appeal)58213_storage)",
+            "contract": "OmniArbitration",
+            "src": "contracts/arbitration/OmniArbitration.sol:391"
+          },
+          {
+            "label": "votes",
+            "offset": 0,
+            "slot": "8",
+            "type": "t_mapping(t_uint256,t_mapping(t_address,t_enum(VoteType)58152))",
+            "contract": "OmniArbitration",
+            "src": "contracts/arbitration/OmniArbitration.sol:394"
+          },
+          {
+            "label": "appealVotes",
+            "offset": 0,
+            "slot": "9",
+            "type": "t_mapping(t_uint256,t_mapping(t_address,t_enum(VoteType)58152))",
+            "contract": "OmniArbitration",
+            "src": "contracts/arbitration/OmniArbitration.sol:397"
+          },
+          {
+            "label": "arbitratorStakes",
+            "offset": 0,
+            "slot": "10",
+            "type": "t_mapping(t_address,t_uint256)",
+            "contract": "OmniArbitration",
+            "src": "contracts/arbitration/OmniArbitration.sol:401"
+          },
+          {
+            "label": "minArbitratorStake",
+            "offset": 0,
+            "slot": "11",
+            "type": "t_uint256",
+            "contract": "OmniArbitration",
+            "src": "contracts/arbitration/OmniArbitration.sol:402"
+          },
+          {
+            "label": "appealStakeMultiplier",
+            "offset": 0,
+            "slot": "12",
+            "type": "t_uint256",
+            "contract": "OmniArbitration",
+            "src": "contracts/arbitration/OmniArbitration.sol:405"
+          },
+          {
+            "label": "arbitratorPool",
+            "offset": 0,
+            "slot": "13",
+            "type": "t_array(t_address)dyn_storage",
+            "contract": "OmniArbitration",
+            "src": "contracts/arbitration/OmniArbitration.sol:407"
+          },
+          {
+            "label": "isInArbitratorPool",
+            "offset": 0,
+            "slot": "14",
+            "type": "t_mapping(t_address,t_bool)",
+            "contract": "OmniArbitration",
+            "src": "contracts/arbitration/OmniArbitration.sol:410"
+          },
+          {
+            "label": "evidenceSubmitters",
+            "offset": 0,
+            "slot": "15",
+            "type": "t_mapping(t_uint256,t_mapping(t_bytes32,t_address))",
+            "contract": "OmniArbitration",
+            "src": "contracts/arbitration/OmniArbitration.sol:411"
+          },
+          {
+            "label": "escrowToDisputeId",
+            "offset": 0,
+            "slot": "16",
+            "type": "t_mapping(t_uint256,t_uint256)",
+            "contract": "OmniArbitration",
+            "src": "contracts/arbitration/OmniArbitration.sol:417"
+          },
+          {
+            "label": "activeDisputeCount",
+            "offset": 0,
+            "slot": "17",
+            "type": "t_mapping(t_address,t_uint256)",
+            "contract": "OmniArbitration",
+            "src": "contracts/arbitration/OmniArbitration.sol:422"
+          },
+          {
+            "label": "pendingImplementation",
+            "offset": 0,
+            "slot": "18",
+            "type": "t_address",
+            "contract": "OmniArbitration",
+            "src": "contracts/arbitration/OmniArbitration.sol:428"
+          },
+          {
+            "label": "upgradeScheduledAt",
+            "offset": 0,
+            "slot": "19",
+            "type": "t_uint256",
+            "contract": "OmniArbitration",
+            "src": "contracts/arbitration/OmniArbitration.sol:433"
+          },
+          {
+            "label": "arbitratorPoolIndex",
+            "offset": 0,
+            "slot": "20",
+            "type": "t_mapping(t_address,t_uint256)",
+            "contract": "OmniArbitration",
+            "src": "contracts/arbitration/OmniArbitration.sol:437"
+          },
+          {
+            "label": "__gap",
+            "offset": 0,
+            "slot": "21",
+            "type": "t_array(t_uint256)44_storage",
+            "contract": "OmniArbitration",
+            "src": "contracts/arbitration/OmniArbitration.sol:443"
+          }
+        ],
+        "types": {
+          "t_address": {
+            "label": "address",
+            "numberOfBytes": "20"
+          },
+          "t_bool": {
+            "label": "bool",
+            "numberOfBytes": "1"
+          },
+          "t_bytes32": {
+            "label": "bytes32",
+            "numberOfBytes": "32"
+          },
+          "t_mapping(t_address,t_bool)": {
+            "label": "mapping(address => bool)",
+            "numberOfBytes": "32"
+          },
+          "t_mapping(t_bytes32,t_struct(RoleData)26_storage)": {
+            "label": "mapping(bytes32 => struct AccessControlUpgradeable.RoleData)",
+            "numberOfBytes": "32"
+          },
+          "t_struct(AccessControlStorage)36_storage": {
+            "label": "struct AccessControlUpgradeable.AccessControlStorage",
+            "members": [
+              {
+                "label": "_roles",
+                "type": "t_mapping(t_bytes32,t_struct(RoleData)26_storage)",
+                "offset": 0,
+                "slot": "0"
+              }
+            ],
+            "numberOfBytes": "32"
+          },
+          "t_struct(InitializableStorage)147_storage": {
+            "label": "struct Initializable.InitializableStorage",
+            "members": [
+              {
+                "label": "_initialized",
+                "type": "t_uint64",
+                "offset": 0,
+                "slot": "0"
+              },
+              {
+                "label": "_initializing",
+                "type": "t_bool",
+                "offset": 8,
+                "slot": "0"
+              }
+            ],
+            "numberOfBytes": "32"
+          },
+          "t_struct(PausableStorage)555_storage": {
+            "label": "struct PausableUpgradeable.PausableStorage",
+            "members": [
+              {
+                "label": "_paused",
+                "type": "t_bool",
+                "offset": 0,
+                "slot": "0"
+              }
+            ],
+            "numberOfBytes": "32"
+          },
+          "t_struct(ReentrancyGuardStorage)619_storage": {
+            "label": "struct ReentrancyGuardUpgradeable.ReentrancyGuardStorage",
+            "members": [
+              {
+                "label": "_status",
+                "type": "t_uint256",
+                "offset": 0,
+                "slot": "0"
+              }
+            ],
+            "numberOfBytes": "32"
+          },
+          "t_struct(RoleData)26_storage": {
+            "label": "struct AccessControlUpgradeable.RoleData",
+            "members": [
+              {
+                "label": "hasRole",
+                "type": "t_mapping(t_address,t_bool)",
+                "offset": 0,
+                "slot": "0"
+              },
+              {
+                "label": "adminRole",
+                "type": "t_bytes32",
+                "offset": 0,
+                "slot": "1"
+              }
+            ],
+            "numberOfBytes": "64"
+          },
+          "t_uint256": {
+            "label": "uint256",
+            "numberOfBytes": "32"
+          },
+          "t_uint64": {
+            "label": "uint64",
+            "numberOfBytes": "8"
+          },
+          "t_array(t_address)3_storage": {
+            "label": "address[3]",
+            "numberOfBytes": "96"
+          },
+          "t_array(t_address)5_storage": {
+            "label": "address[5]",
+            "numberOfBytes": "160"
+          },
+          "t_array(t_address)dyn_storage": {
+            "label": "address[]",
+            "numberOfBytes": "32"
+          },
+          "t_array(t_bytes32)dyn_storage": {
+            "label": "bytes32[]",
+            "numberOfBytes": "32"
+          },
+          "t_array(t_uint256)44_storage": {
+            "label": "uint256[44]",
+            "numberOfBytes": "1408"
+          },
+          "t_contract(IArbitrationEscrow)58014": {
+            "label": "contract IArbitrationEscrow",
+            "numberOfBytes": "20"
+          },
+          "t_contract(IArbitrationParticipation)57980": {
+            "label": "contract IArbitrationParticipation",
+            "numberOfBytes": "20"
+          },
+          "t_contract(IERC20)7223": {
+            "label": "contract IERC20",
+            "numberOfBytes": "20"
+          },
+          "t_enum(DisputeStatus)58159": {
+            "label": "enum OmniArbitration.DisputeStatus",
+            "members": [
+              "Active",
+              "Resolved",
+              "Appealed",
+              "DefaultResolved",
+              "PendingSelection"
+            ],
+            "numberOfBytes": "1"
+          },
+          "t_enum(VoteType)58152": {
+            "label": "enum OmniArbitration.VoteType",
+            "members": [
+              "None",
+              "Release",
+              "Refund"
+            ],
+            "numberOfBytes": "1"
+          },
+          "t_mapping(t_address,t_enum(VoteType)58152)": {
+            "label": "mapping(address => enum OmniArbitration.VoteType)",
+            "numberOfBytes": "32"
+          },
+          "t_mapping(t_address,t_uint256)": {
+            "label": "mapping(address => uint256)",
+            "numberOfBytes": "32"
+          },
+          "t_mapping(t_bytes32,t_address)": {
+            "label": "mapping(bytes32 => address)",
+            "numberOfBytes": "32"
+          },
+          "t_mapping(t_uint256,t_mapping(t_address,t_enum(VoteType)58152))": {
+            "label": "mapping(uint256 => mapping(address => enum OmniArbitration.VoteType))",
+            "numberOfBytes": "32"
+          },
+          "t_mapping(t_uint256,t_mapping(t_bytes32,t_address))": {
+            "label": "mapping(uint256 => mapping(bytes32 => address))",
+            "numberOfBytes": "32"
+          },
+          "t_mapping(t_uint256,t_struct(Appeal)58213_storage)": {
+            "label": "mapping(uint256 => struct OmniArbitration.Appeal)",
+            "numberOfBytes": "32"
+          },
+          "t_mapping(t_uint256,t_struct(Dispute)58193_storage)": {
+            "label": "mapping(uint256 => struct OmniArbitration.Dispute)",
+            "numberOfBytes": "32"
+          },
+          "t_mapping(t_uint256,t_uint256)": {
+            "label": "mapping(uint256 => uint256)",
+            "numberOfBytes": "32"
+          },
+          "t_struct(Appeal)58213_storage": {
+            "label": "struct OmniArbitration.Appeal",
+            "members": [
+              {
+                "label": "disputeId",
+                "type": "t_uint256",
+                "offset": 0,
+                "slot": "0"
+              },
+              {
+                "label": "arbitrators",
+                "type": "t_array(t_address)5_storage",
+                "offset": 0,
+                "slot": "1"
+              },
+              {
+                "label": "releaseVotes",
+                "type": "t_uint8",
+                "offset": 0,
+                "slot": "6"
+              },
+              {
+                "label": "refundVotes",
+                "type": "t_uint8",
+                "offset": 1,
+                "slot": "6"
+              },
+              {
+                "label": "deadline",
+                "type": "t_uint256",
+                "offset": 0,
+                "slot": "7"
+              },
+              {
+                "label": "appealStake",
+                "type": "t_uint256",
+                "offset": 0,
+                "slot": "8"
+              },
+              {
+                "label": "appellant",
+                "type": "t_address",
+                "offset": 0,
+                "slot": "9"
+              },
+              {
+                "label": "resolved",
+                "type": "t_bool",
+                "offset": 20,
+                "slot": "9"
+              }
+            ],
+            "numberOfBytes": "320"
+          },
+          "t_struct(Dispute)58193_storage": {
+            "label": "struct OmniArbitration.Dispute",
+            "members": [
+              {
+                "label": "escrowId",
+                "type": "t_uint256",
+                "offset": 0,
+                "slot": "0"
+              },
+              {
+                "label": "buyer",
+                "type": "t_address",
+                "offset": 0,
+                "slot": "1"
+              },
+              {
+                "label": "seller",
+                "type": "t_address",
+                "offset": 0,
+                "slot": "2"
+              },
+              {
+                "label": "arbitrators",
+                "type": "t_array(t_address)3_storage",
+                "offset": 0,
+                "slot": "3"
+              },
+              {
+                "label": "releaseVotes",
+                "type": "t_uint8",
+                "offset": 0,
+                "slot": "6"
+              },
+              {
+                "label": "refundVotes",
+                "type": "t_uint8",
+                "offset": 1,
+                "slot": "6"
+              },
+              {
+                "label": "createdAt",
+                "type": "t_uint256",
+                "offset": 0,
+                "slot": "7"
+              },
+              {
+                "label": "deadline",
+                "type": "t_uint256",
+                "offset": 0,
+                "slot": "8"
+              },
+              {
+                "label": "disputedAmount",
+                "type": "t_uint256",
+                "offset": 0,
+                "slot": "9"
+              },
+              {
+                "label": "status",
+                "type": "t_enum(DisputeStatus)58159",
+                "offset": 0,
+                "slot": "10"
+              },
+              {
+                "label": "appealed",
+                "type": "t_bool",
+                "offset": 1,
+                "slot": "10"
+              },
+              {
+                "label": "evidenceCIDs",
+                "type": "t_array(t_bytes32)dyn_storage",
+                "offset": 0,
+                "slot": "11"
+              },
+              {
+                "label": "disputeFee",
+                "type": "t_uint256",
+                "offset": 0,
+                "slot": "12"
+              },
+              {
+                "label": "selectionBlock",
+                "type": "t_uint256",
+                "offset": 0,
+                "slot": "13"
+              }
+            ],
+            "numberOfBytes": "448"
+          },
+          "t_uint8": {
+            "label": "uint8",
+            "numberOfBytes": "1"
+          }
+        },
+        "namespaces": {
+          "erc7201:openzeppelin.storage.Pausable": [
+            {
+              "contract": "PausableUpgradeable",
+              "label": "_paused",
+              "type": "t_bool",
+              "src": "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol:21",
+              "offset": 0,
+              "slot": "0"
+            }
+          ],
+          "erc7201:openzeppelin.storage.ReentrancyGuard": [
+            {
+              "contract": "ReentrancyGuardUpgradeable",
+              "label": "_status",
+              "type": "t_uint256",
+              "src": "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol:43",
+              "offset": 0,
+              "slot": "0"
+            }
+          ],
+          "erc7201:openzeppelin.storage.AccessControl": [
+            {
+              "contract": "AccessControlUpgradeable",
+              "label": "_roles",
+              "type": "t_mapping(t_bytes32,t_struct(RoleData)26_storage)",
+              "src": "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol:62",
+              "offset": 0,
+              "slot": "0"
+            }
+          ],
+          "erc7201:openzeppelin.storage.Initializable": [
+            {
+              "contract": "Initializable",
+              "label": "_initialized",
+              "type": "t_uint64",
+              "src": "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol:69",
+              "offset": 0,
+              "slot": "0"
+            },
+            {
+              "contract": "Initializable",
+              "label": "_initializing",
+              "type": "t_bool",
+              "src": "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol:73",
+              "offset": 8,
+              "slot": "0"
+            }
+          ]
+        }
+      }
+    },
+    "c5c7dd18e0e4cfa0a49a51913139b0f9e1e5544e0f2d540350d1ca4952f49924": {
+      "address": "0x6974F8c7712a4f294A1f66Efc16EC678AAB7b7F2",
+      "txHash": "0xa24379f6aa1d9bebf4a47cfcbaf568f6de011312a90c1dbe6344025e1c521f69",
+      "layout": {
+        "solcVersion": "0.8.24",
+        "storage": [
+          {
+            "label": "core",
+            "offset": 0,
+            "slot": "0",
+            "type": "t_contract(OmniCore)31537",
+            "contract": "OmniBridge",
+            "src": "contracts/OmniBridge.sol:166"
+          },
+          {
+            "label": "blockchainId",
+            "offset": 0,
+            "slot": "1",
+            "type": "t_bytes32",
+            "contract": "OmniBridge",
+            "src": "contracts/OmniBridge.sol:169"
+          },
+          {
+            "label": "transferCount",
+            "offset": 0,
+            "slot": "2",
+            "type": "t_uint256",
+            "contract": "OmniBridge",
+            "src": "contracts/OmniBridge.sol:172"
+          },
+          {
+            "label": "chainConfigs",
+            "offset": 0,
+            "slot": "3",
+            "type": "t_mapping(t_uint256,t_struct(ChainConfig)27607_storage)",
+            "contract": "OmniBridge",
+            "src": "contracts/OmniBridge.sol:175"
+          },
+          {
+            "label": "transfers",
+            "offset": 0,
+            "slot": "4",
+            "type": "t_mapping(t_uint256,t_struct(BridgeTransfer)27593_storage)",
+            "contract": "OmniBridge",
+            "src": "contracts/OmniBridge.sol:178"
+          },
+          {
+            "label": "dailyVolume",
+            "offset": 0,
+            "slot": "5",
+            "type": "t_mapping(t_uint256,t_mapping(t_uint256,t_uint256))",
+            "contract": "OmniBridge",
+            "src": "contracts/OmniBridge.sol:181"
+          },
+          {
+            "label": "dailyInboundVolume",
+            "offset": 0,
+            "slot": "6",
+            "type": "t_mapping(t_uint256,t_mapping(t_uint256,t_uint256))",
+            "contract": "OmniBridge",
+            "src": "contracts/OmniBridge.sol:186"
+          },
+          {
+            "label": "processedMessages",
+            "offset": 0,
+            "slot": "7",
+            "type": "t_mapping(t_bytes32,t_bool)",
+            "contract": "OmniBridge",
+            "src": "contracts/OmniBridge.sol:189"
+          },
+          {
+            "label": "blockchainToChainId",
+            "offset": 0,
+            "slot": "8",
+            "type": "t_mapping(t_bytes32,t_uint256)",
+            "contract": "OmniBridge",
+            "src": "contracts/OmniBridge.sol:192"
+          },
+          {
+            "label": "trustedBridges",
+            "offset": 0,
+            "slot": "9",
+            "type": "t_mapping(t_bytes32,t_address)",
+            "contract": "OmniBridge",
+            "src": "contracts/OmniBridge.sol:195"
+          },
+          {
+            "label": "chainToBlockchainId",
+            "offset": 0,
+            "slot": "10",
+            "type": "t_mapping(t_uint256,t_bytes32)",
+            "contract": "OmniBridge",
+            "src": "contracts/OmniBridge.sol:200"
+          },
+          {
+            "label": "accumulatedFees",
+            "offset": 0,
+            "slot": "11",
+            "type": "t_mapping(t_address,t_uint256)",
+            "contract": "OmniBridge",
+            "src": "contracts/OmniBridge.sol:205"
+          },
+          {
+            "label": "transferUsePrivacy",
+            "offset": 0,
+            "slot": "12",
+            "type": "t_mapping(t_uint256,t_bool)",
+            "contract": "OmniBridge",
+            "src": "contracts/OmniBridge.sol:209"
+          },
+          {
+            "label": "_ossified",
+            "offset": 0,
+            "slot": "13",
+            "type": "t_bool",
+            "contract": "OmniBridge",
+            "src": "contracts/OmniBridge.sol:212"
+          },
+          {
+            "label": "feeVault",
+            "offset": 1,
+            "slot": "13",
+            "type": "t_address",
+            "contract": "OmniBridge",
+            "src": "contracts/OmniBridge.sol:215"
+          },
+          {
+            "label": "__gap",
+            "offset": 0,
+            "slot": "14",
+            "type": "t_array(t_uint256)43_storage",
+            "contract": "OmniBridge",
+            "src": "contracts/OmniBridge.sol:218"
+          }
+        ],
+        "types": {
+          "t_address": {
+            "label": "address",
+            "numberOfBytes": "20"
+          },
+          "t_bool": {
+            "label": "bool",
+            "numberOfBytes": "1"
+          },
+          "t_bytes32": {
+            "label": "bytes32",
+            "numberOfBytes": "32"
+          },
+          "t_mapping(t_address,t_bool)": {
+            "label": "mapping(address => bool)",
+            "numberOfBytes": "32"
+          },
+          "t_mapping(t_bytes32,t_struct(RoleData)26_storage)": {
+            "label": "mapping(bytes32 => struct AccessControlUpgradeable.RoleData)",
+            "numberOfBytes": "32"
+          },
+          "t_struct(AccessControlStorage)36_storage": {
+            "label": "struct AccessControlUpgradeable.AccessControlStorage",
+            "members": [
+              {
+                "label": "_roles",
+                "type": "t_mapping(t_bytes32,t_struct(RoleData)26_storage)",
+                "offset": 0,
+                "slot": "0"
+              }
+            ],
+            "numberOfBytes": "32"
+          },
+          "t_struct(InitializableStorage)147_storage": {
+            "label": "struct Initializable.InitializableStorage",
+            "members": [
+              {
+                "label": "_initialized",
+                "type": "t_uint64",
+                "offset": 0,
+                "slot": "0"
+              },
+              {
+                "label": "_initializing",
+                "type": "t_bool",
+                "offset": 8,
+                "slot": "0"
+              }
+            ],
+            "numberOfBytes": "32"
+          },
+          "t_struct(PausableStorage)555_storage": {
+            "label": "struct PausableUpgradeable.PausableStorage",
+            "members": [
+              {
+                "label": "_paused",
+                "type": "t_bool",
+                "offset": 0,
+                "slot": "0"
+              }
+            ],
+            "numberOfBytes": "32"
+          },
+          "t_struct(ReentrancyGuardStorage)619_storage": {
+            "label": "struct ReentrancyGuardUpgradeable.ReentrancyGuardStorage",
+            "members": [
+              {
+                "label": "_status",
+                "type": "t_uint256",
+                "offset": 0,
+                "slot": "0"
+              }
+            ],
+            "numberOfBytes": "32"
+          },
+          "t_struct(RoleData)26_storage": {
+            "label": "struct AccessControlUpgradeable.RoleData",
+            "members": [
+              {
+                "label": "hasRole",
+                "type": "t_mapping(t_address,t_bool)",
+                "offset": 0,
+                "slot": "0"
+              },
+              {
+                "label": "adminRole",
+                "type": "t_bytes32",
+                "offset": 0,
+                "slot": "1"
+              }
+            ],
+            "numberOfBytes": "64"
+          },
+          "t_uint256": {
+            "label": "uint256",
+            "numberOfBytes": "32"
+          },
+          "t_uint64": {
+            "label": "uint64",
+            "numberOfBytes": "8"
+          },
+          "t_array(t_uint256)43_storage": {
+            "label": "uint256[43]",
+            "numberOfBytes": "1376"
+          },
+          "t_contract(OmniCore)31537": {
+            "label": "contract OmniCore",
+            "numberOfBytes": "20"
+          },
+          "t_mapping(t_address,t_uint256)": {
+            "label": "mapping(address => uint256)",
+            "numberOfBytes": "32"
+          },
+          "t_mapping(t_bytes32,t_address)": {
+            "label": "mapping(bytes32 => address)",
+            "numberOfBytes": "32"
+          },
+          "t_mapping(t_bytes32,t_bool)": {
+            "label": "mapping(bytes32 => bool)",
+            "numberOfBytes": "32"
+          },
+          "t_mapping(t_bytes32,t_uint256)": {
+            "label": "mapping(bytes32 => uint256)",
+            "numberOfBytes": "32"
+          },
+          "t_mapping(t_uint256,t_bool)": {
+            "label": "mapping(uint256 => bool)",
+            "numberOfBytes": "32"
+          },
+          "t_mapping(t_uint256,t_bytes32)": {
+            "label": "mapping(uint256 => bytes32)",
+            "numberOfBytes": "32"
+          },
+          "t_mapping(t_uint256,t_mapping(t_uint256,t_uint256))": {
+            "label": "mapping(uint256 => mapping(uint256 => uint256))",
+            "numberOfBytes": "32"
+          },
+          "t_mapping(t_uint256,t_struct(BridgeTransfer)27593_storage)": {
+            "label": "mapping(uint256 => struct OmniBridge.BridgeTransfer)",
+            "numberOfBytes": "32"
+          },
+          "t_mapping(t_uint256,t_struct(ChainConfig)27607_storage)": {
+            "label": "mapping(uint256 => struct OmniBridge.ChainConfig)",
+            "numberOfBytes": "32"
+          },
+          "t_mapping(t_uint256,t_uint256)": {
+            "label": "mapping(uint256 => uint256)",
+            "numberOfBytes": "32"
+          },
+          "t_struct(BridgeTransfer)27593_storage": {
+            "label": "struct OmniBridge.BridgeTransfer",
+            "members": [
+              {
+                "label": "sender",
+                "type": "t_address",
+                "offset": 0,
+                "slot": "0"
+              },
+              {
+                "label": "completed",
+                "type": "t_bool",
+                "offset": 20,
+                "slot": "0"
+              },
+              {
+                "label": "recipient",
+                "type": "t_address",
+                "offset": 0,
+                "slot": "1"
+              },
+              {
+                "label": "amount",
+                "type": "t_uint256",
+                "offset": 0,
+                "slot": "2"
+              },
+              {
+                "label": "sourceChainId",
+                "type": "t_uint256",
+                "offset": 0,
+                "slot": "3"
+              },
+              {
+                "label": "targetChainId",
+                "type": "t_uint256",
+                "offset": 0,
+                "slot": "4"
+              },
+              {
+                "label": "transferHash",
+                "type": "t_bytes32",
+                "offset": 0,
+                "slot": "5"
+              },
+              {
+                "label": "timestamp",
+                "type": "t_uint256",
+                "offset": 0,
+                "slot": "6"
+              }
+            ],
+            "numberOfBytes": "224"
+          },
+          "t_struct(ChainConfig)27607_storage": {
+            "label": "struct OmniBridge.ChainConfig",
+            "members": [
+              {
+                "label": "teleporterAddress",
+                "type": "t_address",
+                "offset": 0,
+                "slot": "0"
+              },
+              {
+                "label": "isActive",
+                "type": "t_bool",
+                "offset": 20,
+                "slot": "0"
+              },
+              {
+                "label": "minTransfer",
+                "type": "t_uint256",
+                "offset": 0,
+                "slot": "1"
+              },
+              {
+                "label": "maxTransfer",
+                "type": "t_uint256",
+                "offset": 0,
+                "slot": "2"
+              },
+              {
+                "label": "dailyLimit",
+                "type": "t_uint256",
+                "offset": 0,
+                "slot": "3"
+              },
+              {
+                "label": "transferFee",
+                "type": "t_uint256",
+                "offset": 0,
+                "slot": "4"
+              }
+            ],
+            "numberOfBytes": "160"
+          }
+        },
+        "namespaces": {
+          "erc7201:openzeppelin.storage.Pausable": [
+            {
+              "contract": "PausableUpgradeable",
+              "label": "_paused",
+              "type": "t_bool",
+              "src": "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol:21",
+              "offset": 0,
+              "slot": "0"
+            }
+          ],
+          "erc7201:openzeppelin.storage.ReentrancyGuard": [
+            {
+              "contract": "ReentrancyGuardUpgradeable",
+              "label": "_status",
+              "type": "t_uint256",
+              "src": "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol:43",
+              "offset": 0,
+              "slot": "0"
+            }
+          ],
+          "erc7201:openzeppelin.storage.AccessControl": [
+            {
+              "contract": "AccessControlUpgradeable",
+              "label": "_roles",
+              "type": "t_mapping(t_bytes32,t_struct(RoleData)26_storage)",
+              "src": "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol:62",
+              "offset": 0,
+              "slot": "0"
+            }
+          ],
+          "erc7201:openzeppelin.storage.Initializable": [
+            {
+              "contract": "Initializable",
+              "label": "_initialized",
+              "type": "t_uint64",
+              "src": "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol:69",
+              "offset": 0,
+              "slot": "0"
+            },
+            {
+              "contract": "Initializable",
+              "label": "_initializing",
+              "type": "t_bool",
+              "src": "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol:73",
+              "offset": 8,
+              "slot": "0"
+            }
+          ]
+        }
+      }
+    },
+    "0399ea6e8500b6a7f3e61248de5096e70b0a91c734a0231b033fd48f947f6035": {
+      "address": "0xd3cd580d0CB62B1d48d15932BdF09a81dc93836e",
+      "txHash": "0xfe303ab5331f82203b5a4d478acc48ed5093bed7333313ad97389dc6309b7577",
+      "layout": {
+        "solcVersion": "0.8.24",
+        "storage": [
+          {
+            "label": "omniCoin",
+            "offset": 0,
+            "slot": "0",
+            "type": "t_contract(IERC20)7223",
+            "contract": "OmniPrivacyBridge",
+            "src": "contracts/OmniPrivacyBridge.sol:107"
+          },
+          {
+            "label": "privateOmniCoin",
+            "offset": 0,
+            "slot": "1",
+            "type": "t_contract(IPrivateOmniCoin)36259",
+            "contract": "OmniPrivacyBridge",
+            "src": "contracts/OmniPrivacyBridge.sol:111"
+          },
+          {
+            "label": "maxConversionLimit",
+            "offset": 0,
+            "slot": "2",
+            "type": "t_uint256",
+            "contract": "OmniPrivacyBridge",
+            "src": "contracts/OmniPrivacyBridge.sol:114"
+          },
+          {
+            "label": "totalLocked",
+            "offset": 0,
+            "slot": "3",
+            "type": "t_uint256",
+            "contract": "OmniPrivacyBridge",
+            "src": "contracts/OmniPrivacyBridge.sol:117"
+          },
+          {
+            "label": "totalConvertedToPrivate",
+            "offset": 0,
+            "slot": "4",
+            "type": "t_uint256",
+            "contract": "OmniPrivacyBridge",
+            "src": "contracts/OmniPrivacyBridge.sol:120"
+          },
+          {
+            "label": "totalConvertedToPublic",
+            "offset": 0,
+            "slot": "5",
+            "type": "t_uint256",
+            "contract": "OmniPrivacyBridge",
+            "src": "contracts/OmniPrivacyBridge.sol:123"
+          },
+          {
+            "label": "bridgeMintedPXOM",
+            "offset": 0,
+            "slot": "6",
+            "type": "t_uint256",
+            "contract": "OmniPrivacyBridge",
+            "src": "contracts/OmniPrivacyBridge.sol:126"
+          },
+          {
+            "label": "totalFeesCollected",
+            "offset": 0,
+            "slot": "7",
+            "type": "t_uint256",
+            "contract": "OmniPrivacyBridge",
+            "src": "contracts/OmniPrivacyBridge.sol:129"
+          },
+          {
+            "label": "dailyVolumeLimit",
+            "offset": 0,
+            "slot": "8",
+            "type": "t_uint256",
+            "contract": "OmniPrivacyBridge",
+            "src": "contracts/OmniPrivacyBridge.sol:132"
+          },
+          {
+            "label": "currentDayVolume",
+            "offset": 0,
+            "slot": "9",
+            "type": "t_uint256",
+            "contract": "OmniPrivacyBridge",
+            "src": "contracts/OmniPrivacyBridge.sol:135"
+          },
+          {
+            "label": "currentDayStart",
+            "offset": 0,
+            "slot": "10",
+            "type": "t_uint256",
+            "contract": "OmniPrivacyBridge",
+            "src": "contracts/OmniPrivacyBridge.sol:138"
+          },
+          {
+            "label": "_ossified",
+            "offset": 0,
+            "slot": "11",
+            "type": "t_bool",
+            "contract": "OmniPrivacyBridge",
+            "src": "contracts/OmniPrivacyBridge.sol:141"
+          },
+          {
+            "label": "__gap",
+            "offset": 0,
+            "slot": "12",
+            "type": "t_array(t_uint256)38_storage",
+            "contract": "OmniPrivacyBridge",
+            "src": "contracts/OmniPrivacyBridge.sol:152"
+          }
+        ],
+        "types": {
+          "t_address": {
+            "label": "address",
+            "numberOfBytes": "20"
+          },
+          "t_bool": {
+            "label": "bool",
+            "numberOfBytes": "1"
+          },
+          "t_bytes32": {
+            "label": "bytes32",
+            "numberOfBytes": "32"
+          },
+          "t_mapping(t_address,t_bool)": {
+            "label": "mapping(address => bool)",
+            "numberOfBytes": "32"
+          },
+          "t_mapping(t_bytes32,t_struct(RoleData)26_storage)": {
+            "label": "mapping(bytes32 => struct AccessControlUpgradeable.RoleData)",
+            "numberOfBytes": "32"
+          },
+          "t_struct(AccessControlStorage)36_storage": {
+            "label": "struct AccessControlUpgradeable.AccessControlStorage",
+            "members": [
+              {
+                "label": "_roles",
+                "type": "t_mapping(t_bytes32,t_struct(RoleData)26_storage)",
+                "offset": 0,
+                "slot": "0"
+              }
+            ],
+            "numberOfBytes": "32"
+          },
+          "t_struct(InitializableStorage)147_storage": {
+            "label": "struct Initializable.InitializableStorage",
+            "members": [
+              {
+                "label": "_initialized",
+                "type": "t_uint64",
+                "offset": 0,
+                "slot": "0"
+              },
+              {
+                "label": "_initializing",
+                "type": "t_bool",
+                "offset": 8,
+                "slot": "0"
+              }
+            ],
+            "numberOfBytes": "32"
+          },
+          "t_struct(PausableStorage)555_storage": {
+            "label": "struct PausableUpgradeable.PausableStorage",
+            "members": [
+              {
+                "label": "_paused",
+                "type": "t_bool",
+                "offset": 0,
+                "slot": "0"
+              }
+            ],
+            "numberOfBytes": "32"
+          },
+          "t_struct(ReentrancyGuardStorage)619_storage": {
+            "label": "struct ReentrancyGuardUpgradeable.ReentrancyGuardStorage",
+            "members": [
+              {
+                "label": "_status",
+                "type": "t_uint256",
+                "offset": 0,
+                "slot": "0"
+              }
+            ],
+            "numberOfBytes": "32"
+          },
+          "t_struct(RoleData)26_storage": {
+            "label": "struct AccessControlUpgradeable.RoleData",
+            "members": [
+              {
+                "label": "hasRole",
+                "type": "t_mapping(t_address,t_bool)",
+                "offset": 0,
+                "slot": "0"
+              },
+              {
+                "label": "adminRole",
+                "type": "t_bytes32",
+                "offset": 0,
+                "slot": "1"
+              }
+            ],
+            "numberOfBytes": "64"
+          },
+          "t_uint256": {
+            "label": "uint256",
+            "numberOfBytes": "32"
+          },
+          "t_uint64": {
+            "label": "uint64",
+            "numberOfBytes": "8"
+          },
+          "t_array(t_uint256)38_storage": {
+            "label": "uint256[38]",
+            "numberOfBytes": "1216"
+          },
+          "t_contract(IERC20)7223": {
+            "label": "contract IERC20",
+            "numberOfBytes": "20"
+          },
+          "t_contract(IPrivateOmniCoin)36259": {
+            "label": "contract IPrivateOmniCoin",
+            "numberOfBytes": "20"
+          }
+        },
+        "namespaces": {
+          "erc7201:openzeppelin.storage.ReentrancyGuard": [
+            {
+              "contract": "ReentrancyGuardUpgradeable",
+              "label": "_status",
+              "type": "t_uint256",
+              "src": "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol:43",
+              "offset": 0,
+              "slot": "0"
+            }
+          ],
+          "erc7201:openzeppelin.storage.Pausable": [
+            {
+              "contract": "PausableUpgradeable",
+              "label": "_paused",
+              "type": "t_bool",
+              "src": "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol:21",
               "offset": 0,
               "slot": "0"
             }

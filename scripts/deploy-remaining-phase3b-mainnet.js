@@ -36,6 +36,9 @@ const path = require("path");
 /** Real ODDAO treasury address */
 const ODDAO_TREASURY = "0x664B6347a69A22b35348D42E4640CA92e1609378";
 
+/** Protocol treasury address (Pioneer Phase: deployer; update for production) */
+const PROTOCOL_TREASURY = "0xaDAD7751DcDd2E30015C173F2c35a56e467CD9ba";
+
 async function main() {
     console.log("=== Deploy Phase 3b — Remaining 20 Contracts (Mainnet) ===\n");
 
@@ -137,8 +140,8 @@ async function main() {
     const OmniYieldFeeCollector = await ethers.getContractFactory("OmniYieldFeeCollector");
     const yieldFee = await OmniYieldFeeCollector.deploy(
         ODDAO_TREASURY,       // primary recipient (70%)
-        stakingPoolAddress,   // staking pool (20%)
-        deployer.address,     // validator recipient (10%, deployer for Pioneer)
+        ODDAO_TREASURY,       // ODDAO treasury (20%)
+        PROTOCOL_TREASURY,    // protocol treasury (10%)
         performanceFeeBps     // 10% performance fee
     );
     await yieldFee.waitForDeployment();
@@ -229,6 +232,11 @@ async function main() {
     deployments.contracts.OmniBridge = bridgeAddr;
     deployments.contracts.OmniBridgeImplementation = bridgeImpl;
     console.log("OmniBridge:", bridgeAddr);
+
+    // Wire bridge fees to UnifiedFeeVault (G4 audit remediation)
+    const bridgeContract = OmniBridge.attach(bridgeAddr);
+    await bridgeContract.setFeeVault(feeVaultAddr);
+    console.log("  -> OmniBridge.setFeeVault() →", feeVaultAddr);
     save();
     deployed++;
 

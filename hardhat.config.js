@@ -144,6 +144,20 @@ module.exports = {
       // Fix for COTI RPC "pending block not available" issue
       blockGasLimit: 30000000,
       allowUnlimitedContractSize: false
+    },
+    // COTI V2 Mainnet — MPC privacy contracts
+    cotiMainnet: {
+      url: "https://mainnet.coti.io/rpc",
+      chainId: 2632500,
+      accounts: process.env.COTI_MAINNET_DEPLOYER_PRIVATE_KEY
+        ? [process.env.COTI_MAINNET_DEPLOYER_PRIVATE_KEY]
+        : [],
+      gas: "auto",
+      gasPrice: 5000000000, // 5 Gwei
+      timeout: 180000, // 3 minutes for MPC operations
+      confirmations: 2,
+      blockGasLimit: 30000000,
+      allowUnlimitedContractSize: false
     }
   },
   paths: {
