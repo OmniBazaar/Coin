@@ -6,7 +6,7 @@
  * - Dual signature verification (EIP-712)
  * - Order matching logic verification
  * - Atomic settlement execution
- * - Fee distribution (70% ODDAO, 20% Staking Pool, 10% Matching Validator)
+ * - Fee distribution (70% LP, 20% ODDAO, 10% Protocol) with maker rebate
  * - Anyone can submit settlement (no VALIDATOR_ROLE required)
  * - Edge cases and security
  */
@@ -58,8 +58,8 @@ describe("DEXSettlement - Trustless Architecture", function () {
     let taker: any;
     let matchingValidator: any;
     let anyoneElse: any;
+    let liquidityPool: any;
     let oddao: any;
-    let stakingPool: any;
     let protocolTreasury: any;
 
     let ownerAddress: string;
@@ -67,8 +67,8 @@ describe("DEXSettlement - Trustless Architecture", function () {
     let takerAddress: string;
     let matchingValidatorAddress: string;
     let anyoneElseAddress: string;
+    let liquidityPoolAddress: string;
     let oddaoAddress: string;
-    let stakingPoolAddress: string;
     let protocolTreasuryAddress: string;
 
     // Mock ERC20 tokens for testing
@@ -78,7 +78,7 @@ describe("DEXSettlement - Trustless Architecture", function () {
     const INITIAL_BALANCE = ethers.parseUnits("1000000", 18);
 
     beforeEach(async function () {
-        [owner, maker, taker, matchingValidator, anyoneElse, oddao, stakingPool, protocolTreasury] =
+        [owner, maker, taker, matchingValidator, anyoneElse, liquidityPool, oddao, protocolTreasury] =
             await ethers.getSigners();
 
         ownerAddress = await owner.getAddress();
@@ -86,8 +86,8 @@ describe("DEXSettlement - Trustless Architecture", function () {
         takerAddress = await taker.getAddress();
         matchingValidatorAddress = await matchingValidator.getAddress();
         anyoneElseAddress = await anyoneElse.getAddress();
+        liquidityPoolAddress = await liquidityPool.getAddress();
         oddaoAddress = await oddao.getAddress();
-        stakingPoolAddress = await stakingPool.getAddress();
         protocolTreasuryAddress = await protocolTreasury.getAddress();
 
         // Deploy mock ERC20 tokens
@@ -104,8 +104,8 @@ describe("DEXSettlement - Trustless Architecture", function () {
         // Deploy DEXSettlement
         const DEXSettlement = await ethers.getContractFactory("DEXSettlement");
         dexSettlement = await DEXSettlement.deploy(
-            oddaoAddress,              // 70% of fees -> ODDAO
-            stakingPoolAddress,        // 20% of fees -> Staking Pool
+            liquidityPoolAddress,      // 70% of fees -> Liquidity Providers
+            oddaoAddress,              // 20% of fees -> ODDAO
             protocolTreasuryAddress    // 10% of fees -> Protocol Treasury
         );
         await dexSettlement.waitForDeployment();
@@ -125,8 +125,8 @@ describe("DEXSettlement - Trustless Architecture", function () {
     describe("Deployment", function () {
         it("Should set correct fee recipients", async function () {
             const feeRecipients = await dexSettlement.getFeeRecipients();
+            expect(feeRecipients.liquidityPool).to.equal(liquidityPoolAddress);
             expect(feeRecipients.oddao).to.equal(oddaoAddress);
-            expect(feeRecipients.stakingPool).to.equal(stakingPoolAddress);
             expect(feeRecipients.protocolTreasury).to.equal(protocolTreasuryAddress);
         });
 
@@ -632,8 +632,8 @@ describe("DEXSettlement - Trustless Architecture", function () {
         });
     });
 
-    describe("Fee Distribution (70% ODDAO, 20% Staking Pool, 10% Protocol)", function () {
-        it("Should emit fee distribution event", async function () {
+    describe("Fee Distribution (70% LP, 20% ODDAO, 10% Protocol) with Maker Rebate", function () {
+        it("Should emit fee distribution event with net fees after rebate", async function () {
             const makerOrder = {
                 trader: makerAddress,
                 isBuy: false,
@@ -662,22 +662,19 @@ describe("DEXSettlement - Trustless Architecture", function () {
                 nonce: 0
             };
 
-            const makerHash = await dexSettlement.hashOrder(makerOrder);
-            const takerHash = await dexSettlement.hashOrder(takerOrder);
-
             const makerSignature = await signOrderEIP712(makerOrder, maker, dexSettlement);
             const takerSignature = await signOrderEIP712(takerOrder, taker, dexSettlement);
 
-            // H-04: Fees are now calculated on amountIn (input token)
-            const makerFee = (makerOrder.amountIn * 10n) / 10000n; // 0.1%
-            const takerFee = (takerOrder.amountIn * 20n) / 10000n; // 0.2%
-            const totalFees = makerFee + takerFee;
+            // Maker gets 0.05% rebate (no fee), taker pays 0.20%
+            const makerRebate = (makerOrder.amountIn * 5n) / 10000n; // 0.05% rebate TO maker
+            const takerFee = (takerOrder.amountIn * 20n) / 10000n; // 0.2% taker fee
+            const netFee = takerFee - makerRebate;
 
-            const oddaoAmount = (totalFees * 7000n) / 10000n; // 70% -> ODDAO
-            const stakingPoolAmount = (totalFees * 2000n) / 10000n; // 20% -> Staking Pool
-            const protocolAmount = (totalFees * 1000n) / 10000n; // 10% -> Protocol
+            // 70/20/10 split on net fee (not total taker fee)
+            const oddaoAmount = (netFee * 2000n) / 10000n; // 20% -> ODDAO
+            const protocolAmount = (netFee * 1000n) / 10000n; // 10% -> Protocol
+            const lpAmount = netFee - oddaoAmount - protocolAmount; // 70% -> LP (remainder)
 
-            // Last arg is block.timestamp (not block.number)
             const tx = await dexSettlement.settleTrade(
                 makerOrder, takerOrder, makerSignature, takerSignature
             );
@@ -688,11 +685,59 @@ describe("DEXSettlement - Trustless Architecture", function () {
                 .to.emit(dexSettlement, "FeesDistributed")
                 .withArgs(
                     matchingValidatorAddress,
+                    lpAmount,
                     oddaoAmount,
-                    stakingPoolAmount,
                     protocolAmount,
                     block!.timestamp
                 );
+        });
+
+        it("Should pay maker rebate (0.05%) to maker address", async function () {
+            const makerOrder = {
+                trader: makerAddress,
+                isBuy: false,
+                tokenIn: await tokenA.getAddress(),
+                tokenOut: await tokenB.getAddress(),
+                amountIn: ethers.parseUnits("1000", 18),
+                amountOut: ethers.parseUnits("1000", 18),
+                price: 10000,
+                deadline: Math.floor(Date.now() / 1000) + 3600,
+                salt: ethers.randomBytes(32),
+                matchingValidator: matchingValidatorAddress,
+                nonce: 0
+            };
+
+            const takerOrder = {
+                trader: takerAddress,
+                isBuy: true,
+                tokenIn: await tokenB.getAddress(),
+                tokenOut: await tokenA.getAddress(),
+                amountIn: ethers.parseUnits("1000", 18),
+                amountOut: ethers.parseUnits("1000", 18),
+                price: 10000,
+                deadline: Math.floor(Date.now() / 1000) + 3600,
+                salt: ethers.randomBytes(32),
+                matchingValidator: matchingValidatorAddress,
+                nonce: 0
+            };
+
+            const makerSignature = await signOrderEIP712(makerOrder, maker, dexSettlement);
+            const takerSignature = await signOrderEIP712(takerOrder, taker, dexSettlement);
+
+            // Rebate is paid in taker's tokenIn (tokenB)
+            const makerRebate = (makerOrder.amountIn * 5n) / 10000n; // 0.05%
+            const makerTokenBBefore = await tokenB.balanceOf(makerAddress);
+
+            await dexSettlement.settleTrade(
+                makerOrder, takerOrder, makerSignature, takerSignature
+            );
+
+            const makerTokenBAfter = await tokenB.balanceOf(makerAddress);
+            // Maker receives taker's amountOut (full) + rebate in taker's tokenIn
+            // Rebate comes from taker fee, paid in tokenB
+            expect(makerTokenBAfter - makerTokenBBefore).to.equal(
+                takerOrder.amountIn - (takerOrder.amountIn * 20n) / 10000n + makerRebate
+            );
         });
 
         it("Should credit matching validator (not settler)", async function () {
@@ -1009,11 +1054,12 @@ describe("DEXSettlement - Trustless Architecture", function () {
             expect(contractBalanceAAfter).to.equal(contractBalanceABefore);
             expect(contractBalanceBAfter).to.equal(contractBalanceBBefore);
 
-            // Verify totalFeesCollected was updated
-            const makerFee = (makerOrder.amountIn * 10n) / 10000n; // 0.1%
+            // Verify totalFeesCollected was updated with net fee (after rebate)
             const takerFee = (takerOrder.amountIn * 20n) / 10000n; // 0.2%
+            const makerRebate = (makerOrder.amountIn * 5n) / 10000n; // 0.05%
+            const netFee = takerFee - makerRebate;
             const stats = await dexSettlement.getTradingStats();
-            expect(stats.fees).to.equal(makerFee + takerFee);
+            expect(stats.fees).to.equal(netFee);
         });
     });
 
@@ -1078,10 +1124,13 @@ describe("DEXSettlement - Trustless Architecture", function () {
         });
     });
 
-    describe("Nonce Management", function () {
-        it("Should increment nonces after settlement", async function () {
-            const makerNonceBefore = await dexSettlement.getNonce(makerAddress);
-            const takerNonceBefore = await dexSettlement.getNonce(takerAddress);
+    describe("Nonce Management (Bitmap)", function () {
+        it("Should mark nonces as used after settlement", async function () {
+            // Bitmap nonces: nonce 0 should be unused before settlement
+            const makerNonceUsedBefore = await dexSettlement.isNonceUsed(makerAddress, 0);
+            const takerNonceUsedBefore = await dexSettlement.isNonceUsed(takerAddress, 0);
+            expect(makerNonceUsedBefore).to.equal(false);
+            expect(takerNonceUsedBefore).to.equal(false);
 
             const makerOrder = {
                 trader: makerAddress,
@@ -1094,7 +1143,7 @@ describe("DEXSettlement - Trustless Architecture", function () {
                 deadline: Math.floor(Date.now() / 1000) + 3600,
                 salt: ethers.randomBytes(32),
                 matchingValidator: matchingValidatorAddress,
-                nonce: Number(makerNonceBefore)
+                nonce: 0
             };
 
             const takerOrder = {
@@ -1108,11 +1157,8 @@ describe("DEXSettlement - Trustless Architecture", function () {
                 deadline: Math.floor(Date.now() / 1000) + 3600,
                 salt: ethers.randomBytes(32),
                 matchingValidator: matchingValidatorAddress,
-                nonce: Number(takerNonceBefore)
+                nonce: 0
             };
-
-            const makerHash = await dexSettlement.hashOrder(makerOrder);
-            const takerHash = await dexSettlement.hashOrder(takerOrder);
 
             const makerSignature = await signOrderEIP712(makerOrder, maker, dexSettlement);
             const takerSignature = await signOrderEIP712(takerOrder, taker, dexSettlement);
@@ -1124,11 +1170,11 @@ describe("DEXSettlement - Trustless Architecture", function () {
                 takerSignature
             );
 
-            const makerNonceAfter = await dexSettlement.getNonce(makerAddress);
-            const takerNonceAfter = await dexSettlement.getNonce(takerAddress);
-
-            expect(makerNonceAfter).to.equal(makerNonceBefore + 1n);
-            expect(takerNonceAfter).to.equal(takerNonceBefore + 1n);
+            // After settlement, nonce 0 should be marked as used
+            const makerNonceUsedAfter = await dexSettlement.isNonceUsed(makerAddress, 0);
+            const takerNonceUsedAfter = await dexSettlement.isNonceUsed(takerAddress, 0);
+            expect(makerNonceUsedAfter).to.equal(true);
+            expect(takerNonceUsedAfter).to.equal(true);
         });
     });
 

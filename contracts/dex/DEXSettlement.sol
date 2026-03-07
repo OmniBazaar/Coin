@@ -44,10 +44,15 @@ import {
  * - Emergency circuit breakers
  * - Intent-based settlement with real token escrow
  *
- * Fee Distribution (push pattern — immediate transfer):
- * - 70% -> ODDAO (governance operations)
- * - 20% -> Staking Pool (incentivizes staking)
- * - 10% -> Matching Validator (processing the trade)
+ * Fee Structure (maker-taker with rebate):
+ * - Taker fee: 0.20% of input amount
+ * - Maker rebate: 0.05% earned by maker (paid from taker fee)
+ * - Net fee revenue: 0.15% distributed via push pattern
+ *
+ * Fee Distribution (70/20/10 of net fee):
+ * - 70% -> Liquidity Providers (rewards LPs)
+ * - 20% -> ODDAO (governance treasury)
+ * - 10% -> Protocol Treasury (POL)
  *
  * Audit Remediations Applied:
  * - H-01: settleIntent() access control
@@ -116,13 +121,13 @@ contract DEXSettlement is
 
     /**
      * @notice Fee distribution addresses
-     * @param oddao Address of ODDAO treasury (70%)
-     * @param stakingPool Address of staking pool (20%)
-     * @param protocolTreasury Address of protocol treasury (10%)
+     * @param liquidityPool LP pool address (70% of net fees)
+     * @param oddao ODDAO treasury address (20% of net fees)
+     * @param protocolTreasury Protocol treasury address (10%)
      */
     struct FeeRecipients {
+        address liquidityPool;
         address oddao;
-        address stakingPool;
         address protocolTreasury;
     }
 
@@ -176,17 +181,17 @@ contract DEXSettlement is
     /// @notice Basis points divisor (100%)
     uint256 public constant BASIS_POINTS_DIVISOR = 10000;
 
-    /// @notice ODDAO fee share (70%)
-    uint256 public constant ODDAO_SHARE = 7000;
+    /// @notice LP pool fee share (70% of net fees)
+    uint256 public constant LP_SHARE = 7000;
 
-    /// @notice Staking pool fee share (20%)
-    uint256 public constant STAKING_POOL_SHARE = 2000;
+    /// @notice ODDAO treasury fee share (20% of net fees)
+    uint256 public constant ODDAO_SHARE = 2000;
 
-    /// @notice Protocol treasury fee share (10%)
+    /// @notice Protocol treasury fee share (10% of net fees)
     uint256 public constant PROTOCOL_SHARE = 1000;
 
-    /// @notice Spot market maker fee (0.1%)
-    uint256 public constant SPOT_MAKER_FEE = 10;
+    /// @notice Spot market maker rebate (0.05% earned by maker)
+    uint256 public constant SPOT_MAKER_REBATE = 5;
 
     /// @notice Spot market taker fee (0.2%)
     uint256 public constant SPOT_TAKER_FEE = 20;
@@ -307,8 +312,8 @@ contract DEXSettlement is
      * @param tokenOut Token being bought
      * @param amountIn Amount of tokenIn
      * @param amountOut Amount of tokenOut
-     * @param makerFee Fee paid by maker
-     * @param takerFee Fee paid by taker
+     * @param makerRebate Rebate paid to maker (0.05% of amountIn)
+     * @param takerFee Fee paid by taker (0.20%)
      * @param matchingValidator Validator who matched
      * @param settler Address that submitted settlement
      */
@@ -320,7 +325,7 @@ contract DEXSettlement is
         address tokenOut,
         uint256 amountIn,
         uint256 amountOut,
-        uint256 makerFee,
+        uint256 makerRebate,
         uint256 takerFee,
         address matchingValidator,
         address settler
@@ -329,15 +334,15 @@ contract DEXSettlement is
     /**
      * @notice Emitted when fees are distributed
      * @param matchingValidator Validator who matched the trade
-     * @param oddaoAmount Amount to ODDAO (70%)
-     * @param stakingPoolAmount Amount to staking pool (20%)
-     * @param protocolAmount Amount to protocol treasury (10%)
+     * @param lpAmount Amount to LPs (70% of net fee)
+     * @param oddaoAmount Amount to ODDAO (20% of net fee)
+     * @param protocolAmount Amount to protocol (10% of net fee)
      * @param timestamp Distribution timestamp
      */
     event FeesDistributed(
         address indexed matchingValidator,
+        uint256 indexed lpAmount,
         uint256 indexed oddaoAmount,
-        uint256 indexed stakingPoolAmount,
         uint256 protocolAmount,
         uint256 timestamp
     );
@@ -384,13 +389,13 @@ contract DEXSettlement is
 
     /**
      * @notice Emitted when fee recipients are updated
+     * @param newLiquidityPool New LP pool address
      * @param newOddao New ODDAO address
-     * @param newStakingPool New staking pool address
      * @param newProtocolTreasury New protocol treasury address
      */
     event FeeRecipientsUpdated(
+        address indexed newLiquidityPool,
         address indexed newOddao,
-        address indexed newStakingPool,
         address newProtocolTreasury
     );
 
@@ -408,14 +413,14 @@ contract DEXSettlement is
 
     /**
      * @notice Emitted when fee recipient change is scheduled (M-04)
+     * @param newLiquidityPool Proposed new LP pool address
      * @param newOddao Proposed new ODDAO address
-     * @param newStakingPool Proposed new staking pool address
      * @param newProtocolTreasury Proposed new protocol treasury
      * @param effectiveAt Timestamp when change can be applied
      */
     event FeeRecipientsChangeScheduled(
+        address indexed newLiquidityPool,
         address indexed newOddao,
-        address indexed newStakingPool,
         address newProtocolTreasury,
         uint256 effectiveAt
     );
@@ -624,29 +629,29 @@ contract DEXSettlement is
 
     /**
      * @notice Initialize the DEXSettlement contract
-     * @param _oddao ODDAO treasury address (70% of fees)
-     * @param _stakingPool Staking pool address (20% of fees)
-     * @param _protocolTreasury Protocol treasury address (10% of fees)
+     * @param _liquidityPool LP pool address (70% of net fees)
+     * @param _oddao ODDAO treasury address (20% of net fees)
+     * @param _protocolTreasury Protocol treasury address (10%)
      */
     constructor(
+        address _liquidityPool,
         address _oddao,
-        address _stakingPool,
         address _protocolTreasury
     )
         EIP712("OmniCoin DEX Settlement", "1")
         Ownable(msg.sender)
     {
         if (
-            _oddao == address(0)
-                || _stakingPool == address(0)
+            _liquidityPool == address(0)
+                || _oddao == address(0)
                 || _protocolTreasury == address(0)
         ) {
             revert InvalidAddress();
         }
 
         feeRecipients = FeeRecipients({
+            liquidityPool: _liquidityPool,
             oddao: _oddao,
-            stakingPool: _stakingPool,
             protocolTreasury: _protocolTreasury
         });
 
@@ -769,15 +774,15 @@ contract DEXSettlement is
         _checkSlippage(makerOrder, takerOrder);
 
         // H-04: Calculate fees on input token amounts
-        uint256 makerFee = (makerOrder.amountIn
-            * SPOT_MAKER_FEE) / BASIS_POINTS_DIVISOR;
+        // Maker earns a rebate; taker pays the fee
+        uint256 makerRebate = (makerOrder.amountIn
+            * SPOT_MAKER_REBATE) / BASIS_POINTS_DIVISOR;
         uint256 takerFee = (takerOrder.amountIn
             * SPOT_TAKER_FEE) / BASIS_POINTS_DIVISOR;
 
         _executeAtomicSettlement(
             makerOrder,
             takerOrder,
-            makerFee,
             takerFee
         );
 
@@ -799,12 +804,13 @@ contract DEXSettlement is
         dailyVolumeUsed +=
             makerOrder.amountIn + takerOrder.amountIn;
 
-        // H-04: Fees now come from tokenIn (input token)
-        _distributeFees(
-            makerFee,
+        // Distribute net fee (takerFee - makerRebate)
+        // with rebate paid to maker
+        _distributeFeesWithRebate(
             takerFee,
-            makerOrder.tokenIn,
+            makerRebate,
             takerOrder.tokenIn,
+            makerOrder.trader,
             makerOrder.matchingValidator
         );
 
@@ -820,7 +826,7 @@ contract DEXSettlement is
             makerOrder.tokenOut,
             makerOrder.amountIn,
             makerOrder.amountOut,
-            makerFee,
+            makerRebate,
             takerFee,
             makerOrder.matchingValidator,
             msg.sender
@@ -868,38 +874,38 @@ contract DEXSettlement is
 
     /**
      * @notice Schedule fee recipient address change (M-04)
-     * @param _oddao New ODDAO address (receives 70%)
-     * @param _stakingPool New staking pool address (20%)
+     * @param _liquidityPool New LP pool address (70% of net)
+     * @param _oddao New ODDAO address (20% of net)
      * @param _protocolTreasury New protocol treasury address (10%)
      * @dev Queues the change with a 48-hour timelock. Call
      *      `applyFeeRecipients()` after the delay to apply.
      */
     function scheduleFeeRecipients(
+        address _liquidityPool,
         address _oddao,
-        address _stakingPool,
         address _protocolTreasury
     ) external onlyOwner {
         if (feeRecipientsTimelockExpiry != 0) {
             revert PendingChangeExists();
         }
         if (
-            _oddao == address(0)
-                || _stakingPool == address(0)
+            _liquidityPool == address(0)
+                || _oddao == address(0)
                 || _protocolTreasury == address(0)
         ) {
             revert InvalidAddress();
         }
 
         pendingFeeRecipients = FeeRecipients({
+            liquidityPool: _liquidityPool,
             oddao: _oddao,
-            stakingPool: _stakingPool,
             protocolTreasury: _protocolTreasury
         });
         feeRecipientsTimelockExpiry = block.timestamp + TIMELOCK_DELAY; // solhint-disable-line not-rely-on-time
 
         emit FeeRecipientsChangeScheduled(
+            _liquidityPool,
             _oddao,
-            _stakingPool,
             _protocolTreasury,
             feeRecipientsTimelockExpiry
         );
@@ -925,16 +931,16 @@ contract DEXSettlement is
         }
 
         // H-05: Force-claim pending fees to old recipients
+        _claimAllPendingFees(feeRecipients.liquidityPool);
         _claimAllPendingFees(feeRecipients.oddao);
-        _claimAllPendingFees(feeRecipients.stakingPool);
         _claimAllPendingFees(feeRecipients.protocolTreasury);
 
         feeRecipients = pendingFeeRecipients;
         feeRecipientsTimelockExpiry = 0;
 
         emit FeeRecipientsUpdated(
+            feeRecipients.liquidityPool,
             feeRecipients.oddao,
-            feeRecipients.stakingPool,
             feeRecipients.protocolTreasury
         );
     }
@@ -1258,36 +1264,22 @@ contract DEXSettlement is
         // M-05: CEI - mark settled before external calls
         coll.settled = true;
 
-        // C-01: Calculate fees on both sides
-        uint256 traderFee = (coll.traderAmount
-            * SPOT_MAKER_FEE) / BASIS_POINTS_DIVISOR;
+        // C-01: Trader (maker equivalent) earns rebate,
+        // solver (taker equivalent) pays fee
+        uint256 traderRebate = (coll.traderAmount
+            * SPOT_MAKER_REBATE) / BASIS_POINTS_DIVISOR;
         uint256 solverFee = (coll.solverAmount
             * SPOT_TAKER_FEE) / BASIS_POINTS_DIVISOR;
 
-        uint256 traderNet = coll.traderAmount - traderFee;
+        // Trader sends full amount (no fee deduction)
         uint256 solverNet = coll.solverAmount - solverFee;
 
-        // C-01: Accrue fee splits
-        if (traderFee > 0) {
-            _accrueFeeSplit(traderFee, coll.tokenIn);
-            _trackFeeToken(coll.tokenIn);
-            totalFeesCollected += traderFee;
-        }
-        if (solverFee > 0) {
-            _accrueFeeSplit(solverFee, coll.tokenOut);
-            _trackFeeToken(coll.tokenOut);
-            totalFeesCollected += solverFee;
-        }
-
-        // Transfer escrowed trader tokens: net to solver,
-        // fee stays in contract for claiming
+        // Transfer escrowed trader tokens: full amount to
+        // solver (trader pays no fee, earns rebate)
         IERC20(coll.tokenIn).safeTransfer(
             coll.solver,
-            traderNet
+            coll.traderAmount
         );
-        // NOTE: traderFee portion stays in contract (was
-        // escrowed during lockIntentCollateral). No transfer
-        // needed — it remains here for fee recipients to claim.
 
         // Transfer solver tokens to trader (minus fee)
         // M-07: Balance check for fee-on-transfer tokens
@@ -1313,6 +1305,27 @@ contract DEXSettlement is
                 address(this),
                 solverFee
             );
+        }
+
+        // Distribute solver fee with trader rebate
+        if (solverFee > 0) {
+            uint256 rebate = traderRebate > solverFee
+                ? solverFee : traderRebate;
+            uint256 netFee = solverFee - rebate;
+
+            // Pay rebate to trader from solver fee
+            if (rebate > 0) {
+                IERC20(coll.tokenOut).safeTransfer(
+                    coll.trader, rebate
+                );
+            }
+
+            // Distribute remaining net fee
+            if (netFee > 0) {
+                _accrueFeeSplit(netFee, coll.tokenOut);
+                _trackFeeToken(coll.tokenOut);
+                totalFeesCollected += netFee;
+            }
         }
 
         emit IntentSettled(
@@ -1558,47 +1571,34 @@ contract DEXSettlement is
     }
 
     /**
-     * @notice Execute atomic settlement (H-04, M-07 fix)
+     * @notice Execute atomic settlement with maker rebate
      * @param makerOrder Maker's order
      * @param takerOrder Taker's order
-     * @param makerFee Fee from maker's input
-     * @param takerFee Fee from taker's input
-     * @dev Fees are deducted from the input token amounts.
-     *      Counterparty receives (amountIn - fee). Fee is
-     *      sent to the contract for distribution.
+     * @param takerFee Fee from taker's input (0.20%)
+     * @dev Maker sends FULL amountIn (no fee deduction).
+     *      Taker sends (amountIn - takerFee) to maker,
+     *      takerFee stays in contract for distribution.
      *      M-07: Uses balance-before/after to detect and
      *      reject fee-on-transfer tokens.
      */
     function _executeAtomicSettlement(
         Order calldata makerOrder,
         Order calldata takerOrder,
-        uint256 makerFee,
         uint256 takerFee
     ) internal {
-        // Maker sends (amountIn - fee) to taker
-        uint256 makerNet = makerOrder.amountIn - makerFee;
-
+        // Maker sends full amountIn to taker (no fee)
         // M-07: Check maker's transfer for fee-on-transfer
         uint256 balBefore = IERC20(makerOrder.tokenIn)
             .balanceOf(takerOrder.trader);
         IERC20(makerOrder.tokenIn).safeTransferFrom(
             makerOrder.trader,
             takerOrder.trader,
-            makerNet
+            makerOrder.amountIn
         );
         uint256 balAfter = IERC20(makerOrder.tokenIn)
             .balanceOf(takerOrder.trader);
-        if (balAfter - balBefore != makerNet) {
+        if (balAfter - balBefore != makerOrder.amountIn) {
             revert FeeOnTransferNotSupported();
-        }
-
-        // Maker fee to contract
-        if (makerFee > 0) {
-            IERC20(makerOrder.tokenIn).safeTransferFrom(
-                makerOrder.trader,
-                address(this),
-                makerFee
-            );
         }
 
         // Taker sends (amountIn - fee) to maker
@@ -1629,51 +1629,59 @@ contract DEXSettlement is
     }
 
     /**
-     * @notice Distribute trading fees via direct transfer
-     * @param makerFee Fee from maker
-     * @param takerFee Fee from taker
-     * @param makerFeeToken Token of maker fee
-     * @param takerFeeToken Token of taker fee
-     * @param matchingValidator Validator who matched (for event)
-     * @dev 70% ODDAO, 20% Staking Pool, 10% Protocol Treasury.
-     *      Push pattern: fees transferred immediately.
-     *      Remainder from rounding goes to ODDAO.
+     * @notice Distribute fees with maker rebate
+     * @param takerFee Total taker fee collected
+     * @param makerRebate Rebate to pay to maker
+     * @param feeToken Token in which fees are denominated
+     * @param makerTrader Maker address receiving rebate
+     * @param matchingValidator Validator who matched (event)
+     * @dev Pays makerRebate from takerFee to maker, then
+     *      distributes remaining net fee via 70/20/10 split
+     *      (LP/ODDAO/Protocol). Push pattern — immediate.
      */
-    function _distributeFees(
-        uint256 makerFee,
+    function _distributeFeesWithRebate(
         uint256 takerFee,
-        address makerFeeToken,
-        address takerFeeToken,
+        uint256 makerRebate,
+        address feeToken,
+        address makerTrader,
         address matchingValidator
     ) internal {
-        uint256 totalFees = makerFee + takerFee;
-        if (totalFees == 0) return;
+        if (takerFee == 0) return;
 
-        totalFeesCollected += totalFees;
-
-        if (makerFee > 0) {
-            _accrueFeeSplit(makerFee, makerFeeToken);
-            _trackFeeToken(makerFeeToken);
+        // Safety: rebate must not exceed taker fee
+        if (makerRebate > takerFee) {
+            makerRebate = takerFee;
         }
 
-        if (takerFee > 0) {
-            _accrueFeeSplit(takerFee, takerFeeToken);
-            _trackFeeToken(takerFeeToken);
+        uint256 netFee = takerFee - makerRebate;
+        totalFeesCollected += netFee;
+
+        // Pay rebate to maker
+        if (makerRebate > 0) {
+            IERC20(feeToken).safeTransfer(
+                makerTrader,
+                makerRebate
+            );
         }
 
-        // Aggregate event amounts
-        uint256 oddaoAmt = (totalFees * ODDAO_SHARE)
+        // Distribute net fee via 70/20/10
+        if (netFee > 0) {
+            _accrueFeeSplit(netFee, feeToken);
+            _trackFeeToken(feeToken);
+        }
+
+        // Event amounts based on net fee
+        uint256 lpAmt = (netFee * LP_SHARE)
             / BASIS_POINTS_DIVISOR;
-        uint256 stakingAmt =
-            (totalFees * STAKING_POOL_SHARE)
-                / BASIS_POINTS_DIVISOR;
-        uint256 protocolAmt = (totalFees * PROTOCOL_SHARE)
+        uint256 oddaoAmt = (netFee * ODDAO_SHARE)
+            / BASIS_POINTS_DIVISOR;
+        uint256 protocolAmt = (netFee * PROTOCOL_SHARE)
             / BASIS_POINTS_DIVISOR;
 
         emit FeesDistributed(
             matchingValidator,
+            lpAmt,
             oddaoAmt,
-            stakingAmt,
             protocolAmt,
             // solhint-disable-next-line not-rely-on-time
             block.timestamp
@@ -1682,34 +1690,34 @@ contract DEXSettlement is
 
     /**
      * @notice Transfer a single fee amount directly to
-     *         the three recipients with remainder to ODDAO
+     *         the three recipients with remainder to LPs
      * @param fee Total fee amount
      * @param token Fee token address
      * @dev Push pattern: fees are transferred immediately
      *      during settlement, not accrued for later claim.
-     *      70% ODDAO, 20% Staking Pool, 10% Protocol Treasury.
-     *      Remainder from integer division goes to ODDAO
+     *      70% LP Pool, 20% ODDAO, 10% Protocol Treasury.
+     *      Remainder from integer division goes to LP Pool
      *      to prevent dust accumulation (M-02).
      */
     function _accrueFeeSplit(
         uint256 fee,
         address token
     ) internal {
-        uint256 sp = (fee * STAKING_POOL_SHARE)
+        uint256 od = (fee * ODDAO_SHARE)
             / BASIS_POINTS_DIVISOR;
         uint256 pt = (fee * PROTOCOL_SHARE)
             / BASIS_POINTS_DIVISOR;
-        // ODDAO gets remainder (avoids rounding dust)
-        uint256 od = fee - sp - pt;
+        // LP gets remainder (avoids rounding dust)
+        uint256 lp = fee - od - pt;
 
+        if (lp > 0) {
+            IERC20(token).safeTransfer(
+                feeRecipients.liquidityPool, lp
+            );
+        }
         if (od > 0) {
             IERC20(token).safeTransfer(
                 feeRecipients.oddao, od
-            );
-        }
-        if (sp > 0) {
-            IERC20(token).safeTransfer(
-                feeRecipients.stakingPool, sp
             );
         }
         if (pt > 0) {
