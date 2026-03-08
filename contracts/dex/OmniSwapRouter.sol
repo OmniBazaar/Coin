@@ -122,9 +122,6 @@ contract OmniSwapRouter is Ownable2Step, Pausable, ReentrancyGuard {
     /// @notice Basis points divisor (100%)
     uint256 public constant BASIS_POINTS_DIVISOR = 10000;
 
-    /// @notice Timelock delay for critical admin functions (M-02)
-    uint256 public constant TIMELOCK_DELAY = 48 hours;
-
     // ========================================================================
     // STATE VARIABLES
     // ========================================================================
@@ -133,11 +130,9 @@ contract OmniSwapRouter is Ownable2Step, Pausable, ReentrancyGuard {
     uint256 public swapFeeBps;
 
     /// @notice Fee recipient address (receives 100% on-chain)
-    /// @dev H-02: The 70/20/10 fee distribution (ODDAO / staking pool / validator)
-    ///      is handled off-chain by the fee collector contract or a separate
-    ///      OmniFeeDistributor. On-chain, fees are sent to a single address
-    ///      for simplicity. This matches the DEXSettlement.sol pattern where
-    ///      the validator backend performs the three-way split.
+    /// @dev The 70/20/10 fee distribution (ODDAO / staking pool / protocol)
+    ///      is handled by the UnifiedFeeVault contract. On-chain, fees are
+    ///      sent to a single address (UnifiedFeeVault) for simplicity.
     address public feeRecipient;
 
     /// @notice Mapping of source ID to adapter contract
@@ -148,18 +143,6 @@ contract OmniSwapRouter is Ownable2Step, Pausable, ReentrancyGuard {
 
     /// @notice Total fees collected
     uint256 public totalFeesCollected;
-
-    /// @notice Pending swap fee in basis points
-    uint256 public pendingSwapFeeBps;
-
-    /// @notice Pending fee recipient address
-    address public pendingFeeRecipient;
-
-    /// @notice Timestamp when pending fee change can be applied
-    uint256 public feeTimelockExpiry;
-
-    /// @notice Timestamp when pending recipient change can apply
-    uint256 public recipientTimelockExpiry;
 
     // ========================================================================
     // EVENTS
@@ -219,26 +202,6 @@ contract OmniSwapRouter is Ownable2Step, Pausable, ReentrancyGuard {
      */
     event TokensRescued(address indexed token, uint256 indexed amount);
 
-    /**
-     * @notice Emitted when a fee change is scheduled (M-02)
-     * @param newFee Proposed new fee in basis points
-     * @param effectiveAt Timestamp when the change can be applied
-     */
-    event FeeChangeScheduled(
-        uint256 indexed newFee,
-        uint256 indexed effectiveAt
-    );
-
-    /**
-     * @notice Emitted when a recipient change is scheduled (M-02)
-     * @param newRecipient Proposed new fee recipient
-     * @param effectiveAt Timestamp when the change can be applied
-     */
-    event RecipientChangeScheduled(
-        address indexed newRecipient,
-        uint256 indexed effectiveAt
-    );
-
     // ========================================================================
     // CUSTOM ERRORS
     // ========================================================================
@@ -278,12 +241,6 @@ contract OmniSwapRouter is Ownable2Step, Pausable, ReentrancyGuard {
 
     /// @notice Thrown when a registered adapter address has no deployed code
     error AdapterNotContract();
-
-    /// @notice Thrown when the timelock period has not elapsed (M-02)
-    error TimelockNotElapsed();
-
-    /// @notice Thrown when no pending change is scheduled (M-02)
-    error NoPendingChange();
 
     // ========================================================================
     // CONSTRUCTOR
@@ -404,83 +361,37 @@ contract OmniSwapRouter is Ownable2Step, Pausable, ReentrancyGuard {
     }
 
     /**
-     * @notice Schedule swap fee change with timelock (M-02)
-     * @param _swapFeeBps New swap fee in basis points
-     * @dev Queues the change with a 48-hour delay. Call
-     *      `applySwapFee()` after the delay to apply.
+     * @notice Update swap fee in basis points
+     * @param _swapFeeBps New swap fee in basis points (max 100 = 1%)
+     * @dev Pioneer Phase: no timelock. Will be replaced with
+     *      timelocked version before multi-sig handoff.
      */
-    function scheduleSwapFee(
+    function setSwapFee(
         uint256 _swapFeeBps
     ) external onlyOwner {
         if (_swapFeeBps > 100) revert FeeTooHigh();
 
-        pendingSwapFeeBps = _swapFeeBps;
-        // solhint-disable-next-line not-rely-on-time
-        feeTimelockExpiry = block.timestamp + TIMELOCK_DELAY;
-
-        emit FeeChangeScheduled(
-            _swapFeeBps,
-            feeTimelockExpiry
-        );
-    }
-
-    /**
-     * @notice Apply pending swap fee after timelock (M-02)
-     */
-    function applySwapFee() external onlyOwner {
-        if (feeTimelockExpiry == 0) revert NoPendingChange();
-        // solhint-disable-next-line not-rely-on-time
-        if (block.timestamp < feeTimelockExpiry) {
-            revert TimelockNotElapsed();
-        }
-
         uint256 oldFee = swapFeeBps;
-        swapFeeBps = pendingSwapFeeBps;
-        feeTimelockExpiry = 0;
-        emit SwapFeeUpdated(oldFee, pendingSwapFeeBps);
+        swapFeeBps = _swapFeeBps;
+        emit SwapFeeUpdated(oldFee, _swapFeeBps);
     }
 
     /**
-     * @notice Schedule fee recipient change with timelock (M-02)
+     * @notice Update fee recipient address
      * @param _feeRecipient New fee recipient address
-     * @dev Queues the change with a 48-hour delay. Call
-     *      `applyFeeRecipient()` after the delay to apply.
+     * @dev Pioneer Phase: no timelock. Will be replaced with
+     *      timelocked version before multi-sig handoff.
      */
-    function scheduleFeeRecipient(
+    function setFeeRecipient(
         address _feeRecipient
     ) external onlyOwner {
         if (_feeRecipient == address(0)) {
             revert InvalidRecipientAddress();
         }
 
-        pendingFeeRecipient = _feeRecipient;
-        recipientTimelockExpiry = block.timestamp + TIMELOCK_DELAY; // solhint-disable-line not-rely-on-time
-
-        emit RecipientChangeScheduled(
-            _feeRecipient,
-            recipientTimelockExpiry
-        );
-    }
-
-    /**
-     * @notice Apply pending fee recipient after timelock (M-02)
-     */
-    function applyFeeRecipient() external onlyOwner {
-        if (recipientTimelockExpiry == 0) {
-            revert NoPendingChange();
-        }
-        // solhint-disable-next-line not-rely-on-time
-        if (block.timestamp < recipientTimelockExpiry) {
-            revert TimelockNotElapsed();
-        }
-
         address oldRecipient = feeRecipient;
-        feeRecipient = pendingFeeRecipient;
-        recipientTimelockExpiry = 0;
-        emit FeeRecipientUpdated(
-            oldRecipient,
-            pendingFeeRecipient
-        );
+        feeRecipient = _feeRecipient;
+        emit FeeRecipientUpdated(oldRecipient, _feeRecipient);
     }
 
     /**
@@ -502,13 +413,13 @@ contract OmniSwapRouter is Ownable2Step, Pausable, ReentrancyGuard {
     /**
      * @notice Rescue accidentally-sent tokens to the fee recipient
      * @param token Token address to rescue
-     * @dev Restricted: only callable by feeRecipient, transfers full balance.
-     *      This prevents owner from draining arbitrary amounts to arbitrary
-     *      addresses. Only accidentally-sent tokens should ever be present.
+     * @dev Restricted: only callable by owner, transfers full balance
+     *      to current feeRecipient. Only accidentally-sent tokens
+     *      should ever be present.
      */
-    function rescueTokens(address token) external nonReentrant {
-        if (msg.sender != feeRecipient) revert InvalidRecipientAddress();
-
+    function rescueTokens(
+        address token
+    ) external nonReentrant onlyOwner {
         uint256 balance = IERC20(token).balanceOf(address(this));
         if (balance > 0) {
             IERC20(token).safeTransfer(feeRecipient, balance);

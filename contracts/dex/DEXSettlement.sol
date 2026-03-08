@@ -62,7 +62,8 @@ import {
  * - H-05: Force-claim pending fees on recipient change
  * - H-06: incrementNonce() for order cancellation
  * - M-01: Nonce bitmap for concurrent orders
- * - M-04: Timelock on critical admin functions
+ * - M-04: Timelock on trading-limits admin functions
+ *         (fee recipients: Pioneer Phase direct setter)
  * - M-06: maxSlippageBps enforced in settlement
  * - M-07: Fee-on-transfer token incompatibility guard
  */
@@ -259,12 +260,6 @@ contract DEXSettlement is
     /// @notice IntentId => collateral record
     mapping(bytes32 => IntentCollateral) public intentCollateral;
 
-    /// @notice Pending fee recipient change (M-04)
-    FeeRecipients public pendingFeeRecipients;
-
-    /// @notice Timestamp when pending fee recipients can be applied
-    uint256 public feeRecipientsTimelockExpiry;
-
     /// @notice Pending trading limits change (M-04)
     uint256 public pendingMaxTradeSize;
 
@@ -412,20 +407,6 @@ contract DEXSettlement is
     );
 
     /**
-     * @notice Emitted when fee recipient change is scheduled (M-04)
-     * @param newLiquidityPool Proposed new LP pool address
-     * @param newOddao Proposed new ODDAO address
-     * @param newProtocolTreasury Proposed new protocol treasury
-     * @param effectiveAt Timestamp when change can be applied
-     */
-    event FeeRecipientsChangeScheduled(
-        address indexed newLiquidityPool,
-        address indexed newOddao,
-        address newProtocolTreasury,
-        uint256 effectiveAt
-    );
-
-    /**
      * @notice Emitted when trading limits change is scheduled (M-04)
      * @param newMaxTradeSize Proposed max trade size
      * @param newDailyVolumeLimit Proposed daily volume limit
@@ -438,12 +419,6 @@ contract DEXSettlement is
         uint256 newMaxSlippageBps,
         uint256 effectiveAt
     );
-
-    /**
-     * @notice Emitted when a scheduled fee recipients change
-     *         is cancelled (M-04)
-     */
-    event FeeRecipientsChangeCancelled();
 
     /**
      * @notice Emitted when a scheduled trading limits change
@@ -873,21 +848,20 @@ contract DEXSettlement is
     // ================================================================
 
     /**
-     * @notice Schedule fee recipient address change (M-04)
+     * @notice Update fee recipient addresses (Pioneer Phase)
      * @param _liquidityPool New LP pool address (70% of net)
      * @param _oddao New ODDAO address (20% of net)
      * @param _protocolTreasury New protocol treasury address (10%)
-     * @dev Queues the change with a 48-hour timelock. Call
-     *      `applyFeeRecipients()` after the delay to apply.
+     * @dev Force-claims all pending fees to old recipients
+     *      before updating addresses (H-05 audit fix preserved).
+     *      Pioneer Phase: no timelock. Will be replaced with
+     *      timelocked version before multi-sig handoff.
      */
-    function scheduleFeeRecipients(
+    function setFeeRecipients(
         address _liquidityPool,
         address _oddao,
         address _protocolTreasury
-    ) external onlyOwner {
-        if (feeRecipientsTimelockExpiry != 0) {
-            revert PendingChangeExists();
-        }
+    ) external nonReentrant onlyOwner {
         if (
             _liquidityPool == address(0)
                 || _oddao == address(0)
@@ -896,69 +870,22 @@ contract DEXSettlement is
             revert InvalidAddress();
         }
 
-        pendingFeeRecipients = FeeRecipients({
-            liquidityPool: _liquidityPool,
-            oddao: _oddao,
-            protocolTreasury: _protocolTreasury
-        });
-        feeRecipientsTimelockExpiry = block.timestamp + TIMELOCK_DELAY; // solhint-disable-line not-rely-on-time
-
-        emit FeeRecipientsChangeScheduled(
-            _liquidityPool,
-            _oddao,
-            _protocolTreasury,
-            feeRecipientsTimelockExpiry
-        );
-    }
-
-    /**
-     * @notice Apply pending fee recipient change after timelock
-     *         has elapsed (M-04, H-05)
-     * @dev Force-claims all pending fees to old recipients
-     *      before updating addresses.
-     */
-    function applyFeeRecipients()
-        external
-        nonReentrant
-        onlyOwner
-    {
-        if (feeRecipientsTimelockExpiry == 0) {
-            revert NoPendingChange();
-        }
-        // solhint-disable-next-line not-rely-on-time
-        if (block.timestamp < feeRecipientsTimelockExpiry) {
-            revert TimelockNotElapsed();
-        }
-
         // H-05: Force-claim pending fees to old recipients
         _claimAllPendingFees(feeRecipients.liquidityPool);
         _claimAllPendingFees(feeRecipients.oddao);
         _claimAllPendingFees(feeRecipients.protocolTreasury);
 
-        feeRecipients = pendingFeeRecipients;
-        feeRecipientsTimelockExpiry = 0;
+        feeRecipients = FeeRecipients({
+            liquidityPool: _liquidityPool,
+            oddao: _oddao,
+            protocolTreasury: _protocolTreasury
+        });
 
         emit FeeRecipientsUpdated(
-            feeRecipients.liquidityPool,
-            feeRecipients.oddao,
-            feeRecipients.protocolTreasury
+            _liquidityPool,
+            _oddao,
+            _protocolTreasury
         );
-    }
-
-    /**
-     * @notice Cancel a pending fee recipients change (M-04)
-     * @dev Only callable by owner. Resets the pending state.
-     */
-    function cancelScheduledFeeRecipients()
-        external
-        onlyOwner
-    {
-        if (feeRecipientsTimelockExpiry == 0) {
-            revert NoPendingChange();
-        }
-        feeRecipientsTimelockExpiry = 0;
-        delete pendingFeeRecipients;
-        emit FeeRecipientsChangeCancelled();
     }
 
     /**
@@ -1077,6 +1004,16 @@ contract DEXSettlement is
      */
     function unpause() external onlyOwner {
         _unpause();
+    }
+
+    /**
+     * @notice Disabled to prevent accidental loss of contract
+     *         admin control
+     * @dev Always reverts. Ownership can only be transferred via
+     *      two-step {transferOwnership} + {acceptOwnership} flow.
+     */
+    function renounceOwnership() public pure override {
+        revert InvalidAddress();
     }
 
     /**
@@ -1764,17 +1701,28 @@ contract DEXSettlement is
                 accruedFees[recipient][token];
             if (amount > 0) {
                 accruedFees[recipient][token] = 0;
-                // solhint-disable-next-line no-empty-blocks
-                try IERC20(token).transfer(
-                    recipient,
-                    amount
-                ) {
+                // Low-level call handles both reverting
+                // tokens (H-02) and tokens that return
+                // false without reverting (VP-26).
+                // solhint-disable-next-line avoid-low-level-calls
+                (bool ok, bytes memory ret) =
+                    token.call(
+                        abi.encodeWithSelector(
+                            IERC20.transfer.selector,
+                            recipient,
+                            amount
+                        )
+                    );
+                bool transferred = ok
+                    && (ret.length == 0
+                        || abi.decode(ret, (bool)));
+                if (transferred) {
                     emit FeesClaimed(
                         recipient,
                         token,
                         amount
                     );
-                } catch {
+                } else {
                     // Re-credit on failure (H-02)
                     accruedFees[recipient][token] =
                         amount;

@@ -130,8 +130,8 @@ contract UnifiedFeeVault is
     bytes32 public constant FEE_MANAGER_ROLE =
         keccak256("FEE_MANAGER_ROLE");
 
-    /// @notice Timelock delay for recipient changes (48 hours)
-    /// @dev M-02 audit fix: prevents instant diversion of fee flow
+    /// @notice Timelock delay for configuration changes (48 hours)
+    /// @dev Used for swap router and privacy bridge timelocks
     uint256 public constant RECIPIENT_CHANGE_DELAY = 48 hours;
 
     // ════════════════════════════════════════════════════════════════════
@@ -160,17 +160,26 @@ contract UnifiedFeeVault is
     /// @dev Once true, no further upgrades are possible
     bool private _ossified;
 
-    /// @notice Pending recipient change awaiting timelock
-    /// @dev Stores the proposed staking pool address
-    address public pendingStakingPool;
+    /// @custom:deprecated Kept for UUPS storage layout compatibility.
+    ///     Was: address public pendingStakingPool (packed in slot 5
+    ///     with _ossified). Removed in Pioneer Phase (no recipient
+    ///     timelock). Must remain to preserve slot assignments of all
+    ///     subsequent state variables.
+    /// @custom:oz-renamed-from pendingStakingPool
+    // solhint-disable-next-line var-name-mixedcase
+    address private __deprecated_pendingStakingPool;
 
-    /// @notice Pending recipient change awaiting timelock
-    /// @dev Stores the proposed protocol treasury address
-    address public pendingProtocolTreasury;
+    /// @custom:deprecated Kept for UUPS storage layout compatibility.
+    ///     Was: address public pendingProtocolTreasury (slot 6).
+    /// @custom:oz-renamed-from pendingProtocolTreasury
+    // solhint-disable-next-line var-name-mixedcase
+    address private __deprecated_pendingProtocolTreasury;
 
-    /// @notice Timestamp when pending recipient change can be applied
-    /// @dev Zero means no pending change
-    uint256 public recipientChangeTimestamp;
+    /// @custom:deprecated Kept for UUPS storage layout compatibility.
+    ///     Was: uint256 public recipientChangeTimestamp (slot 7).
+    /// @custom:oz-renamed-from recipientChangeTimestamp
+    // solhint-disable-next-line var-name-mixedcase
+    uint256 private __deprecated_recipientChangeTimestamp;
 
     /// @notice Accumulated claimable fees per recipient per token
     /// @dev M-03 audit fix: pull pattern for reverting recipients.
@@ -235,8 +244,12 @@ contract UnifiedFeeVault is
     uint256 public ossificationScheduledAt;
 
     /// @notice Storage gap for future upgrades
-    /// @dev Budget: 15 original + 7 new = 22 slots used. Gap = 28.
-    ///      Reduce by N when adding N new state variables.
+    /// @dev Budget: 15 original + 4 new + 3 deprecated = 22 slots.
+    ///      Gap = 28. Total = 50 (standard OZ budget).
+    ///      Pioneer Phase: 3 recipient-timelock state variables
+    ///      were deprecated (not removed) to preserve UUPS storage
+    ///      layout compatibility. See __deprecated_* above.
+    ///      Reduce gap by N when adding N new state variables.
     uint256[28] private __gap;
 
     // ════════════════════════════════════════════════════════════════════
@@ -293,18 +306,6 @@ contract UnifiedFeeVault is
         address indexed protocolTreasury
     );
 
-    /// @notice Emitted when a recipient change is proposed
-    /// @param stakingPool Proposed staking pool address
-    /// @param protocolTreasury Proposed protocol treasury address
-    /// @param effectiveTimestamp When the change can be applied
-    event RecipientsChangeProposed(
-        address indexed stakingPool,
-        address indexed protocolTreasury,
-        uint256 indexed effectiveTimestamp
-    );
-
-    /// @notice Emitted when a pending recipient change is cancelled
-    event RecipientsChangeCancelled();
 
     /// @notice Emitted when the contract is permanently ossified
     /// @param caller Address that triggered ossification
@@ -931,81 +932,24 @@ contract UnifiedFeeVault is
     // ════════════════════════════════════════════════════════════════════
 
     /**
-     * @notice Propose new staking pool and protocol treasury addresses
-     * @dev M-02 audit fix: changes are not applied immediately.
-     *      After RECIPIENT_CHANGE_DELAY (48 hours) elapses, call
-     *      applyRecipients() to finalize the change. This prevents
-     *      instant diversion of the 30% fee flow from a compromised
-     *      ADMIN_ROLE key.
-     * @param _stakingPool Proposed StakingRewardPool address
-     * @param _protocolTreasury Proposed protocol treasury address
+     * @notice Set staking pool and protocol treasury addresses
+     * @dev Pioneer Phase: direct setter without timelock.
+     *      Will be replaced with timelocked version before
+     *      multi-sig handoff.
+     * @param _stakingPool StakingRewardPool contract address (20%)
+     * @param _protocolTreasury Protocol treasury address (10%)
      */
-    function proposeRecipients(
+    function setRecipients(
         address _stakingPool,
         address _protocolTreasury
     ) external onlyRole(ADMIN_ROLE) {
         if (_stakingPool == address(0)) revert ZeroAddress();
         if (_protocolTreasury == address(0)) revert ZeroAddress();
 
-        pendingStakingPool = _stakingPool;
-        pendingProtocolTreasury = _protocolTreasury;
-        /* solhint-disable not-rely-on-time */
-        recipientChangeTimestamp =
-            block.timestamp + RECIPIENT_CHANGE_DELAY;
-        /* solhint-enable not-rely-on-time */
-
-        emit RecipientsChangeProposed(
-            _stakingPool,
-            _protocolTreasury,
-            recipientChangeTimestamp
-        );
-    }
-
-    /**
-     * @notice Apply the pending recipient change after timelock
-     * @dev Reverts if timelock has not elapsed or no pending change
-     *      exists. Only ADMIN_ROLE can execute.
-     */
-    function applyRecipients()
-        external
-        onlyRole(ADMIN_ROLE)
-    {
-        if (recipientChangeTimestamp == 0) {
-            revert NoPendingChange();
-        }
-        // solhint-disable-next-line not-rely-on-time
-        if (block.timestamp < recipientChangeTimestamp) {
-            revert TimelockNotElapsed();
-        }
-
-        stakingPool = pendingStakingPool;
-        protocolTreasury = pendingProtocolTreasury;
-
-        // Clear pending state
-        pendingStakingPool = address(0);
-        pendingProtocolTreasury = address(0);
-        recipientChangeTimestamp = 0;
+        stakingPool = _stakingPool;
+        protocolTreasury = _protocolTreasury;
 
         emit RecipientsUpdated(stakingPool, protocolTreasury);
-    }
-
-    /**
-     * @notice Cancel a pending recipient change
-     * @dev Can be called at any time before applyRecipients().
-     */
-    function cancelRecipientsChange()
-        external
-        onlyRole(ADMIN_ROLE)
-    {
-        if (recipientChangeTimestamp == 0) {
-            revert NoPendingChange();
-        }
-
-        pendingStakingPool = address(0);
-        pendingProtocolTreasury = address(0);
-        recipientChangeTimestamp = 0;
-
-        emit RecipientsChangeCancelled();
     }
 
     /**

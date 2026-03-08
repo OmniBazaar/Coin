@@ -4,6 +4,7 @@ pragma solidity 0.8.24;
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import {Ownable2Step, Ownable} from "@openzeppelin/contracts/access/Ownable2Step.sol";
 
 /**
  * @title OmniFeeRouter
@@ -15,25 +16,26 @@ import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol
  *
  * Flow:
  *   1. Pull totalAmount of inputToken from caller.
- *   2. Send feeAmount to immutable feeCollector.
+ *   2. Send feeAmount to feeCollector (mutable, owner-controlled).
  *   3. Approve netAmount to the external DEX router.
  *   4. Execute the swap via low-level call with caller-supplied calldata.
  *   5. Sweep output and residual input tokens back to caller.
  *
  * Trustless guarantees:
  *   - Fee percentage capped by immutable maxFeeBps (set at deploy).
- *   - Fee collector address is immutable (set at deploy).
+ *   - Fee collector address is mutable (owner-only, for Pioneer Phase flexibility).
  *   - Router address validated: cannot be a token, this contract, or an EOA (C-01).
  *   - Deadline parameter for MEV protection (M-01).
  *   - Contract never holds user funds between transactions.
  *   - All token transfers use SafeERC20 (reverts on failure).
  *   - Reentrancy guard on every external entry point.
+ *   - Ownable2Step for safe two-step ownership transfer.
  *
  * Gas optimisations:
- *   - Immutable storage for fee collector and cap.
+ *   - Immutable storage for fee cap.
  *   - Custom errors instead of revert strings.
  */
-contract OmniFeeRouter is ReentrancyGuard {
+contract OmniFeeRouter is Ownable2Step, ReentrancyGuard {
     using SafeERC20 for IERC20;
 
     // -----------------------------------------------------------------------
@@ -44,7 +46,7 @@ contract OmniFeeRouter is ReentrancyGuard {
     uint256 private constant BPS_DENOMINATOR = 10_000;
 
     /// @notice Address that receives all collected fees.
-    address public immutable feeCollector; // solhint-disable-line immutable-vars-naming
+    address public feeCollector;
 
     /// @notice Maximum fee in basis points (e.g., 100 = 1.00%).
     uint256 public immutable maxFeeBps; // solhint-disable-line immutable-vars-naming
@@ -71,10 +73,18 @@ contract OmniFeeRouter is ReentrancyGuard {
         address router
     );
 
-    /// @notice Emitted when accidentally-sent tokens are rescued by feeCollector.
+    /// @notice Emitted when accidentally-sent tokens are rescued by owner.
     /// @param token  The ERC20 token rescued.
     /// @param amount The amount of tokens rescued.
     event TokensRescued(address indexed token, uint256 indexed amount);
+
+    /// @notice Emitted when the fee collector address is updated.
+    /// @param oldCollector Previous fee collector address.
+    /// @param newCollector New fee collector address.
+    event FeeCollectorUpdated(
+        address indexed oldCollector,
+        address indexed newCollector
+    );
 
     // -----------------------------------------------------------------------
     // Custom Errors
@@ -112,11 +122,14 @@ contract OmniFeeRouter is ReentrancyGuard {
     // -----------------------------------------------------------------------
 
     /**
-     * @notice Deploy the fee router with a fixed fee collector and cap.
-     * @param _feeCollector Address that receives collected fees (immutable).
+     * @notice Deploy the fee router with an initial fee collector and cap.
+     * @param _feeCollector Address that receives collected fees (initial value, owner-changeable).
      * @param _maxFeeBps    Maximum fee in basis points (immutable, e.g., 100 = 1%).
      */
-    constructor(address _feeCollector, uint256 _maxFeeBps) {
+    constructor(
+        address _feeCollector,
+        uint256 _maxFeeBps
+    ) Ownable(msg.sender) {
         if (_feeCollector == address(0)) revert InvalidFeeCollector();
         if (_maxFeeBps == 0 || _maxFeeBps > 500) {
             // Cap cannot exceed 5% as a hard safety bound
@@ -207,18 +220,41 @@ contract OmniFeeRouter is ReentrancyGuard {
     }
 
     /**
+     * @notice Update the fee collector address
+     * @param _feeCollector New fee collector address
+     * @dev Pioneer Phase: no timelock. Will be replaced with
+     *      timelocked version before multi-sig handoff.
+     */
+    function setFeeCollector(
+        address _feeCollector
+    ) external onlyOwner {
+        if (_feeCollector == address(0)) revert InvalidFeeCollector();
+
+        address oldCollector = feeCollector;
+        feeCollector = _feeCollector;
+        emit FeeCollectorUpdated(oldCollector, _feeCollector);
+    }
+
+    /**
      * @notice Rescue tokens accidentally sent to this contract.
-     * @dev Only callable by feeCollector. Cannot be used during a trade
-     *      because of the reentrancy guard.
+     * @dev Only callable by owner. Sends rescued tokens to feeCollector.
      * @param token ERC20 token to rescue.
      */
-    function rescueTokens(address token) external nonReentrant {
-        if (msg.sender != feeCollector) revert InvalidFeeCollector();
+    function rescueTokens(address token) external nonReentrant onlyOwner {
         uint256 balance = IERC20(token).balanceOf(address(this));
         if (balance > 0) {
             IERC20(token).safeTransfer(feeCollector, balance);
             emit TokensRescued(token, balance);
         }
+    }
+
+    /**
+     * @notice Disabled to prevent accidental loss of contract admin control
+     * @dev Always reverts. Ownership can only be transferred via two-step
+     *      {transferOwnership} + {acceptOwnership} flow.
+     */
+    function renounceOwnership() public pure override {
+        revert InvalidFeeCollector();
     }
 
     // -----------------------------------------------------------------------

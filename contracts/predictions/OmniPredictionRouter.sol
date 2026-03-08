@@ -6,6 +6,7 @@ import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {IERC1155} from "@openzeppelin/contracts/token/ERC1155/IERC1155.sol";
 import {ERC1155Holder} from "@openzeppelin/contracts/token/ERC1155/utils/ERC1155Holder.sol";
+import {Ownable2Step, Ownable} from "@openzeppelin/contracts/access/Ownable2Step.sol";
 
 /**
  * @title OmniPredictionRouter
@@ -17,13 +18,14 @@ import {ERC1155Holder} from "@openzeppelin/contracts/token/ERC1155/utils/ERC1155
  *
  * Trustless guarantees:
  *   - Fee percentage is capped by immutable `MAX_FEE_BPS` (set at deploy).
- *   - Fee collector address is immutable (set at deploy).
+ *   - Fee collector address is mutable (owner-only, for Pioneer Phase flexibility).
  *   - Contract never holds user funds between transactions.
  *   - All token transfers use SafeERC20 (reverts on failure).
  *   - Reentrancy guard on every external entry point.
+ *   - Ownable2Step for safe two-step ownership transfer.
  *
  * Gas optimisations:
- *   - Immutable storage for fee collector and cap.
+ *   - Immutable storage for fee cap.
  *   - Custom errors instead of revert strings.
  *
  * ERC-1155 compatibility:
@@ -32,7 +34,7 @@ import {ERC1155Holder} from "@openzeppelin/contracts/token/ERC1155/utils/ERC1155
  *   - Provides `buyWithFeeAndSweepERC1155()` for ERC-1155 outcome token
  *     sweep after trade execution.
  */
-contract OmniPredictionRouter is ReentrancyGuard, ERC1155Holder {
+contract OmniPredictionRouter is Ownable2Step, ReentrancyGuard, ERC1155Holder {
     using SafeERC20 for IERC20;
 
     // -----------------------------------------------------------------------
@@ -46,14 +48,14 @@ contract OmniPredictionRouter is ReentrancyGuard, ERC1155Holder {
     uint256 private constant GAS_RESERVE = 50_000;
 
     // -----------------------------------------------------------------------
-    // Immutable State
+    // State Variables
     // -----------------------------------------------------------------------
 
     /// @notice Address that receives all collected fees
-    address public immutable FEE_COLLECTOR;
+    address public feeCollector;
 
     /// @notice Maximum fee in basis points (e.g. 200 = 2.00%)
-    uint256 public immutable MAX_FEE_BPS;
+    uint256 public immutable MAX_FEE_BPS; // solhint-disable-line immutable-vars-naming
 
     // -----------------------------------------------------------------------
     // Mutable State
@@ -71,7 +73,7 @@ contract OmniPredictionRouter is ReentrancyGuard, ERC1155Holder {
     /// @param user         The trader's address
     /// @param collateral   The collateral token (USDC / WXDAI)
     /// @param totalAmount  Total amount pulled from user (including fee)
-    /// @param feeAmount    Fee collected and sent to FEE_COLLECTOR
+    /// @param feeAmount    Fee collected and sent to feeCollector
     /// @param netAmount    Amount forwarded to the platform
     /// @param platform     Target platform contract address
     event TradeExecuted(
@@ -89,6 +91,22 @@ contract OmniPredictionRouter is ReentrancyGuard, ERC1155Holder {
     event PlatformApprovalChanged(
         address indexed platform,
         bool indexed approved
+    );
+
+    /// @notice Emitted when the fee collector address is updated
+    /// @param oldCollector Previous fee collector address
+    /// @param newCollector New fee collector address
+    event FeeCollectorUpdated(
+        address indexed oldCollector,
+        address indexed newCollector
+    );
+
+    /// @notice Emitted when tokens are rescued from the contract
+    /// @param token ERC20 token that was rescued
+    /// @param amount Amount of tokens rescued
+    event TokensRescued(
+        address indexed token,
+        uint256 indexed amount
     );
 
     // -----------------------------------------------------------------------
@@ -136,17 +154,20 @@ contract OmniPredictionRouter is ReentrancyGuard, ERC1155Holder {
     // -----------------------------------------------------------------------
 
     /**
-     * @notice Deploy the prediction router with a fixed fee collector and cap.
-     * @param feeCollector_ Address that receives collected fees (immutable)
+     * @notice Deploy the prediction router with an initial fee collector and cap.
+     * @param feeCollector_ Address that receives collected fees (initial value, owner-changeable)
      * @param maxFeeBps_    Maximum fee in basis points (immutable, e.g. 200 = 2%)
      */
-    constructor(address feeCollector_, uint256 maxFeeBps_) {
+    constructor(
+        address feeCollector_,
+        uint256 maxFeeBps_
+    ) Ownable(msg.sender) {
         if (feeCollector_ == address(0)) revert InvalidFeeCollector();
         if (maxFeeBps_ == 0 || maxFeeBps_ > 1000) {
             // Cap cannot exceed 10% as a hard safety bound
             revert FeeExceedsCap(maxFeeBps_, 1000);
         }
-        FEE_COLLECTOR = feeCollector_;
+        feeCollector = feeCollector_;
         MAX_FEE_BPS = maxFeeBps_;
     }
 
@@ -155,17 +176,32 @@ contract OmniPredictionRouter is ReentrancyGuard, ERC1155Holder {
     // -----------------------------------------------------------------------
 
     /**
+     * @notice Update the fee collector address
+     * @param feeCollector_ New fee collector address
+     * @dev Pioneer Phase: no timelock. Will be replaced with
+     *      timelocked version before multi-sig handoff.
+     */
+    function setFeeCollector(
+        address feeCollector_
+    ) external onlyOwner {
+        if (feeCollector_ == address(0)) revert InvalidFeeCollector();
+
+        address oldCollector = feeCollector;
+        feeCollector = feeCollector_;
+        emit FeeCollectorUpdated(oldCollector, feeCollector_);
+    }
+
+    /**
      * @notice Add or remove a platform from the approved platforms list.
-     * @dev Only callable by the fee collector (admin). Prevents the zero
-     *      address from being approved.
+     * @dev Only callable by owner. Prevents the zero address from
+     *      being approved.
      * @param platform Address of the platform contract to approve or revoke
      * @param approved True to approve, false to revoke
      */
     function setPlatformApproval(
         address platform,
         bool approved
-    ) external {
-        if (msg.sender != FEE_COLLECTOR) revert InvalidFeeCollector();
+    ) external onlyOwner {
         if (platform == address(0)) revert InvalidPlatformTarget();
         approvedPlatforms[platform] = approved;
         emit PlatformApprovalChanged(platform, approved);
@@ -181,7 +217,7 @@ contract OmniPredictionRouter is ReentrancyGuard, ERC1155Holder {
      *      1. Validate deadline has not passed.
      *      2. Validate platformTarget is on the approved platforms list.
      *      3. Pull `totalAmount` of `collateralToken` from caller.
-     *      4. Send `feeAmount` to `FEE_COLLECTOR`.
+     *      4. Send `feeAmount` to `feeCollector`.
      *      5. Validate fee does not exceed `MAX_FEE_BPS` cap.
      *      6. Approve net amount to `platformTarget`.
      *      7. Call `platformTarget` with `platformData`.
@@ -366,16 +402,36 @@ contract OmniPredictionRouter is ReentrancyGuard, ERC1155Holder {
 
     /**
      * @notice Rescue tokens accidentally sent to this contract.
-     * @dev Only callable by FEE_COLLECTOR. Cannot be used during a trade
-     *      because of the reentrancy guard.
+     * @dev Only callable by owner. Sends rescued tokens to feeCollector.
      * @param token ERC20 token to rescue
      */
-    function rescueTokens(address token) external nonReentrant {
-        if (msg.sender != FEE_COLLECTOR) revert InvalidFeeCollector();
+    function rescueTokens(address token) external nonReentrant onlyOwner {
         uint256 balance = IERC20(token).balanceOf(address(this));
         if (balance > 0) {
-            IERC20(token).safeTransfer(FEE_COLLECTOR, balance);
+            IERC20(token).safeTransfer(feeCollector, balance);
+            emit TokensRescued(token, balance);
         }
+    }
+
+    /**
+     * @notice Disabled to prevent accidental loss of contract admin control
+     * @dev Always reverts. Ownership can only be transferred via two-step
+     *      {transferOwnership} + {acceptOwnership} flow.
+     */
+    function renounceOwnership() public pure override {
+        revert InvalidFeeCollector();
+    }
+
+    /**
+     * @notice Returns true if this contract implements the given interface
+     * @param interfaceId Interface identifier to check
+     * @return True if the interface is supported
+     * @dev Required to resolve Ownable2Step vs ERC1155Holder conflict.
+     */
+    function supportsInterface(
+        bytes4 interfaceId
+    ) public view virtual override returns (bool) {
+        return super.supportsInterface(interfaceId);
     }
 
     // -----------------------------------------------------------------------
@@ -391,7 +447,7 @@ contract OmniPredictionRouter is ReentrancyGuard, ERC1155Holder {
      *            operations (approval reset, sweep, event) cannot be starved.
      * @param collateralToken ERC20 collateral token address
      * @param totalAmount     Total amount pulled from the user
-     * @param feeAmount       Fee sent to FEE_COLLECTOR
+     * @param feeAmount       Fee sent to feeCollector
      * @param netAmount       Amount approved and forwarded to the platform
      * @param platformTarget  Approved platform contract address
      * @param platformData    ABI-encoded call data for the platform
@@ -417,7 +473,7 @@ contract OmniPredictionRouter is ReentrancyGuard, ERC1155Holder {
 
         // --- Send fee to collector ---
         if (feeAmount > 0) {
-            IERC20(collateralToken).safeTransfer(FEE_COLLECTOR, feeAmount);
+            IERC20(collateralToken).safeTransfer(feeCollector, feeAmount);
         }
 
         // --- Approve net amount to platform ---

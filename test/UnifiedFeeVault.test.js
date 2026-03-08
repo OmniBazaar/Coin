@@ -570,46 +570,33 @@ describe("UnifiedFeeVault", function () {
   // ─────────────────────────────────────────────────────────────────────
 
   describe("Admin Functions", function () {
-    it("should update recipients via proposeRecipients + applyRecipients", async function () {
+    it("should update recipients via setRecipients", async function () {
       const newStaking = user.address;
       const newTreasury = attacker.address;
 
-      // Propose new recipients (starts 48h timelock)
       await vault
         .connect(admin)
-        .proposeRecipients(newStaking, newTreasury);
-
-      // Advance time past the 48h timelock
-      await time.increase(48 * 60 * 60 + 1);
-
-      // Apply the change
-      await vault.connect(admin).applyRecipients();
+        .setRecipients(newStaking, newTreasury);
 
       expect(await vault.stakingPool()).to.equal(newStaking);
       expect(await vault.protocolTreasury()).to.equal(newTreasury);
     });
 
-    it("should emit RecipientsUpdated event on applyRecipients", async function () {
-      await vault
-        .connect(admin)
-        .proposeRecipients(user.address, attacker.address);
-
-      await time.increase(48 * 60 * 60 + 1);
-
+    it("should emit RecipientsUpdated event on setRecipients", async function () {
       await expect(
-        vault.connect(admin).applyRecipients()
+        vault.connect(admin).setRecipients(user.address, attacker.address)
       )
         .to.emit(vault, "RecipientsUpdated")
         .withArgs(user.address, attacker.address);
     });
 
-    it("should revert proposeRecipients for non-ADMIN_ROLE",
+    it("should revert setRecipients for non-ADMIN_ROLE",
       async function () {
         const ADMIN_ROLE = await vault.ADMIN_ROLE();
         await expect(
           vault
             .connect(attacker)
-            .proposeRecipients(user.address, attacker.address)
+            .setRecipients(user.address, attacker.address)
         )
           .to.be.revertedWithCustomError(
             vault,
@@ -619,37 +606,33 @@ describe("UnifiedFeeVault", function () {
       }
     );
 
-    it("should revert proposeRecipients with zero staking pool",
+    it("should revert setRecipients with zero staking pool",
       async function () {
         await expect(
           vault
             .connect(admin)
-            .proposeRecipients(ethers.ZeroAddress, protocolTreasury.address)
+            .setRecipients(ethers.ZeroAddress, protocolTreasury.address)
         ).to.be.revertedWithCustomError(vault, "ZeroAddress");
       }
     );
 
-    it("should revert proposeRecipients with zero protocol treasury",
+    it("should revert setRecipients with zero protocol treasury",
       async function () {
         await expect(
           vault
             .connect(admin)
-            .proposeRecipients(stakingPool.address, ethers.ZeroAddress)
+            .setRecipients(stakingPool.address, ethers.ZeroAddress)
         ).to.be.revertedWithCustomError(vault, "ZeroAddress");
       }
     );
 
-    it("should distribute to new recipients after proposeRecipients + applyRecipients",
+    it("should distribute to new recipients after setRecipients",
       async function () {
-        // Propose and apply new recipients
         const newStaking = user;
         const newTreasury = attacker;
         await vault
           .connect(admin)
-          .proposeRecipients(newStaking.address, newTreasury.address);
-
-        await time.increase(48 * 60 * 60 + 1);
-        await vault.connect(admin).applyRecipients();
+          .setRecipients(newStaking.address, newTreasury.address);
 
         // Deposit and distribute
         await vault
