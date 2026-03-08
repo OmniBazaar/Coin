@@ -56,6 +56,12 @@ contract OmniTreasury is
     ///         `executeBatch` invocation.
     uint256 public constant MAX_BATCH_SIZE = 64;
 
+    // ─────────────────────── State Variables ──────────────────────
+
+    /// @notice Tracks the number of addresses holding
+    ///         DEFAULT_ADMIN_ROLE to prevent accidental lockout.
+    uint256 private _adminCount;
+
     // ──────────────────────────── Events ─────────────────────────────
 
     /// @notice Emitted when native XOM is received via `receive()`.
@@ -124,6 +130,17 @@ contract OmniTreasury is
     /// @param count The number of calls in the batch.
     event BatchExecuted(uint256 indexed count);
 
+    /// @notice Emitted when governance is atomically transitioned
+    ///         from the Pioneer Phase deployer to production contracts.
+    /// @param newGovernance The new GOVERNANCE_ROLE holder (timelock).
+    /// @param newGuardian   The new GUARDIAN_ROLE holder (multi-sig).
+    /// @param newAdmin      The new DEFAULT_ADMIN_ROLE holder (timelock).
+    event GovernanceTransitioned(
+        address indexed newGovernance,
+        address indexed newGuardian,
+        address indexed newAdmin
+    );
+
     // ──────────────────────────── Errors ─────────────────────────────
 
     /// @notice Thrown when an address parameter is the zero address.
@@ -148,6 +165,10 @@ contract OmniTreasury is
 
     /// @notice Thrown when `executeBatch` exceeds the maximum batch size.
     error BatchTooLarge();
+
+    /// @notice Thrown when the last DEFAULT_ADMIN_ROLE holder tries to
+    ///         renounce or be revoked while the contract is paused.
+    error CannotRemoveLastAdminWhilePaused();
 
     // ─────────────────────────── Constructor ─────────────────────────
 
@@ -409,6 +430,56 @@ contract OmniTreasury is
         _unpause();
     }
 
+    // ──────────────────── Admin Functions ──────────────────────────
+
+    /**
+     * @notice Atomically transition all roles from the Pioneer Phase
+     *         deployer to production governance contracts.
+     * @dev Grants roles to the new holders first, then revokes the
+     *      caller's roles in the correct order (governance, guardian,
+     *      admin last). This prevents the misordered-renouncement
+     *      attack where the deployer renounces admin before governance
+     *      and becomes an irremovable governor.
+     *
+     *      Safe to call while paused — the new admin can unpause.
+     *      If the caller does not hold a particular role, the revoke
+     *      for that role is a no-op.
+     * @param newGovernance Address to receive GOVERNANCE_ROLE
+     *                      (typically OmniTimelockController).
+     * @param newGuardian   Address to receive GUARDIAN_ROLE
+     *                      (typically EmergencyGuardian multi-sig).
+     * @param newAdmin      Address to receive DEFAULT_ADMIN_ROLE
+     *                      (typically OmniTimelockController).
+     */
+    function transitionGovernance(
+        address newGovernance,
+        address newGuardian,
+        address newAdmin
+    )
+        external
+        onlyRole(DEFAULT_ADMIN_ROLE)
+    {
+        if (newGovernance == address(0)) revert ZeroAddress();
+        if (newGuardian == address(0)) revert ZeroAddress();
+        if (newAdmin == address(0)) revert ZeroAddress();
+
+        // Grant new roles first (admin first so _adminCount > 1
+        // before revoking the caller's admin role)
+        _grantRole(DEFAULT_ADMIN_ROLE, newAdmin);
+        _grantRole(GOVERNANCE_ROLE, newGovernance);
+        _grantRole(GUARDIAN_ROLE, newGuardian);
+
+        // Revoke caller's roles — governance and guardian first,
+        // admin last (correct order)
+        _revokeRole(GOVERNANCE_ROLE, msg.sender);
+        _revokeRole(GUARDIAN_ROLE, msg.sender);
+        _revokeRole(DEFAULT_ADMIN_ROLE, msg.sender);
+
+        emit GovernanceTransitioned(
+            newGovernance, newGuardian, newAdmin
+        );
+    }
+
     // ──────────────────────── View Functions ─────────────────────────
 
     /**
@@ -454,5 +525,45 @@ contract OmniTreasury is
         return
             interfaceId == type(IERC721Receiver).interfaceId ||
             super.supportsInterface(interfaceId);
+    }
+
+    // ─────────────────── Internal Overrides ───────────────────────
+
+    /**
+     * @dev Track `_adminCount` when DEFAULT_ADMIN_ROLE is granted.
+     */
+    function _grantRole(
+        bytes32 role,
+        address account
+    ) internal override returns (bool granted) {
+        granted = super._grantRole(role, account);
+        if (granted && role == DEFAULT_ADMIN_ROLE) {
+            ++_adminCount;
+        }
+    }
+
+    /**
+     * @dev Track `_adminCount` when DEFAULT_ADMIN_ROLE is revoked.
+     *      Prevents removing the last admin while the contract is
+     *      paused, which would permanently brick the treasury
+     *      (no one could call `unpause()`).
+     */
+    function _revokeRole(
+        bytes32 role,
+        address account
+    ) internal override returns (bool revoked) {
+        if (
+            role == DEFAULT_ADMIN_ROLE &&
+            hasRole(role, account) &&
+            _adminCount == 1 &&
+            paused()
+        ) {
+            revert CannotRemoveLastAdminWhilePaused();
+        }
+
+        revoked = super._revokeRole(role, account);
+        if (revoked && role == DEFAULT_ADMIN_ROLE) {
+            --_adminCount;
+        }
     }
 }

@@ -781,4 +781,252 @@ describe("OmniTreasury", function () {
       expect(await treasury.nativeBalance()).to.equal(0);
     });
   });
+
+  // ═══════════════════════════════════════════════════════════════════
+  //  13. transitionGovernance (Atomic Role Transition)
+  // ═══════════════════════════════════════════════════════════════════
+
+  describe("transitionGovernance", function () {
+    let newGovernance, newGuardian, newAdmin;
+
+    beforeEach(async function () {
+      const signers = await ethers.getSigners();
+      newGovernance = signers[5];
+      newGuardian = signers[6];
+      newAdmin = signers[7];
+    });
+
+    it("should atomically transfer all roles", async function () {
+      await expect(
+        treasury.connect(admin).transitionGovernance(
+          newGovernance.address, newGuardian.address, newAdmin.address
+        )
+      ).to.emit(treasury, "GovernanceTransitioned")
+        .withArgs(
+          newGovernance.address, newGuardian.address, newAdmin.address
+        );
+
+      const GOVERNANCE_ROLE = await treasury.GOVERNANCE_ROLE();
+      const GUARDIAN_ROLE = await treasury.GUARDIAN_ROLE();
+      const DEFAULT_ADMIN_ROLE =
+        "0x0000000000000000000000000000000000000000000000000000000000000000";
+
+      // New holders have roles
+      expect(
+        await treasury.hasRole(GOVERNANCE_ROLE, newGovernance.address)
+      ).to.be.true;
+      expect(
+        await treasury.hasRole(GUARDIAN_ROLE, newGuardian.address)
+      ).to.be.true;
+      expect(
+        await treasury.hasRole(DEFAULT_ADMIN_ROLE, newAdmin.address)
+      ).to.be.true;
+
+      // Old admin lost all roles
+      expect(
+        await treasury.hasRole(DEFAULT_ADMIN_ROLE, admin.address)
+      ).to.be.false;
+      expect(
+        await treasury.hasRole(GOVERNANCE_ROLE, admin.address)
+      ).to.be.false;
+      expect(
+        await treasury.hasRole(GUARDIAN_ROLE, admin.address)
+      ).to.be.false;
+    });
+
+    it("should work even when contract is paused", async function () {
+      await treasury.connect(guardian).pause();
+
+      await expect(
+        treasury.connect(admin).transitionGovernance(
+          newGovernance.address, newGuardian.address, newAdmin.address
+        )
+      ).to.emit(treasury, "GovernanceTransitioned");
+
+      // New admin can unpause
+      await expect(
+        treasury.connect(newAdmin).unpause()
+      ).to.not.be.reverted;
+    });
+
+    it("should revert when called by non-admin", async function () {
+      await expect(
+        treasury.connect(attacker).transitionGovernance(
+          newGovernance.address, newGuardian.address, newAdmin.address
+        )
+      ).to.be.reverted;
+    });
+
+    it("should revert with zero newGovernance", async function () {
+      await expect(
+        treasury.connect(admin).transitionGovernance(
+          ethers.ZeroAddress, newGuardian.address, newAdmin.address
+        )
+      ).to.be.revertedWithCustomError(treasury, "ZeroAddress");
+    });
+
+    it("should revert with zero newGuardian", async function () {
+      await expect(
+        treasury.connect(admin).transitionGovernance(
+          newGovernance.address, ethers.ZeroAddress, newAdmin.address
+        )
+      ).to.be.revertedWithCustomError(treasury, "ZeroAddress");
+    });
+
+    it("should revert with zero newAdmin", async function () {
+      await expect(
+        treasury.connect(admin).transitionGovernance(
+          newGovernance.address, newGuardian.address, ethers.ZeroAddress
+        )
+      ).to.be.revertedWithCustomError(treasury, "ZeroAddress");
+    });
+
+    it("should allow new governance to transfer after transition",
+      async function () {
+        await treasury.connect(admin).transitionGovernance(
+          newGovernance.address, newGuardian.address, newAdmin.address
+        );
+
+        // Fund treasury
+        await token.mint(treasury.target, MINT_AMOUNT);
+
+        // New governance can transfer
+        await expect(
+          treasury.connect(newGovernance).transferToken(
+            token.target, recipient.address, TRANSFER_AMOUNT
+          )
+        ).to.emit(treasury, "TokenTransferred");
+      }
+    );
+
+    it("should not revoke roles from other holders (only caller)",
+      async function () {
+        // governance signer was granted GOVERNANCE_ROLE in beforeEach
+        // transitionGovernance only revokes the caller's (admin's) roles
+        await treasury.connect(admin).transitionGovernance(
+          newGovernance.address, newGuardian.address, newAdmin.address
+        );
+
+        const GOVERNANCE_ROLE = await treasury.GOVERNANCE_ROLE();
+
+        // The separately-granted governance signer still has its role
+        expect(
+          await treasury.hasRole(GOVERNANCE_ROLE, governance.address)
+        ).to.be.true;
+
+        // New admin can revoke it if needed
+        await treasury.connect(newAdmin).revokeRole(
+          GOVERNANCE_ROLE, governance.address
+        );
+        expect(
+          await treasury.hasRole(GOVERNANCE_ROLE, governance.address)
+        ).to.be.false;
+      }
+    );
+
+    it("should prevent old admin from regaining roles after transition",
+      async function () {
+        await treasury.connect(admin).transitionGovernance(
+          newGovernance.address, newGuardian.address, newAdmin.address
+        );
+
+        // Old admin cannot grant itself roles back
+        const GOVERNANCE_ROLE = await treasury.GOVERNANCE_ROLE();
+        await expect(
+          treasury.connect(admin).grantRole(
+            GOVERNANCE_ROLE, admin.address
+          )
+        ).to.be.reverted;
+      }
+    );
+  });
+
+  // ═══════════════════════════════════════════════════════════════════
+  //  14. Last Admin Protection (Paused State)
+  // ═══════════════════════════════════════════════════════════════════
+
+  describe("Last Admin Protection", function () {
+    it("should prevent last admin from renouncing while paused",
+      async function () {
+        const DEFAULT_ADMIN_ROLE =
+          "0x0000000000000000000000000000000000000000000000000000000000000000";
+
+        await treasury.connect(guardian).pause();
+
+        await expect(
+          treasury.connect(admin).renounceRole(
+            DEFAULT_ADMIN_ROLE, admin.address
+          )
+        ).to.be.revertedWithCustomError(
+          treasury, "CannotRemoveLastAdminWhilePaused"
+        );
+      }
+    );
+
+    it("should allow admin to renounce when not paused",
+      async function () {
+        const DEFAULT_ADMIN_ROLE =
+          "0x0000000000000000000000000000000000000000000000000000000000000000";
+
+        // Renouncing when not paused should work
+        // (but means no admin — risky, just testing it's allowed)
+        await expect(
+          treasury.connect(admin).renounceRole(
+            DEFAULT_ADMIN_ROLE, admin.address
+          )
+        ).to.not.be.reverted;
+
+        expect(
+          await treasury.hasRole(DEFAULT_ADMIN_ROLE, admin.address)
+        ).to.be.false;
+      }
+    );
+
+    it("should allow revoking admin when another admin exists and paused",
+      async function () {
+        const DEFAULT_ADMIN_ROLE =
+          "0x0000000000000000000000000000000000000000000000000000000000000000";
+        const signers = await ethers.getSigners();
+        const secondAdmin = signers[8];
+
+        // Grant second admin
+        await treasury.connect(admin).grantRole(
+          DEFAULT_ADMIN_ROLE, secondAdmin.address
+        );
+
+        // Pause
+        await treasury.connect(guardian).pause();
+
+        // Can revoke the first admin because secondAdmin still exists
+        await expect(
+          treasury.connect(admin).renounceRole(
+            DEFAULT_ADMIN_ROLE, admin.address
+          )
+        ).to.not.be.reverted;
+
+        // secondAdmin can still unpause
+        await expect(
+          treasury.connect(secondAdmin).unpause()
+        ).to.not.be.reverted;
+      }
+    );
+
+    it("should prevent revokeRole on last admin while paused",
+      async function () {
+        const DEFAULT_ADMIN_ROLE =
+          "0x0000000000000000000000000000000000000000000000000000000000000000";
+
+        await treasury.connect(guardian).pause();
+
+        // Admin trying to revokeRole on itself while paused
+        await expect(
+          treasury.connect(admin).revokeRole(
+            DEFAULT_ADMIN_ROLE, admin.address
+          )
+        ).to.be.revertedWithCustomError(
+          treasury, "CannotRemoveLastAdminWhilePaused"
+        );
+      }
+    );
+  });
 });

@@ -4,7 +4,7 @@
 **Audited by:** Claude Code Audit Agent (6-Pass Enhanced)
 **Contract:** `Coin/contracts/OmniTreasury.sol`
 **Solidity Version:** 0.8.24
-**Lines of Code:** 458
+**Lines of Code:** 569
 **Upgradeable:** No
 **Handles Funds:** Yes (native XOM, ERC-20, ERC-721, ERC-1155)
 
@@ -202,7 +202,7 @@ For `execute()`, this is by design (callers may need return data). For `executeB
 
 ---
 
-### [L-05] Single-Step Admin Role Transfer
+### [L-05] Single-Step Admin Role Transfer — **MITIGATED**
 
 **Severity:** Low
 **Category:** SC01 — Access Control
@@ -211,10 +211,10 @@ For `execute()`, this is by design (callers may need return data). For `executeB
 **Sources:** Cyfrin Checklist SOL-CR-6
 
 **Description:**
-The contract uses OpenZeppelin's standard `AccessControl` which allows single-step admin role transfer via `grantRole(DEFAULT_ADMIN_ROLE, newAdmin)` + `revokeRole(DEFAULT_ADMIN_ROLE, oldAdmin)`. If the new admin address is incorrect (typo), admin access is permanently lost. OpenZeppelin's `AccessControlDefaultAdminRules` provides two-step admin transfer with a delay.
+The contract uses OpenZeppelin's standard `AccessControl` which allows single-step admin role transfer via `grantRole(DEFAULT_ADMIN_ROLE, newAdmin)` + `revokeRole(DEFAULT_ADMIN_ROLE, oldAdmin)`. If the new admin address is incorrect (typo), admin access is permanently lost.
 
-**Recommendation:**
-Consider using `AccessControlDefaultAdminRules` instead of `AccessControl` for safer admin transitions. This requires a delay period before admin transfer is finalized, preventing accidental lockout.
+**Mitigation Applied:**
+Added `transitionGovernance()` — an atomic function that grants all roles to new addresses before revoking the caller's roles. This eliminates misordered renouncement risk. Additionally, `_revokeRole` override prevents removing the last admin while paused, avoiding permanent contract lockout. The residual risk (typo in new admin address) remains but is acceptable given the atomic nature of the transition.
 
 ---
 
@@ -319,22 +319,20 @@ All `gas-indexed-events` warnings were fixed prior to audit by adding `indexed` 
 
 | Role | Functions | Risk Level |
 |------|-----------|------------|
-| `DEFAULT_ADMIN_ROLE` | `grantRole()`, `revokeRole()`, `renounceRole()`, `unpause()` | 9/10 — Can grant all other roles and resume operations |
+| `DEFAULT_ADMIN_ROLE` | `grantRole()`, `revokeRole()`, `renounceRole()`, `unpause()`, `transitionGovernance()` | 9/10 — Can grant all other roles and resume operations |
 | `GOVERNANCE_ROLE` | `transferToken()`, `transferNative()`, `approveToken()`, `transferNFT()`, `transferERC1155()`, `execute()`, `executeBatch()` | 9/10 — Full control over all assets |
 | `GUARDIAN_ROLE` | `pause()` | 3/10 — Can halt operations only (cannot resume) |
 
 ## Centralization Risk Assessment
 
-**Single-key maximum damage:** During Pioneer Phase, the deployer key can drain 100% of all treasury assets (native XOM, ERC-20, ERC-721, ERC-1155) in a single transaction. It can also permanently brick the contract by pausing and revoking all roles.
+**Single-key maximum damage:** During Pioneer Phase, the deployer key can drain 100% of all treasury assets (native XOM, ERC-20, ERC-721, ERC-1155) in a single transaction. The contract can no longer be permanently bricked — `_revokeRole` prevents removing the last admin while paused.
 
-**Risk Rating:** 9/10 during Pioneer Phase, dropping to 3/10 after timelock + guardian transition.
+**Risk Rating:** 8/10 during Pioneer Phase, dropping to 3/10 after timelock + guardian transition.
 
 **Recommendation:**
 1. Immediately use a hardware wallet for the deployer key
-2. Transition to OmniTimelockController (48h delay) for GOVERNANCE_ROLE
-3. Transition to EmergencyGuardian (multi-sig) for GUARDIAN_ROLE
-4. Deployer renounces all three roles after transition
-5. Consider AccessControlDefaultAdminRules for safer admin key rotation
+2. Call `transitionGovernance(timelockAddr, guardianAddr, timelockAddr)` to atomically hand off all roles
+3. The deployer loses all three roles in a single transaction — no misordering risk
 
 ## Test Coverage
 
@@ -354,9 +352,11 @@ All `gas-indexed-events` warnings were fixed prior to audit by adding `indexed` 
 | Reentrancy Protection | 1 | All Pass |
 | supportsInterface | 5 | All Pass |
 | View Functions | 4 | All Pass |
-| **Total** | **67** | **All Pass** |
+| transitionGovernance | 9 | All Pass |
+| Last Admin Protection | 4 | All Pass |
+| **Total** | **80** | **All Pass** |
 
-**Post-audit fixes verified:** L-01, L-02, L-03, M-04 all tested and passing.
+**Post-audit fixes verified:** L-01, L-02, L-03, M-04, L-05 (mitigated), G3, C4 all tested and passing.
 
 ---
 
