@@ -79,7 +79,8 @@ describe("OmniENS", function () {
       await xom.getAddress(),
       oddaoTreasury.address,
       stakingPool.address,
-      protocolTreasury.address
+      protocolTreasury.address,
+      ethers.ZeroAddress // trustedForwarder_ (disabled)
     );
     await ens.waitForDeployment();
 
@@ -172,7 +173,8 @@ describe("OmniENS", function () {
           ethers.ZeroAddress,
           oddaoTreasury.address,
           stakingPool.address,
-          protocolTreasury.address
+          protocolTreasury.address,
+          ethers.ZeroAddress // trustedForwarder_ (disabled)
         )
       ).to.be.revertedWithCustomError(ens, "ZeroAddress");
     });
@@ -184,7 +186,8 @@ describe("OmniENS", function () {
           await xom.getAddress(),
           ethers.ZeroAddress,
           stakingPool.address,
-          protocolTreasury.address
+          protocolTreasury.address,
+          ethers.ZeroAddress // trustedForwarder_ (disabled)
         )
       ).to.be.revertedWithCustomError(ens, "ZeroAddress");
     });
@@ -196,7 +199,8 @@ describe("OmniENS", function () {
           await xom.getAddress(),
           oddaoTreasury.address,
           ethers.ZeroAddress,
-          protocolTreasury.address
+          protocolTreasury.address,
+          ethers.ZeroAddress // trustedForwarder_ (disabled)
         )
       ).to.be.revertedWithCustomError(ens, "ZeroAddress");
     });
@@ -208,7 +212,8 @@ describe("OmniENS", function () {
           await xom.getAddress(),
           oddaoTreasury.address,
           stakingPool.address,
-          ethers.ZeroAddress
+          ethers.ZeroAddress,
+          ethers.ZeroAddress // trustedForwarder_ (disabled)
         )
       ).to.be.revertedWithCustomError(ens, "ZeroAddress");
     });

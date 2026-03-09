@@ -8,6 +8,10 @@ import {ReentrancyGuard} from
     "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {Ownable2Step, Ownable} from
     "@openzeppelin/contracts/access/Ownable2Step.sol";
+import {ERC2771Context} from
+    "@openzeppelin/contracts/metatx/ERC2771Context.sol";
+import {Context} from
+    "@openzeppelin/contracts/utils/Context.sol";
 
 // ══════════════════════════════════════════════════════════════════════
 //                           CUSTOM ERRORS
@@ -69,7 +73,7 @@ error FeeOutOfBounds();
  *      of username assignments.
  *
  * Features:
- * - Register username: lock to msg.sender for duration (30-365 days)
+ * - Register username: lock to caller for duration (30-365 days)
  * - Commit-reveal: prevents front-running of name registration
  * - Transfer: current owner can transfer to another address
  * - Renew: extend before or after expiry
@@ -89,6 +93,7 @@ error FeeOutOfBounds();
  * - CEI pattern enforced (L-04)
  * - Constructor zero-address validation (M-02)
  * - Renewal fee based on actual duration after cap (M-01)
+ * - ERC-2771 meta-transaction support via trusted forwarder
  *
  * Audit Fixes (2026-02-28 Round 4):
  * - H-01: Commit-reveal scheme for registration
@@ -100,7 +105,7 @@ error FeeOutOfBounds();
  * - L-03: Registration fee bounds validation
  * - L-04: CEI pattern in register() and renew()
  */
-contract OmniENS is ReentrancyGuard, Ownable2Step {
+contract OmniENS is ReentrancyGuard, Ownable2Step, ERC2771Context {
     using SafeERC20 for IERC20;
 
     // ══════════════════════════════════════════════════════════════════
@@ -275,13 +280,16 @@ contract OmniENS is ReentrancyGuard, Ownable2Step {
      * @param _oddaoTreasury ODDAO treasury address (70%)
      * @param _stakingPool Staking pool address (20%)
      * @param _protocolTreasury Protocol treasury address (10%)
+     * @param trustedForwarder_ ERC-2771 trusted forwarder address
+     *        (address(0) disables meta-transactions)
      */
     constructor(
         address _xomToken,
         address _oddaoTreasury,
         address _stakingPool,
-        address _protocolTreasury
-    ) Ownable(msg.sender) {
+        address _protocolTreasury,
+        address trustedForwarder_
+    ) Ownable(msg.sender) ERC2771Context(trustedForwarder_) {
         // M-02: Zero-address validation
         if (_xomToken == address(0)) revert ZeroAddress();
         if (_oddaoTreasury == address(0)) revert ZeroAddress();
@@ -306,13 +314,13 @@ contract OmniENS is ReentrancyGuard, Ownable2Step {
      *      the name being registered until the reveal phase.
      *      Caller must wait MIN_COMMITMENT_AGE before calling
      *      register(), and must register within MAX_COMMITMENT_AGE.
-     * @param commitment Hash of (name, msg.sender, secret)
+     * @param commitment Hash of (name, caller, secret)
      */
     function commit(bytes32 commitment) external {
         // solhint-disable-next-line not-rely-on-time
         commitments[commitment] = block.timestamp;
 
-        emit NameCommitted(commitment, msg.sender);
+        emit NameCommitted(commitment, _msgSender());
     }
 
     // ══════════════════════════════════════════════════════════════════
@@ -335,9 +343,11 @@ contract OmniENS is ReentrancyGuard, Ownable2Step {
         uint256 duration,
         bytes32 secret
     ) external nonReentrant {
+        address caller = _msgSender();
+
         _validateName(name);
         _validateDuration(duration);
-        _consumeCommitment(name, secret);
+        _consumeCommitment(name, caller, secret);
 
         bytes32 nameHash = _nameHash(name);
         _ensureNameAvailable(name, nameHash);
@@ -351,24 +361,24 @@ contract OmniENS is ReentrancyGuard, Ownable2Step {
         uint256 expiresAt = block.timestamp + duration;
 
         registrations[nameHash] = Registration({
-            owner: msg.sender,
+            owner: caller,
             registeredAt: block.timestamp, // solhint-disable-line not-rely-on-time
             expiresAt: expiresAt
         });
 
         // M-03: Emit event if overwriting active reverse record
-        _setReverseRecord(msg.sender, nameHash);
+        _setReverseRecord(caller, nameHash);
 
         nameStrings[nameHash] = name;
         ++totalRegistrations;
 
         // L-04: External call AFTER state changes (CEI pattern)
         if (fee > 0) {
-            _distributeFee(fee);
+            _distributeFee(caller, fee);
         }
 
         emit NameRegistered(
-            name, msg.sender, expiresAt, fee
+            name, caller, expiresAt, fee
         );
     }
 
@@ -381,6 +391,8 @@ contract OmniENS is ReentrancyGuard, Ownable2Step {
         string calldata name,
         address newOwner
     ) external nonReentrant {
+        address caller = _msgSender();
+
         if (newOwner == address(0)) {
             revert ZeroAddress();
         }
@@ -388,21 +400,21 @@ contract OmniENS is ReentrancyGuard, Ownable2Step {
         bytes32 nameHash = _nameHash(name);
         Registration storage reg = registrations[nameHash];
 
-        if (reg.owner != msg.sender) revert NotNameOwner();
+        if (reg.owner != caller) revert NotNameOwner();
         // solhint-disable-next-line not-rely-on-time
         if (block.timestamp > reg.expiresAt - 1) {
             revert NameNotFound(name);
         }
 
         // Clear old reverse record
-        if (reverseRecords[msg.sender] == nameHash) {
-            delete reverseRecords[msg.sender];
+        if (reverseRecords[caller] == nameHash) {
+            delete reverseRecords[caller];
         }
 
         reg.owner = newOwner;
         reverseRecords[newOwner] = nameHash;
 
-        emit NameTransferred(name, msg.sender, newOwner);
+        emit NameTransferred(name, caller, newOwner);
     }
 
     /**
@@ -420,6 +432,8 @@ contract OmniENS is ReentrancyGuard, Ownable2Step {
         string calldata name,
         uint256 additionalDuration
     ) external nonReentrant {
+        address caller = _msgSender();
+
         if (additionalDuration < MIN_DURATION) {
             revert DurationTooShort(
                 additionalDuration, MIN_DURATION
@@ -429,7 +443,7 @@ contract OmniENS is ReentrancyGuard, Ownable2Step {
         bytes32 nameHash = _nameHash(name);
         Registration storage reg = registrations[nameHash];
 
-        if (reg.owner != msg.sender) revert NotNameOwner();
+        if (reg.owner != caller) revert NotNameOwner();
 
         // Extend from current expiry or now (whichever is later)
         /* solhint-disable not-rely-on-time */
@@ -459,10 +473,10 @@ contract OmniENS is ReentrancyGuard, Ownable2Step {
 
         // L-04: External call AFTER state changes
         if (fee > 0) {
-            _distributeFee(fee);
+            _distributeFee(caller, fee);
         }
 
-        emit NameRenewed(name, msg.sender, newExpiry);
+        emit NameRenewed(name, caller, newExpiry);
     }
 
     // ══════════════════════════════════════════════════════════════════
@@ -614,15 +628,20 @@ contract OmniENS is ReentrancyGuard, Ownable2Step {
 
     /**
      * @notice Collect fee from user and distribute 70/20/10
-     * @dev Transfers total fee from msg.sender to this contract,
+     * @dev Transfers total fee from the payer to this contract,
      *      then splits: 70% ODDAO, 20% Staking Pool, 10% Protocol.
      *      ODDAO gets remainder to avoid rounding dust.
+     * @param payer Address to pull the fee from (the actual user
+     *        via _msgSender(), supporting meta-transactions)
      * @param totalFee Total fee amount in XOM
      */
-    function _distributeFee(uint256 totalFee) internal {
+    function _distributeFee(
+        address payer,
+        uint256 totalFee
+    ) internal {
         // Pull fee from user to this contract
         xomToken.safeTransferFrom(
-            msg.sender, address(this), totalFee
+            payer, address(this), totalFee
         );
 
         uint256 stakingAmount =
@@ -683,14 +702,17 @@ contract OmniENS is ReentrancyGuard, Ownable2Step {
      * @dev H-01 audit fix: Checks commitment age bounds and
      *      deletes the commitment to prevent reuse.
      * @param name The name being registered
+     * @param caller The address that made the commitment
+     *        (resolved via _msgSender() for meta-tx support)
      * @param secret The secret used in the commitment
      */
     function _consumeCommitment(
         string calldata name,
+        address caller,
         bytes32 secret
     ) internal {
         bytes32 commitment = keccak256(
-            abi.encodePacked(name, msg.sender, secret)
+            abi.encodePacked(name, caller, secret)
         );
         uint256 committedAt = commitments[commitment];
         if (committedAt == 0) revert NoCommitment();
@@ -735,6 +757,65 @@ contract OmniENS is ReentrancyGuard, Ownable2Step {
                 delete reverseRecords[reg.owner];
             }
         }
+    }
+
+    // ══════════════════════════════════════════════════════════════════
+    //              ERC-2771 CONTEXT OVERRIDES (DIAMOND)
+    // ══════════════════════════════════════════════════════════════════
+
+    /**
+     * @notice Resolve the sender for ERC-2771 meta-transactions
+     * @dev Overrides both Context (inherited via Ownable2Step) and
+     *      ERC2771Context to resolve the Solidity diamond ambiguity.
+     *      Delegates to ERC2771Context which extracts the original
+     *      sender from calldata when called via a trusted forwarder.
+     * @return The message sender (original user in meta-tx, or
+     *         msg.sender for direct calls)
+     */
+    function _msgSender()
+        internal
+        view
+        override(Context, ERC2771Context)
+        returns (address)
+    {
+        return ERC2771Context._msgSender();
+    }
+
+    /**
+     * @notice Resolve the calldata for ERC-2771 meta-transactions
+     * @dev Overrides both Context (inherited via Ownable2Step) and
+     *      ERC2771Context to resolve the Solidity diamond ambiguity.
+     *      Delegates to ERC2771Context which strips the appended
+     *      sender address from calldata when called via a trusted
+     *      forwarder.
+     * @return The message data (stripped in meta-tx, or original
+     *         msg.data for direct calls)
+     */
+    function _msgData()
+        internal
+        view
+        override(Context, ERC2771Context)
+        returns (bytes calldata)
+    {
+        return ERC2771Context._msgData();
+    }
+
+    /**
+     * @notice Return the context suffix length for ERC-2771
+     * @dev Overrides both Context (inherited via Ownable2Step) and
+     *      ERC2771Context to resolve the Solidity diamond ambiguity.
+     *      Delegates to ERC2771Context which returns 20 (the byte
+     *      length of an address appended by the trusted forwarder).
+     * @return The number of bytes appended to calldata by the
+     *         forwarder (20 for ERC-2771)
+     */
+    function _contextSuffixLength()
+        internal
+        view
+        override(Context, ERC2771Context)
+        returns (uint256)
+    {
+        return ERC2771Context._contextSuffixLength();
     }
 
     // ── Internal Pure Functions ──────────────────────────────────

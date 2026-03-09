@@ -50,7 +50,7 @@ describe("OmniBridge", function () {
     
     // Deploy OmniCoin tokens
     const Token = await ethers.getContractFactory("OmniCoin");
-    token = await Token.deploy();
+    token = await Token.deploy(ethers.ZeroAddress);
     await token.initialize();
     
     const PrivateToken = await ethers.getContractFactory("PrivateOmniCoin");
@@ -65,7 +65,7 @@ describe("OmniBridge", function () {
     core = await upgrades.deployProxy(
       OmniCore,
       [admin.address, token.target, admin.address, admin.address],
-      { initializer: "initialize" }
+      { initializer: "initialize", constructorArgs: [ethers.ZeroAddress] }
     );
     
     // Register services
@@ -77,7 +77,7 @@ describe("OmniBridge", function () {
     bridge = await upgrades.deployProxy(
       OmniBridge,
       [core.target, admin.address],
-      { initializer: "initialize", kind: "uups" }
+      { initializer: "initialize", kind: "uups", constructorArgs: [ethers.ZeroAddress] }
     );
     
     // Setup: Give users tokens

@@ -37,9 +37,9 @@ describe("UUPS Governance System", function () {
       guardian1, guardian2, guardian3, guardian4, guardian5
     ] = await ethers.getSigners();
 
-    // 1. Deploy OmniCoin
+    // 1. Deploy OmniCoin (trustedForwarder = zero for tests)
     const Token = await ethers.getContractFactory("OmniCoin");
-    token = await Token.deploy();
+    token = await Token.deploy(ethers.ZeroAddress);
     await token.initialize();
 
     // 2. Deploy OmniCore via UUPS proxy
@@ -47,7 +47,11 @@ describe("UUPS Governance System", function () {
     core = await upgrades.deployProxy(
       OmniCore,
       [admin.address, token.target, admin.address, admin.address],
-      { initializer: "initialize" }
+      {
+        initializer: "initialize",
+        constructorArgs: [ethers.ZeroAddress],
+        unsafeAllow: ["constructor"]
+      }
     );
 
     // Register OmniCoin service
@@ -83,18 +87,23 @@ describe("UUPS Governance System", function () {
     governance = await upgrades.deployProxy(
       Governance,
       [token.target, core.target, timelock.target, admin.address],
-      { initializer: "initialize", kind: "uups" }
+      {
+        initializer: "initialize",
+        kind: "uups",
+        constructorArgs: [ethers.ZeroAddress],
+        unsafeAllow: ["constructor"]
+      }
     );
 
     // Grant PROPOSER_ROLE to governance
     const PROPOSER_ROLE = await timelock.PROPOSER_ROLE();
     await timelock.connect(owner).grantRole(PROPOSER_ROLE, governance.target);
 
-    // Distribute tokens for voting
-    await token.mint(proposer.address, ethers.parseEther("15000"));
-    await token.mint(voter1.address, ethers.parseEther("50000"));
-    await token.mint(voter2.address, ethers.parseEther("40000"));
-    await token.mint(voter3.address, ethers.parseEther("30000"));
+    // Distribute tokens for voting (owner holds full supply from initialize())
+    await token.connect(owner).transfer(proposer.address, ethers.parseEther("15000"));
+    await token.connect(owner).transfer(voter1.address, ethers.parseEther("50000"));
+    await token.connect(owner).transfer(voter2.address, ethers.parseEther("40000"));
+    await token.connect(owner).transfer(voter3.address, ethers.parseEther("30000"));
 
     // Delegate to self so ERC20Votes checkpoints are active
     await token.connect(proposer).delegate(proposer.address);
@@ -329,7 +338,7 @@ describe("UUPS Governance System", function () {
 
     it("Should execute operation after delay", async function () {
       // Mint tokens to timelock so it can transfer
-      await token.mint(timelock.target, ethers.parseEther("100"));
+      await token.connect(owner).transfer(timelock.target, ethers.parseEther("100"));
 
       const target = token.target;
       const value = 0;
@@ -470,7 +479,7 @@ describe("UUPS Governance System", function () {
         const predecessor = ethers.ZeroHash;
         const salt = ethers.id("cancel-test-op");
 
-        await token.mint(timelock.target, ethers.parseEther("100"));
+        await token.connect(owner).transfer(timelock.target, ethers.parseEther("100"));
 
         await timelock.connect(owner).schedule(
           target, value, data, predecessor, salt, ROUTINE_DELAY
@@ -633,7 +642,12 @@ describe("UUPS Governance System", function () {
           upgrades.deployProxy(
             Gov,
             [ethers.ZeroAddress, core.target, timelock.target, admin.address],
-            { initializer: "initialize", kind: "uups" }
+            {
+              initializer: "initialize",
+              kind: "uups",
+              constructorArgs: [ethers.ZeroAddress],
+              unsafeAllow: ["constructor"]
+            }
           )
         ).to.be.revertedWithCustomError(Gov, "InvalidAddress");
       });
@@ -981,7 +995,7 @@ describe("UUPS Governance System", function () {
         await mine(1);
 
         // Mint to timelock for execution
-        await token.mint(timelock.target, ethers.parseEther("1000"));
+        await token.connect(owner).transfer(timelock.target, ethers.parseEther("1000"));
 
         const targets = [token.target];
         const values = [0];
@@ -1131,7 +1145,7 @@ describe("UUPS Governance System", function () {
 
       it("Should allow proposal with staked-only balance", async function () {
         const [,,,,,,,,,,, stakerOnly] = await ethers.getSigners();
-        await token.mint(stakerOnly.address, ethers.parseEther("10000"));
+        await token.connect(owner).transfer(stakerOnly.address, ethers.parseEther("10000"));
         await token.connect(stakerOnly).delegate(stakerOnly.address);
 
         // Stake all tokens
@@ -1188,7 +1202,10 @@ describe("UUPS Governance System", function () {
           "OmniGovernance", admin
         );
         await expect(
-          upgrades.upgradeProxy(governance.target, GovV2)
+          upgrades.upgradeProxy(governance.target, GovV2, {
+            constructorArgs: [ethers.ZeroAddress],
+            unsafeAllow: ["constructor"]
+          })
         ).to.be.revertedWithCustomError(governance, "ContractIsOssified");
       });
     });
@@ -1343,7 +1360,12 @@ describe("UUPS Governance System", function () {
       bridge = await upgrades.deployProxy(
         OmniBridge,
         [core.target, admin.address],
-        { initializer: "initialize", kind: "uups" }
+        {
+          initializer: "initialize",
+          kind: "uups",
+          constructorArgs: [ethers.ZeroAddress],
+          unsafeAllow: ["constructor"]
+        }
       );
     });
 
@@ -1382,7 +1404,10 @@ describe("UUPS Governance System", function () {
         "OmniBridge", admin
       );
       await expect(
-        upgrades.upgradeProxy(bridge.target, OmniBridge)
+        upgrades.upgradeProxy(bridge.target, OmniBridge, {
+          constructorArgs: [ethers.ZeroAddress],
+          unsafeAllow: ["constructor"]
+        })
       ).to.be.revertedWithCustomError(bridge, "ContractIsOssified");
     });
   });
@@ -1417,7 +1442,10 @@ describe("UUPS Governance System", function () {
       // Must connect as admin (who has ADMIN_ROLE) to reach ossification check
       const OmniCore = await ethers.getContractFactory("OmniCore", admin);
       await expect(
-        upgrades.upgradeProxy(core.target, OmniCore)
+        upgrades.upgradeProxy(core.target, OmniCore, {
+          constructorArgs: [ethers.ZeroAddress],
+          unsafeAllow: ["constructor"]
+        })
       ).to.be.revertedWithCustomError(core, "ContractIsOssified");
     });
 
@@ -1443,7 +1471,7 @@ describe("UUPS Governance System", function () {
 
     it("Should execute a full ROUTINE governance flow end-to-end", async function () {
       // Mint tokens to timelock for the proposal action
-      await token.mint(timelock.target, ethers.parseEther("500"));
+      await token.connect(owner).transfer(timelock.target, ethers.parseEther("500"));
 
       await mine(1);
 
@@ -1497,7 +1525,7 @@ describe("UUPS Governance System", function () {
     });
 
     it("Should handle guardian emergency cancel of a queued proposal", async function () {
-      await token.mint(timelock.target, ethers.parseEther("500"));
+      await token.connect(owner).transfer(timelock.target, ethers.parseEther("500"));
 
       await mine(1);
 

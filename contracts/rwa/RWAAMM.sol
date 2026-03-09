@@ -6,6 +6,8 @@ import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {ECDSA} from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 import {MessageHashUtils} from "@openzeppelin/contracts/utils/cryptography/MessageHashUtils.sol";
+import {ERC2771Context} from
+    "@openzeppelin/contracts/metatx/ERC2771Context.sol";
 import {IRWAAMM} from "./interfaces/IRWAAMM.sol";
 import {IRWAComplianceOracle} from "./interfaces/IRWAComplianceOracle.sol";
 import {RWAPool} from "./RWAPool.sol";
@@ -67,7 +69,7 @@ import {RWAPool} from "./RWAPool.sol";
  * - Slippage protection
  * - Multi-sig emergency controls
  */
-contract RWAAMM is IRWAAMM, ReentrancyGuard {
+contract RWAAMM is IRWAAMM, ReentrancyGuard, ERC2771Context {
     using SafeERC20 for IERC20;
     using ECDSA for bytes32;
     using MessageHashUtils for bytes32;
@@ -199,14 +201,16 @@ contract RWAAMM is IRWAAMM, ReentrancyGuard {
      * @param _feeVault Fee vault contract address (UnifiedFeeVault)
      * @param _xomToken XOM token address
      * @param _complianceOracle Compliance oracle contract
+     * @param trustedForwarder_ Trusted ERC-2771 forwarder address
      */
     // solhint-disable-next-line code-complexity
     constructor(
         address[5] memory _emergencyMultisig,
         address _feeVault,
         address _xomToken,
-        address _complianceOracle
-    ) {
+        address _complianceOracle,
+        address trustedForwarder_
+    ) ERC2771Context(trustedForwarder_) {
         // Validate all emergency signer addresses
         for (uint256 i = 0; i < MULTISIG_COUNT; ++i) {
             if (_emergencyMultisig[i] == address(0)) revert ZeroAddress();
@@ -435,7 +439,7 @@ contract RWAAMM is IRWAAMM, ReentrancyGuard {
         address token0,
         address token1
     ) external whenNotPaused returns (bytes32 poolId, address poolAddress) {
-        if (!_poolCreators[msg.sender]) revert NotPoolCreator();
+        if (!_poolCreators[_msgSender()]) revert NotPoolCreator();
         return _createPool(token0, token1);
     }
 
@@ -469,6 +473,8 @@ contract RWAAMM is IRWAAMM, ReentrancyGuard {
     {
         if (amountIn == 0) revert ZeroAmount();
 
+        address caller = _msgSender();
+
         bytes32 poolId = getPoolId(tokenIn, tokenOut);
         if (_poolPaused[poolId]) revert PoolPaused(poolId);
 
@@ -477,7 +483,7 @@ contract RWAAMM is IRWAAMM, ReentrancyGuard {
 
         // Check compliance if required
         if (_isComplianceRequired(tokenIn, tokenOut)) {
-            _checkSwapCompliance(msg.sender, tokenIn, tokenOut, amountIn);
+            _checkSwapCompliance(caller, tokenIn, tokenOut, amountIn);
         }
 
         RWAPool pool = RWAPool(poolAddr);
@@ -511,14 +517,14 @@ contract RWAAMM is IRWAAMM, ReentrancyGuard {
 
         // Transfer input tokens to pool (trade amount + LP fee)
         IERC20(tokenIn).safeTransferFrom(
-            msg.sender, poolAddr, amountToPool
+            caller, poolAddr, amountToPool
         );
 
         // Transfer vault fee (20% staking + 10% protocol)
         // to UnifiedFeeVault for batched distribution
         if (vaultFee > 0) {
             IERC20(tokenIn).safeTransferFrom(
-                msg.sender, FEE_VAULT, vaultFee
+                caller, FEE_VAULT, vaultFee
             );
         }
 
@@ -527,7 +533,7 @@ contract RWAAMM is IRWAAMM, ReentrancyGuard {
             ? (uint256(0), amountOut)
             : (amountOut, uint256(0));
 
-        pool.swap(amount0Out, amount1Out, msg.sender, "");
+        pool.swap(amount0Out, amount1Out, caller, "");
 
         // Calculate price impact
         uint256 priceImpact = 0;
@@ -551,7 +557,7 @@ contract RWAAMM is IRWAAMM, ReentrancyGuard {
             route: route
         });
 
-        emit Swap(msg.sender, tokenIn, tokenOut, amountIn, amountOut, protocolFee);
+        emit Swap(caller, tokenIn, tokenOut, amountIn, amountOut, protocolFee);
     }
     /* solhint-enable code-complexity */
 
@@ -593,12 +599,14 @@ contract RWAAMM is IRWAAMM, ReentrancyGuard {
             uint256 liquidity
         )
     {
+        address caller = _msgSender();
+
         bytes32 poolId = getPoolId(token0, token1);
         address poolAddr = _pools[poolId];
 
         // Create pool if it doesn't exist (requires pool creator role)
         if (poolAddr == address(0)) {
-            if (!_poolCreators[msg.sender]) revert NotPoolCreator();
+            if (!_poolCreators[caller]) revert NotPoolCreator();
             (, poolAddr) = _createPool(token0, token1);
         }
 
@@ -607,7 +615,7 @@ contract RWAAMM is IRWAAMM, ReentrancyGuard {
         // Check compliance for both tokens (RWA tokens require
         // KYC/accreditation for all interactions, including liquidity)
         if (_isComplianceRequired(token0, token1)) {
-            _checkLiquidityCompliance(msg.sender, token0, token1);
+            _checkLiquidityCompliance(caller, token0, token1);
         }
 
         RWAPool pool = RWAPool(poolAddr);
@@ -646,18 +654,18 @@ contract RWAAMM is IRWAAMM, ReentrancyGuard {
         address actualToken0 = pool.token0();
         address actualToken1 = pool.token1();
 
-        IERC20(actualToken0).safeTransferFrom(msg.sender, poolAddr, amount0);
-        IERC20(actualToken1).safeTransferFrom(msg.sender, poolAddr, amount1);
+        IERC20(actualToken0).safeTransferFrom(caller, poolAddr, amount0);
+        IERC20(actualToken1).safeTransferFrom(caller, poolAddr, amount1);
 
         // Mint LP tokens
-        liquidity = pool.mint(msg.sender);
+        liquidity = pool.mint(caller);
 
         // Swap back amounts if needed for return values
         if (!isToken0First) {
             (amount0, amount1) = (amount1, amount0);
         }
 
-        emit LiquidityAdded(msg.sender, poolId, amount0, amount1, liquidity);
+        emit LiquidityAdded(caller, poolId, amount0, amount1, liquidity);
     }
     /* solhint-enable code-complexity */
 
@@ -680,22 +688,24 @@ contract RWAAMM is IRWAAMM, ReentrancyGuard {
             uint256 amount1
         )
     {
+        address caller = _msgSender();
+
         bytes32 poolId = getPoolId(token0, token1);
         address poolAddr = _pools[poolId];
         if (poolAddr == address(0)) revert PoolNotFound(poolId);
 
         // Check compliance for both tokens before withdrawal
         if (_isComplianceRequired(token0, token1)) {
-            _checkLiquidityCompliance(msg.sender, token0, token1);
+            _checkLiquidityCompliance(caller, token0, token1);
         }
 
         RWAPool pool = RWAPool(poolAddr);
 
         // Transfer LP tokens to pool
-        IERC20(poolAddr).safeTransferFrom(msg.sender, poolAddr, liquidity);
+        IERC20(poolAddr).safeTransferFrom(caller, poolAddr, liquidity);
 
         // Burn LP tokens and get underlying
-        (amount0, amount1) = pool.burn(msg.sender);
+        (amount0, amount1) = pool.burn(caller);
 
         // Check minimums
         bool isToken0First = pool.token0() == token0;
@@ -706,7 +716,7 @@ contract RWAAMM is IRWAAMM, ReentrancyGuard {
         if (amount0 < amount0Min) revert SlippageExceeded(amount0Min, amount0);
         if (amount1 < amount1Min) revert SlippageExceeded(amount1Min, amount1);
 
-        emit LiquidityRemoved(msg.sender, poolId, amount0, amount1, liquidity);
+        emit LiquidityRemoved(caller, poolId, amount0, amount1, liquidity);
     }
 
     // ========================================================================
@@ -801,7 +811,7 @@ contract RWAAMM is IRWAAMM, ReentrancyGuard {
             _poolPaused[poolId] = true;
         }
 
-        emit EmergencyPaused(poolId, msg.sender, reason);
+        emit EmergencyPaused(poolId, _msgSender(), reason);
     }
 
     /**
@@ -832,7 +842,7 @@ contract RWAAMM is IRWAAMM, ReentrancyGuard {
             _poolPaused[poolId] = false;
         }
 
-        emit EmergencyUnpaused(poolId, msg.sender);
+        emit EmergencyUnpaused(poolId, _msgSender());
     }
 
     // ========================================================================
@@ -919,7 +929,7 @@ contract RWAAMM is IRWAAMM, ReentrancyGuard {
         _pools[poolId] = address(pool);
         _allPoolIds.push(poolId);
 
-        emit PoolCreated(poolId, tokenA, tokenB, msg.sender);
+        emit PoolCreated(poolId, tokenA, tokenB, _msgSender());
 
         poolAddress = address(pool);
     }

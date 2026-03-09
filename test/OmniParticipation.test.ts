@@ -82,6 +82,7 @@ describe('OmniParticipation', function () {
             {
                 initializer: 'initialize',
                 kind: 'uups',
+                constructorArgs: [ethers.ZeroAddress],
             }
         );
         await participation.waitForDeployment();
@@ -128,7 +129,7 @@ describe('OmniParticipation', function () {
                 upgrades.deployProxy(
                     OmniParticipation,
                     [ZeroAddress, await mockOmniCore.getAddress()],
-                    { initializer: 'initialize', kind: 'uups' }
+                    { initializer: 'initialize', kind: 'uups', constructorArgs: [ethers.ZeroAddress] }
                 )
             ).to.be.revertedWithCustomError(OmniParticipation, 'ZeroAddress');
         });
@@ -139,7 +140,7 @@ describe('OmniParticipation', function () {
                 upgrades.deployProxy(
                     OmniParticipation,
                     [await mockRegistration.getAddress(), ZeroAddress],
-                    { initializer: 'initialize', kind: 'uups' }
+                    { initializer: 'initialize', kind: 'uups', constructorArgs: [ethers.ZeroAddress] }
                 )
             ).to.be.revertedWithCustomError(OmniParticipation, 'ZeroAddress');
         });

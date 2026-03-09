@@ -18,6 +18,12 @@ import {
 import {
     EIP712
 } from "@openzeppelin/contracts/utils/cryptography/EIP712.sol";
+import {
+    ERC2771Context
+} from "@openzeppelin/contracts/metatx/ERC2771Context.sol";
+import {
+    Context
+} from "@openzeppelin/contracts/utils/Context.sol";
 
 /**
  * @title DEXSettlement
@@ -71,7 +77,8 @@ contract DEXSettlement is
     EIP712,
     Ownable2Step,
     Pausable,
-    ReentrancyGuard
+    ReentrancyGuard,
+    ERC2771Context
 {
     using SafeERC20 for IERC20;
     using ECDSA for bytes32;
@@ -607,14 +614,18 @@ contract DEXSettlement is
      * @param _liquidityPool LP pool address (70% of net fees)
      * @param _oddao ODDAO treasury address (20% of net fees)
      * @param _protocolTreasury Protocol treasury address (10%)
+     * @param trustedForwarder_ ERC-2771 trusted forwarder for
+     *        gasless meta-transactions (e.g. OmniForwarder)
      */
     constructor(
         address _liquidityPool,
         address _oddao,
-        address _protocolTreasury
+        address _protocolTreasury,
+        address trustedForwarder_
     )
         EIP712("OmniCoin DEX Settlement", "1")
         Ownable(msg.sender)
+        ERC2771Context(trustedForwarder_)
     {
         if (
             _liquidityPool == address(0)
@@ -653,14 +664,16 @@ contract DEXSettlement is
             revert InvalidOrderHash();
         }
 
-        commitments[msg.sender][orderHash] = Commitment({
+        address caller = _msgSender();
+
+        commitments[caller][orderHash] = Commitment({
             orderHash: orderHash,
             commitBlock: block.number,
             revealed: false
         });
 
         emit OrderCommitted(
-            msg.sender,
+            caller,
             orderHash,
             block.number
         );
@@ -672,14 +685,16 @@ contract DEXSettlement is
      * @dev Verifies commitment exists and timing is correct
      */
     function revealOrder(Order calldata order) external {
-        if (order.trader != msg.sender) {
+        address caller = _msgSender();
+
+        if (order.trader != caller) {
             revert InvalidSignature();
         }
 
         bytes32 orderHash =
             _hashTypedDataV4(_hashOrder(order));
         Commitment storage commitment =
-            commitments[msg.sender][orderHash];
+            commitments[caller][orderHash];
 
         if (commitment.commitBlock == 0) {
             revert CommitmentNotFound();
@@ -821,11 +836,13 @@ contract DEXSettlement is
      *      nonce is a single bit in a 256-bit word.
      */
     function invalidateNonce(uint256 nonce) external {
+        address caller = _msgSender();
+
         (uint256 wordIdx, uint256 bitIdx) =
             _noncePosition(nonce);
         uint256 bit = 1 << bitIdx;
-        nonceBitmap[msg.sender][wordIdx] |= bit;
-        emit NonceUsed(msg.sender, wordIdx, bitIdx);
+        nonceBitmap[caller][wordIdx] |= bit;
+        emit NonceUsed(caller, wordIdx, bitIdx);
     }
 
     /**
@@ -839,8 +856,10 @@ contract DEXSettlement is
     function invalidateNonceWord(
         uint256 wordIndex
     ) external {
-        nonceBitmap[msg.sender][wordIndex] = type(uint256).max;
-        emit NonceUsed(msg.sender, wordIndex, 256);
+        address caller = _msgSender();
+
+        nonceBitmap[caller][wordIndex] = type(uint256).max;
+        emit NonceUsed(caller, wordIndex, 256);
     }
 
     // ================================================================
@@ -1056,13 +1075,15 @@ contract DEXSettlement is
     function claimFees(
         address token
     ) external nonReentrant {
-        uint256 amount = accruedFees[msg.sender][token];
+        address caller = _msgSender();
+
+        uint256 amount = accruedFees[caller][token];
         if (amount == 0) revert ZeroAmount();
 
-        accruedFees[msg.sender][token] = 0;
-        IERC20(token).safeTransfer(msg.sender, amount);
+        accruedFees[caller][token] = 0;
+        IERC20(token).safeTransfer(caller, amount);
 
-        emit FeesClaimed(msg.sender, token, amount);
+        emit FeesClaimed(caller, token, amount);
     }
 
     // ================================================================
@@ -1102,6 +1123,8 @@ contract DEXSettlement is
         // L-03/L-05: Enforce emergencyStop
         if (emergencyStop) revert EmergencyStopActive();
 
+        address caller = _msgSender();
+
         if (intentCollateral[intentId].locked) {
             revert CollateralAlreadyLocked();
         }
@@ -1126,7 +1149,7 @@ contract DEXSettlement is
         }
 
         intentCollateral[intentId] = IntentCollateral({
-            trader: msg.sender,
+            trader: caller,
             locked: true,
             settled: false,
             solver: solver,
@@ -1144,7 +1167,7 @@ contract DEXSettlement is
             address(this)
         );
         IERC20(tokenIn).safeTransferFrom(
-            msg.sender,
+            caller,
             address(this),
             traderAmount
         );
@@ -1157,7 +1180,7 @@ contract DEXSettlement is
 
         emit IntentCollateralLocked(
             intentId,
-            msg.sender,
+            caller,
             solver,
             traderAmount,
             solverAmount
@@ -1180,6 +1203,8 @@ contract DEXSettlement is
     ) external nonReentrant whenNotPaused {
         if (emergencyStop) revert EmergencyStopActive();
 
+        address caller = _msgSender();
+
         IntentCollateral storage coll =
             intentCollateral[intentId];
 
@@ -1192,8 +1217,8 @@ contract DEXSettlement is
 
         // H-01: Access control
         if (
-            msg.sender != coll.trader
-                && msg.sender != coll.solver
+            caller != coll.trader
+                && caller != coll.solver
         ) {
             revert UnauthorizedSettler();
         }
@@ -1283,12 +1308,14 @@ contract DEXSettlement is
     function cancelIntent(
         bytes32 intentId
     ) external nonReentrant {
+        address caller = _msgSender();
+
         IntentCollateral storage coll =
             intentCollateral[intentId];
 
         if (!coll.locked) revert CollateralNotLocked();
         if (coll.settled) revert AlreadySettled();
-        if (msg.sender != coll.trader) {
+        if (caller != coll.trader) {
             revert InvalidSignature();
         }
         // M-03: Enforce deadline before allowing cancel
@@ -2025,5 +2052,56 @@ contract DEXSettlement is
     ) internal pure returns (uint256 wordIdx, uint256 bitIdx) {
         wordIdx = nonce / 256;
         bitIdx = nonce % 256;
+    }
+
+    // ================================================================
+    // ERC2771Context OVERRIDES
+    // (resolve Context vs ERC2771Context diamond)
+    // ================================================================
+
+    /**
+     * @notice Resolve _msgSender between Context (via
+     *         Ownable/Pausable) and ERC2771Context
+     * @dev ERC2771Context overrides _msgSender() to extract
+     *      the original signer from trusted-forwarder calldata.
+     * @return sender The original transaction signer
+     */
+    function _msgSender()
+        internal
+        view
+        override(Context, ERC2771Context)
+        returns (address sender)
+    {
+        return ERC2771Context._msgSender();
+    }
+
+    /**
+     * @notice Resolve _msgData between Context (via
+     *         Ownable/Pausable) and ERC2771Context
+     * @return The original calldata (stripped of appended
+     *         sender when forwarded)
+     */
+    function _msgData()
+        internal
+        view
+        override(Context, ERC2771Context)
+        returns (bytes calldata)
+    {
+        return ERC2771Context._msgData();
+    }
+
+    /**
+     * @notice Resolve _contextSuffixLength between Context
+     *         and ERC2771Context
+     * @return Length of the context suffix (20 bytes when
+     *         called via trusted forwarder, 0 otherwise)
+     */
+    function _contextSuffixLength()
+        internal
+        view
+        override(Context, ERC2771Context)
+        returns (uint256)
+    {
+        return ERC2771Context._contextSuffixLength();
     }
 }

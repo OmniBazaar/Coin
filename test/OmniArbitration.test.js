@@ -83,7 +83,7 @@ describe("OmniArbitration", function () {
         oddao.address,
         protocolTreasury.address
       ],
-      { initializer: "initialize", kind: "uups" }
+      { initializer: "initialize", kind: "uups", constructorArgs: [ethers.ZeroAddress] }
     );
 
     // ── Register 10 arbitrators ──

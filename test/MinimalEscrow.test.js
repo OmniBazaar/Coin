@@ -25,11 +25,11 @@ describe("MinimalEscrow", function () {
 
     // Deploy OmniCoin token (XOM)
     const Token = await ethers.getContractFactory("OmniCoin");
-    token = await Token.connect(owner).deploy();
+    token = await Token.connect(owner).deploy(ethers.ZeroAddress);
     await token.connect(owner).initialize();
 
     // Deploy a second OmniCoin as pXOM stand-in (privacy token)
-    pToken = await Token.connect(owner).deploy();
+    pToken = await Token.connect(owner).deploy(ethers.ZeroAddress);
     await pToken.connect(owner).initialize();
 
     // Deploy MinimalEscrow: omniCoin, privateOmniCoin, registry, feeCollector, feeBps
@@ -39,15 +39,16 @@ describe("MinimalEscrow", function () {
       pToken.target,
       registry.address,
       owner.address, // feeCollector — deployer receives marketplace fees
-      100 // 1% marketplace fee (100 basis points)
+      100, // 1% marketplace fee (100 basis points)
+      ethers.ZeroAddress // trustedForwarder_ (disabled)
     );
 
     // Register arbitrator (owner is ADMIN since owner deployed the contract)
     await escrow.connect(owner).addArbitrator(arbitrator.address);
 
-    // Setup: Give buyer tokens
-    await token.connect(owner).mint(buyer.address, ethers.parseEther("1000"));
-    await token.connect(owner).mint(seller.address, ethers.parseEther("100")); // For dispute stakes
+    // Setup: Give buyer and seller tokens (transfer from deployer's pre-minted supply)
+    await token.connect(owner).transfer(buyer.address, ethers.parseEther("1000"));
+    await token.connect(owner).transfer(seller.address, ethers.parseEther("100")); // For dispute stakes
 
     // Approve escrow contract
     await token.connect(buyer).approve(escrow.target, ethers.parseEther("1000"));

@@ -6,6 +6,10 @@ import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
+import {ERC2771Context} from
+    "@openzeppelin/contracts/metatx/ERC2771Context.sol";
+import {Context} from
+    "@openzeppelin/contracts/utils/Context.sol";
 
 /**
  * @title LiquidityBootstrappingPool
@@ -52,7 +56,7 @@ import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
  *   Day 7: price = (10000 * 3000) / (100M * 7000) = 0.0000428 USDC/XOM
  *   (assuming no swaps change reserves)
  */
-contract LiquidityBootstrappingPool is ReentrancyGuard, Ownable, Pausable {
+contract LiquidityBootstrappingPool is ReentrancyGuard, Ownable, Pausable, ERC2771Context {
     using SafeERC20 for IERC20;
 
     // ============ Constants ============
@@ -243,13 +247,15 @@ contract LiquidityBootstrappingPool is ReentrancyGuard, Ownable, Pausable {
      * @param _counterAsset Counter-asset (USDC) token address
      * @param _counterAssetDecimals Decimals of counter-asset (6 for USDC)
      * @param _treasury Address to receive raised funds
+     * @param trustedForwarder_ Trusted ERC-2771 forwarder address
      */
     constructor(
         address _xom,
         address _counterAsset,
         uint8 _counterAssetDecimals,
-        address _treasury
-    ) Ownable(msg.sender) {
+        address _treasury,
+        address trustedForwarder_
+    ) Ownable(msg.sender) ERC2771Context(trustedForwarder_) {
         if (
             _xom == address(0) ||
             _counterAsset == address(0) ||
@@ -380,8 +386,10 @@ contract LiquidityBootstrappingPool is ReentrancyGuard, Ownable, Pausable {
         uint256 counterAssetIn,
         uint256 minXomOut
     ) external nonReentrant whenNotPaused returns (uint256 xomOut) {
+        address caller = _msgSender();
+
         // --- Checks (consolidated validation) ---
-        _validateSwap(counterAssetIn);
+        _validateSwap(counterAssetIn, caller);
 
         xomOut = _computeSwapOutput(counterAssetIn);
 
@@ -395,7 +403,7 @@ contract LiquidityBootstrappingPool is ReentrancyGuard, Ownable, Pausable {
 
         // --- Transfer counter-asset in to measure actual received ---
         uint256 actualReceived = _transferCounterAssetIn(
-            counterAssetIn
+            counterAssetIn, caller
         );
 
         // --- Effects (state updates with ACTUAL received amount) ---
@@ -409,12 +417,12 @@ contract LiquidityBootstrappingPool is ReentrancyGuard, Ownable, Pausable {
         if (postSwapPrice < priceFloor) revert PriceBelowFloor();
 
         // --- Interaction (XOM out) ---
-        XOM_TOKEN.safeTransfer(msg.sender, xomOut);
+        XOM_TOKEN.safeTransfer(caller, xomOut);
 
         // solhint-disable-next-line not-rely-on-time
         uint256 swapTimestamp = block.timestamp;
         emit Swap(
-            msg.sender,
+            caller,
             actualReceived,
             xomOut,
             postSwapPrice,
@@ -631,9 +639,11 @@ contract LiquidityBootstrappingPool is ReentrancyGuard, Ownable, Pausable {
      *      the per-transaction check, so the per-transaction check
      *      is only retained as an early cheap revert.
      * @param counterAssetIn Amount of counter-asset to swap
+     * @param caller Resolved sender address (via ERC-2771)
      */
     function _validateSwap(
-        uint256 counterAssetIn
+        uint256 counterAssetIn,
+        address caller
     ) internal {
         if (!isActive()) revert LBPNotActive();
         if (counterAssetIn == 0) revert InvalidParameters();
@@ -643,9 +653,9 @@ contract LiquidityBootstrappingPool is ReentrancyGuard, Ownable, Pausable {
                 revert ExceedsMaxPurchase();
             }
             // Cumulative per-address tracking
-            cumulativePurchases[msg.sender] += counterAssetIn;
+            cumulativePurchases[caller] += counterAssetIn;
             if (
-                cumulativePurchases[msg.sender]
+                cumulativePurchases[caller]
                     > maxPurchaseAmount
             ) {
                 revert CumulativePurchaseExceeded();
@@ -659,15 +669,17 @@ contract LiquidityBootstrappingPool is ReentrancyGuard, Ownable, Pausable {
      *      tokens. The caller is responsible for using actualReceived
      *      (not counterAssetIn) when updating state variables.
      * @param counterAssetIn Nominal amount to transfer
+     * @param caller Resolved sender address (via ERC-2771)
      * @return actualReceived Amount actually received after any fee
      */
     function _transferCounterAssetIn(
-        uint256 counterAssetIn
+        uint256 counterAssetIn,
+        address caller
     ) internal returns (uint256 actualReceived) {
         uint256 balBefore =
             COUNTER_ASSET_TOKEN.balanceOf(address(this));
         COUNTER_ASSET_TOKEN.safeTransferFrom(
-            msg.sender, address(this), counterAssetIn
+            caller, address(this), counterAssetIn
         );
         actualReceived =
             COUNTER_ASSET_TOKEN.balanceOf(address(this))
@@ -697,6 +709,58 @@ contract LiquidityBootstrappingPool is ReentrancyGuard, Ownable, Pausable {
             counterAssetIn
         );
     }
+
+    // ============ ERC-2771 Overrides ============
+
+    /**
+     * @notice Return the sender of the call, accounting for
+     *         ERC-2771 meta-transactions.
+     * @dev Delegates to ERC2771Context to extract the original
+     *      sender when the call comes from the trusted forwarder.
+     * @return The resolved sender address.
+     */
+    function _msgSender()
+        internal
+        view
+        override(Context, ERC2771Context)
+        returns (address)
+    {
+        return ERC2771Context._msgSender();
+    }
+
+    /**
+     * @notice Return the calldata of the call, accounting for
+     *         ERC-2771 meta-transactions.
+     * @dev Delegates to ERC2771Context to strip the appended
+     *      sender address when the call comes from the trusted
+     *      forwarder.
+     * @return The resolved calldata.
+     */
+    function _msgData()
+        internal
+        view
+        override(Context, ERC2771Context)
+        returns (bytes calldata)
+    {
+        return ERC2771Context._msgData();
+    }
+
+    /**
+     * @notice Return the context suffix length for ERC-2771.
+     * @dev ERC-2771 appends 20 bytes (the sender address) to
+     *      the calldata.
+     * @return Length of the context suffix (20).
+     */
+    function _contextSuffixLength()
+        internal
+        view
+        override(Context, ERC2771Context)
+        returns (uint256)
+    {
+        return ERC2771Context._contextSuffixLength();
+    }
+
+    // ============ Internal Pure Functions ============
 
     /**
      * @notice Calculate swap output using Balancer weighted math
@@ -843,4 +907,5 @@ contract LiquidityBootstrappingPool is ReentrancyGuard, Ownable, Pausable {
             unchecked { ++i; }
         }
     }
+
 }

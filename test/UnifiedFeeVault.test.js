@@ -55,7 +55,12 @@ describe("UnifiedFeeVault", function () {
     vault = await upgrades.deployProxy(
       Vault,
       [admin.address, stakingPool.address, protocolTreasury.address],
-      { initializer: "initialize", kind: "uups" }
+      {
+        initializer: "initialize",
+        kind: "uups",
+        constructorArgs: [ethers.ZeroAddress],
+        unsafeAllow: ["constructor"]
+      }
     );
     await vault.waitForDeployment();
 
@@ -120,7 +125,12 @@ describe("UnifiedFeeVault", function () {
             stakingPool.address,
             protocolTreasury.address,
           ],
-          { initializer: "initialize", kind: "uups" }
+          {
+          initializer: "initialize",
+          kind: "uups",
+          constructorArgs: [ethers.ZeroAddress],
+          unsafeAllow: ["constructor"]
+        }
         )
       ).to.be.revertedWithCustomError(Vault, "ZeroAddress");
     });
@@ -131,7 +141,12 @@ describe("UnifiedFeeVault", function () {
         upgrades.deployProxy(
           Vault,
           [admin.address, ethers.ZeroAddress, protocolTreasury.address],
-          { initializer: "initialize", kind: "uups" }
+          {
+          initializer: "initialize",
+          kind: "uups",
+          constructorArgs: [ethers.ZeroAddress],
+          unsafeAllow: ["constructor"]
+        }
         )
       ).to.be.revertedWithCustomError(Vault, "ZeroAddress");
     });
@@ -142,7 +157,12 @@ describe("UnifiedFeeVault", function () {
         upgrades.deployProxy(
           Vault,
           [admin.address, stakingPool.address, ethers.ZeroAddress],
-          { initializer: "initialize", kind: "uups" }
+          {
+          initializer: "initialize",
+          kind: "uups",
+          constructorArgs: [ethers.ZeroAddress],
+          unsafeAllow: ["constructor"]
+        }
         )
       ).to.be.revertedWithCustomError(Vault, "ZeroAddress");
     });
@@ -795,7 +815,10 @@ describe("UnifiedFeeVault", function () {
 
       const VaultV2 = await ethers.getContractFactory("UnifiedFeeVault");
       await expect(
-        upgrades.upgradeProxy(vault.target, VaultV2)
+        upgrades.upgradeProxy(vault.target, VaultV2, {
+          constructorArgs: [ethers.ZeroAddress],
+          unsafeAllow: ["constructor"]
+        })
       ).to.be.revertedWithCustomError(vault, "ContractIsOssified");
     });
   });
@@ -870,7 +893,11 @@ describe("UnifiedFeeVault", function () {
       const VaultV2 = await ethers.getContractFactory("UnifiedFeeVault");
       const upgraded = await upgrades.upgradeProxy(
         vault.target,
-        VaultV2
+        VaultV2,
+        {
+          constructorArgs: [ethers.ZeroAddress],
+          unsafeAllow: ["constructor"]
+        }
       );
       expect(upgraded.target).to.equal(vault.target);
     });
@@ -881,7 +908,10 @@ describe("UnifiedFeeVault", function () {
         attacker
       );
       await expect(
-        upgrades.upgradeProxy(vault.target, VaultV2)
+        upgrades.upgradeProxy(vault.target, VaultV2, {
+          constructorArgs: [ethers.ZeroAddress],
+          unsafeAllow: ["constructor"]
+        })
       ).to.be.revertedWithCustomError(
         vault,
         "AccessControlUnauthorizedAccount"
@@ -902,7 +932,11 @@ describe("UnifiedFeeVault", function () {
       const VaultV2 = await ethers.getContractFactory("UnifiedFeeVault");
       const upgraded = await upgrades.upgradeProxy(
         vault.target,
-        VaultV2
+        VaultV2,
+        {
+          constructorArgs: [ethers.ZeroAddress],
+          unsafeAllow: ["constructor"]
+        }
       );
 
       // State should be preserved
@@ -1323,7 +1357,12 @@ describe("UnifiedFeeVault", function () {
       const freshVault = await upgrades.deployProxy(
         Vault,
         [admin.address, stakingPool.address, protocolTreasury.address],
-        { initializer: "initialize", kind: "uups" }
+        {
+          initializer: "initialize",
+          kind: "uups",
+          constructorArgs: [ethers.ZeroAddress],
+          unsafeAllow: ["constructor"]
+        }
       );
       await freshVault.waitForDeployment();
 
@@ -1343,7 +1382,12 @@ describe("UnifiedFeeVault", function () {
       const freshVault = await upgrades.deployProxy(
         Vault,
         [admin.address, stakingPool.address, protocolTreasury.address],
-        { initializer: "initialize", kind: "uups" }
+        {
+          initializer: "initialize",
+          kind: "uups",
+          constructorArgs: [ethers.ZeroAddress],
+          unsafeAllow: ["constructor"]
+        }
       );
       await freshVault.waitForDeployment();
 
@@ -1540,7 +1584,12 @@ describe("UnifiedFeeVault", function () {
             stakingPool.address,
             protocolTreasury.address,
           ],
-          { initializer: "initialize", kind: "uups" }
+          {
+          initializer: "initialize",
+          kind: "uups",
+          constructorArgs: [ethers.ZeroAddress],
+          unsafeAllow: ["constructor"]
+        }
         );
         await freshVault.waitForDeployment();
 

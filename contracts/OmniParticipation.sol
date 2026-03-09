@@ -7,6 +7,10 @@ import {UUPSUpgradeable} from
     "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
 import {ReentrancyGuardUpgradeable} from
     "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
+import {ERC2771ContextUpgradeable} from
+    "@openzeppelin/contracts-upgradeable/metatx/ERC2771ContextUpgradeable.sol";
+import {ContextUpgradeable} from
+    "@openzeppelin/contracts-upgradeable/utils/ContextUpgradeable.sol";
 
 // ═══════════════════════════════════════════════════════════════════════════════
 //                              INTERFACES
@@ -105,7 +109,8 @@ interface IOmniCore {
 contract OmniParticipation is // solhint-disable-line max-states-count
     AccessControlUpgradeable,
     UUPSUpgradeable,
-    ReentrancyGuardUpgradeable
+    ReentrancyGuardUpgradeable,
+    ERC2771ContextUpgradeable
 {
     // ═══════════════════════════════════════════════════════════════════════
     //                          TYPE DECLARATIONS
@@ -482,7 +487,9 @@ contract OmniParticipation is // solhint-disable-line max-states-count
     // ═══════════════════════════════════════════════════════════════════════
 
     /// @custom:oz-upgrades-unsafe-allow constructor
-    constructor() {
+    constructor(
+        address trustedForwarder_
+    ) ERC2771ContextUpgradeable(trustedForwarder_) {
         _disableInitializers();
     }
 
@@ -526,11 +533,13 @@ contract OmniParticipation is // solhint-disable-line max-states-count
         uint8 stars,
         bytes32 transactionHash
     ) external nonReentrant {
+        address caller = _msgSender();
+
         if (stars < 1 || stars > 5) revert InvalidStars();
-        if (msg.sender == reviewed) revert CannotReviewSelf();        // M-03
+        if (caller == reviewed) revert CannotReviewSelf();            // M-03
         if (reviewed == address(0)) revert ZeroAddress();
         if (usedTransactions[transactionHash]) revert TransactionAlreadyUsed();
-        if (!registration.isRegistered(msg.sender)) revert NotRegistered();
+        if (!registration.isRegistered(caller)) revert NotRegistered();
         if (!registration.isRegistered(reviewed)) revert NotRegistered();
 
         // ATK-H12/K01: Enforce per-user array cap
@@ -547,7 +556,7 @@ contract OmniParticipation is // solhint-disable-line max-states-count
 
         // Record review
         reviewHistory[reviewed].push(Review({
-            reviewer: msg.sender,
+            reviewer: caller,
             reviewed: reviewed,
             stars: stars,
             timestamp: block.timestamp, // solhint-disable-line not-rely-on-time
@@ -558,7 +567,7 @@ contract OmniParticipation is // solhint-disable-line max-states-count
         // Recalculate reputation (only from verified reviews)
         _updateMarketplaceReputation(reviewed);
 
-        emit ReviewSubmitted(msg.sender, reviewed, stars, transactionHash);
+        emit ReviewSubmitted(caller, reviewed, stars, transactionHash);
     }
 
     /**
@@ -770,13 +779,15 @@ contract OmniParticipation is // solhint-disable-line max-states-count
     function claimMarketplaceTransactions(
         bytes32[] calldata transactionHashes
     ) external {
-        if (!registration.isRegistered(msg.sender)) revert NotRegistered();
+        address caller = _msgSender();
+
+        if (!registration.isRegistered(caller)) revert NotRegistered();
 
         uint256 hashLen = transactionHashes.length;
         if (hashLen == 0 || hashLen > MAX_BATCH_SIZE) revert InvalidBatchSize();
 
         // ATK-H12/K01: Enforce per-user array cap
-        uint256 currentLen = transactionClaims[msg.sender].length;
+        uint256 currentLen = transactionClaims[caller].length;
         if (currentLen + hashLen > MAX_CLAIMS_PER_USER) {
             revert ArrayCapExceeded(
                 currentLen + hashLen, MAX_CLAIMS_PER_USER
@@ -787,7 +798,7 @@ contract OmniParticipation is // solhint-disable-line max-states-count
             if (usedTransactions[transactionHashes[i]]) revert TransactionAlreadyUsed();
             usedTransactions[transactionHashes[i]] = true;
 
-            transactionClaims[msg.sender].push(TransactionClaim({
+            transactionClaims[caller].push(TransactionClaim({
                 transactionHash: transactionHashes[i],
                 timestamp: block.timestamp, // solhint-disable-line not-rely-on-time
                 verified: false
@@ -797,9 +808,9 @@ contract OmniParticipation is // solhint-disable-line max-states-count
         }
 
         // Update activity (will only count verified claims)
-        _updateMarketplaceActivity(msg.sender);
+        _updateMarketplaceActivity(caller);
 
-        emit TransactionsClaimed(msg.sender, hashLen);
+        emit TransactionsClaimed(caller, hashLen);
     }
 
     /**
@@ -879,15 +890,17 @@ contract OmniParticipation is // solhint-disable-line max-states-count
         bytes32 listingHash,
         string calldata reason
     ) external {
-        if (!registration.isRegistered(msg.sender)) revert NotRegistered();
+        address caller = _msgSender();
+
+        if (!registration.isRegistered(caller)) revert NotRegistered();
         if (bytes(reason).length < 10) revert ReasonTooShort();
 
         // M-07: Prevent duplicate report submissions per reporter
-        if (usedReportHashes[msg.sender][listingHash]) revert ReportAlreadySubmitted();
-        usedReportHashes[msg.sender][listingHash] = true;
+        if (usedReportHashes[caller][listingHash]) revert ReportAlreadySubmitted();
+        usedReportHashes[caller][listingHash] = true;
 
         // ATK-H12/K01: Enforce per-user array cap
-        uint256 currentLen = reportHistory[msg.sender].length;
+        uint256 currentLen = reportHistory[caller].length;
         // solhint-disable-next-line gas-strict-inequalities
         if (currentLen >= MAX_REPORTS_PER_USER) {
             revert ArrayCapExceeded(
@@ -895,8 +908,8 @@ contract OmniParticipation is // solhint-disable-line max-states-count
             );
         }
 
-        reportHistory[msg.sender].push(Report({
-            reporter: msg.sender,
+        reportHistory[caller].push(Report({
+            reporter: caller,
             listingHash: listingHash,
             reason: reason,
             timestamp: block.timestamp, // solhint-disable-line not-rely-on-time
@@ -904,7 +917,7 @@ contract OmniParticipation is // solhint-disable-line max-states-count
             isValid: false
         }));
 
-        emit ReportSubmitted(msg.sender, listingHash, reason);
+        emit ReportSubmitted(caller, listingHash, reason);
     }
 
     /**
@@ -988,7 +1001,9 @@ contract OmniParticipation is // solhint-disable-line max-states-count
         string calldata contributionType,
         bytes32 contentHash
     ) external {
-        if (!registration.isRegistered(msg.sender)) revert NotRegistered();
+        address caller = _msgSender();
+
+        if (!registration.isRegistered(caller)) revert NotRegistered();
 
         // M-07: Prevent duplicate content hash submissions
         if (usedContentHashes[contentHash]) revert ContentHashAlreadyUsed();
@@ -1006,7 +1021,7 @@ contract OmniParticipation is // solhint-disable-line max-states-count
 
         // ATK-H12/K01: Enforce per-user array cap
         uint256 currentLen =
-            forumContributions[msg.sender].length;
+            forumContributions[caller].length;
         // solhint-disable-next-line gas-strict-inequalities
         if (currentLen >= MAX_FORUM_CONTRIBUTIONS_PER_USER) {
             revert ArrayCapExceeded(
@@ -1015,14 +1030,14 @@ contract OmniParticipation is // solhint-disable-line max-states-count
             );
         }
 
-        forumContributions[msg.sender].push(ForumContribution({
+        forumContributions[caller].push(ForumContribution({
             contributionType: contributionType,
             contentHash: contentHash,
             timestamp: block.timestamp, // solhint-disable-line not-rely-on-time
             verified: false
         }));
 
-        emit ForumContributionClaimed(msg.sender, contributionType, contentHash);
+        emit ForumContributionClaimed(caller, contributionType, contentHash);
     }
 
     /**
@@ -1543,6 +1558,60 @@ contract OmniParticipation is // solhint-disable-line max-states-count
     ) internal override onlyRole(DEFAULT_ADMIN_ROLE) {
         if (_ossified) revert ContractIsOssified();
         if (newImplementation == address(0)) revert ZeroAddress();
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    //                    ERC-2771 CONTEXT OVERRIDES
+    // ═══════════════════════════════════════════════════════════════════════
+
+    /**
+     * @notice Resolve _msgSender diamond between ContextUpgradeable
+     *         and ERC2771ContextUpgradeable
+     * @dev Delegates to ERC2771ContextUpgradeable which returns the
+     *      original sender appended by a trusted forwarder, or falls
+     *      back to msg.sender for direct calls.
+     * @return The effective sender address for this call
+     */
+    function _msgSender()
+        internal
+        view
+        override(ContextUpgradeable, ERC2771ContextUpgradeable)
+        returns (address)
+    {
+        return ERC2771ContextUpgradeable._msgSender();
+    }
+
+    /**
+     * @notice Resolve _msgData diamond between ContextUpgradeable
+     *         and ERC2771ContextUpgradeable
+     * @dev Delegates to ERC2771ContextUpgradeable which strips the
+     *      appended sender address from calldata when called via a
+     *      trusted forwarder.
+     * @return The effective calldata for this call
+     */
+    function _msgData()
+        internal
+        view
+        override(ContextUpgradeable, ERC2771ContextUpgradeable)
+        returns (bytes calldata)
+    {
+        return ERC2771ContextUpgradeable._msgData();
+    }
+
+    /**
+     * @notice Resolve _contextSuffixLength diamond between
+     *         ContextUpgradeable and ERC2771ContextUpgradeable
+     * @dev ERC-2771 specifies a 20-byte suffix (the forwarded sender
+     *      address). Base ContextUpgradeable returns 0.
+     * @return Length in bytes of the context suffix (20 for ERC-2771)
+     */
+    function _contextSuffixLength()
+        internal
+        view
+        override(ContextUpgradeable, ERC2771ContextUpgradeable)
+        returns (uint256)
+    {
+        return ERC2771ContextUpgradeable._contextSuffixLength();
     }
 
     // ═══════════════════════════════════════════════════════════════════════

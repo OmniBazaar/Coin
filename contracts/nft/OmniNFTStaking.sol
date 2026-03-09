@@ -11,6 +11,10 @@ import {ReentrancyGuard} from
     "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {Ownable2Step, Ownable} from
     "@openzeppelin/contracts/access/Ownable2Step.sol";
+import {ERC2771Context} from
+    "@openzeppelin/contracts/metatx/ERC2771Context.sol";
+import {Context} from
+    "@openzeppelin/contracts/utils/Context.sol";
 
 /**
  * @title OmniNFTStaking
@@ -37,7 +41,12 @@ import {Ownable2Step, Ownable} from
  *          accounting (H-04).
  *        - lastClaimAt only advances when rewards are actually paid (H-05).
  */
-contract OmniNFTStaking is ERC721Holder, ReentrancyGuard, Ownable2Step {
+contract OmniNFTStaking is
+    ERC721Holder,
+    ReentrancyGuard,
+    Ownable2Step,
+    ERC2771Context
+{
     using SafeERC20 for IERC20;
 
     // ── Structs ──────────────────────────────────────────────────────────
@@ -273,8 +282,11 @@ contract OmniNFTStaking is ERC721Holder, ReentrancyGuard, Ownable2Step {
 
     /**
      * @notice Deploy the staking contract.
+     * @param trustedForwarder_ Trusted ERC-2771 forwarder address.
      */
-    constructor() Ownable(msg.sender) {}
+    constructor(
+        address trustedForwarder_
+    ) Ownable(msg.sender) ERC2771Context(trustedForwarder_) {}
 
     // ── External functions ───────────────────────────────────────────────
 
@@ -314,6 +326,8 @@ contract OmniNFTStaking is ERC721Holder, ReentrancyGuard, Ownable2Step {
             revert InsufficientTotalReward();
         }
 
+        address caller = _msgSender();
+
         poolId = nextPoolId;
         ++nextPoolId;
 
@@ -323,7 +337,7 @@ contract OmniNFTStaking is ERC721Holder, ReentrancyGuard, Ownable2Step {
         );
 
         pools[poolId] = Pool({
-            creator: msg.sender,
+            creator: caller,
             collection: collection,
             rewardToken: rewardToken,
             totalReward: totalReward,
@@ -340,7 +354,7 @@ contract OmniNFTStaking is ERC721Holder, ReentrancyGuard, Ownable2Step {
         // H-04: Use balance-before/after to handle fee-on-transfer tokens
         uint256 balBefore = IERC20(rewardToken).balanceOf(address(this));
         IERC20(rewardToken).safeTransferFrom(
-            msg.sender,
+            caller,
             address(this),
             totalReward
         );
@@ -353,7 +367,7 @@ contract OmniNFTStaking is ERC721Holder, ReentrancyGuard, Ownable2Step {
 
         emit PoolCreated(
             poolId,
-            msg.sender,
+            caller,
             collection,
             rewardToken,
             received,
@@ -378,10 +392,11 @@ contract OmniNFTStaking is ERC721Holder, ReentrancyGuard, Ownable2Step {
         if (block.timestamp >= pool.endTime) revert PoolExpired();
         if (stakes[poolId][tokenId].active) revert AlreadyStaked();
 
+        address caller = _msgSender();
         uint256 multiplier = MULTIPLIER_PRECISION;
 
         stakes[poolId][tokenId] = Stake({
-            staker: msg.sender,
+            staker: caller,
             // solhint-disable-next-line not-rely-on-time
             stakedAt: uint64(block.timestamp),
             // solhint-disable-next-line not-rely-on-time
@@ -397,12 +412,12 @@ contract OmniNFTStaking is ERC721Holder, ReentrancyGuard, Ownable2Step {
 
         // Transfer NFT to contract
         IERC721(pool.collection).safeTransferFrom(
-            msg.sender,
+            caller,
             address(this),
             tokenId
         );
 
-        emit Staked(poolId, msg.sender, tokenId);
+        emit Staked(poolId, caller, tokenId);
     }
 
     /**
@@ -421,7 +436,8 @@ contract OmniNFTStaking is ERC721Holder, ReentrancyGuard, Ownable2Step {
     ) external nonReentrant {
         Stake storage s = stakes[poolId][tokenId];
         if (!s.active) revert StakeNotFound();
-        if (s.staker != msg.sender) revert NotStaker();
+        address caller = _msgSender();
+        if (s.staker != caller) revert NotStaker();
 
         Pool storage pool = pools[poolId];
 
@@ -444,7 +460,7 @@ contract OmniNFTStaking is ERC721Holder, ReentrancyGuard, Ownable2Step {
             // USDC, blocklisted address).
             // solhint-disable-next-line no-empty-blocks
             try IERC20(pool.rewardToken).transfer(
-                msg.sender, pending
+                caller, pending
             ) returns (bool success) {
                 if (success) {
                     paid = pending;
@@ -453,7 +469,7 @@ contract OmniNFTStaking is ERC721Holder, ReentrancyGuard, Ownable2Step {
                     pool.remainingReward += pending;
                     s.accumulatedReward -= pending;
                     emit RewardTransferFailed(
-                        poolId, msg.sender, pending
+                        poolId, caller, pending
                     );
                 }
             } catch {
@@ -461,7 +477,7 @@ contract OmniNFTStaking is ERC721Holder, ReentrancyGuard, Ownable2Step {
                 pool.remainingReward += pending;
                 s.accumulatedReward -= pending;
                 emit RewardTransferFailed(
-                    poolId, msg.sender, pending
+                    poolId, caller, pending
                 );
             }
         }
@@ -469,11 +485,11 @@ contract OmniNFTStaking is ERC721Holder, ReentrancyGuard, Ownable2Step {
         // NFT is ALWAYS returned regardless of reward transfer outcome
         IERC721(pool.collection).safeTransferFrom(
             address(this),
-            msg.sender,
+            caller,
             tokenId
         );
 
-        emit Unstaked(poolId, msg.sender, tokenId, paid);
+        emit Unstaked(poolId, caller, tokenId, paid);
     }
 
     /**
@@ -490,7 +506,8 @@ contract OmniNFTStaking is ERC721Holder, ReentrancyGuard, Ownable2Step {
     ) external nonReentrant {
         Stake storage s = stakes[poolId][tokenId];
         if (!s.active) revert StakeNotFound();
-        if (s.staker != msg.sender) revert NotStaker();
+        address caller = _msgSender();
+        if (s.staker != caller) revert NotStaker();
 
         Pool storage pool = pools[poolId];
 
@@ -509,9 +526,9 @@ contract OmniNFTStaking is ERC721Holder, ReentrancyGuard, Ownable2Step {
         s.accumulatedReward += pending;
         pool.remainingReward -= pending;
 
-        IERC20(pool.rewardToken).safeTransfer(msg.sender, pending);
+        IERC20(pool.rewardToken).safeTransfer(caller, pending);
 
-        emit RewardsClaimed(poolId, msg.sender, tokenId, pending);
+        emit RewardsClaimed(poolId, caller, tokenId, pending);
     }
 
     /**
@@ -528,7 +545,8 @@ contract OmniNFTStaking is ERC721Holder, ReentrancyGuard, Ownable2Step {
     ) external nonReentrant {
         Stake storage s = stakes[poolId][tokenId];
         if (!s.active) revert StakeNotFound();
-        if (s.staker != msg.sender) revert NotStaker();
+        address caller = _msgSender();
+        if (s.staker != caller) revert NotStaker();
 
         Pool storage pool = pools[poolId];
 
@@ -540,11 +558,11 @@ contract OmniNFTStaking is ERC721Holder, ReentrancyGuard, Ownable2Step {
         // Return NFT -- no reward transfer attempted
         IERC721(pool.collection).safeTransferFrom(
             address(this),
-            msg.sender,
+            caller,
             tokenId
         );
 
-        emit EmergencyWithdraw(poolId, msg.sender, tokenId);
+        emit EmergencyWithdraw(poolId, caller, tokenId);
     }
 
     /**
@@ -559,7 +577,8 @@ contract OmniNFTStaking is ERC721Holder, ReentrancyGuard, Ownable2Step {
     ) external nonReentrant {
         Pool storage pool = pools[poolId];
         if (pool.creator == address(0)) revert PoolNotFound();
-        if (pool.creator != msg.sender) revert NotPoolCreator();
+        address caller = _msgSender();
+        if (pool.creator != caller) revert NotPoolCreator();
         // solhint-disable-next-line not-rely-on-time
         if (block.timestamp < pool.endTime) revert PoolStillActive();
 
@@ -568,9 +587,9 @@ contract OmniNFTStaking is ERC721Holder, ReentrancyGuard, Ownable2Step {
 
         pool.remainingReward = 0;
 
-        IERC20(pool.rewardToken).safeTransfer(msg.sender, amount);
+        IERC20(pool.rewardToken).safeTransfer(caller, amount);
 
-        emit RemainingRewardsWithdrawn(poolId, msg.sender, amount);
+        emit RemainingRewardsWithdrawn(poolId, caller, amount);
     }
 
     /**
@@ -812,6 +831,58 @@ contract OmniNFTStaking is ERC721Holder, ReentrancyGuard, Ownable2Step {
         if (duration >= STREAK_TIER1) return STREAK_BONUS_1;
         return STREAK_BONUS_0;
     }
+
+    // ── ERC-2771 overrides (Context diamond resolution) ───────────
+
+    /**
+     * @notice Return the sender of the call, accounting for
+     *         ERC-2771 meta-transactions.
+     * @dev Delegates to ERC2771Context to extract the original
+     *      sender when the call comes from the trusted forwarder.
+     * @return The resolved sender address.
+     */
+    function _msgSender()
+        internal
+        view
+        override(Context, ERC2771Context)
+        returns (address)
+    {
+        return ERC2771Context._msgSender();
+    }
+
+    /**
+     * @notice Return the calldata of the call, accounting for
+     *         ERC-2771 meta-transactions.
+     * @dev Delegates to ERC2771Context to strip the appended
+     *      sender address when the call comes from the trusted
+     *      forwarder.
+     * @return The resolved calldata.
+     */
+    function _msgData()
+        internal
+        view
+        override(Context, ERC2771Context)
+        returns (bytes calldata)
+    {
+        return ERC2771Context._msgData();
+    }
+
+    /**
+     * @notice Return the context suffix length for ERC-2771.
+     * @dev ERC-2771 appends 20 bytes (the sender address) to
+     *      the calldata.
+     * @return Length of the context suffix (20).
+     */
+    function _contextSuffixLength()
+        internal
+        view
+        override(Context, ERC2771Context)
+        returns (uint256)
+    {
+        return ERC2771Context._contextSuffixLength();
+    }
+
+    // ── Internal Pure Functions ──────────────────────────────────
 
     /**
      * @notice Calculate rewards segmented by streak tier boundaries.

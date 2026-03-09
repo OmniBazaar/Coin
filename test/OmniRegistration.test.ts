@@ -68,6 +68,7 @@ describe('OmniRegistration', function () {
         registration = await upgrades.deployProxy(OmniRegistration, [], {
             initializer: 'initialize',
             kind: 'uups',
+            constructorArgs: [ethers.ZeroAddress],
         });
         await registration.waitForDeployment();
 
@@ -720,6 +721,7 @@ describe('OmniRegistration', function () {
                 const freshRegistration = await upgrades.deployProxy(OmniRegistration, [], {
                     initializer: 'initialize',
                     kind: 'uups',
+                    constructorArgs: [ethers.ZeroAddress],
                 });
                 await freshRegistration.waitForDeployment();
 

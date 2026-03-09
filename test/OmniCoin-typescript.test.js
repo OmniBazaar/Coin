@@ -12,7 +12,7 @@ describe("OmniCoin TypeScript-Style Tests", function () {
         [owner, addr1, addr2, ...addrs] = await ethers.getSigners();
 
         const OmniCoin = await ethers.getContractFactory("OmniCoin");
-        omniCoin = await OmniCoin.deploy();
+        omniCoin = await OmniCoin.deploy(ethers.ZeroAddress);
         await omniCoin.initialize();
     });
 

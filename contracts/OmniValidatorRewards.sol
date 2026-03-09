@@ -12,6 +12,10 @@ import {PausableUpgradeable} from
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from
     "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import {ERC2771ContextUpgradeable} from
+    "@openzeppelin/contracts-upgradeable/metatx/ERC2771ContextUpgradeable.sol";
+import {ContextUpgradeable} from
+    "@openzeppelin/contracts-upgradeable/utils/ContextUpgradeable.sol";
 
 // ══════════════════════════════════════════════════════════════════════
 //                              INTERFACES
@@ -204,7 +208,8 @@ contract OmniValidatorRewards is
     AccessControlUpgradeable,
     UUPSUpgradeable,
     ReentrancyGuardUpgradeable,
-    PausableUpgradeable
+    PausableUpgradeable,
+    ERC2771ContextUpgradeable
 {
 // solhint-enable max-states-count
     using SafeERC20 for IERC20;
@@ -734,8 +739,19 @@ contract OmniValidatorRewards is
     //                           INITIALIZATION
     // ══════════════════════════════════════════════════════════════════
 
+    /**
+     * @notice Constructor that disables initializers for the
+     *         implementation contract
+     * @dev Sets the trusted forwarder address as an immutable
+     *      (stored in bytecode, not proxy storage). Pass address(0)
+     *      to disable meta-transaction support.
+     * @param trustedForwarder_ Address of the OmniForwarder
+     *        contract for gasless relay
+     */
     /// @custom:oz-upgrades-unsafe-allow constructor
-    constructor() {
+    constructor(
+        address trustedForwarder_
+    ) ERC2771ContextUpgradeable(trustedForwarder_) {
         _disableInitializers();
     }
 
@@ -1085,7 +1101,8 @@ contract OmniValidatorRewards is
         external
         nonReentrant
     {
-        uint256 amount = accumulatedRewards[msg.sender];
+        address caller = _msgSender();
+        uint256 amount = accumulatedRewards[caller];
         if (amount == 0) revert NoRewardsToClaim();
 
         // Check contract balance
@@ -1093,15 +1110,15 @@ contract OmniValidatorRewards is
         if (balance < amount) revert InsufficientBalance();
 
         // Update state before transfer (CEI pattern)
-        accumulatedRewards[msg.sender] = 0;
-        totalClaimed[msg.sender] += amount;
+        accumulatedRewards[caller] = 0;
+        totalClaimed[caller] += amount;
         totalOutstandingRewards -= amount;
 
         // Transfer rewards
-        xomToken.safeTransfer(msg.sender, amount);
+        xomToken.safeTransfer(caller, amount);
 
         emit RewardsClaimed(
-            msg.sender, amount, totalClaimed[msg.sender]
+            caller, amount, totalClaimed[caller]
         );
     }
 
@@ -2247,5 +2264,69 @@ contract OmniValidatorRewards is
             // Linear scale for amounts below 1M: 0-20
             score = (amount * 20) / 1_000_000 ether;
         }
+    }
+
+    // ══════════════════════════════════════════════════════════════════
+    //              ERC2771Context Overrides (resolve diamond)
+    // ══════════════════════════════════════════════════════════════════
+
+    /**
+     * @notice Resolve _msgSender between ContextUpgradeable and
+     *         ERC2771ContextUpgradeable
+     * @dev Returns the original user address when called through
+     *      the trusted forwarder. Used by claimRewards() to
+     *      identify the actual validator.
+     * @return The original transaction signer when relayed, or
+     *         msg.sender when direct
+     */
+    function _msgSender()
+        internal
+        view
+        override(
+            ContextUpgradeable,
+            ERC2771ContextUpgradeable
+        )
+        returns (address)
+    {
+        return ERC2771ContextUpgradeable._msgSender();
+    }
+
+    /**
+     * @notice Resolve _msgData between ContextUpgradeable and
+     *         ERC2771ContextUpgradeable
+     * @dev Strips the appended sender address from calldata
+     *      when relayed
+     * @return The original calldata without the ERC2771 suffix
+     */
+    function _msgData()
+        internal
+        view
+        override(
+            ContextUpgradeable,
+            ERC2771ContextUpgradeable
+        )
+        returns (bytes calldata)
+    {
+        return ERC2771ContextUpgradeable._msgData();
+    }
+
+    /**
+     * @notice Resolve _contextSuffixLength between
+     *         ContextUpgradeable and ERC2771ContextUpgradeable
+     * @dev Returns 20 (address length) for ERC2771 context
+     *      suffix stripping
+     * @return The number of bytes appended to calldata by the
+     *         forwarder (20)
+     */
+    function _contextSuffixLength()
+        internal
+        view
+        override(
+            ContextUpgradeable,
+            ERC2771ContextUpgradeable
+        )
+        returns (uint256)
+    {
+        return ERC2771ContextUpgradeable._contextSuffixLength();
     }
 }

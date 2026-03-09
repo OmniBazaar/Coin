@@ -54,6 +54,7 @@ describe("OmniMarketplace", function () {
     marketplace = await upgrades.deployProxy(Factory, [], {
       initializer: "initialize",
       kind: "uups",
+      constructorArgs: [ethers.ZeroAddress],
     });
     await marketplace.waitForDeployment();
   });

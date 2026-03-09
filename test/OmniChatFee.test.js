@@ -34,14 +34,15 @@ describe("OmniChatFee", function () {
     xom = await MockERC20.deploy("OmniCoin", "XOM");
     await xom.waitForDeployment();
 
-    // Deploy OmniChatFee (5 params: xomToken, stakingPool, oddaoTreasury, protocolTreasury, baseFee)
+    // Deploy OmniChatFee (6 params: xomToken, stakingPool, oddaoTreasury, protocolTreasury, baseFee, trustedForwarder)
     const OmniChatFee = await ethers.getContractFactory("OmniChatFee");
     chatFee = await OmniChatFee.deploy(
       await xom.getAddress(),
       stakingPool.address,
       oddaoTreasury.address,
       protocolTreasury.address,
-      BASE_FEE
+      BASE_FEE,
+      ethers.ZeroAddress
     );
     await chatFee.waitForDeployment();
 
@@ -107,7 +108,8 @@ describe("OmniChatFee", function () {
           stakingPool.address,
           oddaoTreasury.address,
           protocolTreasury.address,
-          BASE_FEE
+          BASE_FEE,
+          ethers.ZeroAddress
         )
       ).to.be.revertedWithCustomError(chatFee, "ZeroChatAddress");
     });
@@ -121,7 +123,8 @@ describe("OmniChatFee", function () {
           ethers.ZeroAddress,
           oddaoTreasury.address,
           protocolTreasury.address,
-          BASE_FEE
+          BASE_FEE,
+          ethers.ZeroAddress
         )
       ).to.be.revertedWithCustomError(chatFee, "ZeroChatAddress");
     });
@@ -135,7 +138,8 @@ describe("OmniChatFee", function () {
           stakingPool.address,
           ethers.ZeroAddress,
           protocolTreasury.address,
-          BASE_FEE
+          BASE_FEE,
+          ethers.ZeroAddress
         )
       ).to.be.revertedWithCustomError(chatFee, "ZeroChatAddress");
     });
@@ -149,7 +153,8 @@ describe("OmniChatFee", function () {
           stakingPool.address,
           oddaoTreasury.address,
           ethers.ZeroAddress,
-          BASE_FEE
+          BASE_FEE,
+          ethers.ZeroAddress
         )
       ).to.be.revertedWithCustomError(chatFee, "ZeroChatAddress");
     });

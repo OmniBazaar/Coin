@@ -10,6 +10,10 @@ import {ECDSA} from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 import {PausableUpgradeable} from "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol";
 import {Checkpoints} from "@openzeppelin/contracts/utils/structs/Checkpoints.sol";
 import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
+import {
+    ERC2771ContextUpgradeable
+} from "@openzeppelin/contracts-upgradeable/metatx/ERC2771ContextUpgradeable.sol";
+import {ContextUpgradeable} from "@openzeppelin/contracts-upgradeable/utils/ContextUpgradeable.sol";
 
 /**
  * @title OmniCore
@@ -69,7 +73,8 @@ contract OmniCore is
     AccessControlUpgradeable,
     ReentrancyGuardUpgradeable,
     PausableUpgradeable,
-    UUPSUpgradeable
+    UUPSUpgradeable,
+    ERC2771ContextUpgradeable
 {
     using SafeERC20 for IERC20;
     using Checkpoints for Checkpoints.Trace224;
@@ -383,10 +388,15 @@ contract OmniCore is
 
     /**
      * @notice Constructor that disables initializers for the implementation contract
-     * @dev Prevents the implementation contract from being initialized
+     * @dev Prevents the implementation contract from being initialized.
+     *      Sets the trusted forwarder address as an immutable (stored in bytecode,
+     *      not proxy storage). Pass address(0) to disable meta-transaction support.
+     * @param trustedForwarder_ Address of the OmniForwarder contract for gasless relay
      */
     /// @custom:oz-upgrades-unsafe-allow constructor
-    constructor() {
+    constructor(
+        address trustedForwarder_
+    ) ERC2771ContextUpgradeable(trustedForwarder_) {
         _disableInitializers();
     }
 
@@ -661,7 +671,8 @@ contract OmniCore is
         uint256 duration
     ) external nonReentrant whenNotPaused {
         if (amount == 0) revert InvalidAmount();
-        if (stakes[msg.sender].active) revert InvalidAmount();
+        address caller = _msgSender();
+        if (stakes[caller].active) revert InvalidAmount();
 
         // H-02: Validate tier is within range and amount matches tier thresholds
         _validateStakingTier(amount, tier);
@@ -670,10 +681,10 @@ contract OmniCore is
         _validateDuration(duration);
 
         // Transfer tokens from user
-        OMNI_COIN.safeTransferFrom(msg.sender, address(this), amount);
+        OMNI_COIN.safeTransferFrom(caller, address(this), amount);
 
         // Store minimal stake data
-        stakes[msg.sender] = Stake({
+        stakes[caller] = Stake({
             amount: amount,
             tier: tier,
             duration: duration,
@@ -684,12 +695,12 @@ contract OmniCore is
         totalStaked += amount;
 
         // Write staking checkpoint for governance snapshot
-        _stakeCheckpoints[msg.sender].push(
+        _stakeCheckpoints[caller].push(
             SafeCast.toUint32(block.number),
             SafeCast.toUint224(amount)
         );
 
-        emit TokensStaked(msg.sender, amount, tier, duration);
+        emit TokensStaked(caller, amount, tier, duration);
     }
 
     /**
@@ -698,7 +709,8 @@ contract OmniCore is
      *      Call StakingRewardPool.snapshotRewards() BEFORE this to preserve rewards.
      */
     function unlock() external nonReentrant whenNotPaused {
-        Stake storage userStake = stakes[msg.sender];
+        address caller = _msgSender();
+        Stake storage userStake = stakes[caller];
 
         if (!userStake.active) revert StakeNotFound();
         if (block.timestamp < userStake.lockTime) revert StakeLocked(); // solhint-disable-line not-rely-on-time
@@ -714,15 +726,15 @@ contract OmniCore is
         totalStaked -= amount;
 
         // Write zero checkpoint for governance snapshot
-        _stakeCheckpoints[msg.sender].push(
+        _stakeCheckpoints[caller].push(
             SafeCast.toUint32(block.number),
             0
         );
 
         // Transfer tokens back
-        OMNI_COIN.safeTransfer(msg.sender, amount);
+        OMNI_COIN.safeTransfer(caller, amount);
 
-        emit TokensUnlocked(msg.sender, amount, block.timestamp); // solhint-disable-line not-rely-on-time
+        emit TokensUnlocked(caller, amount, block.timestamp); // solhint-disable-line not-rely-on-time
     }
 
     // =============================================================================
@@ -931,13 +943,14 @@ contract OmniCore is
         if (token == address(0)) revert InvalidAddress();
         if (amount == 0) revert InvalidAmount();
 
+        address caller = _msgSender();
         // M-03: Use balance-before/after pattern to handle
         // fee-on-transfer tokens correctly.
         uint256 balanceBefore = IERC20(token).balanceOf(address(this));
-        IERC20(token).safeTransferFrom(msg.sender, address(this), amount);
+        IERC20(token).safeTransferFrom(caller, address(this), amount);
         uint256 received = IERC20(token).balanceOf(address(this)) - balanceBefore;
 
-        dexBalances[msg.sender][token] += received;
+        dexBalances[caller][token] += received;
     }
 
     /**
@@ -948,10 +961,11 @@ contract OmniCore is
      */
     function withdrawFromDEX(address token, uint256 amount) external nonReentrant whenNotPaused {
         if (amount == 0) revert InvalidAmount();
-        if (dexBalances[msg.sender][token] < amount) revert InvalidAmount();
+        address caller = _msgSender();
+        if (dexBalances[caller][token] < amount) revert InvalidAmount();
 
-        dexBalances[msg.sender][token] -= amount;
-        IERC20(token).safeTransfer(msg.sender, amount);
+        dexBalances[caller][token] -= amount;
+        IERC20(token).safeTransfer(caller, amount);
     }
 
     // =============================================================================
@@ -1303,5 +1317,53 @@ contract OmniCore is
     ) internal pure returns (address signer) {
         signer = ECDSA.recover(messageHash, signature);
         if (signer == address(0)) revert InvalidSignature();
+    }
+
+    // =============================================================================
+    // ERC2771Context Overrides (resolve diamond with AccessControl/Pausable Context)
+    // =============================================================================
+
+    /**
+     * @notice Resolve _msgSender between ContextUpgradeable and ERC2771ContextUpgradeable
+     * @dev Returns the original user address when called through the trusted forwarder.
+     *      Used by user-facing functions (stake, unlock, deposit, withdraw) to identify
+     *      the actual user. Admin functions still use role-based access control.
+     * @return The original transaction signer when relayed, or msg.sender when direct
+     */
+    function _msgSender()
+        internal
+        view
+        override(ContextUpgradeable, ERC2771ContextUpgradeable)
+        returns (address)
+    {
+        return ERC2771ContextUpgradeable._msgSender();
+    }
+
+    /**
+     * @notice Resolve _msgData between ContextUpgradeable and ERC2771ContextUpgradeable
+     * @dev Strips the appended sender address from calldata when relayed
+     * @return The original calldata without the ERC2771 suffix
+     */
+    function _msgData()
+        internal
+        view
+        override(ContextUpgradeable, ERC2771ContextUpgradeable)
+        returns (bytes calldata)
+    {
+        return ERC2771ContextUpgradeable._msgData();
+    }
+
+    /**
+     * @notice Resolve _contextSuffixLength between ContextUpgradeable and ERC2771ContextUpgradeable
+     * @dev Returns 20 (address length) for ERC2771 context suffix stripping
+     * @return The number of bytes appended to calldata by the forwarder (20)
+     */
+    function _contextSuffixLength()
+        internal
+        view
+        override(ContextUpgradeable, ERC2771ContextUpgradeable)
+        returns (uint256)
+    {
+        return ERC2771ContextUpgradeable._contextSuffixLength();
     }
 }

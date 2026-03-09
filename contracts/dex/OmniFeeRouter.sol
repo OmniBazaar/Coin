@@ -5,6 +5,8 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {Ownable2Step, Ownable} from "@openzeppelin/contracts/access/Ownable2Step.sol";
+import {ERC2771Context} from "@openzeppelin/contracts/metatx/ERC2771Context.sol";
+import {Context} from "@openzeppelin/contracts/utils/Context.sol";
 
 /**
  * @title OmniFeeRouter
@@ -35,7 +37,7 @@ import {Ownable2Step, Ownable} from "@openzeppelin/contracts/access/Ownable2Step
  *   - Immutable storage for fee cap.
  *   - Custom errors instead of revert strings.
  */
-contract OmniFeeRouter is Ownable2Step, ReentrancyGuard {
+contract OmniFeeRouter is Ownable2Step, ReentrancyGuard, ERC2771Context {
     using SafeERC20 for IERC20;
 
     // -----------------------------------------------------------------------
@@ -123,13 +125,19 @@ contract OmniFeeRouter is Ownable2Step, ReentrancyGuard {
 
     /**
      * @notice Deploy the fee router with an initial fee collector and cap.
-     * @param _feeCollector Address that receives collected fees (initial value, owner-changeable).
-     * @param _maxFeeBps    Maximum fee in basis points (immutable, e.g., 100 = 1%).
+     * @param _feeCollector     Address that receives collected fees (initial value, owner-changeable).
+     * @param _maxFeeBps        Maximum fee in basis points (immutable, e.g., 100 = 1%).
+     * @param trustedForwarder_ ERC-2771 trusted forwarder for gasless meta-transactions
+     *                          (e.g. OmniForwarder).
      */
     constructor(
         address _feeCollector,
-        uint256 _maxFeeBps
-    ) Ownable(msg.sender) {
+        uint256 _maxFeeBps,
+        address trustedForwarder_
+    )
+        Ownable(msg.sender)
+        ERC2771Context(trustedForwarder_)
+    {
         if (_feeCollector == address(0)) revert InvalidFeeCollector();
         if (_maxFeeBps == 0 || _maxFeeBps > 500) {
             // Cap cannot exceed 5% as a hard safety bound
@@ -175,11 +183,13 @@ contract OmniFeeRouter is Ownable2Step, ReentrancyGuard {
         _validateRouter(routerAddress, inputToken, outputToken);
         _validateFee(totalAmount, feeAmount);
 
+        address caller = _msgSender();
+
         // --- Pull input tokens from user (H-02: balance-before/after) ---
         uint256 inputBefore =
             IERC20(inputToken).balanceOf(address(this));
         IERC20(inputToken).safeTransferFrom(
-            msg.sender, address(this), totalAmount
+            caller, address(this), totalAmount
         );
         uint256 actualReceived =
             IERC20(inputToken).balanceOf(address(this)) - inputBefore;
@@ -197,7 +207,7 @@ contract OmniFeeRouter is Ownable2Step, ReentrancyGuard {
         // --- Execute swap via external router ---
         uint256 outputReceived = _executeRouterSwap(
             inputToken, outputToken, netAmount,
-            routerAddress, routerCalldata
+            routerAddress, routerCalldata, caller
         );
 
         // --- Verify slippage and sweep output tokens ---
@@ -205,11 +215,11 @@ contract OmniFeeRouter is Ownable2Step, ReentrancyGuard {
             revert InsufficientOutputTokens(outputReceived, minOutput);
         }
         if (outputReceived > 0) {
-            IERC20(outputToken).safeTransfer(msg.sender, outputReceived);
+            IERC20(outputToken).safeTransfer(caller, outputReceived);
         }
 
         emit SwapExecuted(
-            msg.sender,
+            caller,
             inputToken,
             outputToken,
             actualReceived,
@@ -264,12 +274,13 @@ contract OmniFeeRouter is Ownable2Step, ReentrancyGuard {
     /**
      * @notice Approve, execute the external router swap, then clean up.
      * @dev Resets router approval to zero after the call and sweeps any
-     *      residual input tokens back to msg.sender (C-01 mitigation).
+     *      residual input tokens back to the original caller (C-01 mitigation).
      * @param inputToken     ERC20 token approved to the router.
      * @param outputToken    ERC20 token expected from the router.
      * @param netAmount      Amount of inputToken to approve to the router.
      * @param routerAddress  Address of the external DEX router.
      * @param routerCalldata ABI-encoded swap call for the external router.
+     * @param caller         Original transaction signer (from _msgSender()).
      * @return outputReceived Amount of outputToken received from the swap.
      */
     function _executeRouterSwap(
@@ -277,7 +288,8 @@ contract OmniFeeRouter is Ownable2Step, ReentrancyGuard {
         address outputToken,
         uint256 netAmount,
         address routerAddress,
-        bytes calldata routerCalldata
+        bytes calldata routerCalldata,
+        address caller
     ) private returns (uint256 outputReceived) {
         // --- Approve net amount to external router ---
         IERC20(inputToken).forceApprove(routerAddress, netAmount);
@@ -304,7 +316,7 @@ contract OmniFeeRouter is Ownable2Step, ReentrancyGuard {
         uint256 inputRemaining =
             IERC20(inputToken).balanceOf(address(this));
         if (inputRemaining > 0) {
-            IERC20(inputToken).safeTransfer(msg.sender, inputRemaining);
+            IERC20(inputToken).safeTransfer(caller, inputRemaining);
         }
 
         // --- Calculate output received ---
@@ -372,5 +384,56 @@ contract OmniFeeRouter is Ownable2Step, ReentrancyGuard {
         if (inputToken == address(0)) revert InvalidTokenAddress();
         if (outputToken == address(0)) revert InvalidTokenAddress();
         if (inputToken == outputToken) revert InvalidTokenAddress();
+    }
+
+    // -----------------------------------------------------------------------
+    // ERC2771Context Overrides
+    // (resolve Context vs ERC2771Context diamond)
+    // -----------------------------------------------------------------------
+
+    /**
+     * @notice Resolve _msgSender between Context (via Ownable)
+     *         and ERC2771Context
+     * @dev ERC2771Context overrides _msgSender() to extract the
+     *      original signer from trusted-forwarder calldata.
+     * @return sender The original transaction signer
+     */
+    function _msgSender()
+        internal
+        view
+        override(Context, ERC2771Context)
+        returns (address sender)
+    {
+        return ERC2771Context._msgSender();
+    }
+
+    /**
+     * @notice Resolve _msgData between Context (via Ownable)
+     *         and ERC2771Context
+     * @return The original calldata (stripped of appended
+     *         sender when forwarded)
+     */
+    function _msgData()
+        internal
+        view
+        override(Context, ERC2771Context)
+        returns (bytes calldata)
+    {
+        return ERC2771Context._msgData();
+    }
+
+    /**
+     * @notice Resolve _contextSuffixLength between Context
+     *         and ERC2771Context
+     * @return Length of the context suffix (20 bytes when
+     *         called via trusted forwarder, 0 otherwise)
+     */
+    function _contextSuffixLength()
+        internal
+        view
+        override(Context, ERC2771Context)
+        returns (uint256)
+    {
+        return ERC2771Context._contextSuffixLength();
     }
 }

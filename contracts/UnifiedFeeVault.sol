@@ -13,6 +13,10 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from
     "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {IFeeSwapRouter} from "./interfaces/IFeeSwapRouter.sol";
+import {ERC2771ContextUpgradeable} from
+    "@openzeppelin/contracts-upgradeable/metatx/ERC2771ContextUpgradeable.sol";
+import {ContextUpgradeable} from
+    "@openzeppelin/contracts-upgradeable/utils/ContextUpgradeable.sol";
 
 /**
  * @title IOmniPrivacyBridge
@@ -82,7 +86,8 @@ contract UnifiedFeeVault is
     AccessControlUpgradeable,
     UUPSUpgradeable,
     ReentrancyGuardUpgradeable,
-    PausableUpgradeable
+    PausableUpgradeable,
+    ERC2771ContextUpgradeable
 {
     using SafeERC20 for IERC20;
 
@@ -502,8 +507,19 @@ contract UnifiedFeeVault is
     //                      CONSTRUCTOR & INITIALIZER
     // ════════════════════════════════════════════════════════════════════
 
+    /**
+     * @notice Constructor that disables initializers for the
+     *         implementation contract
+     * @dev Sets the trusted forwarder address as an immutable
+     *      (stored in bytecode, not proxy storage). Pass address(0)
+     *      to disable meta-transaction support.
+     * @param trustedForwarder_ Address of the OmniForwarder
+     *        contract for gasless relay
+     */
     /// @custom:oz-upgrades-unsafe-allow constructor
-    constructor() {
+    constructor(
+        address trustedForwarder_
+    ) ERC2771ContextUpgradeable(trustedForwarder_) {
         _disableInitializers();
     }
 
@@ -672,16 +688,17 @@ contract UnifiedFeeVault is
     function claimPending(
         address token
     ) external nonReentrant {
-        uint256 amount = pendingClaims[msg.sender][token];
+        address caller = _msgSender();
+        uint256 amount = pendingClaims[caller][token];
         if (amount == 0) revert NothingToClaim();
 
         // C-01 audit fix: decrement global tracker before transfer
-        pendingClaims[msg.sender][token] = 0;
+        pendingClaims[caller][token] = 0;
         totalPendingClaims[token] -= amount;
 
-        IERC20(token).safeTransfer(msg.sender, amount);
+        IERC20(token).safeTransfer(caller, amount);
 
-        emit PendingClaimWithdrawn(msg.sender, token, amount);
+        emit PendingClaimWithdrawn(caller, token, amount);
     }
 
     // ════════════════════════════════════════════════════════════════════
@@ -1482,5 +1499,69 @@ contract UnifiedFeeVault is
         if (amount > pending) {
             revert InsufficientPendingBalance(amount, pending);
         }
+    }
+
+    // ════════════════════════════════════════════════════════════════════
+    //           ERC2771Context Overrides (resolve diamond)
+    // ════════════════════════════════════════════════════════════════════
+
+    /**
+     * @notice Resolve _msgSender between ContextUpgradeable and
+     *         ERC2771ContextUpgradeable
+     * @dev Returns the original user address when called through
+     *      the trusted forwarder. Used by claimPending() to
+     *      identify the actual claimant.
+     * @return The original transaction signer when relayed, or
+     *         msg.sender when direct
+     */
+    function _msgSender()
+        internal
+        view
+        override(
+            ContextUpgradeable,
+            ERC2771ContextUpgradeable
+        )
+        returns (address)
+    {
+        return ERC2771ContextUpgradeable._msgSender();
+    }
+
+    /**
+     * @notice Resolve _msgData between ContextUpgradeable and
+     *         ERC2771ContextUpgradeable
+     * @dev Strips the appended sender address from calldata
+     *      when relayed
+     * @return The original calldata without the ERC2771 suffix
+     */
+    function _msgData()
+        internal
+        view
+        override(
+            ContextUpgradeable,
+            ERC2771ContextUpgradeable
+        )
+        returns (bytes calldata)
+    {
+        return ERC2771ContextUpgradeable._msgData();
+    }
+
+    /**
+     * @notice Resolve _contextSuffixLength between
+     *         ContextUpgradeable and ERC2771ContextUpgradeable
+     * @dev Returns 20 (address length) for ERC2771 context
+     *      suffix stripping
+     * @return The number of bytes appended to calldata by the
+     *         forwarder (20)
+     */
+    function _contextSuffixLength()
+        internal
+        view
+        override(
+            ContextUpgradeable,
+            ERC2771ContextUpgradeable
+        )
+        returns (uint256)
+    {
+        return ERC2771ContextUpgradeable._contextSuffixLength();
     }
 }

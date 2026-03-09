@@ -11,6 +11,10 @@ import {ReentrancyGuard} from
     "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {Ownable2Step, Ownable} from
     "@openzeppelin/contracts/access/Ownable2Step.sol";
+import {ERC2771Context} from
+    "@openzeppelin/contracts/metatx/ERC2771Context.sol";
+import {Context} from
+    "@openzeppelin/contracts/utils/Context.sol";
 
 /**
  * @title OmniNFTLending
@@ -30,7 +34,12 @@ import {Ownable2Step, Ownable} from
  *          financial settlement; borrower can claim the NFT later via
  *          claimNFT() (H-03).
  */
-contract OmniNFTLending is ERC721Holder, ReentrancyGuard, Ownable2Step {
+contract OmniNFTLending is
+    ERC721Holder,
+    ReentrancyGuard,
+    Ownable2Step,
+    ERC2771Context
+{
     using SafeERC20 for IERC20;
 
     // ── Structs ──────────────────────────────────────────────────────────
@@ -278,11 +287,13 @@ contract OmniNFTLending is ERC721Holder, ReentrancyGuard, Ownable2Step {
      * @param initialFeeRecipient Address that receives platform fees.
      * @param initialFeeBps Platform fee in bps of interest
      *        (e.g. 1000 = 10 %).
+     * @param trustedForwarder_ Trusted ERC-2771 forwarder address.
      */
     constructor(
         address initialFeeRecipient,
-        uint16 initialFeeBps
-    ) Ownable(msg.sender) {
+        uint16 initialFeeBps,
+        address trustedForwarder_
+    ) Ownable(msg.sender) ERC2771Context(trustedForwarder_) {
         // M-01: Validate fee recipient is non-zero
         if (initialFeeRecipient == address(0)) revert ZeroAddress();
         if (initialFeeBps > MAX_PLATFORM_FEE_BPS) revert FeeTooHigh();
@@ -320,11 +331,13 @@ contract OmniNFTLending is ERC721Holder, ReentrancyGuard, Ownable2Step {
             revert InvalidDuration();
         }
 
+        address caller = _msgSender();
+
         offerId = nextOfferId;
         ++nextOfferId;
 
         offers[offerId] = Offer({
-            lender: msg.sender,
+            lender: caller,
             currency: currency,
             principal: principal,
             interestBps: interestBps,
@@ -339,11 +352,11 @@ contract OmniNFTLending is ERC721Holder, ReentrancyGuard, Ownable2Step {
 
         // C-02: Balance-before/after for fee-on-transfer protection
         _safeTransferInWithBalanceCheck(
-            currency, msg.sender, principal
+            currency, caller, principal
         );
 
         emit OfferCreated(
-            offerId, msg.sender, principal,
+            offerId, caller, principal,
             interestBps, durationDays
         );
     }
@@ -371,6 +384,7 @@ contract OmniNFTLending is ERC721Holder, ReentrancyGuard, Ownable2Step {
             revert CollectionNotAccepted();
         }
 
+        address caller = _msgSender();
         offer.active = false;
 
         // H-01: Pro-rate annual interest by loan duration.
@@ -393,7 +407,7 @@ contract OmniNFTLending is ERC721Holder, ReentrancyGuard, Ownable2Step {
 
         loans[loanId] = Loan({
             offerId: offerId,
-            borrower: msg.sender,
+            borrower: caller,
             lender: offer.lender,
             collection: collection,
             tokenId: tokenId,
@@ -411,17 +425,17 @@ contract OmniNFTLending is ERC721Holder, ReentrancyGuard, Ownable2Step {
 
         // Transfer NFT from borrower to contract
         IERC721(collection).safeTransferFrom(
-            msg.sender,
+            caller,
             address(this),
             tokenId
         );
         // Transfer principal from contract to borrower
         IERC20(offer.currency).safeTransfer(
-            msg.sender, offer.principal
+            caller, offer.principal
         );
 
         emit LoanStarted(
-            loanId, offerId, msg.sender, collection, tokenId
+            loanId, offerId, caller, collection, tokenId
         );
     }
 
@@ -440,7 +454,8 @@ contract OmniNFTLending is ERC721Holder, ReentrancyGuard, Ownable2Step {
         Loan storage loan = loans[loanId];
         if (loan.borrower == address(0)) revert LoanNotFound();
         if (loan.repaid || loan.liquidated) revert LoanNotActive();
-        if (msg.sender != loan.borrower) revert NotBorrower();
+        address caller = _msgSender();
+        if (caller != loan.borrower) revert NotBorrower();
 
         loan.repaid = true;
 
@@ -453,7 +468,7 @@ contract OmniNFTLending is ERC721Holder, ReentrancyGuard, Ownable2Step {
 
         // C-02: Balance-before/after for fee-on-transfer protection
         _safeTransferInWithBalanceCheck(
-            loan.currency, msg.sender, totalFromBorrower
+            loan.currency, caller, totalFromBorrower
         );
 
         // Lender receives principal + interest - platform fee
@@ -474,18 +489,18 @@ contract OmniNFTLending is ERC721Holder, ReentrancyGuard, Ownable2Step {
         // solhint-disable-next-line no-empty-blocks
         try IERC721(loan.collection).safeTransferFrom(
             address(this),
-            msg.sender,
+            caller,
             loan.tokenId
         ) {
             // NFT returned successfully
         } catch {
             // NFT transfer failed -- mark for manual claim
             nftClaimable[loanId] = true;
-            emit NFTClaimReady(loanId, msg.sender);
+            emit NFTClaimReady(loanId, caller);
         }
 
         emit LoanRepaid(
-            loanId, msg.sender, totalFromBorrower, platformFee
+            loanId, caller, totalFromBorrower, platformFee
         );
     }
 
@@ -501,17 +516,18 @@ contract OmniNFTLending is ERC721Holder, ReentrancyGuard, Ownable2Step {
     function claimNFT(uint256 loanId) external nonReentrant {
         if (!nftClaimable[loanId]) revert NFTNotClaimable();
         Loan storage loan = loans[loanId];
-        if (msg.sender != loan.borrower) revert NotBorrower();
+        address caller = _msgSender();
+        if (caller != loan.borrower) revert NotBorrower();
 
         nftClaimable[loanId] = false;
 
         IERC721(loan.collection).safeTransferFrom(
             address(this),
-            msg.sender,
+            caller,
             loan.tokenId
         );
 
-        emit NFTClaimed(loanId, msg.sender);
+        emit NFTClaimed(loanId, caller);
     }
 
     /**
@@ -556,15 +572,16 @@ contract OmniNFTLending is ERC721Holder, ReentrancyGuard, Ownable2Step {
         Offer storage offer = offers[offerId];
         if (offer.lender == address(0)) revert OfferNotFound();
         if (!offer.active) revert OfferNotActive();
-        if (msg.sender != offer.lender) revert NotLender();
+        address caller = _msgSender();
+        if (caller != offer.lender) revert NotLender();
 
         offer.active = false;
 
         IERC20(offer.currency).safeTransfer(
-            msg.sender, offer.principal
+            caller, offer.principal
         );
 
-        emit OfferCancelled(offerId, msg.sender);
+        emit OfferCancelled(offerId, caller);
     }
 
     // ── Admin functions ──────────────────────────────────────────────────
@@ -720,5 +737,55 @@ contract OmniNFTLending is ERC721Holder, ReentrancyGuard, Ownable2Step {
         if (balAfter - balBefore != amount) {
             revert TransferAmountMismatch();
         }
+    }
+
+    // ── ERC-2771 overrides (Context diamond resolution) ────────────
+
+    /**
+     * @notice Return the sender of the call, accounting for
+     *         ERC-2771 meta-transactions.
+     * @dev Delegates to ERC2771Context to extract the original
+     *      sender when the call comes from the trusted forwarder.
+     * @return The resolved sender address.
+     */
+    function _msgSender()
+        internal
+        view
+        override(Context, ERC2771Context)
+        returns (address)
+    {
+        return ERC2771Context._msgSender();
+    }
+
+    /**
+     * @notice Return the calldata of the call, accounting for
+     *         ERC-2771 meta-transactions.
+     * @dev Delegates to ERC2771Context to strip the appended
+     *      sender address when the call comes from the trusted
+     *      forwarder.
+     * @return The resolved calldata.
+     */
+    function _msgData()
+        internal
+        view
+        override(Context, ERC2771Context)
+        returns (bytes calldata)
+    {
+        return ERC2771Context._msgData();
+    }
+
+    /**
+     * @notice Return the context suffix length for ERC-2771.
+     * @dev ERC-2771 appends 20 bytes (the sender address) to
+     *      the calldata.
+     * @return Length of the context suffix (20).
+     */
+    function _contextSuffixLength()
+        internal
+        view
+        override(Context, ERC2771Context)
+        returns (uint256)
+    {
+        return ERC2771Context._contextSuffixLength();
     }
 }

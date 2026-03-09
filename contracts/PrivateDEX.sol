@@ -22,6 +22,14 @@ import {
 } from
     "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
 import {
+    ERC2771ContextUpgradeable
+} from
+    "@openzeppelin/contracts-upgradeable/metatx/ERC2771ContextUpgradeable.sol";
+import {
+    ContextUpgradeable
+} from
+    "@openzeppelin/contracts-upgradeable/utils/ContextUpgradeable.sol";
+import {
     MpcCore,
     gtUint64,
     ctUint64,
@@ -81,7 +89,8 @@ contract PrivateDEX is
     AccessControlUpgradeable,
     PausableUpgradeable,
     ReentrancyGuardUpgradeable,
-    UUPSUpgradeable
+    UUPSUpgradeable,
+    ERC2771ContextUpgradeable
 {
     using MpcCore for gtUint64;
     using MpcCore for ctUint64;
@@ -314,10 +323,18 @@ contract PrivateDEX is
     /**
      * @notice Constructor for PrivateDEX (upgradeable pattern)
      * @dev Disables initializers to prevent implementation contract
-     *      from being initialized directly.
+     *      from being initialized directly. Stores the trusted
+     *      forwarder address immutably in bytecode (safe for
+     *      proxies because immutables live in the implementation
+     *      bytecode, not in proxy storage).
+     * @param trustedForwarder_ OmniForwarder address for gasless
+     *        meta-transactions (ERC-2771). Use address(0) to
+     *        disable meta-transaction support.
      * @custom:oz-upgrades-unsafe-allow constructor
      */
-    constructor() {
+    constructor(
+        address trustedForwarder_
+    ) ERC2771ContextUpgradeable(trustedForwarder_) {
         _disableInitializers();
     }
 
@@ -372,17 +389,19 @@ contract PrivateDEX is
         nonReentrant
         returns (bytes32 orderId)
     {
+        address caller = _msgSender();
+
         if (bytes(pair).length == 0) revert InvalidPair();
         // Cap based on active orders (not lifetime)
         // solhint-disable-next-line gas-strict-inequalities
-        if (activeOrderCount[msg.sender] >= MAX_ORDERS_PER_USER) {
+        if (activeOrderCount[caller] >= MAX_ORDERS_PER_USER) {
             revert TooManyOrders();
         }
 
         // Generate unique order ID with strong entropy
-        uint256 userCount = ++userOrderCount[msg.sender];
+        uint256 userCount = ++userOrderCount[caller];
         orderId = keccak256(abi.encode(
-            msg.sender,
+            caller,
             // solhint-disable-next-line not-rely-on-time
             block.timestamp,
             block.prevrandao,
@@ -397,7 +416,7 @@ contract PrivateDEX is
         // Create order
         orders[orderId] = PrivateOrder({
             orderId: orderId,
-            trader: msg.sender,
+            trader: caller,
             isBuy: isBuy,
             pair: pair,
             encAmount: encAmount,
@@ -412,13 +431,13 @@ contract PrivateDEX is
 
         // Track order
         orderIds.push(orderId);
-        userOrders[msg.sender].push(orderId);
+        userOrders[caller].push(orderId);
         ++totalOrders;
-        ++activeOrderCount[msg.sender];
+        ++activeOrderCount[caller];
         // L-01: Maintain global active order counter
         ++totalActiveOrders;
 
-        emit PrivateOrderSubmitted(orderId, msg.sender, pair);
+        emit PrivateOrderSubmitted(orderId, caller, pair);
         return orderId;
     }
 
@@ -813,10 +832,11 @@ contract PrivateDEX is
     function cancelPrivateOrder(
         bytes32 orderId
     ) external whenNotPaused nonReentrant {
+        address caller = _msgSender();
         PrivateOrder storage order = orders[orderId];
 
         if (order.trader == address(0)) revert OrderNotFound();
-        if (order.trader != msg.sender) revert Unauthorized();
+        if (order.trader != caller) revert Unauthorized();
         if (
             order.status == OrderStatus.FILLED ||
             order.status == OrderStatus.CANCELLED
@@ -828,8 +848,8 @@ contract PrivateDEX is
         order.status = OrderStatus.CANCELLED;
 
         // Decrement active order count
-        if (activeOrderCount[msg.sender] > 0) {
-            --activeOrderCount[msg.sender];
+        if (activeOrderCount[caller] > 0) {
+            --activeOrderCount[caller];
         }
         // L-01: Decrement global counter
         if (totalActiveOrders > 0) {
@@ -839,7 +859,7 @@ contract PrivateDEX is
         emit OrderStatusChanged(
             orderId, oldStatus, OrderStatus.CANCELLED
         );
-        emit PrivateOrderCancelled(orderId, msg.sender);
+        emit PrivateOrderCancelled(orderId, caller);
     }
 
     // ====================================================================
@@ -1128,5 +1148,62 @@ contract PrivateDEX is
         onlyRole(ADMIN_ROLE)
     {
         if (_ossified) revert ContractIsOssified();
+    }
+
+    // ====================================================================
+    // ERC-2771 CONTEXT OVERRIDES
+    // ====================================================================
+
+    /**
+     * @notice Return the true sender of the call
+     * @dev When called via the trusted forwarder the last 20 bytes
+     *      of calldata contain the original sender; otherwise falls
+     *      back to the standard msg.sender. Resolves the diamond
+     *      between ContextUpgradeable (AccessControlUpgradeable,
+     *      PausableUpgradeable) and ERC2771ContextUpgradeable.
+     * @return The address that initiated the current call
+     */
+    function _msgSender()
+        internal
+        view
+        override(ContextUpgradeable, ERC2771ContextUpgradeable)
+        returns (address)
+    {
+        return ERC2771ContextUpgradeable._msgSender();
+    }
+
+    /**
+     * @notice Return the true calldata of the call
+     * @dev When called via the trusted forwarder the trailing 20
+     *      bytes (original sender) are stripped; otherwise returns
+     *      the full msg.data. Resolves the diamond between
+     *      ContextUpgradeable and ERC2771ContextUpgradeable.
+     * @return The calldata without the appended sender address
+     */
+    function _msgData()
+        internal
+        view
+        override(ContextUpgradeable, ERC2771ContextUpgradeable)
+        returns (bytes calldata)
+    {
+        return ERC2771ContextUpgradeable._msgData();
+    }
+
+    /**
+     * @notice Return the length of the context suffix appended by
+     *         the trusted forwarder
+     * @dev Returns 20 (the sender address length) when a trusted
+     *      forwarder is configured, 0 otherwise. Resolves the
+     *      diamond between ContextUpgradeable and
+     *      ERC2771ContextUpgradeable.
+     * @return Length in bytes of the context suffix
+     */
+    function _contextSuffixLength()
+        internal
+        view
+        override(ContextUpgradeable, ERC2771ContextUpgradeable)
+        returns (uint256)
+    {
+        return ERC2771ContextUpgradeable._contextSuffixLength();
     }
 }

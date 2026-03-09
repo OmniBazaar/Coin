@@ -10,6 +10,8 @@ import {Nonces} from "@openzeppelin/contracts/utils/Nonces.sol";
 import {
     AccessControlDefaultAdminRules
 } from "@openzeppelin/contracts/access/extensions/AccessControlDefaultAdminRules.sol";
+import {ERC2771Context} from "@openzeppelin/contracts/metatx/ERC2771Context.sol";
+import {Context} from "@openzeppelin/contracts/utils/Context.sol";
 
 /**
  * @title OmniCoin
@@ -26,6 +28,13 @@ import {
  * - ERC20Permit for gasless approvals (EIP-2612)
  * - ERC20Votes for on-chain governance delegation and checkpointed voting power
  * - Full genesis supply of 16.6 billion tokens (pre-minted to deployer for pool funding)
+ * - ERC2771Context for gasless meta-transactions via OmniForwarder
+ *
+ * Gasless Support:
+ * - All ERC20 operations (transfer, approve, transferFrom) work through the forwarder
+ *   because OZ ERC20 internally uses _msgSender() which ERC2771Context overrides
+ * - batchTransfer also uses _msgSender() for gasless support
+ * - Admin/minter functions deliberately use msg.sender (admin ops should NOT be relayed)
  *
  * Governance:
  * - Token holders must call delegate(self) to activate voting power
@@ -44,7 +53,8 @@ contract OmniCoin is
     ERC20Pausable,
     ERC20Permit,
     ERC20Votes,
-    AccessControlDefaultAdminRules
+    AccessControlDefaultAdminRules,
+    ERC2771Context
 {
     // Constants
     /// @notice Role identifier for minting permissions
@@ -85,14 +95,19 @@ contract OmniCoin is
     /**
      * @notice Constructor for OmniCoin
      * @dev Sets up ERC20 with name, symbol, ERC20Permit with EIP-712 domain,
-     *      ERC20Votes for governance delegation, and two-step admin transfer
-     *      with a 48-hour delay (M-03 remediation). Records deployer address
-     *      to prevent initialize() front-running.
+     *      ERC20Votes for governance delegation, two-step admin transfer
+     *      with a 48-hour delay (M-03 remediation), and ERC2771Context for
+     *      gasless meta-transactions. Records deployer address to prevent
+     *      initialize() front-running.
+     * @param trustedForwarder_ Address of the OmniForwarder contract for gasless relay.
+     *        Pass address(0) to disable meta-transaction support (falls back to msg.sender).
      */
-    constructor()
+    /// @custom:oz-upgrades-unsafe-allow constructor
+    constructor(address trustedForwarder_)
         ERC20("OmniCoin", "XOM")
         ERC20Permit("OmniCoin")
         AccessControlDefaultAdminRules(48 hours, msg.sender)
+        ERC2771Context(trustedForwarder_)
     {
         _deployer = msg.sender;
     }
@@ -159,9 +174,10 @@ contract OmniCoin is
         if (recipients.length != amounts.length) revert ArrayLengthMismatch();
         if (recipients.length > 10) revert TooManyRecipients();
 
+        address sender = _msgSender();
         for (uint256 i = 0; i < recipients.length; ++i) {
             if (recipients[i] == address(0) || recipients[i] == address(this)) revert InvalidRecipient();
-            _transfer(msg.sender, recipients[i], amounts[i]);
+            _transfer(sender, recipients[i], amounts[i]);
         }
 
         return true;
@@ -196,7 +212,8 @@ contract OmniCoin is
     }
 
     // =========================================================================
-    // Overrides required for multiple inheritance (ERC20Pausable + ERC20Votes)
+    // Overrides required for multiple inheritance
+    // (ERC20Pausable + ERC20Votes + ERC2771Context)
     // =========================================================================
 
     /**
@@ -227,5 +244,50 @@ contract OmniCoin is
         uint256 amount
     ) internal override(ERC20, ERC20Pausable, ERC20Votes) {
         super._update(from, to, amount);
+    }
+
+    /**
+     * @notice Resolve _msgSender between Context and ERC2771Context
+     * @dev ERC2771Context overrides _msgSender() to extract the original signer
+     *      from calldata when called through the trusted forwarder. This override
+     *      resolves the diamond with Context (inherited by ERC20, AccessControl, etc.).
+     * @return The original transaction signer (user) when relayed, or msg.sender when direct
+     */
+    function _msgSender()
+        internal
+        view
+        override(Context, ERC2771Context)
+        returns (address)
+    {
+        return ERC2771Context._msgSender();
+    }
+
+    /**
+     * @notice Resolve _msgData between Context and ERC2771Context
+     * @dev Strips the appended sender address from calldata when called through
+     *      the trusted forwarder. Falls back to msg.data for direct calls.
+     * @return The original calldata without the ERC2771 suffix
+     */
+    function _msgData()
+        internal
+        view
+        override(Context, ERC2771Context)
+        returns (bytes calldata)
+    {
+        return ERC2771Context._msgData();
+    }
+
+    /**
+     * @notice Resolve _contextSuffixLength between Context and ERC2771Context
+     * @dev Returns 20 (address length) for ERC2771 context suffix stripping
+     * @return The number of bytes appended to calldata by the forwarder (20)
+     */
+    function _contextSuffixLength()
+        internal
+        view
+        override(Context, ERC2771Context)
+        returns (uint256)
+    {
+        return ERC2771Context._contextSuffixLength();
     }
 }

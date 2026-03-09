@@ -79,12 +79,13 @@ describe('RWAAMM Protocol', function () {
             feeVault.address,
             await xomToken.getAddress(),
             await complianceOracle.getAddress(),
+            ethers.ZeroAddress,
         );
         await amm.waitForDeployment();
 
         // Deploy router
         const Router = await ethers.getContractFactory('RWARouter');
-        router = await Router.deploy(await amm.getAddress());
+        router = await Router.deploy(await amm.getAddress(), ethers.ZeroAddress);
         await router.waitForDeployment();
 
         // Mint tokens to users
@@ -123,6 +124,7 @@ describe('RWAAMM Protocol', function () {
                     ethers.ZeroAddress, // Invalid fee vault
                     await xomToken.getAddress(),
                     await complianceOracle.getAddress(),
+                    ethers.ZeroAddress,
                 ),
             ).to.be.revertedWithCustomError(amm, 'ZeroAddress');
         });

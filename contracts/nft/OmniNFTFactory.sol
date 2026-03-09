@@ -4,6 +4,10 @@ pragma solidity 0.8.24;
 import {Clones} from "@openzeppelin/contracts/proxy/Clones.sol";
 import {Ownable2Step, Ownable} from
     "@openzeppelin/contracts/access/Ownable2Step.sol";
+import {ERC2771Context} from
+    "@openzeppelin/contracts/metatx/ERC2771Context.sol";
+import {Context} from
+    "@openzeppelin/contracts/utils/Context.sol";
 
 /**
  * @title IOmniNFTCollection
@@ -45,7 +49,7 @@ interface IOmniNFTCollection {
  *      collections. The fee percentage is included in the
  *      CollectionCreated event for auditability.
  */
-contract OmniNFTFactory is Ownable2Step {
+contract OmniNFTFactory is Ownable2Step, ERC2771Context {
     // ── Constants ────────────────────────────────────────────────────
     /// @notice Maximum platform fee: 10 % (1000 basis points).
     uint16 public constant MAX_PLATFORM_FEE_BPS = 1000;
@@ -111,10 +115,12 @@ contract OmniNFTFactory is Ownable2Step {
     /**
      * @notice Deploy the factory with the given implementation.
      * @param _implementation OmniNFTCollection implementation.
+     * @param trustedForwarder_ Trusted ERC-2771 forwarder address.
      */
     constructor(
-        address _implementation
-    ) Ownable(msg.sender) {
+        address _implementation,
+        address trustedForwarder_
+    ) Ownable(msg.sender) ERC2771Context(trustedForwarder_) {
         if (_implementation == address(0)) {
             revert InvalidImplementation();
         }
@@ -147,10 +153,12 @@ contract OmniNFTFactory is Ownable2Step {
             revert TooManyCollections();
         }
 
+        address caller = _msgSender();
+
         clone = Clones.clone(implementation);
 
         IOmniNFTCollection(clone).initialize(
-            msg.sender,
+            caller,
             collectionName,
             collectionSymbol,
             maxSupply,
@@ -161,12 +169,12 @@ contract OmniNFTFactory is Ownable2Step {
 
         collections.push(clone);
         isFactoryCollection[clone] = true;
-        creatorCollections[msg.sender].push(clone);
+        creatorCollections[caller].push(clone);
 
         // M-02: Include platformFeeBps in event for off-chain enforcement
         emit CollectionCreated(
             clone,
-            msg.sender,
+            caller,
             collectionName,
             collectionSymbol,
             maxSupply,
@@ -222,5 +230,55 @@ contract OmniNFTFactory is Ownable2Step {
         address creator
     ) external view returns (uint256) {
         return creatorCollections[creator].length;
+    }
+
+    // ── ERC-2771 overrides (Context diamond resolution) ───────────
+
+    /**
+     * @notice Return the sender of the call, accounting for
+     *         ERC-2771 meta-transactions.
+     * @dev Delegates to ERC2771Context to extract the original
+     *      sender when the call comes from the trusted forwarder.
+     * @return The resolved sender address.
+     */
+    function _msgSender()
+        internal
+        view
+        override(Context, ERC2771Context)
+        returns (address)
+    {
+        return ERC2771Context._msgSender();
+    }
+
+    /**
+     * @notice Return the calldata of the call, accounting for
+     *         ERC-2771 meta-transactions.
+     * @dev Delegates to ERC2771Context to strip the appended
+     *      sender address when the call comes from the trusted
+     *      forwarder.
+     * @return The resolved calldata.
+     */
+    function _msgData()
+        internal
+        view
+        override(Context, ERC2771Context)
+        returns (bytes calldata)
+    {
+        return ERC2771Context._msgData();
+    }
+
+    /**
+     * @notice Return the context suffix length for ERC-2771.
+     * @dev ERC-2771 appends 20 bytes (the sender address) to
+     *      the calldata.
+     * @return Length of the context suffix (20).
+     */
+    function _contextSuffixLength()
+        internal
+        view
+        override(Context, ERC2771Context)
+        returns (uint256)
+    {
+        return ERC2771Context._contextSuffixLength();
     }
 }

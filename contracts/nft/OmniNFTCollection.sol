@@ -11,6 +11,10 @@ import {Strings} from
     "@openzeppelin/contracts/utils/Strings.sol";
 import {ReentrancyGuard} from
     "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import {ERC2771Context} from
+    "@openzeppelin/contracts/metatx/ERC2771Context.sol";
+import {Context} from
+    "@openzeppelin/contracts/utils/Context.sol";
 
 /**
  * @title OmniNFTCollection
@@ -22,7 +26,12 @@ import {ReentrancyGuard} from
  *      name/symbol overrides. Uses an initializer for the clone
  *      pattern.
  */
-contract OmniNFTCollection is ERC721, ERC2981, ReentrancyGuard {
+contract OmniNFTCollection is
+    ERC721,
+    ERC2981,
+    ERC2771Context,
+    ReentrancyGuard
+{
     using Strings for uint256;
 
     // ── Structs ──────────────────────────────────────────────────────
@@ -143,10 +152,19 @@ contract OmniNFTCollection is ERC721, ERC2981, ReentrancyGuard {
 
     // ── Constructor (disabled for clone pattern) ─────────────────────
     /**
+     * @notice Deploy the implementation contract (disabled for clones).
      * @dev Constructor sets the ERC721 name/symbol for the
      *      implementation contract. Clones call `initialize()`.
+     *      The trusted forwarder is baked into implementation
+     *      bytecode and inherited by ERC-1167 clones.
+     * @param trustedForwarder_ Trusted ERC-2771 forwarder address.
      */
-    constructor() ERC721("OmniNFT", "ONFT") {
+    constructor(
+        address trustedForwarder_
+    )
+        ERC721("OmniNFT", "ONFT")
+        ERC2771Context(trustedForwarder_)
+    {
         initialized = true;
     }
 
@@ -251,10 +269,11 @@ contract OmniNFTCollection is ERC721, ERC2981, ReentrancyGuard {
         if (quantity == 0) revert ZeroQuantity();
         _validateMintPhase();
 
+        address caller = _msgSender();
         PhaseConfig storage phase = phases[activePhase];
 
-        _validateWhitelist(phase, proof);
-        _validateWalletLimit(phase, quantity);
+        _validateWhitelist(phase, proof, caller);
+        _validateWalletLimit(phase, quantity, caller);
 
         // Supply check
         if (nextTokenId + quantity > maxSupply) {
@@ -268,12 +287,12 @@ contract OmniNFTCollection is ERC721, ERC2981, ReentrancyGuard {
         // Mint
         uint256 startId = nextTokenId;
         for (uint256 i = 0; i < quantity; ++i) {
-            _safeMint(msg.sender, nextTokenId);
+            _safeMint(caller, nextTokenId);
             ++nextTokenId;
         }
-        mintedPerPhase[activePhase][msg.sender] += quantity;
+        mintedPerPhase[activePhase][caller] += quantity;
 
-        emit Minted(msg.sender, startId, quantity);
+        emit Minted(caller, startId, quantity);
     }
 
     /**
@@ -449,10 +468,12 @@ contract OmniNFTCollection is ERC721, ERC2981, ReentrancyGuard {
      *      collection proof replay attacks.
      * @param phase The active phase config.
      * @param proof Merkle proof array.
+     * @param caller The resolved caller address (via _msgSender).
      */
     function _validateWhitelist(
         PhaseConfig storage phase,
-        bytes32[] calldata proof
+        bytes32[] calldata proof,
+        address caller
     ) internal view {
         if (phase.merkleRoot != bytes32(0)) {
             // M-03: Include chainId, contract address, and phase in
@@ -463,7 +484,7 @@ contract OmniNFTCollection is ERC721, ERC2981, ReentrancyGuard {
                     block.chainid,
                     address(this),
                     activePhase,
-                    msg.sender
+                    caller
                 )
             );
             if (
@@ -483,17 +504,68 @@ contract OmniNFTCollection is ERC721, ERC2981, ReentrancyGuard {
      * @dev Reverts with WalletLimitExceeded if over limit.
      * @param phase The active phase config.
      * @param quantity Number of tokens being minted.
+     * @param caller The resolved caller address (via _msgSender).
      */
     function _validateWalletLimit(
         PhaseConfig storage phase,
-        uint256 quantity
+        uint256 quantity,
+        address caller
     ) internal view {
         if (phase.maxPerWallet > 0) {
             uint256 minted =
-                mintedPerPhase[activePhase][msg.sender];
+                mintedPerPhase[activePhase][caller];
             if (minted + quantity > phase.maxPerWallet) {
                 revert WalletLimitExceeded();
             }
         }
+    }
+
+    // ── ERC-2771 overrides (Context diamond resolution) ────────
+    /**
+     * @notice Return the sender of the call, accounting for
+     *         ERC-2771 meta-transactions.
+     * @dev Delegates to ERC2771Context to extract the original
+     *      sender when the call comes from the trusted forwarder.
+     * @return The resolved sender address.
+     */
+    function _msgSender()
+        internal
+        view
+        override(Context, ERC2771Context)
+        returns (address)
+    {
+        return ERC2771Context._msgSender();
+    }
+
+    /**
+     * @notice Return the calldata of the call, accounting for
+     *         ERC-2771 meta-transactions.
+     * @dev Delegates to ERC2771Context to strip the appended
+     *      sender address when the call comes from the trusted
+     *      forwarder.
+     * @return The resolved calldata.
+     */
+    function _msgData()
+        internal
+        view
+        override(Context, ERC2771Context)
+        returns (bytes calldata)
+    {
+        return ERC2771Context._msgData();
+    }
+
+    /**
+     * @notice Return the context suffix length for ERC-2771.
+     * @dev ERC-2771 appends 20 bytes (the sender address) to
+     *      the calldata.
+     * @return Length of the context suffix (20).
+     */
+    function _contextSuffixLength()
+        internal
+        view
+        override(Context, ERC2771Context)
+        returns (uint256)
+    {
+        return ERC2771Context._contextSuffixLength();
     }
 }

@@ -7,6 +7,8 @@ import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol
 import {IERC1155} from "@openzeppelin/contracts/token/ERC1155/IERC1155.sol";
 import {ERC1155Holder} from "@openzeppelin/contracts/token/ERC1155/utils/ERC1155Holder.sol";
 import {Ownable2Step, Ownable} from "@openzeppelin/contracts/access/Ownable2Step.sol";
+import {ERC2771Context} from "@openzeppelin/contracts/metatx/ERC2771Context.sol";
+import {Context} from "@openzeppelin/contracts/utils/Context.sol";
 
 /**
  * @title OmniPredictionRouter
@@ -34,7 +36,7 @@ import {Ownable2Step, Ownable} from "@openzeppelin/contracts/access/Ownable2Step
  *   - Provides `buyWithFeeAndSweepERC1155()` for ERC-1155 outcome token
  *     sweep after trade execution.
  */
-contract OmniPredictionRouter is Ownable2Step, ReentrancyGuard, ERC1155Holder {
+contract OmniPredictionRouter is Ownable2Step, ReentrancyGuard, ERC1155Holder, ERC2771Context {
     using SafeERC20 for IERC20;
 
     // -----------------------------------------------------------------------
@@ -157,11 +159,13 @@ contract OmniPredictionRouter is Ownable2Step, ReentrancyGuard, ERC1155Holder {
      * @notice Deploy the prediction router with an initial fee collector and cap.
      * @param feeCollector_ Address that receives collected fees (initial value, owner-changeable)
      * @param maxFeeBps_    Maximum fee in basis points (immutable, e.g. 200 = 2%)
+     * @param trustedForwarder_ OmniForwarder address for gasless relay (address(0) to disable)
      */
     constructor(
         address feeCollector_,
-        uint256 maxFeeBps_
-    ) Ownable(msg.sender) {
+        uint256 maxFeeBps_,
+        address trustedForwarder_
+    ) Ownable(msg.sender) ERC2771Context(trustedForwarder_) {
         if (feeCollector_ == address(0)) revert InvalidFeeCollector();
         if (maxFeeBps_ == 0 || maxFeeBps_ > 1000) {
             // Cap cannot exceed 10% as a hard safety bound
@@ -244,18 +248,19 @@ contract OmniPredictionRouter is Ownable2Step, ReentrancyGuard, ERC1155Holder {
         bytes calldata platformData,
         uint256 deadline
     ) external nonReentrant {
+        address caller = _msgSender();
         uint256 netAmount = _validateTradeParams(
             collateralToken, totalAmount, feeAmount,
             platformTarget, deadline
         );
 
         _executeTrade(
-            collateralToken, totalAmount, feeAmount,
+            caller, collateralToken, totalAmount, feeAmount,
             netAmount, platformTarget, platformData
         );
 
         emit TradeExecuted(
-            msg.sender,
+            caller,
             collateralToken,
             totalAmount,
             feeAmount,
@@ -293,6 +298,7 @@ contract OmniPredictionRouter is Ownable2Step, ReentrancyGuard, ERC1155Holder {
     ) external nonReentrant {
         if (outcomeToken == address(0)) revert InvalidOutcomeToken();
 
+        address caller = _msgSender();
         uint256 netAmount = _validateTradeParams(
             collateralToken, totalAmount, feeAmount,
             platformTarget, deadline
@@ -304,7 +310,7 @@ contract OmniPredictionRouter is Ownable2Step, ReentrancyGuard, ERC1155Holder {
         );
 
         _executeTrade(
-            collateralToken, totalAmount, feeAmount,
+            caller, collateralToken, totalAmount, feeAmount,
             netAmount, platformTarget, platformData
         );
 
@@ -316,12 +322,12 @@ contract OmniPredictionRouter is Ownable2Step, ReentrancyGuard, ERC1155Holder {
         }
         if (outcomeReceived > 0) {
             IERC20(outcomeToken).safeTransfer(
-                msg.sender, outcomeReceived
+                caller, outcomeReceived
             );
         }
 
         emit TradeExecuted(
-            msg.sender,
+            caller,
             collateralToken,
             totalAmount,
             feeAmount,
@@ -361,6 +367,7 @@ contract OmniPredictionRouter is Ownable2Step, ReentrancyGuard, ERC1155Holder {
     ) external nonReentrant {
         if (outcomeToken == address(0)) revert InvalidOutcomeToken();
 
+        address caller = _msgSender();
         uint256 netAmount = _validateTradeParams(
             collateralToken, totalAmount, feeAmount,
             platformTarget, deadline
@@ -372,7 +379,7 @@ contract OmniPredictionRouter is Ownable2Step, ReentrancyGuard, ERC1155Holder {
         );
 
         _executeTrade(
-            collateralToken, totalAmount, feeAmount,
+            caller, collateralToken, totalAmount, feeAmount,
             netAmount, platformTarget, platformData
         );
 
@@ -385,13 +392,13 @@ contract OmniPredictionRouter is Ownable2Step, ReentrancyGuard, ERC1155Holder {
         }
         if (outcomeReceived > 0) {
             IERC1155(outcomeToken).safeTransferFrom(
-                address(this), msg.sender, outcomeTokenId,
+                address(this), caller, outcomeTokenId,
                 outcomeReceived, ""
             );
         }
 
         emit TradeExecuted(
-            msg.sender,
+            caller,
             collateralToken,
             totalAmount,
             feeAmount,
@@ -445,6 +452,7 @@ contract OmniPredictionRouter is Ownable2Step, ReentrancyGuard, ERC1155Holder {
      *      M-01: Uses balance-before/after to detect fee-on-transfer tokens.
      *      M-03: Caps gas forwarded to the platform call so post-call
      *            operations (approval reset, sweep, event) cannot be starved.
+     * @param caller          Address of the user (from _msgSender())
      * @param collateralToken ERC20 collateral token address
      * @param totalAmount     Total amount pulled from the user
      * @param feeAmount       Fee sent to feeCollector
@@ -453,6 +461,7 @@ contract OmniPredictionRouter is Ownable2Step, ReentrancyGuard, ERC1155Holder {
      * @param platformData    ABI-encoded call data for the platform
      */
     function _executeTrade(
+        address caller,
         address collateralToken,
         uint256 totalAmount,
         uint256 feeAmount,
@@ -463,7 +472,7 @@ contract OmniPredictionRouter is Ownable2Step, ReentrancyGuard, ERC1155Holder {
         // --- M-01: Pull collateral with balance-before/after check ---
         uint256 balBefore = IERC20(collateralToken).balanceOf(address(this));
         IERC20(collateralToken).safeTransferFrom(
-            msg.sender, address(this), totalAmount
+            caller, address(this), totalAmount
         );
         uint256 actualReceived =
             IERC20(collateralToken).balanceOf(address(this)) - balBefore;
@@ -556,5 +565,61 @@ contract OmniPredictionRouter is Ownable2Step, ReentrancyGuard, ERC1155Holder {
         }
 
         netAmount = totalAmount - feeAmount;
+    }
+
+    // -----------------------------------------------------------------------
+    // ERC2771Context Overrides (resolve diamond with Ownable)
+    // -----------------------------------------------------------------------
+
+    /**
+     * @notice Resolve _msgSender between Context (via Ownable)
+     *         and ERC2771Context
+     * @dev Returns the original user address when called through
+     *      the trusted forwarder. Used by buyWithFee(),
+     *      buyWithFeeAndSweep(), and buyWithFeeAndSweepERC1155()
+     *      to identify the actual user.
+     * @return The original transaction signer when relayed, or
+     *         msg.sender when direct
+     */
+    function _msgSender()
+        internal
+        view
+        override(Context, ERC2771Context)
+        returns (address)
+    {
+        return ERC2771Context._msgSender();
+    }
+
+    /**
+     * @notice Resolve _msgData between Context (via Ownable)
+     *         and ERC2771Context
+     * @dev Strips the appended sender address from calldata
+     *      when relayed
+     * @return The original calldata without the ERC2771 suffix
+     */
+    function _msgData()
+        internal
+        view
+        override(Context, ERC2771Context)
+        returns (bytes calldata)
+    {
+        return ERC2771Context._msgData();
+    }
+
+    /**
+     * @notice Resolve _contextSuffixLength between Context
+     *         and ERC2771Context
+     * @dev Returns 20 (address length) for ERC2771 context
+     *      suffix stripping
+     * @return The number of bytes appended to calldata by the
+     *         forwarder (20)
+     */
+    function _contextSuffixLength()
+        internal
+        view
+        override(Context, ERC2771Context)
+        returns (uint256)
+    {
+        return ERC2771Context._contextSuffixLength();
     }
 }

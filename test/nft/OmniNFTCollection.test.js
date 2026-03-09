@@ -20,11 +20,11 @@ describe("OmniNFTCollection", function () {
     [owner, creator, user1, user2, user3] = await ethers.getSigners();
 
     const Collection = await ethers.getContractFactory("OmniNFTCollection");
-    collection = await Collection.deploy();
+    collection = await Collection.deploy(ethers.ZeroAddress);
 
     // Clone pattern: we deploy a fresh instance and initialize it.
     // For testing, deploy a second instance and initialize it directly.
-    const freshCollection = await Collection.deploy();
+    const freshCollection = await Collection.deploy(ethers.ZeroAddress);
     // The constructor marks it as initialized, so we test via factory pattern.
     // For unit tests, deploy without constructor init by using a helper.
   });
@@ -37,10 +37,10 @@ describe("OmniNFTCollection", function () {
   async function deployInitializedCollection(params = {}) {
     // Deploy the factory, which will create a proper clone
     const Collection = await ethers.getContractFactory("OmniNFTCollection");
-    const impl = await Collection.deploy();
+    const impl = await Collection.deploy(ethers.ZeroAddress);
 
     const Factory = await ethers.getContractFactory("OmniNFTFactory");
-    const factory = await Factory.deploy(await impl.getAddress());
+    const factory = await Factory.deploy(await impl.getAddress(), ethers.ZeroAddress);
 
     const tx = await factory.connect(params.creator || creator).createCollection(
       params.name || "TestNFT",

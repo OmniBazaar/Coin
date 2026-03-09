@@ -14,7 +14,7 @@ describe("OmniCoin", function () {
 
     // Deploy OmniCoin
     const OmniCoin = await ethers.getContractFactory("OmniCoin");
-    omniCoin = await OmniCoin.deploy();
+    omniCoin = await OmniCoin.deploy(ethers.ZeroAddress);
     await omniCoin.initialize();
 
     // Grant roles

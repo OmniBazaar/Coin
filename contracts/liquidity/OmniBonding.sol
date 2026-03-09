@@ -6,6 +6,10 @@ import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
+import {ERC2771Context} from
+    "@openzeppelin/contracts/metatx/ERC2771Context.sol";
+import {Context} from
+    "@openzeppelin/contracts/utils/Context.sol";
 
 /**
  * @title OmniBonding
@@ -61,7 +65,7 @@ import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
  *
  * Inspired by Olympus DAO bonding mechanism.
  */
-contract OmniBonding is ReentrancyGuard, Ownable, Pausable {
+contract OmniBonding is ReentrancyGuard, Ownable, Pausable, ERC2771Context {
     using SafeERC20 for IERC20;
 
     // ============ Structs ============
@@ -355,12 +359,14 @@ contract OmniBonding is ReentrancyGuard, Ownable, Pausable {
      * @param _treasury Treasury address to receive bonded assets
      * @param _initialXomPrice Initial fixed XOM price
      *        (18 decimals, e.g., 5e15 = $0.005)
+     * @param trustedForwarder_ Trusted ERC-2771 forwarder address
      */
     constructor(
         address _xom,
         address _treasury,
-        uint256 _initialXomPrice
-    ) Ownable(msg.sender) {
+        uint256 _initialXomPrice,
+        address trustedForwarder_
+    ) Ownable(msg.sender) ERC2771Context(trustedForwarder_) {
         if (_xom == address(0) || _treasury == address(0)) {
             revert InvalidParameters();
         }
@@ -525,13 +531,15 @@ contract OmniBonding is ReentrancyGuard, Ownable, Pausable {
         // L-02: Reject zero-amount bonds
         if (amount == 0) revert InvalidParameters();
 
+        address caller = _msgSender();
+
         BondTerms storage terms = _validateBondAsset(
             asset, amount
         );
 
         // Check for existing active bond
         UserBond storage existingBond =
-            userBonds[msg.sender][asset];
+            userBonds[caller][asset];
         if (
             existingBond.xomOwed > 0
                 && existingBond.claimed < existingBond.xomOwed
@@ -566,7 +574,7 @@ contract OmniBonding is ReentrancyGuard, Ownable, Pausable {
         uint256 treasuryBalBefore =
             terms.asset.balanceOf(treasury);
         terms.asset.safeTransferFrom(
-            msg.sender, treasury, amount
+            caller, treasury, amount
         );
         uint256 actualReceived =
             terms.asset.balanceOf(treasury) - treasuryBalBefore;
@@ -577,7 +585,7 @@ contract OmniBonding is ReentrancyGuard, Ownable, Pausable {
         // Create bond
         // solhint-disable-next-line not-rely-on-time
         uint256 vestingEnd = block.timestamp + terms.vestingPeriod;
-        userBonds[msg.sender][asset] = UserBond({
+        userBonds[caller][asset] = UserBond({
             xomOwed: xomOwed,
             // solhint-disable-next-line not-rely-on-time
             vestingStart: block.timestamp,
@@ -594,7 +602,7 @@ contract OmniBonding is ReentrancyGuard, Ownable, Pausable {
         totalXomOutstanding += xomOwed;
 
         emit BondCreated(
-            msg.sender, asset, amount, xomOwed, vestingEnd
+            caller, asset, amount, xomOwed, vestingEnd
         );
 
         return xomOwed;
@@ -609,7 +617,8 @@ contract OmniBonding is ReentrancyGuard, Ownable, Pausable {
     function claim(
         address asset
     ) external nonReentrant returns (uint256 claimed) {
-        UserBond storage userBond = userBonds[msg.sender][asset];
+        address caller = _msgSender();
+        UserBond storage userBond = userBonds[caller][asset];
         if (userBond.xomOwed == 0) revert NoBondToClaim();
 
         claimed = _calculateClaimable(userBond);
@@ -621,12 +630,12 @@ contract OmniBonding is ReentrancyGuard, Ownable, Pausable {
         // M-03: Clean up fully-claimed bond to free storage
         // and allow re-bonding without friction
         if (userBond.claimed == userBond.xomOwed) {
-            delete userBonds[msg.sender][asset];
+            delete userBonds[caller][asset];
         }
 
-        XOM.safeTransfer(msg.sender, claimed);
+        XOM.safeTransfer(caller, claimed);
 
-        emit BondClaimed(msg.sender, asset, claimed);
+        emit BondClaimed(caller, asset, claimed);
 
         return claimed;
     }
@@ -641,10 +650,11 @@ contract OmniBonding is ReentrancyGuard, Ownable, Pausable {
         nonReentrant
         returns (uint256 totalClaimed)
     {
+        address caller = _msgSender();
         for (uint256 i = 0; i < bondAssets.length; ++i) {
             address asset = bondAssets[i];
             UserBond storage userBond =
-                userBonds[msg.sender][asset];
+                userBonds[caller][asset];
 
             if (userBond.xomOwed > 0) {
                 uint256 claimable = _calculateClaimable(
@@ -658,11 +668,11 @@ contract OmniBonding is ReentrancyGuard, Ownable, Pausable {
                     if (
                         userBond.claimed == userBond.xomOwed
                     ) {
-                        delete userBonds[msg.sender][asset];
+                        delete userBonds[caller][asset];
                     }
 
                     emit BondClaimed(
-                        msg.sender, asset, claimable
+                        caller, asset, claimable
                     );
                 }
             }
@@ -670,7 +680,7 @@ contract OmniBonding is ReentrancyGuard, Ownable, Pausable {
 
         if (totalClaimed == 0) revert NothingToClaim();
         totalXomOutstanding -= totalClaimed;
-        XOM.safeTransfer(msg.sender, totalClaimed);
+        XOM.safeTransfer(caller, totalClaimed);
 
         return totalClaimed;
     }
@@ -1079,6 +1089,58 @@ contract OmniBonding is ReentrancyGuard, Ownable, Pausable {
             ? vested - userBond.claimed
             : 0;
     }
+
+    // ============ ERC-2771 Overrides ============
+
+    /**
+     * @notice Return the sender of the call, accounting for
+     *         ERC-2771 meta-transactions.
+     * @dev Delegates to ERC2771Context to extract the original
+     *      sender when the call comes from the trusted forwarder.
+     * @return The resolved sender address.
+     */
+    function _msgSender()
+        internal
+        view
+        override(Context, ERC2771Context)
+        returns (address)
+    {
+        return ERC2771Context._msgSender();
+    }
+
+    /**
+     * @notice Return the calldata of the call, accounting for
+     *         ERC-2771 meta-transactions.
+     * @dev Delegates to ERC2771Context to strip the appended
+     *      sender address when the call comes from the trusted
+     *      forwarder.
+     * @return The resolved calldata.
+     */
+    function _msgData()
+        internal
+        view
+        override(Context, ERC2771Context)
+        returns (bytes calldata)
+    {
+        return ERC2771Context._msgData();
+    }
+
+    /**
+     * @notice Return the context suffix length for ERC-2771.
+     * @dev ERC-2771 appends 20 bytes (the sender address) to
+     *      the calldata.
+     * @return Length of the context suffix (20).
+     */
+    function _contextSuffixLength()
+        internal
+        view
+        override(Context, ERC2771Context)
+        returns (uint256)
+    {
+        return ERC2771Context._contextSuffixLength();
+    }
+
+    // ============ Internal Pure Functions ============
 
     /**
      * @notice Normalize asset amount to 18 decimal price value

@@ -7,6 +7,8 @@ import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
 import {Ownable2Step, Ownable} from "@openzeppelin/contracts/access/Ownable2Step.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import {ERC2771Context} from "@openzeppelin/contracts/metatx/ERC2771Context.sol";
+import {Context} from "@openzeppelin/contracts/utils/Context.sol";
 /* solhint-enable import-path-check */
 
 /**
@@ -71,7 +73,7 @@ interface ISwapAdapter {
  * - Executes swaps atomically
  * - Distributes fees to protocol treasury
  */
-contract OmniSwapRouter is Ownable2Step, Pausable, ReentrancyGuard {
+contract OmniSwapRouter is Ownable2Step, Pausable, ReentrancyGuard, ERC2771Context {
     using SafeERC20 for IERC20;
 
     // ========================================================================
@@ -250,8 +252,17 @@ contract OmniSwapRouter is Ownable2Step, Pausable, ReentrancyGuard {
      * @notice Constructor to initialize the OmniSwapRouter
      * @param _feeRecipient Address to receive swap fees
      * @param _swapFeeBps Initial swap fee in basis points
+     * @param trustedForwarder_ ERC-2771 trusted forwarder for
+     *        gasless meta-transactions (e.g. OmniForwarder)
      */
-    constructor(address _feeRecipient, uint256 _swapFeeBps) Ownable(msg.sender) {
+    constructor(
+        address _feeRecipient,
+        uint256 _swapFeeBps,
+        address trustedForwarder_
+    )
+        Ownable(msg.sender)
+        ERC2771Context(trustedForwarder_)
+    {
         if (_feeRecipient == address(0)) revert InvalidRecipientAddress();
         if (_swapFeeBps > 100) revert FeeTooHigh(); // Max 1%
 
@@ -275,11 +286,13 @@ contract OmniSwapRouter is Ownable2Step, Pausable, ReentrancyGuard {
     ) external nonReentrant whenNotPaused returns (SwapResult memory result) {
         _validateSwapParams(params);
 
+        address caller = _msgSender();
+
         // Transfer input tokens (balance-before/after for fee-on-transfer)
         uint256 balanceBefore =
             IERC20(params.tokenIn).balanceOf(address(this));
         IERC20(params.tokenIn).safeTransferFrom(
-            msg.sender, address(this), params.amountIn
+            caller, address(this), params.amountIn
         );
         uint256 actualReceived =
             IERC20(params.tokenIn).balanceOf(address(this)) - balanceBefore;
@@ -316,7 +329,7 @@ contract OmniSwapRouter is Ownable2Step, Pausable, ReentrancyGuard {
         totalFeesCollected += feeAmount;
 
         emit SwapExecuted(
-            msg.sender,
+            caller,
             params.tokenIn,
             params.tokenOut,
             params.amountIn,
@@ -624,5 +637,56 @@ contract OmniSwapRouter is Ownable2Step, Pausable, ReentrancyGuard {
         ) {
             revert PathMismatch();
         }
+    }
+
+    // ========================================================================
+    // ERC2771Context OVERRIDES
+    // (resolve Context vs ERC2771Context diamond)
+    // ========================================================================
+
+    /**
+     * @notice Resolve _msgSender between Context (via
+     *         Ownable/Pausable) and ERC2771Context
+     * @dev ERC2771Context overrides _msgSender() to extract
+     *      the original signer from trusted-forwarder calldata.
+     * @return sender The original transaction signer
+     */
+    function _msgSender()
+        internal
+        view
+        override(Context, ERC2771Context)
+        returns (address sender)
+    {
+        return ERC2771Context._msgSender();
+    }
+
+    /**
+     * @notice Resolve _msgData between Context (via
+     *         Ownable/Pausable) and ERC2771Context
+     * @return The original calldata (stripped of appended
+     *         sender when forwarded)
+     */
+    function _msgData()
+        internal
+        view
+        override(Context, ERC2771Context)
+        returns (bytes calldata)
+    {
+        return ERC2771Context._msgData();
+    }
+
+    /**
+     * @notice Resolve _contextSuffixLength between Context
+     *         and ERC2771Context
+     * @return Length of the context suffix (20 bytes when
+     *         called via trusted forwarder, 0 otherwise)
+     */
+    function _contextSuffixLength()
+        internal
+        view
+        override(Context, ERC2771Context)
+        returns (uint256)
+    {
+        return ERC2771Context._contextSuffixLength();
     }
 }

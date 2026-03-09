@@ -16,7 +16,7 @@ describe("OmniPrivacyBridge", function () {
 
     // Deploy OmniCoin (XOM)
     const OmniCoin = await ethers.getContractFactory("OmniCoin");
-    omniCoin = await OmniCoin.deploy();
+    omniCoin = await OmniCoin.deploy(ethers.ZeroAddress);
     await omniCoin.initialize();
 
     // Deploy PrivateOmniCoin (pXOM) via UUPS proxy
@@ -32,7 +32,7 @@ describe("OmniPrivacyBridge", function () {
     bridge = await upgrades.deployProxy(
       Bridge,
       [await omniCoin.getAddress(), await privateOmniCoin.getAddress()],
-      { initializer: "initialize", kind: "uups" }
+      { initializer: "initialize", kind: "uups", constructorArgs: [ethers.ZeroAddress] }
     );
 
     // Grant bridge the MINTER_ROLE on PrivateOmniCoin
@@ -51,12 +51,10 @@ describe("OmniPrivacyBridge", function () {
     const FEE_MANAGER_ROLE = await bridge.FEE_MANAGER_ROLE();
     await bridge.grantRole(FEE_MANAGER_ROLE, feeManager.address);
 
-    // Mint some XOM to users for testing (keep within uint64 max: ~18.4 ether)
-    const MINTER_ROLE_XOM = await omniCoin.MINTER_ROLE();
-    await omniCoin.grantRole(MINTER_ROLE_XOM, owner.address);
-    await omniCoin.mint(user1.address, ethers.parseEther("15"));
-    await omniCoin.mint(user2.address, ethers.parseEther("15"));
-    await omniCoin.mint(user3.address, ethers.parseEther("15"));
+    // Transfer XOM to users for testing (from deployer's pre-minted supply)
+    await omniCoin.transfer(user1.address, ethers.parseEther("15"));
+    await omniCoin.transfer(user2.address, ethers.parseEther("15"));
+    await omniCoin.transfer(user3.address, ethers.parseEther("15"));
 
     // Transfer some XOM to bridge for initial liquidity
     await omniCoin.transfer(await bridge.getAddress(), ethers.parseEther("100"));
@@ -94,7 +92,7 @@ describe("OmniPrivacyBridge", function () {
         upgrades.deployProxy(
           Bridge,
           [ethers.ZeroAddress, await privateOmniCoin.getAddress()],
-          { initializer: "initialize", kind: "uups" }
+          { initializer: "initialize", kind: "uups", constructorArgs: [ethers.ZeroAddress] }
         )
       ).to.be.revertedWithCustomError(Bridge, "ZeroAddress");
     });
@@ -105,7 +103,7 @@ describe("OmniPrivacyBridge", function () {
         upgrades.deployProxy(
           Bridge,
           [await omniCoin.getAddress(), ethers.ZeroAddress],
-          { initializer: "initialize", kind: "uups" }
+          { initializer: "initialize", kind: "uups", constructorArgs: [ethers.ZeroAddress] }
         )
       ).to.be.revertedWithCustomError(Bridge, "ZeroAddress");
     });

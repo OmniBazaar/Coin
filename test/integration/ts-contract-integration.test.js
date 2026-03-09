@@ -66,7 +66,12 @@ describe("TS-Contract Integration (G10 Audit Remediation)", function () {
       vault = await upgrades.deployProxy(
         Vault,
         [admin.address, stakingPool.address, protocolTreasury.address],
-        { initializer: "initialize", kind: "uups" }
+        {
+          initializer: "initialize",
+          kind: "uups",
+          constructorArgs: [ethers.ZeroAddress],
+          unsafeAllow: ["constructor"]
+        }
       );
       await vault.waitForDeployment();
 
@@ -197,13 +202,14 @@ describe("TS-Contract Integration (G10 Audit Remediation)", function () {
       xom = await MockERC20.deploy("OmniCoin", "XOM");
       await xom.waitForDeployment();
 
-      // Deploy OmniENS with 4 constructor params
+      // Deploy OmniENS with 5 constructor params (including trustedForwarder)
       const OmniENS = await ethers.getContractFactory("OmniENS");
       ens = await OmniENS.deploy(
         await xom.getAddress(),
         oddaoTreasury.address,
         stakingPool.address,
-        protocolTreasury.address
+        protocolTreasury.address,
+        ethers.ZeroAddress
       );
       await ens.waitForDeployment();
 
@@ -328,7 +334,8 @@ describe("TS-Contract Integration (G10 Audit Remediation)", function () {
         stakingPool.address,
         oddaoTreasury.address,
         protocolTreasury.address,
-        BASE_FEE
+        BASE_FEE,
+        ethers.ZeroAddress
       );
       await chatFee.waitForDeployment();
 
@@ -503,7 +510,12 @@ describe("TS-Contract Integration (G10 Audit Remediation)", function () {
       vault = await upgrades.deployProxy(
         Vault,
         [admin.address, stakingPool.address, protocolTreasury.address],
-        { initializer: "initialize", kind: "uups" }
+        {
+          initializer: "initialize",
+          kind: "uups",
+          constructorArgs: [ethers.ZeroAddress],
+          unsafeAllow: ["constructor"]
+        }
       );
       await vault.waitForDeployment();
 
@@ -624,28 +636,35 @@ describe("TS-Contract Integration (G10 Audit Remediation)", function () {
       vault = await upgrades.deployProxy(
         Vault,
         [admin.address, stakingPool.address, protocolTreasury.address],
-        { initializer: "initialize", kind: "uups" }
+        {
+          initializer: "initialize",
+          kind: "uups",
+          constructorArgs: [ethers.ZeroAddress],
+          unsafeAllow: ["constructor"]
+        }
       );
       await vault.waitForDeployment();
 
-      // Deploy ENS
+      // Deploy ENS (including trustedForwarder)
       const OmniENS = await ethers.getContractFactory("OmniENS");
       ens = await OmniENS.deploy(
         await xom.getAddress(),
         oddaoTreasury.address,
         stakingPool.address,
-        protocolTreasury.address
+        protocolTreasury.address,
+        ethers.ZeroAddress
       );
       await ens.waitForDeployment();
 
-      // Deploy ChatFee
+      // Deploy ChatFee (including trustedForwarder)
       const OmniChatFee = await ethers.getContractFactory("OmniChatFee");
       chatFee = await OmniChatFee.deploy(
         await xom.getAddress(),
         stakingPool.address,
         oddaoTreasury.address,
         protocolTreasury.address,
-        BASE_CHAT_FEE
+        BASE_CHAT_FEE,
+        ethers.ZeroAddress
       );
       await chatFee.waitForDeployment();
     });
@@ -713,7 +732,12 @@ describe("TS-Contract Integration (G10 Audit Remediation)", function () {
       vault = await upgrades.deployProxy(
         Vault,
         [admin.address, stakingPool.address, protocolTreasury.address],
-        { initializer: "initialize", kind: "uups" }
+        {
+          initializer: "initialize",
+          kind: "uups",
+          constructorArgs: [ethers.ZeroAddress],
+          unsafeAllow: ["constructor"]
+        }
       );
       await vault.waitForDeployment();
 
@@ -732,7 +756,8 @@ describe("TS-Contract Integration (G10 Audit Remediation)", function () {
     it("should split marketplace fee into tx/ref/listing and distribute each 70/20/10", async function () {
       const referrer = user1;
       const referrerL2 = user2;
-      const listingNode = validator1;
+      const signers = await ethers.getSigners();
+      const listingNode = signers[9];  // dedicated signer to avoid overlap with validator1
       const sellingNode = bridger;
 
       // Snapshot all recipient balances
@@ -884,7 +909,12 @@ describe("TS-Contract Integration (G10 Audit Remediation)", function () {
       vault = await upgrades.deployProxy(
         Vault,
         [admin.address, stakingPool.address, protocolTreasury.address],
-        { initializer: "initialize", kind: "uups" }
+        {
+          initializer: "initialize",
+          kind: "uups",
+          constructorArgs: [ethers.ZeroAddress],
+          unsafeAllow: ["constructor"]
+        }
       );
       await vault.waitForDeployment();
 
@@ -960,7 +990,12 @@ describe("TS-Contract Integration (G10 Audit Remediation)", function () {
       vault = await upgrades.deployProxy(
         Vault,
         [admin.address, stakingPool.address, protocolTreasury.address],
-        { initializer: "initialize", kind: "uups" }
+        {
+          initializer: "initialize",
+          kind: "uups",
+          constructorArgs: [ethers.ZeroAddress],
+          unsafeAllow: ["constructor"]
+        }
       );
       await vault.waitForDeployment();
 
@@ -1056,13 +1091,14 @@ describe("TS-Contract Integration (G10 Audit Remediation)", function () {
       xom = await MockERC20.deploy("OmniCoin", "XOM");
       await xom.waitForDeployment();
 
-      // Deploy ENS (pushes fees directly to recipients)
+      // Deploy ENS (pushes fees directly to recipients, including trustedForwarder)
       const OmniENS = await ethers.getContractFactory("OmniENS");
       ens = await OmniENS.deploy(
         await xom.getAddress(),
         oddaoTreasury.address,
         stakingPool.address,
-        protocolTreasury.address
+        protocolTreasury.address,
+        ethers.ZeroAddress
       );
       await ens.waitForDeployment();
 
@@ -1071,7 +1107,12 @@ describe("TS-Contract Integration (G10 Audit Remediation)", function () {
       vault = await upgrades.deployProxy(
         Vault,
         [admin.address, stakingPool.address, protocolTreasury.address],
-        { initializer: "initialize", kind: "uups" }
+        {
+          initializer: "initialize",
+          kind: "uups",
+          constructorArgs: [ethers.ZeroAddress],
+          unsafeAllow: ["constructor"]
+        }
       );
       await vault.waitForDeployment();
     });

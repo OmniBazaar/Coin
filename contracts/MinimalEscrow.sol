@@ -6,6 +6,8 @@ import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {MpcCore, gtUint64, ctUint64, gtBool} from "../coti-contracts/contracts/utils/mpc/MpcCore.sol";
+import {ERC2771Context} from "@openzeppelin/contracts/metatx/ERC2771Context.sol";
+import {Context} from "@openzeppelin/contracts/utils/Context.sol";
 
 /**
  * @title MinimalEscrow
@@ -19,8 +21,14 @@ import {MpcCore, gtUint64, ctUint64, gtBool} from "../coti-contracts/contracts/u
  * - Automatic privacy detection based on chain ID
  * - Graceful degradation on non-COTI networks
  * - Maintains full backward compatibility
+ * - ERC2771Context for gasless meta-transactions via OmniForwarder
+ *
+ * Gasless Support:
+ * - All user-facing functions use _msgSender() for gasless relay compatibility
+ * - Admin functions (addArbitrator, removeArbitrator, pause, etc.) use msg.sender directly
+ * - Commit-reveal pattern works correctly: same user relays both commit and reveal
  */
-contract MinimalEscrow is ReentrancyGuard, Pausable {
+contract MinimalEscrow is ReentrancyGuard, Pausable, ERC2771Context {
     using SafeERC20 for IERC20;
     using MpcCore for gtUint64;
     using MpcCore for ctUint64;
@@ -343,13 +351,22 @@ contract MinimalEscrow is ReentrancyGuard, Pausable {
         _;
     }
 
+    /**
+     * @param _omniCoin OmniCoin token address (XOM)
+     * @param _privateOmniCoin Private OmniCoin token address (pXOM)
+     * @param _registry Registry contract address
+     * @param _feeCollector Address receiving marketplace fees
+     * @param _marketplaceFeeBps Fee in basis points (e.g. 100 = 1%)
+     * @param trustedForwarder_ OmniForwarder address for gasless relay (address(0) to disable)
+     */
     constructor(
         address _omniCoin,
         address _privateOmniCoin,
         address _registry,
         address _feeCollector,
-        uint256 _marketplaceFeeBps
-    ) {
+        uint256 _marketplaceFeeBps,
+        address trustedForwarder_
+    ) ERC2771Context(trustedForwarder_) {
         if (
             _omniCoin == address(0) ||
             _privateOmniCoin == address(0) ||
@@ -391,18 +408,19 @@ contract MinimalEscrow is ReentrancyGuard, Pausable {
         uint256 amount,
         uint256 duration
     ) external nonReentrant whenNotPaused returns (uint256 escrowId) {
-        if (seller == address(0) || seller == msg.sender) revert InvalidAddress();
+        address buyer = _msgSender();
+        if (seller == address(0) || seller == buyer) revert InvalidAddress();
         if (amount == 0) revert InvalidAmount();
         if (duration < MIN_DURATION || duration > MAX_DURATION) revert InvalidDuration();
-        
+
         // Transfer tokens from buyer to escrow
-        OMNI_COIN.safeTransferFrom(msg.sender, address(this), amount);
+        OMNI_COIN.safeTransferFrom(buyer, address(this), amount);
         totalEscrowed[address(OMNI_COIN)] += amount;
 
         escrowId = ++escrowCounter;
-        
+
         escrows[escrowId] = Escrow({
-            buyer: msg.sender,
+            buyer: buyer,
             seller: seller,
             arbitrator: address(0),
             amount: amount,
@@ -413,8 +431,8 @@ contract MinimalEscrow is ReentrancyGuard, Pausable {
             resolved: false,
             disputed: false
         });
-        
-        emit EscrowCreated(escrowId, msg.sender, seller, amount, escrows[escrowId].expiry);
+
+        emit EscrowCreated(escrowId, buyer, seller, amount, escrows[escrowId].expiry);
     }
 
     /**
@@ -424,11 +442,11 @@ contract MinimalEscrow is ReentrancyGuard, Pausable {
      */
     function releaseFunds(uint256 escrowId) external nonReentrant whenNotPaused {
         Escrow storage escrow = escrows[escrowId];
-        
+
         if (escrow.buyer == address(0)) revert EscrowNotFound();
         if (escrow.resolved) revert AlreadyResolved();
         // L-05: Only buyer can release funds to seller
-        if (msg.sender != escrow.buyer) revert NotParticipant();
+        if (_msgSender() != escrow.buyer) revert NotParticipant();
 
         // Simple 2-party agreement (undisputed release by buyer)
         if (!escrow.disputed) {
@@ -462,19 +480,20 @@ contract MinimalEscrow is ReentrancyGuard, Pausable {
 
         if (escrow.buyer == address(0)) revert EscrowNotFound();
         if (escrow.resolved) revert AlreadyResolved();
+        address caller = _msgSender();
         // M-04: Only buyer or seller can trigger refund (prevents griefing by third parties)
-        if (msg.sender != escrow.buyer && msg.sender != escrow.seller) revert NotParticipant();
+        if (caller != escrow.buyer && caller != escrow.seller) revert NotParticipant();
 
         bool canRefund = false;
 
         // Seller agrees to refund
-        if (msg.sender == escrow.seller && !escrow.disputed) {
+        if (caller == escrow.seller && !escrow.disputed) {
             canRefund = true;
         }
 
         // Expired and no dispute - only buyer can claim expired refund
         // solhint-disable-next-line not-rely-on-time
-        if (block.timestamp > escrow.expiry && !escrow.disputed && msg.sender == escrow.buyer) {
+        if (block.timestamp > escrow.expiry && !escrow.disputed && caller == escrow.buyer) {
             canRefund = true;
         }
 
@@ -502,7 +521,8 @@ contract MinimalEscrow is ReentrancyGuard, Pausable {
         if (escrow.buyer == address(0)) revert EscrowNotFound();
         if (escrow.resolved) revert AlreadyResolved();
         if (escrow.disputed) revert AlreadyDisputed();
-        if (msg.sender != escrow.buyer && msg.sender != escrow.seller) revert NotParticipant();
+        address caller = _msgSender();
+        if (caller != escrow.buyer && caller != escrow.seller) revert NotParticipant();
 
         // Must wait minimum time before dispute
         uint256 disputeEarliest = escrow.createdAt + ARBITRATOR_DELAY;
@@ -510,8 +530,8 @@ contract MinimalEscrow is ReentrancyGuard, Pausable {
 
         // Require dispute stake (paid in OmniCoin)
         uint256 requiredStake = (escrow.amount * DISPUTE_STAKE_BASIS) / BASIS_POINTS;
-        OMNI_COIN.safeTransferFrom(msg.sender, address(this), requiredStake);
-        disputeStakes[escrowId][msg.sender] = requiredStake;
+        OMNI_COIN.safeTransferFrom(caller, address(this), requiredStake);
+        disputeStakes[escrowId][caller] = requiredStake;
         totalEscrowed[address(OMNI_COIN)] += requiredStake;
 
         disputeCommitments[escrowId] = DisputeCommitment({
@@ -520,7 +540,7 @@ contract MinimalEscrow is ReentrancyGuard, Pausable {
             revealed: false
         });
 
-        emit DisputeCommitted(escrowId, msg.sender, commitment);
+        emit DisputeCommitted(escrowId, caller, commitment);
     }
 
     /**
@@ -532,27 +552,28 @@ contract MinimalEscrow is ReentrancyGuard, Pausable {
     function revealDispute(uint256 escrowId, uint256 nonce) external nonReentrant whenNotPaused {
         Escrow storage escrow = escrows[escrowId];
         DisputeCommitment storage commitment = disputeCommitments[escrowId];
-        
+
         // solhint-disable-next-line not-rely-on-time
         if (block.timestamp > commitment.revealDeadline) revert RevealDeadlinePassed();
         if (commitment.revealed) revert AlreadyDisputed();
-        
-        // Verify commitment
+
+        address caller = _msgSender();
+        // Verify commitment (hash includes caller address for consistency)
         bytes32 expectedHash = keccak256(abi.encodePacked(
-            escrowId, 
-            nonce, 
-            msg.sender
+            escrowId,
+            nonce,
+            caller
         ));
         if (commitment.commitment != expectedHash) revert InvalidCommitment();
-        
+
         commitment.revealed = true;
         escrow.disputed = true;
-        
+
         // Deterministic arbitrator selection
         address arbitrator = selectArbitrator(escrowId, nonce);
         escrow.arbitrator = arbitrator;
-        
-        emit DisputeRaised(escrowId, msg.sender, arbitrator);
+
+        emit DisputeRaised(escrowId, caller, arbitrator);
     }
 
     /**
@@ -571,13 +592,14 @@ contract MinimalEscrow is ReentrancyGuard, Pausable {
         if (escrow.resolved) revert AlreadyResolved();
         if (!escrow.disputed) revert NotDisputed();
 
+        address caller = _msgSender();
         // Only the counterparty (the party who did NOT initiate the dispute) can post
-        if (msg.sender != escrow.buyer && msg.sender != escrow.seller) {
+        if (caller != escrow.buyer && caller != escrow.seller) {
             revert NotParticipant();
         }
 
         // Prevent double-staking
-        if (disputeStakes[escrowId][msg.sender] != 0) revert StakeAlreadyPosted();
+        if (disputeStakes[escrowId][caller] != 0) revert StakeAlreadyPosted();
 
         // Calculate the same stake amount the initiator paid
         // Use the original escrow amount stored at creation (escrow.amount may include
@@ -586,11 +608,11 @@ contract MinimalEscrow is ReentrancyGuard, Pausable {
         uint256 requiredStake = (escrow.amount * DISPUTE_STAKE_BASIS) / BASIS_POINTS;
         if (requiredStake == 0) revert InsufficientStake();
 
-        OMNI_COIN.safeTransferFrom(msg.sender, address(this), requiredStake);
-        disputeStakes[escrowId][msg.sender] = requiredStake;
+        OMNI_COIN.safeTransferFrom(caller, address(this), requiredStake);
+        disputeStakes[escrowId][caller] = requiredStake;
         totalEscrowed[address(OMNI_COIN)] += requiredStake;
 
-        emit CounterpartyStakePosted(escrowId, msg.sender, requiredStake);
+        emit CounterpartyStakePosted(escrowId, caller, requiredStake);
     }
 
     /**
@@ -601,19 +623,20 @@ contract MinimalEscrow is ReentrancyGuard, Pausable {
      */
     function vote(uint256 escrowId, bool voteForRelease) external nonReentrant whenNotPaused {
         Escrow storage escrow = escrows[escrowId];
-        
-        _validateVote(escrow, escrowId);
-        
-        hasVoted[escrowId][msg.sender] = true;
-        
+        address caller = _msgSender();
+
+        _validateVote(escrow, escrowId, caller);
+
+        hasVoted[escrowId][caller] = true;
+
         if (voteForRelease) {
             ++escrow.releaseVotes;
         } else {
             ++escrow.refundVotes;
         }
-        
-        emit VoteCast(escrowId, msg.sender, voteForRelease);
-        
+
+        emit VoteCast(escrowId, caller, voteForRelease);
+
         // Check if we have a decision (2 votes)
         if (escrow.releaseVotes > 1) {
             _resolveEscrow(escrow, escrowId, escrow.seller);
@@ -783,17 +806,22 @@ contract MinimalEscrow is ReentrancyGuard, Pausable {
      *      Non-disputed escrows must use releaseFunds() or refundBuyer().
      * @param escrow Escrow data
      * @param escrowId Escrow identifier
+     * @param caller Address of the voter (from _msgSender())
      */
-    function _validateVote(Escrow storage escrow, uint256 escrowId) private view {
+    function _validateVote(
+        Escrow storage escrow,
+        uint256 escrowId,
+        address caller
+    ) private view {
         if (escrow.resolved) revert AlreadyResolved();
         // H-03: Voting only allowed on disputed escrows
         if (!escrow.disputed) revert NotDisputed();
-        if (hasVoted[escrowId][msg.sender]) revert AlreadyVoted();
+        if (hasVoted[escrowId][caller]) revert AlreadyVoted();
 
         // For disputed escrows, arbitrator can also vote
-        bool isParticipant = msg.sender == escrow.buyer ||
-                           msg.sender == escrow.seller ||
-                           msg.sender == escrow.arbitrator;
+        bool isParticipant = caller == escrow.buyer ||
+                           caller == escrow.seller ||
+                           caller == escrow.arbitrator;
         if (!isParticipant) revert NotParticipant();
     }
 
@@ -863,7 +891,8 @@ contract MinimalEscrow is ReentrancyGuard, Pausable {
         uint256 duration
     ) external nonReentrant whenNotPaused returns (uint256 escrowId) {
         if (!privacyEnabled) revert PrivacyNotAvailable();
-        if (seller == address(0) || seller == msg.sender) revert InvalidAddress();
+        address buyer = _msgSender();
+        if (seller == address(0) || seller == buyer) revert InvalidAddress();
         if (duration < MIN_DURATION || duration > MAX_DURATION) revert InvalidDuration();
 
         // Decrypt amount for token transfer (need plain value for ERC20)
@@ -871,7 +900,7 @@ contract MinimalEscrow is ReentrancyGuard, Pausable {
         if (plainAmount == 0) revert InvalidAmount();
 
         // Transfer pXOM tokens from buyer to escrow
-        PRIVATE_OMNI_COIN.safeTransferFrom(msg.sender, address(this), uint256(plainAmount));
+        PRIVATE_OMNI_COIN.safeTransferFrom(buyer, address(this), uint256(plainAmount));
         totalEscrowed[address(PRIVATE_OMNI_COIN)] += uint256(plainAmount);
 
         escrowId = ++escrowCounter;
@@ -881,7 +910,7 @@ contract MinimalEscrow is ReentrancyGuard, Pausable {
         isPrivateEscrow[escrowId] = true;
 
         escrows[escrowId] = Escrow({
-            buyer: msg.sender,
+            buyer: buyer,
             seller: seller,
             arbitrator: address(0),
             amount: uint256(plainAmount), // Store plain for public queries
@@ -893,7 +922,7 @@ contract MinimalEscrow is ReentrancyGuard, Pausable {
             disputed: false
         });
 
-        emit PrivateEscrowCreated(escrowId, msg.sender, seller, escrows[escrowId].expiry);
+        emit PrivateEscrowCreated(escrowId, buyer, seller, escrows[escrowId].expiry);
     }
 
     /**
@@ -907,10 +936,11 @@ contract MinimalEscrow is ReentrancyGuard, Pausable {
         if (!isPrivateEscrow[escrowId]) revert CannotMixPrivacyModes();
         if (escrow.buyer == address(0)) revert EscrowNotFound();
         if (escrow.resolved) revert AlreadyResolved();
-        if (msg.sender != escrow.buyer && msg.sender != escrow.seller) revert NotParticipant();
+        address caller = _msgSender();
+        if (caller != escrow.buyer && caller != escrow.seller) revert NotParticipant();
 
         // Simple 2-party agreement (buyer releases to seller)
-        if (!escrow.disputed && msg.sender == escrow.buyer) {
+        if (!escrow.disputed && caller == escrow.buyer) {
             escrow.resolved = true;
             uint256 amount = escrow.amount;
             escrow.amount = 0;
@@ -942,19 +972,20 @@ contract MinimalEscrow is ReentrancyGuard, Pausable {
         if (!isPrivateEscrow[escrowId]) revert CannotMixPrivacyModes();
         if (escrow.buyer == address(0)) revert EscrowNotFound();
         if (escrow.resolved) revert AlreadyResolved();
+        address caller = _msgSender();
         // M-04: Only buyer or seller can trigger refund (prevents griefing by third parties)
-        if (msg.sender != escrow.buyer && msg.sender != escrow.seller) revert NotParticipant();
+        if (caller != escrow.buyer && caller != escrow.seller) revert NotParticipant();
 
         bool canRefund = false;
 
         // Seller agrees to refund
-        if (msg.sender == escrow.seller && !escrow.disputed) {
+        if (caller == escrow.seller && !escrow.disputed) {
             canRefund = true;
         }
 
         // Expired and no dispute - only buyer can claim expired refund
         // solhint-disable-next-line not-rely-on-time
-        if (block.timestamp > escrow.expiry && !escrow.disputed && msg.sender == escrow.buyer) {
+        if (block.timestamp > escrow.expiry && !escrow.disputed && caller == escrow.buyer) {
             canRefund = true;
         }
 
@@ -980,9 +1011,10 @@ contract MinimalEscrow is ReentrancyGuard, Pausable {
 
         if (!isPrivateEscrow[escrowId]) revert CannotMixPrivacyModes();
 
-        _validateVote(escrow, escrowId);
+        address caller = _msgSender();
+        _validateVote(escrow, escrowId, caller);
 
-        hasVoted[escrowId][msg.sender] = true;
+        hasVoted[escrowId][caller] = true;
 
         if (voteForRelease) {
             ++escrow.releaseVotes;
@@ -990,7 +1022,7 @@ contract MinimalEscrow is ReentrancyGuard, Pausable {
             ++escrow.refundVotes;
         }
 
-        emit VoteCast(escrowId, msg.sender, voteForRelease);
+        emit VoteCast(escrowId, caller, voteForRelease);
 
         // Check if we have a decision (2 votes)
         if (escrow.releaseVotes > 1) {
@@ -1096,14 +1128,15 @@ contract MinimalEscrow is ReentrancyGuard, Pausable {
      * @param token Token address to withdraw (typically OMNI_COIN)
      */
     function withdrawClaimable(address token) external nonReentrant {
-        uint256 amount = claimable[token][msg.sender];
+        address caller = _msgSender();
+        uint256 amount = claimable[token][caller];
         if (amount == 0) revert NothingToClaim();
 
-        claimable[token][msg.sender] = 0;
+        claimable[token][caller] = 0;
         totalClaimable[token] -= amount;
-        IERC20(token).safeTransfer(msg.sender, amount);
+        IERC20(token).safeTransfer(caller, amount);
 
-        emit FundsClaimed(msg.sender, token, amount);
+        emit FundsClaimed(caller, token, amount);
     }
 
     /**
@@ -1145,5 +1178,51 @@ contract MinimalEscrow is ReentrancyGuard, Pausable {
         IERC20(token).safeTransfer(recipient, recoverable);
 
         emit TokensRecovered(token, recoverable, recipient);
+    }
+
+    // ========================================================================
+    // ERC2771Context Overrides (resolve diamond with Pausable's Context)
+    // ========================================================================
+
+    /**
+     * @notice Resolve _msgSender between Context (via Pausable) and ERC2771Context
+     * @dev Returns the original user address when called through the trusted forwarder
+     * @return The original transaction signer (user) when relayed, or msg.sender when direct
+     */
+    function _msgSender()
+        internal
+        view
+        override(Context, ERC2771Context)
+        returns (address)
+    {
+        return ERC2771Context._msgSender();
+    }
+
+    /**
+     * @notice Resolve _msgData between Context (via Pausable) and ERC2771Context
+     * @dev Strips the appended sender address from calldata when relayed
+     * @return The original calldata without the ERC2771 suffix
+     */
+    function _msgData()
+        internal
+        view
+        override(Context, ERC2771Context)
+        returns (bytes calldata)
+    {
+        return ERC2771Context._msgData();
+    }
+
+    /**
+     * @notice Resolve _contextSuffixLength between Context and ERC2771Context
+     * @dev Returns 20 (address length) for ERC2771 context suffix stripping
+     * @return The number of bytes appended to calldata by the forwarder (20)
+     */
+    function _contextSuffixLength()
+        internal
+        view
+        override(Context, ERC2771Context)
+        returns (uint256)
+    {
+        return ERC2771Context._contextSuffixLength();
     }
 }

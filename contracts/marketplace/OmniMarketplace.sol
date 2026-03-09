@@ -11,6 +11,10 @@ import {PausableUpgradeable} from
     "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol";
 import {EIP712Upgradeable} from
     "@openzeppelin/contracts-upgradeable/utils/cryptography/EIP712Upgradeable.sol";
+import {ERC2771ContextUpgradeable} from
+    "@openzeppelin/contracts-upgradeable/metatx/ERC2771ContextUpgradeable.sol";
+import {ContextUpgradeable} from
+    "@openzeppelin/contracts-upgradeable/utils/ContextUpgradeable.sol";
 import {ECDSA} from
     "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 
@@ -95,7 +99,8 @@ contract OmniMarketplace is
     UUPSUpgradeable,
     ReentrancyGuardUpgradeable,
     PausableUpgradeable,
-    EIP712Upgradeable
+    EIP712Upgradeable,
+    ERC2771ContextUpgradeable
 {
     // ══════════════════════════════════════════════════════════════════
     //                        TYPE DECLARATIONS
@@ -269,7 +274,9 @@ contract OmniMarketplace is
     // ══════════════════════════════════════════════════════════════════
 
     /// @custom:oz-upgrades-unsafe-allow constructor
-    constructor() {
+    constructor(
+        address trustedForwarder_
+    ) ERC2771ContextUpgradeable(trustedForwarder_) {
         _disableInitializers();
     }
 
@@ -436,6 +443,8 @@ contract OmniMarketplace is
         uint256 price,
         uint256 expiry
     ) external nonReentrant whenNotPaused {
+        address caller = _msgSender();
+
         if (ipfsCID == bytes32(0)) revert InvalidIPFSCID();
         if (contentHash == bytes32(0)) revert InvalidContentHash();
         if (price == 0) revert ZeroPrice();
@@ -447,7 +456,7 @@ contract OmniMarketplace is
         // solhint-disable-next-line not-rely-on-time
         uint256 today = block.timestamp / 1 days;
         if (
-            dailyListingCount[msg.sender][today] >=
+            dailyListingCount[caller][today] >=
             MAX_LISTINGS_PER_DAY
         ) {
             revert DailyLimitExceeded();
@@ -467,12 +476,12 @@ contract OmniMarketplace is
         }
 
         // M-04: Increment daily count
-        dailyListingCount[msg.sender][today]++;
+        dailyListingCount[caller][today]++;
 
         uint256 listingId = nextListingId++;
 
         listings[listingId] = Listing({
-            creator: msg.sender,
+            creator: caller,
             ipfsCID: ipfsCID,
             contentHash: contentHash,
             price: price,
@@ -483,12 +492,12 @@ contract OmniMarketplace is
         });
 
         cidToListingId[ipfsCID] = listingId;
-        listingCount[msg.sender]++;
-        totalListingsCreated[msg.sender]++;
+        listingCount[caller]++;
+        totalListingsCreated[caller]++;
 
         emit ListingRegistered(
             listingId,
-            msg.sender,
+            caller,
             ipfsCID,
             contentHash,
             price,
@@ -514,20 +523,22 @@ contract OmniMarketplace is
     function delistListing(
         uint256 listingId
     ) external nonReentrant {
+        address caller = _msgSender();
+
         Listing storage l = listings[listingId];
         if (l.creator == address(0)) {
             revert ListingNotFound(listingId);
         }
-        if (l.creator != msg.sender) revert NotListingCreator();
+        if (l.creator != caller) revert NotListingCreator();
         if (!l.active) revert ListingNotFound(listingId);
 
         l.active = false;
-        listingCount[msg.sender]--;
+        listingCount[caller]--;
 
         // M-03: Clear CID deduplication so CID can be re-listed
         delete cidToListingId[l.ipfsCID];
 
-        emit ListingDelisted(listingId, msg.sender);
+        emit ListingDelisted(listingId, caller);
     }
 
     /**
@@ -541,11 +552,13 @@ contract OmniMarketplace is
         uint256 listingId,
         uint256 additionalDuration
     ) external nonReentrant whenNotPaused {
+        address caller = _msgSender();
+
         Listing storage l = listings[listingId];
         if (l.creator == address(0)) {
             revert ListingNotFound(listingId);
         }
-        if (l.creator != msg.sender) revert NotListingCreator();
+        if (l.creator != caller) revert NotListingCreator();
         if (!l.active) revert ListingNotFound(listingId);
 
         // Calculate new expiry from now (even if previously expired)
@@ -579,13 +592,15 @@ contract OmniMarketplace is
         uint256 listingId,
         uint256 newPrice
     ) external nonReentrant {
+        address caller = _msgSender();
+
         if (newPrice == 0) revert ZeroPrice();
 
         Listing storage l = listings[listingId];
         if (l.creator == address(0)) {
             revert ListingNotFound(listingId);
         }
-        if (l.creator != msg.sender) revert NotListingCreator();
+        if (l.creator != caller) revert NotListingCreator();
         if (!l.active) revert ListingNotFound(listingId);
 
         uint256 oldPrice = l.price;
@@ -763,5 +778,59 @@ contract OmniMarketplace is
         }
         delete pendingImplementation;
         delete upgradeScheduledAt;
+    }
+
+    // ══════════════════════════════════════════════════════════════════
+    //                   ERC-2771 CONTEXT OVERRIDES
+    // ══════════════════════════════════════════════════════════════════
+
+    /**
+     * @notice Resolve _msgSender diamond between ContextUpgradeable
+     *         and ERC2771ContextUpgradeable
+     * @dev Delegates to ERC2771ContextUpgradeable which returns the
+     *      original sender appended by a trusted forwarder, or falls
+     *      back to msg.sender for direct calls.
+     * @return The effective sender address for this call
+     */
+    function _msgSender()
+        internal
+        view
+        override(ContextUpgradeable, ERC2771ContextUpgradeable)
+        returns (address)
+    {
+        return ERC2771ContextUpgradeable._msgSender();
+    }
+
+    /**
+     * @notice Resolve _msgData diamond between ContextUpgradeable
+     *         and ERC2771ContextUpgradeable
+     * @dev Delegates to ERC2771ContextUpgradeable which strips the
+     *      appended sender address from calldata when called via a
+     *      trusted forwarder.
+     * @return The effective calldata for this call
+     */
+    function _msgData()
+        internal
+        view
+        override(ContextUpgradeable, ERC2771ContextUpgradeable)
+        returns (bytes calldata)
+    {
+        return ERC2771ContextUpgradeable._msgData();
+    }
+
+    /**
+     * @notice Resolve _contextSuffixLength diamond between
+     *         ContextUpgradeable and ERC2771ContextUpgradeable
+     * @dev ERC-2771 specifies a 20-byte suffix (the forwarded sender
+     *      address). Base ContextUpgradeable returns 0.
+     * @return Length in bytes of the context suffix (20 for ERC-2771)
+     */
+    function _contextSuffixLength()
+        internal
+        view
+        override(ContextUpgradeable, ERC2771ContextUpgradeable)
+        returns (uint256)
+    {
+        return ERC2771ContextUpgradeable._contextSuffixLength();
     }
 }

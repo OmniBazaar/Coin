@@ -8,6 +8,10 @@ import {PausableUpgradeable} from "@openzeppelin/contracts-upgradeable/utils/Pau
 import {ReentrancyGuardUpgradeable} from "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
 import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import {UUPSUpgradeable} from "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
+import {ERC2771ContextUpgradeable} from
+    "@openzeppelin/contracts-upgradeable/metatx/ERC2771ContextUpgradeable.sol";
+import {ContextUpgradeable} from
+    "@openzeppelin/contracts-upgradeable/utils/ContextUpgradeable.sol";
 
 /**
  * @title IPrivateOmniCoin
@@ -75,7 +79,8 @@ contract OmniPrivacyBridge is
     AccessControlUpgradeable,
     PausableUpgradeable,
     ReentrancyGuardUpgradeable,
-    UUPSUpgradeable
+    UUPSUpgradeable,
+    ERC2771ContextUpgradeable
 {
     using SafeERC20 for IERC20;
 
@@ -241,10 +246,16 @@ contract OmniPrivacyBridge is
 
     /**
      * @notice Constructor for OmniPrivacyBridge (upgradeable pattern)
-     * @dev Disables initializers to prevent implementation contract from being initialized
+     * @dev Disables initializers to prevent implementation contract from being initialized.
+     *      The trustedForwarder_ address is stored as an immutable by
+     *      ERC2771ContextUpgradeable for meta-transaction support.
+     * @param trustedForwarder_ Address of the ERC-2771 trusted forwarder
+     *        for meta-transaction support (e.g., OmniForwarder)
      * @custom:oz-upgrades-unsafe-allow constructor
      */
-    constructor() {
+    constructor(
+        address trustedForwarder_
+    ) ERC2771ContextUpgradeable(trustedForwarder_) {
         _disableInitializers();
     }
 
@@ -298,6 +309,8 @@ contract OmniPrivacyBridge is
     function convertXOMtoPXOM(
         uint256 amount
     ) external nonReentrant whenNotPaused {
+        address caller = _msgSender();
+
         // Input validation
         if (amount == 0) revert ZeroAmount();
         if (amount < MIN_CONVERSION_AMOUNT) revert BelowMinimum();
@@ -313,7 +326,7 @@ contract OmniPrivacyBridge is
 
         // Transfer XOM from user to bridge (locks tokens)
         omniCoin.safeTransferFrom(
-            msg.sender, address(this), amount
+            caller, address(this), amount
         );
 
         // Update tracking: only lock the backed amount, track fees separately
@@ -322,13 +335,13 @@ contract OmniPrivacyBridge is
         totalConvertedToPrivate += amount;
 
         // Mint public pXOM to user (bridge needs MINTER_ROLE on pXOM)
-        privateOmniCoin.mint(msg.sender, amountAfterFee);
+        privateOmniCoin.mint(caller, amountAfterFee);
 
         // Track bridge-minted pXOM (excludes genesis supply)
         bridgeMintedPXOM += amountAfterFee;
 
         emit ConvertedToPrivate(
-            msg.sender, amount, amountAfterFee, fee
+            caller, amount, amountAfterFee, fee
         );
     }
 
@@ -344,6 +357,8 @@ contract OmniPrivacyBridge is
     function convertPXOMtoXOM(
         uint256 amount
     ) external nonReentrant whenNotPaused {
+        address caller = _msgSender();
+
         // Input validation
         if (amount == 0) revert ZeroAmount();
         if (amount < MIN_CONVERSION_AMOUNT) revert BelowMinimum();
@@ -364,12 +379,12 @@ contract OmniPrivacyBridge is
         totalConvertedToPublic += amount;
 
         // Burn pXOM from user (bridge needs BURNER_ROLE or approval)
-        privateOmniCoin.burnFrom(msg.sender, amount);
+        privateOmniCoin.burnFrom(caller, amount);
 
         // Transfer XOM tokens to the user
-        omniCoin.safeTransfer(msg.sender, amount);
+        omniCoin.safeTransfer(caller, amount);
 
-        emit ConvertedToPublic(msg.sender, amount);
+        emit ConvertedToPublic(caller, amount);
     }
 
     // ========================================================================
@@ -638,5 +653,54 @@ contract OmniPrivacyBridge is
         onlyRole(DEFAULT_ADMIN_ROLE)
     {
         if (_ossified) revert ContractIsOssified();
+    }
+
+    // ========================================================================
+    // ERC-2771 Meta-Transaction Overrides
+    // ========================================================================
+
+    /**
+     * @notice Resolve the real sender for ERC-2771 meta-transactions
+     * @dev Delegates to ERC2771ContextUpgradeable to extract the
+     *      original sender from the trusted forwarder's calldata suffix.
+     * @return The address of the original transaction sender
+     */
+    function _msgSender()
+        internal
+        view
+        override(ContextUpgradeable, ERC2771ContextUpgradeable)
+        returns (address)
+    {
+        return ERC2771ContextUpgradeable._msgSender();
+    }
+
+    /**
+     * @notice Resolve the real calldata for ERC-2771 meta-transactions
+     * @dev Delegates to ERC2771ContextUpgradeable to strip the
+     *      sender-suffix appended by the trusted forwarder.
+     * @return The original calldata without the appended sender address
+     */
+    function _msgData()
+        internal
+        view
+        override(ContextUpgradeable, ERC2771ContextUpgradeable)
+        returns (bytes calldata)
+    {
+        return ERC2771ContextUpgradeable._msgData();
+    }
+
+    /**
+     * @notice Return the context suffix length for ERC-2771
+     * @dev Delegates to ERC2771ContextUpgradeable (returns 20 when
+     *      a trusted forwarder is configured, 0 otherwise).
+     * @return Length in bytes of the calldata suffix (20 for ERC-2771)
+     */
+    function _contextSuffixLength()
+        internal
+        view
+        override(ContextUpgradeable, ERC2771ContextUpgradeable)
+        returns (uint256)
+    {
+        return ERC2771ContextUpgradeable._contextSuffixLength();
     }
 }

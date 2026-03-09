@@ -18,6 +18,10 @@ import {
 import {
     PausableUpgradeable
 } from "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol";
+import {ERC2771ContextUpgradeable} from
+    "@openzeppelin/contracts-upgradeable/metatx/ERC2771ContextUpgradeable.sol";
+import {ContextUpgradeable} from
+    "@openzeppelin/contracts-upgradeable/utils/ContextUpgradeable.sol";
 import {OmniCore} from "./OmniCore.sol";
 
 /**
@@ -107,7 +111,8 @@ contract OmniBridge is
     UUPSUpgradeable,
     AccessControlUpgradeable,
     ReentrancyGuardUpgradeable,
-    PausableUpgradeable
+    PausableUpgradeable,
+    ERC2771ContextUpgradeable
 {
     using SafeERC20 for IERC20;
 
@@ -348,9 +353,13 @@ contract OmniBridge is
 
     /**
      * @notice Disable initializers on implementation contract
+     * @param trustedForwarder_ Address of the ERC-2771 trusted forwarder
+     *        for meta-transaction support (e.g., OmniForwarder)
      */
     /// @custom:oz-upgrades-unsafe-allow constructor
-    constructor() {
+    constructor(
+        address trustedForwarder_
+    ) ERC2771ContextUpgradeable(trustedForwarder_) {
         _disableInitializers();
     }
 
@@ -395,6 +404,8 @@ contract OmniBridge is
         uint256 targetChainId,
         bool usePrivateToken
     ) external nonReentrant whenNotPaused returns (uint256 transferId) {
+        address caller = _msgSender();
+
         // Validate inputs and chain configuration
         if (recipient == address(0)) revert InvalidRecipient();
         if (amount == 0) revert InvalidAmount();
@@ -411,7 +422,7 @@ contract OmniBridge is
         IERC20 token = IERC20(tokenAddress);
 
         // Transfer tokens to bridge
-        token.safeTransferFrom(msg.sender, address(this), amount);
+        token.safeTransferFrom(caller, address(this), amount);
 
         // M-01: Track accumulated fees for later distribution
         if (fee > 0) {
@@ -422,15 +433,15 @@ contract OmniBridge is
         transferId = ++transferCount;
         bytes32 transferHash = keccak256(abi.encodePacked(
             transferId,
-            msg.sender,
+            caller,
             recipient,
             amount,
             targetChainId,
             block.timestamp // solhint-disable-line not-rely-on-time
         ));
-        
+
         transfers[transferId] = BridgeTransfer({
-            sender: msg.sender,
+            sender: caller,
             completed: false,
             recipient: recipient,
             amount: netAmount,
@@ -439,14 +450,14 @@ contract OmniBridge is
             transferHash: transferHash,
             timestamp: block.timestamp // solhint-disable-line not-rely-on-time
         });
-        
+
         // Update daily volume
         // solhint-disable-next-line not-rely-on-time
         dailyVolume[targetChainId][block.timestamp / 1 days] += amount;
-        
+
         emit TransferInitiated(
             transferId,
-            msg.sender,
+            caller,
             recipient,
             netAmount,
             targetChainId,
@@ -643,9 +654,10 @@ contract OmniBridge is
     function refundTransfer(
         uint256 transferId
     ) external nonReentrant whenNotPaused {
+        address caller = _msgSender();
         BridgeTransfer storage t = transfers[transferId];
 
-        if (t.sender != msg.sender) revert InvalidRecipient();
+        if (t.sender != caller) revert InvalidRecipient();
         if (t.completed) revert TransferAlreadyCompleted();
         // solhint-disable-next-line not-rely-on-time
         if (block.timestamp < t.timestamp + REFUND_DELAY) {
@@ -883,6 +895,55 @@ contract OmniBridge is
         if (blockchainToChainId[message.sourceChainID] == 0) {
             revert InvalidChainId();
         }
+    }
+
+    // =========================================================================
+    // ERC-2771 Meta-Transaction Overrides
+    // =========================================================================
+
+    /**
+     * @notice Resolve the real sender for ERC-2771 meta-transactions
+     * @dev Delegates to ERC2771ContextUpgradeable to extract the
+     *      original sender from the trusted forwarder's calldata suffix.
+     * @return The address of the original transaction sender
+     */
+    function _msgSender()
+        internal
+        view
+        override(ContextUpgradeable, ERC2771ContextUpgradeable)
+        returns (address)
+    {
+        return ERC2771ContextUpgradeable._msgSender();
+    }
+
+    /**
+     * @notice Resolve the real calldata for ERC-2771 meta-transactions
+     * @dev Delegates to ERC2771ContextUpgradeable to strip the
+     *      sender-suffix appended by the trusted forwarder.
+     * @return The original calldata without the appended sender address
+     */
+    function _msgData()
+        internal
+        view
+        override(ContextUpgradeable, ERC2771ContextUpgradeable)
+        returns (bytes calldata)
+    {
+        return ERC2771ContextUpgradeable._msgData();
+    }
+
+    /**
+     * @notice Return the context suffix length for ERC-2771
+     * @dev Delegates to ERC2771ContextUpgradeable (returns 20 when
+     *      a trusted forwarder is configured, 0 otherwise).
+     * @return Length in bytes of the calldata suffix (20 for ERC-2771)
+     */
+    function _contextSuffixLength()
+        internal
+        view
+        override(ContextUpgradeable, ERC2771ContextUpgradeable)
+        returns (uint256)
+    {
+        return ERC2771ContextUpgradeable._contextSuffixLength();
     }
 
     /**

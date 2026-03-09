@@ -45,7 +45,7 @@ describe("OmniNFTStaking", function () {
 
     // Deploy staking contract
     const OmniNFTStaking = await ethers.getContractFactory("OmniNFTStaking");
-    staking = await OmniNFTStaking.deploy();
+    staking = await OmniNFTStaking.deploy(ethers.ZeroAddress);
     await staking.waitForDeployment();
 
     // Mint reward tokens to creator and approve staking contract

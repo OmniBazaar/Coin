@@ -4,6 +4,10 @@ pragma solidity 0.8.24;
 import "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
+import {ERC2771ContextUpgradeable} from
+    "@openzeppelin/contracts-upgradeable/metatx/ERC2771ContextUpgradeable.sol";
+import {ContextUpgradeable} from
+    "@openzeppelin/contracts-upgradeable/utils/ContextUpgradeable.sol";
 import "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 import "@openzeppelin/contracts/utils/cryptography/MessageHashUtils.sol";
 
@@ -24,7 +28,8 @@ import "@openzeppelin/contracts/utils/cryptography/MessageHashUtils.sol";
 contract OmniRegistration is
     AccessControlUpgradeable,
     UUPSUpgradeable,
-    ReentrancyGuardUpgradeable
+    ReentrancyGuardUpgradeable,
+    ERC2771ContextUpgradeable
 {
     using ECDSA for bytes32;
     using MessageHashUtils for bytes32;
@@ -610,7 +615,9 @@ contract OmniRegistration is
     // ═══════════════════════════════════════════════════════════════════════
 
     /// @custom:oz-upgrades-unsafe-allow constructor
-    constructor() {
+    constructor(
+        address trustedForwarder_
+    ) ERC2771ContextUpgradeable(trustedForwarder_) {
         _disableInitializers();
     }
 
@@ -782,8 +789,9 @@ contract OmniRegistration is
         uint256 registrationDeadline,
         bytes calldata userSignature
     ) external nonReentrant {
+        address caller = _msgSender();
         _selfRegisterTrustlessInternal(
-            msg.sender,
+            caller,
             emailHash,
             emailTimestamp,
             emailNonce,
@@ -1033,6 +1041,8 @@ contract OmniRegistration is
         uint256 deadline,
         bytes calldata signature
     ) external nonReentrant {
+        address caller = _msgSender();
+
         // 1. Check trusted verification key is set
         if (trustedVerificationKey == address(0)) {
             revert TrustedVerificationKeyNotSet();
@@ -1052,7 +1062,7 @@ contract OmniRegistration is
         bytes32 structHash = keccak256(
             abi.encode(
                 PHONE_VERIFICATION_TYPEHASH,
-                msg.sender, // User must submit their own proof
+                caller, // User must submit their own proof
                 phoneHash,
                 timestamp,
                 nonce,
@@ -1069,7 +1079,7 @@ contract OmniRegistration is
 
         // 6. Store verification
         // Update registration phoneHash if user is registered and phoneHash was empty
-        Registration storage reg = registrations[msg.sender];
+        Registration storage reg = registrations[caller];
         if (reg.timestamp != 0 && reg.phoneHash == bytes32(0)) {
             reg.phoneHash = phoneHash;
         }
@@ -1078,10 +1088,10 @@ contract OmniRegistration is
         usedNonces[nonce] = true;
 
         // 7. Check if KYC Tier 1 complete and update status
-        _checkAndUpdateKycTier1(msg.sender);
+        _checkAndUpdateKycTier1(caller);
 
         // solhint-disable-next-line not-rely-on-time
-        emit PhoneVerified(msg.sender, phoneHash, timestamp);
+        emit PhoneVerified(caller, phoneHash, timestamp);
     }
 
     /**
@@ -1110,6 +1120,8 @@ contract OmniRegistration is
         uint256 deadline,
         bytes calldata signature
     ) external nonReentrant {
+        address caller = _msgSender();
+
         // 1. Check trusted verification key is set
         if (trustedVerificationKey == address(0)) {
             revert TrustedVerificationKeyNotSet();
@@ -1129,7 +1141,7 @@ contract OmniRegistration is
         bytes32 structHash = keccak256(
             abi.encode(
                 SOCIAL_VERIFICATION_TYPEHASH,
-                msg.sender, // User must submit their own proof
+                caller, // User must submit their own proof
                 socialHash,
                 keccak256(bytes(platform)), // Hash the platform string
                 timestamp,
@@ -1146,15 +1158,15 @@ contract OmniRegistration is
         if (signer != trustedVerificationKey) revert InvalidVerificationProof();
 
         // 6. Store verification
-        userSocialHashes[msg.sender] = socialHash;
+        userSocialHashes[caller] = socialHash;
         usedSocialHashes[socialHash] = true;
         usedNonces[nonce] = true;
 
         // 7. Check if KYC Tier 1 complete and update status
-        _checkAndUpdateKycTier1(msg.sender);
+        _checkAndUpdateKycTier1(caller);
 
         // solhint-disable-next-line not-rely-on-time
-        emit SocialVerified(msg.sender, socialHash, platform, timestamp);
+        emit SocialVerified(caller, socialHash, platform, timestamp);
     }
 
     /**
@@ -1394,6 +1406,8 @@ contract OmniRegistration is
         uint256 deadline,
         bytes calldata signature
     ) external nonReentrant {
+        address caller = _msgSender();
+
         // 1. Check trusted verification key is set
         if (trustedVerificationKey == address(0)) revert TrustedVerificationKeyNotSet();
 
@@ -1408,13 +1422,13 @@ contract OmniRegistration is
         if (usedIDHashes[idHash]) revert IDAlreadyUsed();
 
         // 5. Check user has KYC Tier 1
-        if (kycTier1CompletedAt[msg.sender] == 0) revert PreviousTierRequired();
+        if (kycTier1CompletedAt[caller] == 0) revert PreviousTierRequired();
 
         // 6. Verify EIP-712 signature from trustedVerificationKey
         bytes32 structHash = keccak256(
             abi.encode(
                 ID_VERIFICATION_TYPEHASH,
-                msg.sender,
+                caller,
                 idHash,
                 keccak256(bytes(country)),
                 timestamp,
@@ -1431,16 +1445,16 @@ contract OmniRegistration is
         if (signer != trustedVerificationKey) revert InvalidVerificationProof();
 
         // 7. Store verification
-        userIDHashes[msg.sender] = idHash;
+        userIDHashes[caller] = idHash;
         usedIDHashes[idHash] = true;
-        userCountries[msg.sender] = country;
+        userCountries[caller] = country;
         usedNonces[nonce] = true;
 
         // 8. Check if KYC Tier 2 complete (ID + Address + Selfie all required)
-        _checkAndUpdateKycTier2(msg.sender);
+        _checkAndUpdateKycTier2(caller);
 
         // solhint-disable-next-line not-rely-on-time
-        emit IDVerified(msg.sender, idHash, country, timestamp);
+        emit IDVerified(caller, idHash, country, timestamp);
     }
 
     /**
@@ -1534,6 +1548,8 @@ contract OmniRegistration is
         uint256 deadline,
         bytes calldata signature
     ) external nonReentrant {
+        address caller = _msgSender();
+
         // 1. Check trusted verification key is set
         if (trustedVerificationKey == address(0)) revert TrustedVerificationKeyNotSet();
 
@@ -1548,13 +1564,13 @@ contract OmniRegistration is
         if (usedAddressHashes[addressHash]) revert AddressAlreadyUsed();
 
         // 5. Check user has KYC Tier 1
-        if (kycTier1CompletedAt[msg.sender] == 0) revert PreviousTierRequired();
+        if (kycTier1CompletedAt[caller] == 0) revert PreviousTierRequired();
 
         // 6. Verify EIP-712 signature from trustedVerificationKey
         bytes32 structHash = keccak256(
             abi.encode(
                 ADDRESS_VERIFICATION_TYPEHASH,
-                msg.sender,
+                caller,
                 addressHash,
                 keccak256(bytes(country)),
                 documentType,
@@ -1572,15 +1588,15 @@ contract OmniRegistration is
         if (signer != trustedVerificationKey) revert InvalidVerificationProof();
 
         // 7. Store verification
-        userAddressHashes[msg.sender] = addressHash;
+        userAddressHashes[caller] = addressHash;
         usedAddressHashes[addressHash] = true;
         usedNonces[nonce] = true;
 
         // 8. Check if KYC Tier 2 complete (ID + Address + Selfie all required)
-        _checkAndUpdateKycTier2(msg.sender);
+        _checkAndUpdateKycTier2(caller);
 
         // solhint-disable-next-line not-rely-on-time
-        emit AddressVerified(msg.sender, addressHash, country, documentType, timestamp);
+        emit AddressVerified(caller, addressHash, country, documentType, timestamp);
     }
 
     /**
@@ -1604,6 +1620,8 @@ contract OmniRegistration is
         uint256 deadline,
         bytes calldata signature
     ) external nonReentrant {
+        address caller = _msgSender();
+
         // 1. Check trusted verification key is set
         if (trustedVerificationKey == address(0)) revert TrustedVerificationKeyNotSet();
 
@@ -1615,7 +1633,7 @@ contract OmniRegistration is
         if (usedNonces[nonce]) revert NonceAlreadyUsed();
 
         // 4. Check ID verification already submitted
-        if (userIDHashes[msg.sender] == bytes32(0)) revert IDVerificationRequired();
+        if (userIDHashes[caller] == bytes32(0)) revert IDVerificationRequired();
 
         // 5. Verify similarity score meets threshold (85% minimum)
         if (similarity < 85) revert InsufficientSimilarity();
@@ -1624,7 +1642,7 @@ contract OmniRegistration is
         bytes32 structHash = keccak256(
             abi.encode(
                 SELFIE_VERIFICATION_TYPEHASH,
-                msg.sender,
+                caller,
                 selfieHash,
                 similarity,
                 timestamp,
@@ -1641,14 +1659,158 @@ contract OmniRegistration is
         if (signer != trustedVerificationKey) revert InvalidVerificationProof();
 
         // 7. Mark selfie verified
-        selfieVerified[msg.sender] = true;
+        selfieVerified[caller] = true;
         usedNonces[nonce] = true;
 
         // 8. Check if KYC Tier 2 complete (ID + Address + Selfie all required)
-        _checkAndUpdateKycTier2(msg.sender);
+        _checkAndUpdateKycTier2(caller);
 
         // solhint-disable-next-line not-rely-on-time
-        emit SelfieVerified(msg.sender, selfieHash, similarity, timestamp);
+        emit SelfieVerified(caller, selfieHash, similarity, timestamp);
+    }
+
+    /**
+     * @notice Submit address verification on behalf of a user (relay variant)
+     * @param user Address of the user being verified
+     * @param addressHash Keccak256 of (ADDRESS:CITY:POSTAL:COUNTRY:DOC_TYPE)
+     * @param country ISO 3166-1 alpha-2 country code
+     * @param documentType Type of address document ("utility", "bank", "tax")
+     * @param timestamp When verification was performed
+     * @param nonce Unique nonce for replay protection
+     * @param deadline Proof expiration time
+     * @param signature EIP-712 signature from trustedVerificationKey
+     *
+     * @dev Relay variant — anyone (typically a validator) can submit this on
+     *      behalf of the user. Same typehash and verification as
+     *      submitAddressVerification, but takes user as explicit parameter.
+     */
+    function submitAddressVerificationFor(
+        address user,
+        bytes32 addressHash,
+        string calldata country,
+        bytes32 documentType,
+        uint256 timestamp,
+        bytes32 nonce,
+        uint256 deadline,
+        bytes calldata signature
+    ) external nonReentrant {
+        // 1. Check trusted verification key is set
+        if (trustedVerificationKey == address(0)) revert TrustedVerificationKeyNotSet();
+
+        // 2. Check deadline not expired
+        // solhint-disable-next-line not-rely-on-time
+        if (block.timestamp > deadline) revert ProofExpired();
+
+        // 3. Check nonce not already used
+        if (usedNonces[nonce]) revert NonceAlreadyUsed();
+
+        // 4. Check address hash not already used
+        if (usedAddressHashes[addressHash]) revert AddressAlreadyUsed();
+
+        // 5. Check user has KYC Tier 1
+        if (kycTier1CompletedAt[user] == 0) revert PreviousTierRequired();
+
+        // 6. Verify EIP-712 signature (user address is part of signed data)
+        bytes32 structHash = keccak256(
+            abi.encode(
+                ADDRESS_VERIFICATION_TYPEHASH,
+                user,
+                addressHash,
+                keccak256(bytes(country)),
+                documentType,
+                timestamp,
+                nonce,
+                deadline
+            )
+        );
+
+        bytes32 digest = keccak256(
+            abi.encodePacked("\x19\x01", DOMAIN_SEPARATOR, structHash)
+        );
+
+        address signer = digest.recover(signature);
+        if (signer != trustedVerificationKey) revert InvalidVerificationProof();
+
+        // 7. Store verification
+        userAddressHashes[user] = addressHash;
+        usedAddressHashes[addressHash] = true;
+        usedNonces[nonce] = true;
+
+        // 8. Check if KYC Tier 2 complete (ID + Address + Selfie all required)
+        _checkAndUpdateKycTier2(user);
+
+        // solhint-disable-next-line not-rely-on-time
+        emit AddressVerified(user, addressHash, country, documentType, timestamp);
+    }
+
+    /**
+     * @notice Submit selfie verification on behalf of a user (relay variant)
+     * @param user Address of the user being verified
+     * @param selfieHash Keccak256 of selfie image data
+     * @param similarity Face match similarity score (0-100, must be 85+)
+     * @param timestamp When verification was performed
+     * @param nonce Unique nonce for replay protection
+     * @param deadline Proof expiration time
+     * @param signature EIP-712 signature from trustedVerificationKey
+     *
+     * @dev Relay variant — anyone (typically a validator) can submit this on
+     *      behalf of the user. Same typehash and verification as
+     *      submitSelfieVerification, but takes user as explicit parameter.
+     */
+    function submitSelfieVerificationFor(
+        address user,
+        bytes32 selfieHash,
+        uint256 similarity,
+        uint256 timestamp,
+        bytes32 nonce,
+        uint256 deadline,
+        bytes calldata signature
+    ) external nonReentrant {
+        // 1. Check trusted verification key is set
+        if (trustedVerificationKey == address(0)) revert TrustedVerificationKeyNotSet();
+
+        // 2. Check deadline not expired
+        // solhint-disable-next-line not-rely-on-time
+        if (block.timestamp > deadline) revert ProofExpired();
+
+        // 3. Check nonce not already used
+        if (usedNonces[nonce]) revert NonceAlreadyUsed();
+
+        // 4. Check ID verification already submitted
+        if (userIDHashes[user] == bytes32(0)) revert IDVerificationRequired();
+
+        // 5. Verify similarity score meets threshold (85% minimum)
+        if (similarity < 85) revert InsufficientSimilarity();
+
+        // 6. Verify EIP-712 signature (user address is part of signed data)
+        bytes32 structHash = keccak256(
+            abi.encode(
+                SELFIE_VERIFICATION_TYPEHASH,
+                user,
+                selfieHash,
+                similarity,
+                timestamp,
+                nonce,
+                deadline
+            )
+        );
+
+        bytes32 digest = keccak256(
+            abi.encodePacked("\x19\x01", DOMAIN_SEPARATOR, structHash)
+        );
+
+        address signer = digest.recover(signature);
+        if (signer != trustedVerificationKey) revert InvalidVerificationProof();
+
+        // 7. Mark selfie verified
+        selfieVerified[user] = true;
+        usedNonces[nonce] = true;
+
+        // 8. Check if KYC Tier 2 complete (ID + Address + Selfie all required)
+        _checkAndUpdateKycTier2(user);
+
+        // solhint-disable-next-line not-rely-on-time
+        emit SelfieVerified(user, selfieHash, similarity, timestamp);
     }
 
     /**
@@ -1668,6 +1830,8 @@ contract OmniRegistration is
         uint256 deadline,
         bytes calldata signature
     ) external nonReentrant {
+        address caller = _msgSender();
+
         // 1. Check trusted verification key is set
         if (trustedVerificationKey == address(0)) revert TrustedVerificationKeyNotSet();
 
@@ -1679,13 +1843,13 @@ contract OmniRegistration is
         if (usedNonces[nonce]) revert NonceAlreadyUsed();
 
         // 4. Check user has KYC Tier 2
-        if (kycTier2CompletedAt[msg.sender] == 0) revert PreviousTierRequired();
+        if (kycTier2CompletedAt[caller] == 0) revert PreviousTierRequired();
 
         // 5. Verify EIP-712 signature from trustedVerificationKey
         bytes32 structHash = keccak256(
             abi.encode(
                 VIDEO_VERIFICATION_TYPEHASH,
-                msg.sender,
+                caller,
                 sessionHash,
                 timestamp,
                 nonce,
@@ -1701,25 +1865,25 @@ contract OmniRegistration is
         if (signer != trustedVerificationKey) revert InvalidVerificationProof();
 
         // 6. Store verification
-        videoSessionHashes[msg.sender] = sessionHash;
+        videoSessionHashes[caller] = sessionHash;
         usedNonces[nonce] = true;
 
         // 7. Mark KYC Tier 3 complete
         // solhint-disable-next-line not-rely-on-time
-        kycTier3CompletedAt[msg.sender] = block.timestamp;
+        kycTier3CompletedAt[caller] = block.timestamp;
 
         // H-01: Synchronize Registration.kycTier
-        Registration storage reg = registrations[msg.sender];
+        Registration storage reg = registrations[caller];
         if (reg.kycTier < 3) {
             uint8 oldTier = reg.kycTier;
             reg.kycTier = 3;
-            emit KYCUpgraded(msg.sender, oldTier, 3);
+            emit KYCUpgraded(caller, oldTier, 3);
         }
 
         // solhint-disable-next-line not-rely-on-time
-        emit VideoVerified(msg.sender, sessionHash, timestamp);
+        emit VideoVerified(caller, sessionHash, timestamp);
         // solhint-disable-next-line not-rely-on-time
-        emit KycTier3Completed(msg.sender, block.timestamp);
+        emit KycTier3Completed(caller, block.timestamp);
     }
 
     /**
@@ -1811,6 +1975,8 @@ contract OmniRegistration is
         uint256 deadline,
         bytes calldata signature
     ) external nonReentrant {
+        address caller = _msgSender();
+
         // 1. Check provider is trusted
         if (!trustedKYCProviders[kycProvider]) revert UntrustedKYCProvider();
 
@@ -1822,13 +1988,13 @@ contract OmniRegistration is
         if (usedNonces[nonce]) revert NonceAlreadyUsed();
 
         // 4. Check user has KYC Tier 3
-        if (kycTier3CompletedAt[msg.sender] == 0) revert PreviousTierRequired();
+        if (kycTier3CompletedAt[caller] == 0) revert PreviousTierRequired();
 
         // 5. Verify signature from KYC provider
         bytes32 structHash = keccak256(
             abi.encode(
                 THIRD_PARTY_KYC_TYPEHASH,
-                msg.sender,
+                caller,
                 kycProvider,
                 timestamp,
                 nonce,
@@ -1846,19 +2012,19 @@ contract OmniRegistration is
         // 6. Mark complete
         usedNonces[nonce] = true;
         // solhint-disable-next-line not-rely-on-time
-        kycTier4CompletedAt[msg.sender] = block.timestamp;
-        userKYCProvider[msg.sender] = kycProvider;
+        kycTier4CompletedAt[caller] = block.timestamp;
+        userKYCProvider[caller] = kycProvider;
 
         // H-01: Synchronize Registration.kycTier
-        Registration storage reg = registrations[msg.sender];
+        Registration storage reg = registrations[caller];
         if (reg.kycTier < 4) {
             uint8 oldTier = reg.kycTier;
             reg.kycTier = 4;
-            emit KYCUpgraded(msg.sender, oldTier, 4);
+            emit KYCUpgraded(caller, oldTier, 4);
         }
 
         // solhint-disable-next-line not-rely-on-time
-        emit KycTier4Completed(msg.sender, kycProvider, block.timestamp);
+        emit KycTier4Completed(caller, kycProvider, block.timestamp);
     }
 
     /**
@@ -2634,6 +2800,56 @@ contract OmniRegistration is
         address newImplementation // solhint-disable-line no-unused-vars
     ) internal override onlyRole(DEFAULT_ADMIN_ROLE) {
         if (_ossified) revert ContractIsOssified();
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    //                    ERC-2771 CONTEXT OVERRIDES
+    // ═══════════════════════════════════════════════════════════════════════
+
+    /**
+     * @notice Resolve diamond inheritance for _msgSender()
+     * @dev Delegates to ERC2771ContextUpgradeable so that calls from
+     *      the trusted forwarder extract the real sender from calldata.
+     * @return The original sender when called via trusted forwarder,
+     *         otherwise msg.sender
+     */
+    function _msgSender()
+        internal
+        view
+        override(ContextUpgradeable, ERC2771ContextUpgradeable)
+        returns (address)
+    {
+        return ERC2771ContextUpgradeable._msgSender();
+    }
+
+    /**
+     * @notice Resolve diamond inheritance for _msgData()
+     * @dev Delegates to ERC2771ContextUpgradeable so that calls from
+     *      the trusted forwarder strip the appended sender address.
+     * @return The original calldata without the appended sender
+     */
+    function _msgData()
+        internal
+        view
+        override(ContextUpgradeable, ERC2771ContextUpgradeable)
+        returns (bytes calldata)
+    {
+        return ERC2771ContextUpgradeable._msgData();
+    }
+
+    /**
+     * @notice Resolve diamond inheritance for _contextSuffixLength()
+     * @dev Delegates to ERC2771ContextUpgradeable which returns 20
+     *      (the length of an address appended by ERC-2771 forwarders).
+     * @return The context suffix length (20 bytes for ERC-2771)
+     */
+    function _contextSuffixLength()
+        internal
+        view
+        override(ContextUpgradeable, ERC2771ContextUpgradeable)
+        returns (uint256)
+    {
+        return ERC2771ContextUpgradeable._contextSuffixLength();
     }
 
     // ═══════════════════════════════════════════════════════════════════════

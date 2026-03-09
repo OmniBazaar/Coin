@@ -105,6 +105,8 @@ describe('OmniValidatorRewards', function () {
             {
                 initializer: 'initialize',
                 kind: 'uups',
+                constructorArgs: [ethers.ZeroAddress],
+                unsafeAllow: ['constructor'],
             }
         );
         await validatorRewards.waitForDeployment();
@@ -183,7 +185,12 @@ describe('OmniValidatorRewards', function () {
                 upgrades.deployProxy(
                     OmniValidatorRewards,
                     [ZeroAddress, await mockParticipation.getAddress(), await mockOmniCore.getAddress()],
-                    { initializer: 'initialize', kind: 'uups' }
+                    {
+                    initializer: 'initialize',
+                    kind: 'uups',
+                    constructorArgs: [ethers.ZeroAddress],
+                    unsafeAllow: ['constructor'],
+                }
                 )
             ).to.be.revertedWithCustomError(OmniValidatorRewards, 'ZeroAddress');
         });
@@ -194,7 +201,12 @@ describe('OmniValidatorRewards', function () {
                 upgrades.deployProxy(
                     OmniValidatorRewards,
                     [await mockXOMToken.getAddress(), ZeroAddress, await mockOmniCore.getAddress()],
-                    { initializer: 'initialize', kind: 'uups' }
+                    {
+                    initializer: 'initialize',
+                    kind: 'uups',
+                    constructorArgs: [ethers.ZeroAddress],
+                    unsafeAllow: ['constructor'],
+                }
                 )
             ).to.be.revertedWithCustomError(OmniValidatorRewards, 'ZeroAddress');
         });
@@ -205,7 +217,12 @@ describe('OmniValidatorRewards', function () {
                 upgrades.deployProxy(
                     OmniValidatorRewards,
                     [await mockXOMToken.getAddress(), await mockParticipation.getAddress(), ZeroAddress],
-                    { initializer: 'initialize', kind: 'uups' }
+                    {
+                    initializer: 'initialize',
+                    kind: 'uups',
+                    constructorArgs: [ethers.ZeroAddress],
+                    unsafeAllow: ['constructor'],
+                }
                 )
             ).to.be.revertedWithCustomError(OmniValidatorRewards, 'ZeroAddress');
         });
@@ -755,7 +772,7 @@ describe('OmniValidatorRewards', function () {
                         ethers.parseEther('1000'),
                         owner.address
                     )
-                ).to.be.revertedWithCustomError(validatorRewards, 'CannotWithdrawRewardToken');
+                ).to.be.revertedWithCustomError(validatorRewards, 'CannotWithdrawXOM');
             });
 
             it('should withdraw non-XOM tokens', async function () {

@@ -9,10 +9,10 @@ describe("OmniNFTFactory", function () {
     [owner, creator1, creator2, user1] = await ethers.getSigners();
 
     const Collection = await ethers.getContractFactory("OmniNFTCollection");
-    impl = await Collection.deploy();
+    impl = await Collection.deploy(ethers.ZeroAddress);
 
     const Factory = await ethers.getContractFactory("OmniNFTFactory");
-    factory = await Factory.deploy(await impl.getAddress());
+    factory = await Factory.deploy(await impl.getAddress(), ethers.ZeroAddress);
   });
 
   describe("Deployment", function () {
@@ -31,7 +31,7 @@ describe("OmniNFTFactory", function () {
     it("Should reject zero implementation address", async function () {
       const Factory = await ethers.getContractFactory("OmniNFTFactory");
       await expect(
-        Factory.deploy(ethers.ZeroAddress)
+        Factory.deploy(ethers.ZeroAddress, ethers.ZeroAddress)
       ).to.be.revertedWithCustomError(factory, "InvalidImplementation");
     });
   });
@@ -137,7 +137,7 @@ describe("OmniNFTFactory", function () {
 
     it("Should update implementation", async function () {
       const Collection = await ethers.getContractFactory("OmniNFTCollection");
-      const newImpl = await Collection.deploy();
+      const newImpl = await Collection.deploy(ethers.ZeroAddress);
       await factory.setImplementation(await newImpl.getAddress());
       expect(await factory.implementation()).to.equal(await newImpl.getAddress());
     });

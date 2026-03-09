@@ -36,7 +36,7 @@ describe("OmniNFTLending", function () {
 
     // Deploy OmniNFTLending
     const Lending = await ethers.getContractFactory("OmniNFTLending");
-    lending = await Lending.deploy(feeRecipient.address, PLATFORM_FEE_BPS);
+    lending = await Lending.deploy(feeRecipient.address, PLATFORM_FEE_BPS, ethers.ZeroAddress);
 
     // Mint tokens to lender for principal deposits
     await token.mint(lender.address, ethers.parseEther("10000"));
@@ -128,7 +128,7 @@ describe("OmniNFTLending", function () {
     it("Should reject fee above maximum", async function () {
       const Lending = await ethers.getContractFactory("OmniNFTLending");
       await expect(
-        Lending.deploy(feeRecipient.address, 2001)
+        Lending.deploy(feeRecipient.address, 2001, ethers.ZeroAddress)
       ).to.be.revertedWithCustomError(lending, "FeeTooHigh");
     });
   });
@@ -457,7 +457,7 @@ describe("OmniNFTLending", function () {
     it("Should handle zero platform fee correctly", async function () {
       // Deploy a lending contract with 0 fee
       const Lending = await ethers.getContractFactory("OmniNFTLending");
-      const zeroFeeLending = await Lending.deploy(feeRecipient.address, 0);
+      const zeroFeeLending = await Lending.deploy(feeRecipient.address, 0, ethers.ZeroAddress);
 
       // Re-approve for the new contract
       await token

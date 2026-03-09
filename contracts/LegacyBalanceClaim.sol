@@ -2,12 +2,22 @@
 pragma solidity 0.8.24;
 
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
-import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
-import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
-import {ECDSA} from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
-import {MessageHashUtils} from "@openzeppelin/contracts/utils/cryptography/MessageHashUtils.sol";
-import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import {ReentrancyGuard} from
+    "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import {Pausable} from
+    "@openzeppelin/contracts/utils/Pausable.sol";
+import {ECDSA} from
+    "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
+import {MessageHashUtils} from
+    "@openzeppelin/contracts/utils/cryptography/MessageHashUtils.sol";
+import {IERC20} from
+    "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {SafeERC20} from
+    "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import {ERC2771Context} from
+    "@openzeppelin/contracts/metatx/ERC2771Context.sol";
+import {Context} from
+    "@openzeppelin/contracts/utils/Context.sol";
 
 /**
  * @title LegacyBalanceClaim
@@ -46,8 +56,14 @@ import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol
  * - Pausable emergency brake allows owner to halt claims instantly
  * - One-time claiming enforced
  * - Migration finalization requires a 2-year timelock
+ * - ERC-2771 meta-transaction support via trusted forwarder
  */
-contract LegacyBalanceClaim is Ownable, ReentrancyGuard, Pausable {
+contract LegacyBalanceClaim is
+    Ownable,
+    ReentrancyGuard,
+    Pausable,
+    ERC2771Context
+{
     using SafeERC20 for IERC20;
 
     // ──────────────────────────────────────────────────────────────
@@ -273,21 +289,27 @@ contract LegacyBalanceClaim is Ownable, ReentrancyGuard, Pausable {
 
     /**
      * @notice Deploy the legacy balance claim contract
-     * @dev Sets the OmniCoin reference, initial owner, and M-of-N validator set.
-     *      Records the deployment timestamp for migration timelock.
-     *      Validates that the validator set has no duplicates, no zero addresses,
-     *      and that the threshold is valid (1 <= threshold <= validators.length).
+     * @dev Sets the OmniCoin reference, initial owner, and M-of-N
+     *      validator set. Records the deployment timestamp for
+     *      migration timelock. Validates that the validator set has
+     *      no duplicates, no zero addresses, and that the threshold
+     *      is valid (1 <= threshold <= validators.length).
      * @param _omniCoin Address of the OmniCoin token contract
      * @param initialOwner Address of the contract owner
-     * @param _validators Array of authorized validator backend addresses
-     * @param _requiredSignatures Number of signatures required (M in M-of-N)
+     * @param _validators Array of authorized validator backend
+     *        addresses
+     * @param _requiredSignatures Number of signatures required
+     *        (M in M-of-N)
+     * @param trustedForwarder_ ERC-2771 trusted forwarder address
+     *        (address(0) disables meta-transactions)
      */
     constructor(
         address _omniCoin,
         address initialOwner,
         address[] memory _validators,
-        uint256 _requiredSignatures
-    ) Ownable(initialOwner) {
+        uint256 _requiredSignatures,
+        address trustedForwarder_
+    ) Ownable(initialOwner) ERC2771Context(trustedForwarder_) {
         if (_omniCoin == address(0)) revert ZeroAddress();
 
         _validateValidatorSet(_validators, _requiredSignatures);
@@ -784,6 +806,67 @@ contract LegacyBalanceClaim is Ownable, ReentrancyGuard, Pausable {
         }
         // Should not reach here if isValidator check passed
         revert InvalidSigner(_validator);
+    }
+
+    // ──────────────────────────────────────────────────────────────
+    // ERC-2771 context overrides (diamond resolution)
+    // ──────────────────────────────────────────────────────────────
+
+    /**
+     * @notice Resolve the sender for ERC-2771 meta-transactions
+     * @dev Overrides both Context (inherited via Ownable and
+     *      Pausable) and ERC2771Context to resolve the Solidity
+     *      diamond ambiguity. Delegates to ERC2771Context which
+     *      extracts the original sender from calldata when called
+     *      via a trusted forwarder.
+     * @return The message sender (original user in meta-tx, or
+     *         msg.sender for direct calls)
+     */
+    function _msgSender()
+        internal
+        view
+        override(Context, ERC2771Context)
+        returns (address)
+    {
+        return ERC2771Context._msgSender();
+    }
+
+    /**
+     * @notice Resolve the calldata for ERC-2771 meta-transactions
+     * @dev Overrides both Context (inherited via Ownable and
+     *      Pausable) and ERC2771Context to resolve the Solidity
+     *      diamond ambiguity. Delegates to ERC2771Context which
+     *      strips the appended sender address from calldata when
+     *      called via a trusted forwarder.
+     * @return The message data (stripped in meta-tx, or original
+     *         msg.data for direct calls)
+     */
+    function _msgData()
+        internal
+        view
+        override(Context, ERC2771Context)
+        returns (bytes calldata)
+    {
+        return ERC2771Context._msgData();
+    }
+
+    /**
+     * @notice Return the context suffix length for ERC-2771
+     * @dev Overrides both Context (inherited via Ownable and
+     *      Pausable) and ERC2771Context to resolve the Solidity
+     *      diamond ambiguity. Delegates to ERC2771Context which
+     *      returns 20 (the byte length of an address appended by
+     *      the trusted forwarder).
+     * @return The number of bytes appended to calldata by the
+     *         forwarder (20 for ERC-2771)
+     */
+    function _contextSuffixLength()
+        internal
+        view
+        override(Context, ERC2771Context)
+        returns (uint256)
+    {
+        return ERC2771Context._contextSuffixLength();
     }
 
     // ──────────────────────────────────────────────────────────────

@@ -52,7 +52,7 @@ describe("OmniPredictionRouter", function () {
 
     // Deploy the router with valid parameters
     const Router = await ethers.getContractFactory("OmniPredictionRouter");
-    router = await Router.deploy(feeCollector.address, MAX_FEE_BPS);
+    router = await Router.deploy(feeCollector.address, MAX_FEE_BPS, ethers.ZeroAddress);
     await router.waitForDeployment();
   });
 
@@ -69,21 +69,21 @@ describe("OmniPredictionRouter", function () {
     it("should revert when feeCollector is the zero address", async function () {
       const Router = await ethers.getContractFactory("OmniPredictionRouter");
       await expect(
-        Router.deploy(ethers.ZeroAddress, MAX_FEE_BPS)
+        Router.deploy(ethers.ZeroAddress, MAX_FEE_BPS, ethers.ZeroAddress)
       ).to.be.revertedWithCustomError(Router, "InvalidFeeCollector");
     });
 
     it("should revert when maxFeeBps is zero", async function () {
       const Router = await ethers.getContractFactory("OmniPredictionRouter");
       await expect(
-        Router.deploy(feeCollector.address, 0)
+        Router.deploy(feeCollector.address, 0, ethers.ZeroAddress)
       ).to.be.revertedWithCustomError(Router, "FeeExceedsCap");
     });
 
     it("should revert when maxFeeBps exceeds 1000", async function () {
       const Router = await ethers.getContractFactory("OmniPredictionRouter");
       await expect(
-        Router.deploy(feeCollector.address, 1001)
+        Router.deploy(feeCollector.address, 1001, ethers.ZeroAddress)
       ).to.be.revertedWithCustomError(Router, "FeeExceedsCap");
     });
   });

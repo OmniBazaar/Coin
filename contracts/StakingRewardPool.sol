@@ -9,6 +9,10 @@ import {ReentrancyGuardUpgradeable} from
     "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
 import {PausableUpgradeable} from
     "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol";
+import {ERC2771ContextUpgradeable} from
+    "@openzeppelin/contracts-upgradeable/metatx/ERC2771ContextUpgradeable.sol";
+import {ContextUpgradeable} from
+    "@openzeppelin/contracts-upgradeable/utils/ContextUpgradeable.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from
     "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
@@ -96,7 +100,8 @@ contract StakingRewardPool is
     AccessControlUpgradeable,
     UUPSUpgradeable,
     ReentrancyGuardUpgradeable,
-    PausableUpgradeable
+    PausableUpgradeable,
+    ERC2771ContextUpgradeable
 {
     using SafeERC20 for IERC20;
 
@@ -384,7 +389,9 @@ contract StakingRewardPool is
      * @dev Prevents the implementation contract from being initialized
      */
     /// @custom:oz-upgrades-unsafe-allow constructor
-    constructor() {
+    constructor(
+        address trustedForwarder_
+    ) ERC2771ContextUpgradeable(trustedForwarder_) {
         _disableInitializers();
     }
 
@@ -445,7 +452,8 @@ contract StakingRewardPool is
         nonReentrant
         whenNotPaused
     {
-        uint256 reward = earned(msg.sender);
+        address caller = _msgSender();
+        uint256 reward = earned(caller);
         if (reward == 0) revert NoRewardsToClaim();
 
         uint256 poolBalance =
@@ -461,18 +469,18 @@ contract StakingRewardPool is
 
         // Update state before transfer (CEI pattern)
         // solhint-disable-next-line not-rely-on-time
-        lastClaimTime[msg.sender] = block.timestamp;
-        frozenRewards[msg.sender] = remainder;
+        lastClaimTime[caller] = block.timestamp;
+        frozenRewards[caller] = remainder;
         totalDistributed += payout;
 
         // Transfer rewards to caller
         if (payout > 0) {
-            xomToken.safeTransfer(msg.sender, payout);
+            xomToken.safeTransfer(caller, payout);
         }
 
         // solhint-disable not-rely-on-time
         emit RewardsClaimed(
-            msg.sender, payout, block.timestamp
+            caller, payout, block.timestamp
         );
         // solhint-enable not-rely-on-time
     }
@@ -1030,6 +1038,58 @@ contract StakingRewardPool is
         return declaredTier < computedTier
             ? declaredTier
             : computedTier;
+    }
+
+    // ════════════════════════════════════════════════════════════════════
+    //                    ERC-2771 CONTEXT OVERRIDES
+    // ════════════════════════════════════════════════════════════════════
+
+    /**
+     * @notice Resolve diamond inheritance for _msgSender()
+     * @dev Delegates to ERC2771ContextUpgradeable so that calls
+     *      from the trusted forwarder extract the real sender
+     *      from calldata.
+     * @return The original sender when called via trusted
+     *         forwarder, otherwise msg.sender
+     */
+    function _msgSender()
+        internal
+        view
+        override(ContextUpgradeable, ERC2771ContextUpgradeable)
+        returns (address)
+    {
+        return ERC2771ContextUpgradeable._msgSender();
+    }
+
+    /**
+     * @notice Resolve diamond inheritance for _msgData()
+     * @dev Delegates to ERC2771ContextUpgradeable so that calls
+     *      from the trusted forwarder strip the appended sender.
+     * @return The original calldata without the appended sender
+     */
+    function _msgData()
+        internal
+        view
+        override(ContextUpgradeable, ERC2771ContextUpgradeable)
+        returns (bytes calldata)
+    {
+        return ERC2771ContextUpgradeable._msgData();
+    }
+
+    /**
+     * @notice Resolve diamond inheritance for
+     *         _contextSuffixLength()
+     * @dev Delegates to ERC2771ContextUpgradeable which returns
+     *      20 (address length appended by ERC-2771 forwarders).
+     * @return The context suffix length (20 bytes)
+     */
+    function _contextSuffixLength()
+        internal
+        view
+        override(ContextUpgradeable, ERC2771ContextUpgradeable)
+        returns (uint256)
+    {
+        return ERC2771ContextUpgradeable._contextSuffixLength();
     }
 
 }

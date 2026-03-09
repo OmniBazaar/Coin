@@ -121,13 +121,14 @@ describe('OmniRewardManager', function () {
 
         // Deploy OmniCoin
         const OmniCoinFactory = await ethers.getContractFactory('OmniCoin');
-        omniCoin = await OmniCoinFactory.deploy();
+        omniCoin = await OmniCoinFactory.deploy(ethers.ZeroAddress);
         await omniCoin.waitForDeployment();
 
         // Initialize OmniCoin to mint initial supply to deployer
         await omniCoin.initialize();
 
-        // Deploy OmniRewardManager with UUPS proxy
+        // Deploy OmniRewardManager proxy without initializer (M-02 balance check
+        // requires tokens at the contract address before initialize is called).
         const OmniRewardManagerFactory = await ethers.getContractFactory('OmniRewardManager');
         const proxy = await upgrades.deployProxy(
             OmniRewardManagerFactory,
@@ -140,16 +141,33 @@ describe('OmniRewardManager', function () {
                 admin.address,
             ],
             {
-                initializer: 'initialize',
+                initializer: false,
                 kind: 'uups',
+                constructorArgs: [ethers.ZeroAddress],
             }
         );
         await proxy.waitForDeployment();
 
         rewardManager = OmniRewardManagerFactory.attach(await proxy.getAddress());
 
-        // Transfer tokens to reward manager
+        // Transfer tokens to reward manager BEFORE initialization (M-02 audit fix)
         await omniCoin.transfer(await rewardManager.getAddress(), TOTAL_POOL_SIZE);
+
+        // Now initialize the proxy with the required parameters
+        await rewardManager.initialize(
+            await omniCoin.getAddress(),
+            WELCOME_BONUS_POOL,
+            REFERRAL_BONUS_POOL,
+            FIRST_SALE_BONUS_POOL,
+            VALIDATOR_REWARDS_POOL,
+            admin.address
+        );
+
+        // Grant operational roles to admin (audit M-02 reduced _setupRoles to only DEFAULT_ADMIN_ROLE)
+        await rewardManager.connect(admin).grantRole(BONUS_DISTRIBUTOR_ROLE, admin.address);
+        await rewardManager.connect(admin).grantRole(VALIDATOR_REWARD_ROLE, admin.address);
+        await rewardManager.connect(admin).grantRole(UPGRADER_ROLE, admin.address);
+        await rewardManager.connect(admin).grantRole(PAUSER_ROLE, admin.address);
     });
 
     // ========================================
@@ -203,7 +221,7 @@ describe('OmniRewardManager', function () {
                         VALIDATOR_REWARDS_POOL,
                         admin.address,
                     ],
-                    { initializer: 'initialize', kind: 'uups' }
+                    { initializer: 'initialize', kind: 'uups', constructorArgs: [ethers.ZeroAddress] }
                 )
             ).to.be.revertedWithCustomError(rewardManager, 'ZeroAddressNotAllowed');
         });
@@ -222,7 +240,7 @@ describe('OmniRewardManager', function () {
                         VALIDATOR_REWARDS_POOL,
                         ZeroAddress,
                     ],
-                    { initializer: 'initialize', kind: 'uups' }
+                    { initializer: 'initialize', kind: 'uups', constructorArgs: [ethers.ZeroAddress] }
                 )
             ).to.be.revertedWithCustomError(rewardManager, 'ZeroAddressNotAllowed');
         });
@@ -456,7 +474,10 @@ describe('OmniRewardManager', function () {
         });
 
         it('should emit ReferralBonusClaimed event', async function () {
-            const totalAmount = REFERRAL_PRIMARY + REFERRAL_SECONDARY;
+            // Total includes ODDAO share: (referrerTotal * 10) / 90 when secondLevelReferrer != 0
+            const referrerTotal = REFERRAL_PRIMARY + REFERRAL_SECONDARY;
+            const oddaoShare = (referrerTotal * BigInt(10)) / BigInt(90);
+            const totalAmount = referrerTotal + oddaoShare;
 
             await expect(
                 rewardManager.connect(admin).claimReferralBonus(
@@ -1059,15 +1080,22 @@ describe('OmniRewardManager', function () {
                     smallPool,
                     admin.address,
                 ],
-                { initializer: 'initialize', kind: 'uups' }
+                { initializer: false, kind: 'uups', constructorArgs: [ethers.ZeroAddress] }
             );
             await proxy.waitForDeployment();
 
             const smallRewardManager = OmniRewardManagerFactory.attach(await proxy.getAddress());
 
-            // Fund the contract
+            // Fund the contract before initialization (M-02 balance check)
             const totalSmall = smallPool * BigInt(4);
             await omniCoin.transfer(await smallRewardManager.getAddress(), totalSmall);
+
+            // Initialize after funding
+            await smallRewardManager.initialize(
+                await omniCoin.getAddress(), smallPool, smallPool, smallPool, smallPool, admin.address
+            );
+            // Grant roles (audit reduced _setupRoles to DEFAULT_ADMIN_ROLE only)
+            await smallRewardManager.connect(admin).grantRole(BONUS_DISTRIBUTOR_ROLE, admin.address);
 
             // Claim 99% of the pool (threshold is 1%)
             const largeClaimAmount = ethers.parseEther('99'); // 99 XOM out of 100
@@ -1113,13 +1141,21 @@ describe('OmniRewardManager', function () {
                     exactPool,
                     admin.address,
                 ],
-                { initializer: 'initialize', kind: 'uups' }
+                { initializer: false, kind: 'uups', constructorArgs: [ethers.ZeroAddress] }
             );
             await proxy.waitForDeployment();
 
             const smallRewardManager = OmniRewardManagerFactory.attach(await proxy.getAddress());
 
+            // Fund before initialization (M-02 balance check)
             await omniCoin.transfer(await smallRewardManager.getAddress(), exactPool * BigInt(4));
+
+            // Initialize after funding
+            await smallRewardManager.initialize(
+                await omniCoin.getAddress(), exactPool, exactPool, exactPool, exactPool, admin.address
+            );
+            // Grant roles (audit reduced _setupRoles to DEFAULT_ADMIN_ROLE only)
+            await smallRewardManager.connect(admin).grantRole(BONUS_DISTRIBUTOR_ROLE, admin.address);
 
             // First claim should succeed
             const result1 = generateMerkleProof(user1.address, exactPool, ['d1', 'd2']);
@@ -1157,7 +1193,7 @@ describe('OmniRewardManager', function () {
             const upgraded = await upgrades.upgradeProxy(
                 await rewardManager.getAddress(),
                 OmniRewardManagerV2,
-                { call: { fn: 'pause', args: [] } } // Call pause during upgrade as a test
+                { call: { fn: 'pause', args: [] }, constructorArgs: [ethers.ZeroAddress] } // Call pause during upgrade as a test
             );
 
             expect(await upgraded.getAddress()).to.equal(await rewardManager.getAddress());
@@ -1182,7 +1218,8 @@ describe('OmniRewardManager', function () {
             const OmniRewardManagerV2 = await ethers.getContractFactory('OmniRewardManager');
             const upgraded = await upgrades.upgradeProxy(
                 await rewardManager.getAddress(),
-                OmniRewardManagerV2
+                OmniRewardManagerV2,
+                { constructorArgs: [ethers.ZeroAddress] }
             );
 
             // Verify state preserved
@@ -1404,7 +1441,7 @@ describe('OmniRewardManager', function () {
             const registrationProxy = await upgrades.deployProxy(
                 OmniRegistrationFactory,
                 [],
-                { initializer: 'initialize', kind: 'uups' }
+                { initializer: 'initialize', kind: 'uups', constructorArgs: [ethers.ZeroAddress] }
             );
             await registrationProxy.waitForDeployment();
             omniRegistration = OmniRegistrationFactory.attach(await registrationProxy.getAddress());
@@ -1455,7 +1492,8 @@ describe('OmniRewardManager', function () {
             const platform = 'twitter';
             const handle = 'testuser' + Math.floor(Math.random() * 100000);
             const socialHash = keccak256(ethers.toUtf8Bytes(`${platform}:${handle}`));
-            const socialTimestamp = Math.floor(Date.now() / 1000);
+            const latestBlock = await ethers.provider.getBlock('latest');
+            const socialTimestamp = latestBlock!.timestamp;
             const socialNonce = '0x' + Buffer.from(ethers.randomBytes(32)).toString('hex');
             const socialDeadline = socialTimestamp + 3600;
 
@@ -1580,10 +1618,21 @@ describe('OmniRewardManager', function () {
                     VALIDATOR_REWARDS_POOL,
                     admin.address,
                 ],
-                { initializer: 'initialize', kind: 'uups' }
+                { initializer: false, kind: 'uups', constructorArgs: [ethers.ZeroAddress] }
             );
             await newProxy.waitForDeployment();
             const newRewardManager = OmniRewardManagerFactory.attach(await newProxy.getAddress());
+
+            // Fund and initialize (M-02 balance check requires tokens before init)
+            await omniCoin.transfer(await newRewardManager.getAddress(), TOTAL_POOL_SIZE);
+            await newRewardManager.initialize(
+                await omniCoin.getAddress(),
+                WELCOME_BONUS_POOL,
+                REFERRAL_BONUS_POOL,
+                FIRST_SALE_BONUS_POOL,
+                VALIDATOR_REWARDS_POOL,
+                admin.address
+            );
 
             // Don't set registration contract
             await expect(newRewardManager.connect(user1).claimWelcomeBonusTrustless())

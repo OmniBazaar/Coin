@@ -28,7 +28,8 @@ describe("OmniFractionalNFT", function () {
     const OmniFractionalNFT = await ethers.getContractFactory("OmniFractionalNFT");
     fractional = await OmniFractionalNFT.deploy(
       feeRecipient.address,
-      CREATION_FEE_BPS
+      CREATION_FEE_BPS,
+      ethers.ZeroAddress
     );
   });
 
@@ -90,13 +91,13 @@ describe("OmniFractionalNFT", function () {
     it("Should reject creation fee above MAX_CREATION_FEE_BPS (500)", async function () {
       const OmniFractionalNFT = await ethers.getContractFactory("OmniFractionalNFT");
       await expect(
-        OmniFractionalNFT.deploy(feeRecipient.address, 501)
+        OmniFractionalNFT.deploy(feeRecipient.address, 501, ethers.ZeroAddress)
       ).to.be.revertedWithCustomError(fractional, "FeeTooHigh");
     });
 
     it("Should allow creation fee exactly at MAX_CREATION_FEE_BPS (500)", async function () {
       const OmniFractionalNFT = await ethers.getContractFactory("OmniFractionalNFT");
-      const maxFee = await OmniFractionalNFT.deploy(feeRecipient.address, 500);
+      const maxFee = await OmniFractionalNFT.deploy(feeRecipient.address, 500, ethers.ZeroAddress);
       expect(await maxFee.creationFeeBps()).to.equal(500);
     });
   });

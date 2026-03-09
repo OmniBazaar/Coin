@@ -6,6 +6,10 @@ import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {Ownable2Step, Ownable} from "@openzeppelin/contracts/access/Ownable2Step.sol";
 import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
+import {ERC2771Context} from
+    "@openzeppelin/contracts/metatx/ERC2771Context.sol";
+import {Context} from
+    "@openzeppelin/contracts/utils/Context.sol";
 
 /**
  * @title LiquidityMining
@@ -46,7 +50,7 @@ import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
  * per pool via setVestingParams() and must be >= MIN_VESTING_PERIOD
  * (1 day) when non-zero.
  */
-contract LiquidityMining is ReentrancyGuard, Ownable2Step, Pausable {
+contract LiquidityMining is ReentrancyGuard, Ownable2Step, Pausable, ERC2771Context {
     using SafeERC20 for IERC20;
 
     // ============ Structs ============
@@ -304,13 +308,15 @@ contract LiquidityMining is ReentrancyGuard, Ownable2Step, Pausable {
      * @param _treasury Treasury / ODDAO address for fees (70%)
      * @param _validatorFeeRecipient Validator fee recipient (20%)
      * @param _stakingPoolFeeRecipient Staking pool fee recipient (10%)
+     * @param trustedForwarder_ Trusted ERC-2771 forwarder address
      */
     constructor(
         address _xom,
         address _treasury,
         address _validatorFeeRecipient,
-        address _stakingPoolFeeRecipient
-    ) Ownable(msg.sender) {
+        address _stakingPoolFeeRecipient,
+        address trustedForwarder_
+    ) Ownable(msg.sender) ERC2771Context(trustedForwarder_) {
         if (
             _xom == address(0) ||
             _treasury == address(0) ||
@@ -477,22 +483,24 @@ contract LiquidityMining is ReentrancyGuard, Ownable2Step, Pausable {
         if (poolId >= pools.length) revert PoolNotFound();
         if (amount == 0) revert ZeroAmount();
 
+        address caller = _msgSender();
+
         PoolInfo storage pool = pools[poolId];
         if (!pool.active) revert PoolNotActive();
 
         _updatePool(poolId);
 
-        UserStake storage user = userStakes[poolId][msg.sender];
+        UserStake storage user = userStakes[poolId][caller];
 
         // Harvest pending rewards before modifying stake
         if (user.amount > 0) {
-            _harvestRewards(poolId, msg.sender);
+            _harvestRewards(poolId, caller);
         }
 
         // Transfer LP tokens from user (M-01: balance-before/after
         // for fee-on-transfer token compatibility)
         uint256 balBefore = pool.lpToken.balanceOf(address(this));
-        pool.lpToken.safeTransferFrom(msg.sender, address(this), amount);
+        pool.lpToken.safeTransferFrom(caller, address(this), amount);
         uint256 received = pool.lpToken.balanceOf(address(this)) - balBefore;
 
         // Update user stake with actual received amount
@@ -503,7 +511,7 @@ contract LiquidityMining is ReentrancyGuard, Ownable2Step, Pausable {
         // Update pool total
         pool.totalStaked += received;
 
-        emit Staked(msg.sender, poolId, received);
+        emit Staked(caller, poolId, received);
     }
 
     /**
@@ -519,15 +527,17 @@ contract LiquidityMining is ReentrancyGuard, Ownable2Step, Pausable {
         if (poolId >= pools.length) revert PoolNotFound();
         if (amount == 0) revert ZeroAmount();
 
+        address caller = _msgSender();
+
         PoolInfo storage pool = pools[poolId];
-        UserStake storage user = userStakes[poolId][msg.sender];
+        UserStake storage user = userStakes[poolId][caller];
 
         if (user.amount < amount) revert InsufficientStake();
 
         _updatePool(poolId);
 
         // Harvest pending rewards before modifying stake
-        _harvestRewards(poolId, msg.sender);
+        _harvestRewards(poolId, caller);
 
         // Update user stake
         user.amount -= amount;
@@ -538,9 +548,9 @@ contract LiquidityMining is ReentrancyGuard, Ownable2Step, Pausable {
         pool.totalStaked -= amount;
 
         // Transfer LP tokens to user
-        pool.lpToken.safeTransfer(msg.sender, amount);
+        pool.lpToken.safeTransfer(caller, amount);
 
-        emit Withdrawn(msg.sender, poolId, amount);
+        emit Withdrawn(caller, poolId, amount);
     }
 
     /**
@@ -559,10 +569,12 @@ contract LiquidityMining is ReentrancyGuard, Ownable2Step, Pausable {
         // solhint-disable-next-line gas-strict-inequalities
         if (poolId >= pools.length) revert PoolNotFound();
 
-        _updatePool(poolId);
-        _harvestRewards(poolId, msg.sender);
+        address caller = _msgSender();
 
-        UserStake storage user = userStakes[poolId][msg.sender];
+        _updatePool(poolId);
+        _harvestRewards(poolId, caller);
+
+        UserStake storage user = userStakes[poolId][caller];
 
         // Claim immediate rewards
         immediateAmount = user.pendingImmediate;
@@ -578,11 +590,11 @@ contract LiquidityMining is ReentrancyGuard, Ownable2Step, Pausable {
         // Decrement committed rewards tracker
         totalCommittedRewards -= total;
 
-        xom.safeTransfer(msg.sender, total);
+        xom.safeTransfer(caller, total);
         totalXomDistributed += total;
 
         emit RewardsClaimed(
-            msg.sender, poolId, immediateAmount, vestedAmount
+            caller, poolId, immediateAmount, vestedAmount
         );
 
         return (immediateAmount, vestedAmount);
@@ -598,17 +610,18 @@ contract LiquidityMining is ReentrancyGuard, Ownable2Step, Pausable {
         nonReentrant
         returns (uint256 totalImmediate, uint256 totalVested)
     {
+        address caller = _msgSender();
         uint256 poolLen = pools.length;
         for (uint256 i = 0; i < poolLen; ) {
             _updatePool(i);
-            UserStake storage user = userStakes[i][msg.sender];
+            UserStake storage user = userStakes[i][caller];
 
             if (
                 user.amount > 0 ||
                 user.pendingImmediate > 0 ||
                 user.vestingTotal > 0
             ) {
-                _harvestRewards(i, msg.sender);
+                _harvestRewards(i, caller);
 
                 uint256 immediate = user.pendingImmediate;
                 user.pendingImmediate = 0;
@@ -620,7 +633,7 @@ contract LiquidityMining is ReentrancyGuard, Ownable2Step, Pausable {
 
                 if (immediate + vested > 0) {
                     emit RewardsClaimed(
-                        msg.sender, i, immediate, vested
+                        caller, i, immediate, vested
                     );
                 }
             }
@@ -634,7 +647,7 @@ contract LiquidityMining is ReentrancyGuard, Ownable2Step, Pausable {
         // Decrement committed rewards tracker
         totalCommittedRewards -= total;
 
-        xom.safeTransfer(msg.sender, total);
+        xom.safeTransfer(caller, total);
         totalXomDistributed += total;
 
         return (totalImmediate, totalVested);
@@ -654,8 +667,10 @@ contract LiquidityMining is ReentrancyGuard, Ownable2Step, Pausable {
         // solhint-disable-next-line gas-strict-inequalities
         if (poolId >= pools.length) revert PoolNotFound();
 
+        address caller = _msgSender();
+
         PoolInfo storage pool = pools[poolId];
-        UserStake storage user = userStakes[poolId][msg.sender];
+        UserStake storage user = userStakes[poolId][caller];
 
         uint256 amount = user.amount;
         if (amount == 0) revert InsufficientStake();
@@ -702,9 +717,9 @@ contract LiquidityMining is ReentrancyGuard, Ownable2Step, Pausable {
                 stakingPoolFeeRecipient, stakingShare
             );
         }
-        pool.lpToken.safeTransfer(msg.sender, amountAfterFee);
+        pool.lpToken.safeTransfer(caller, amountAfterFee);
 
-        emit EmergencyWithdraw(msg.sender, poolId, amountAfterFee, fee);
+        emit EmergencyWithdraw(caller, poolId, amountAfterFee, fee);
     }
 
     /**
@@ -1123,5 +1138,55 @@ contract LiquidityMining is ReentrancyGuard, Ownable2Step, Pausable {
             totalVested > userStakeInfo.vestingClaimed
                 ? totalVested - userStakeInfo.vestingClaimed
                 : 0;
+    }
+
+    // ============ ERC-2771 Overrides ============
+
+    /**
+     * @notice Return the sender of the call, accounting for
+     *         ERC-2771 meta-transactions.
+     * @dev Delegates to ERC2771Context to extract the original
+     *      sender when the call comes from the trusted forwarder.
+     * @return The resolved sender address.
+     */
+    function _msgSender()
+        internal
+        view
+        override(Context, ERC2771Context)
+        returns (address)
+    {
+        return ERC2771Context._msgSender();
+    }
+
+    /**
+     * @notice Return the calldata of the call, accounting for
+     *         ERC-2771 meta-transactions.
+     * @dev Delegates to ERC2771Context to strip the appended
+     *      sender address when the call comes from the trusted
+     *      forwarder.
+     * @return The resolved calldata.
+     */
+    function _msgData()
+        internal
+        view
+        override(Context, ERC2771Context)
+        returns (bytes calldata)
+    {
+        return ERC2771Context._msgData();
+    }
+
+    /**
+     * @notice Return the context suffix length for ERC-2771.
+     * @dev ERC-2771 appends 20 bytes (the sender address) to
+     *      the calldata.
+     * @return Length of the context suffix (20).
+     */
+    function _contextSuffixLength()
+        internal
+        view
+        override(Context, ERC2771Context)
+        returns (uint256)
+    {
+        return ERC2771Context._contextSuffixLength();
     }
 }

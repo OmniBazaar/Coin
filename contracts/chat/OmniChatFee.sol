@@ -8,6 +8,10 @@ import {ReentrancyGuard} from
     "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {Ownable2Step, Ownable} from
     "@openzeppelin/contracts/access/Ownable2Step.sol";
+import {ERC2771Context} from
+    "@openzeppelin/contracts/metatx/ERC2771Context.sol";
+import {Context} from
+    "@openzeppelin/contracts/utils/Context.sol";
 
 // ══════════════════════════════════════════════════════════════════════
 //                           CUSTOM ERRORS
@@ -57,7 +61,7 @@ error NoRecipientsProvided();
  * - On-chain payment proof prevents fee manipulation
  * - CEI-compliant: state updates before external calls
  */
-contract OmniChatFee is ReentrancyGuard, Ownable2Step {
+contract OmniChatFee is ReentrancyGuard, Ownable2Step, ERC2771Context {
     using SafeERC20 for IERC20;
 
     // ══════════════════════════════════════════════════════════════════
@@ -181,14 +185,17 @@ contract OmniChatFee is ReentrancyGuard, Ownable2Step {
      * @param _oddaoTreasury ODDAO treasury address (70%)
      * @param _protocolTreasury Protocol treasury address (10%)
      * @param _baseFee Base fee per message in XOM (18 decimals)
+     * @param trustedForwarder_ OmniForwarder address for gasless
+     *        relay (address(0) to disable)
      */
     constructor(
         address _xomToken,
         address _stakingPool,
         address _oddaoTreasury,
         address _protocolTreasury,
-        uint256 _baseFee
-    ) Ownable(msg.sender) {
+        uint256 _baseFee,
+        address trustedForwarder_
+    ) Ownable(msg.sender) ERC2771Context(trustedForwarder_) {
         if (_xomToken == address(0)) revert ZeroChatAddress();
         if (_stakingPool == address(0)) revert ZeroChatAddress();
         if (_oddaoTreasury == address(0)) revert ZeroChatAddress();
@@ -221,29 +228,30 @@ contract OmniChatFee is ReentrancyGuard, Ownable2Step {
         if (channelId == bytes32(0)) revert InvalidChannelId();
         if (validator == address(0)) revert ZeroChatAddress();
 
+        address caller = _msgSender();
         uint256 month = _currentMonth();
-        uint256 used = monthlyMessageCount[msg.sender][month];
-        uint256 msgIndex = userMessageIndex[msg.sender]++;
+        uint256 used = monthlyMessageCount[caller][month];
+        uint256 msgIndex = userMessageIndex[caller]++;
 
         if (used < FREE_TIER_LIMIT) {
             // Free tier
-            monthlyMessageCount[msg.sender][month] = used + 1;
-            paymentProofs[msg.sender][channelId][msgIndex] = true;
+            monthlyMessageCount[caller][month] = used + 1;
+            paymentProofs[caller][channelId][msgIndex] = true;
 
             emit FreeMessageUsed(
-                msg.sender,
+                caller,
                 channelId,
                 msgIndex,
                 FREE_TIER_LIMIT - used - 1
             );
         } else {
             // Paid message — CEI: update state before external calls
-            monthlyMessageCount[msg.sender][month] = used + 1;
-            paymentProofs[msg.sender][channelId][msgIndex] = true;
-            _collectFee(msg.sender, baseFee, validator);
+            monthlyMessageCount[caller][month] = used + 1;
+            paymentProofs[caller][channelId][msgIndex] = true;
+            _collectFee(caller, baseFee, validator);
 
             emit MessageFeePaid(
-                msg.sender,
+                caller,
                 channelId,
                 msgIndex,
                 baseFee,
@@ -268,17 +276,18 @@ contract OmniChatFee is ReentrancyGuard, Ownable2Step {
         if (channelId == bytes32(0)) revert InvalidChannelId();
         if (validator == address(0)) revert ZeroChatAddress();
 
+        address caller = _msgSender();
         uint256 fee = baseFee * BULK_FEE_MULTIPLIER;
         uint256 month = _currentMonth();
-        uint256 msgIndex = userMessageIndex[msg.sender]++;
+        uint256 msgIndex = userMessageIndex[caller]++;
 
         // CEI: update state before external calls
-        monthlyMessageCount[msg.sender][month]++;
-        paymentProofs[msg.sender][channelId][msgIndex] = true;
-        _collectFee(msg.sender, fee, validator);
+        monthlyMessageCount[caller][month]++;
+        paymentProofs[caller][channelId][msgIndex] = true;
+        _collectFee(caller, fee, validator);
 
         emit MessageFeePaid(
-            msg.sender,
+            caller,
             channelId,
             msgIndex,
             fee,
@@ -448,5 +457,60 @@ contract OmniChatFee is ReentrancyGuard, Ownable2Step {
     function _currentMonth() internal view returns (uint256) {
         // solhint-disable-next-line not-rely-on-time
         return block.timestamp / MONTH_SECONDS;
+    }
+
+    // ══════════════════════════════════════════════════════════════════
+    //     ERC2771Context Overrides (resolve diamond with Ownable)
+    // ══════════════════════════════════════════════════════════════════
+
+    /**
+     * @notice Resolve _msgSender between Context (via Ownable)
+     *         and ERC2771Context
+     * @dev Returns the original user address when called through
+     *      the trusted forwarder. Used by payMessageFee() and
+     *      payBulkMessageFee() to identify the actual user.
+     * @return The original transaction signer when relayed, or
+     *         msg.sender when direct
+     */
+    function _msgSender()
+        internal
+        view
+        override(Context, ERC2771Context)
+        returns (address)
+    {
+        return ERC2771Context._msgSender();
+    }
+
+    /**
+     * @notice Resolve _msgData between Context (via Ownable)
+     *         and ERC2771Context
+     * @dev Strips the appended sender address from calldata
+     *      when relayed
+     * @return The original calldata without the ERC2771 suffix
+     */
+    function _msgData()
+        internal
+        view
+        override(Context, ERC2771Context)
+        returns (bytes calldata)
+    {
+        return ERC2771Context._msgData();
+    }
+
+    /**
+     * @notice Resolve _contextSuffixLength between Context
+     *         and ERC2771Context
+     * @dev Returns 20 (address length) for ERC2771 context
+     *      suffix stripping
+     * @return The number of bytes appended to calldata by the
+     *         forwarder (20)
+     */
+    function _contextSuffixLength()
+        internal
+        view
+        override(Context, ERC2771Context)
+        returns (uint256)
+    {
+        return ERC2771Context._contextSuffixLength();
     }
 }

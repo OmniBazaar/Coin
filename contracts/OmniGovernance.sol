@@ -19,6 +19,14 @@ import {ECDSA} from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 import {
     EIP712Upgradeable
 } from "@openzeppelin/contracts-upgradeable/utils/cryptography/EIP712Upgradeable.sol";
+import {
+    ERC2771ContextUpgradeable
+} from
+    "@openzeppelin/contracts-upgradeable/metatx/ERC2771ContextUpgradeable.sol";
+import {
+    ContextUpgradeable
+} from
+    "@openzeppelin/contracts-upgradeable/utils/ContextUpgradeable.sol";
 
 /* solhint-disable max-states-count, ordering */
 
@@ -47,7 +55,8 @@ contract OmniGovernance is
     UUPSUpgradeable,
     AccessControlUpgradeable,
     ReentrancyGuardUpgradeable,
-    EIP712Upgradeable
+    EIP712Upgradeable,
+    ERC2771ContextUpgradeable
 {
     // =========================================================================
     // Type Declarations
@@ -297,9 +306,16 @@ contract OmniGovernance is
 
     /**
      * @notice Disable initializers on implementation contract
+     * @dev Sets the trusted forwarder address as an immutable (stored in
+     *      bytecode, not proxy storage). Pass address(0) to disable
+     *      meta-transaction support.
+     * @param trustedForwarder_ Address of the OmniForwarder contract
+     *        for gasless relay
      */
     /// @custom:oz-upgrades-unsafe-allow constructor
-    constructor() {
+    constructor(
+        address trustedForwarder_
+    ) ERC2771ContextUpgradeable(trustedForwarder_) {
         _disableInitializers();
     }
 
@@ -368,7 +384,8 @@ contract OmniGovernance is
             _validateNoCriticalSelectors(calldatas);
         }
 
-        uint256 votingPower = getVotingPower(msg.sender);
+        address caller = _msgSender();
+        uint256 votingPower = getVotingPower(caller);
         if (votingPower < PROPOSAL_THRESHOLD) {
             revert InsufficientVotingPower();
         }
@@ -381,7 +398,7 @@ contract OmniGovernance is
         uint256 voteEnd = voteStart + VOTING_PERIOD;
 
         proposals[proposalId] = Proposal({
-            proposer: msg.sender,
+            proposer: caller,
             proposalType: proposalType,
             descriptionHash: keccak256(bytes(description)),
             snapshotBlock: block.number,
@@ -405,7 +422,7 @@ contract OmniGovernance is
         }
 
         emit ProposalCreated(
-            proposalId, msg.sender, proposalType, voteStart
+            proposalId, caller, proposalType, voteStart
         );
         emit ProposalDetails(
             proposalId, targets, calldatas, description
@@ -421,7 +438,7 @@ contract OmniGovernance is
         uint256 proposalId,
         uint8 support
     ) external nonReentrant {
-        _castVote(proposalId, msg.sender, support);
+        _castVote(proposalId, _msgSender(), support);
     }
 
     /**
@@ -578,8 +595,9 @@ contract OmniGovernance is
         }
 
         // L-03: Use dedicated authorization error
-        bool isProposer = msg.sender == proposal.proposer;
-        bool isAdmin = hasRole(ADMIN_ROLE, msg.sender);
+        address caller = _msgSender();
+        bool isProposer = caller == proposal.proposer;
+        bool isAdmin = hasRole(ADMIN_ROLE, caller);
 
         if (!isProposer && !isAdmin) {
             revert NotAuthorizedToCancel();
@@ -1011,6 +1029,61 @@ contract OmniGovernance is
             bytes32(0), // no predecessor
             salt
         ));
+    }
+
+    // =========================================================================
+    // ERC2771Context Overrides (resolve diamond inheritance)
+    // =========================================================================
+
+    /**
+     * @notice Resolve _msgSender between ContextUpgradeable and
+     *         ERC2771ContextUpgradeable
+     * @dev Returns the original user address when called through the
+     *      trusted forwarder. Used by user-facing functions (propose,
+     *      castVote, cancel) to identify the actual user.
+     * @return The original transaction signer when relayed, or
+     *         msg.sender when direct
+     */
+    function _msgSender()
+        internal
+        view
+        override(ContextUpgradeable, ERC2771ContextUpgradeable)
+        returns (address)
+    {
+        return ERC2771ContextUpgradeable._msgSender();
+    }
+
+    /**
+     * @notice Resolve _msgData between ContextUpgradeable and
+     *         ERC2771ContextUpgradeable
+     * @dev Strips the appended sender address from calldata when
+     *      relayed
+     * @return The original calldata without the ERC2771 suffix
+     */
+    function _msgData()
+        internal
+        view
+        override(ContextUpgradeable, ERC2771ContextUpgradeable)
+        returns (bytes calldata)
+    {
+        return ERC2771ContextUpgradeable._msgData();
+    }
+
+    /**
+     * @notice Resolve _contextSuffixLength between
+     *         ContextUpgradeable and ERC2771ContextUpgradeable
+     * @dev Returns 20 (address length) for ERC2771 context suffix
+     *      stripping
+     * @return The number of bytes appended to calldata by the
+     *         forwarder (20)
+     */
+    function _contextSuffixLength()
+        internal
+        view
+        override(ContextUpgradeable, ERC2771ContextUpgradeable)
+        returns (uint256)
+    {
+        return ERC2771ContextUpgradeable._contextSuffixLength();
     }
 }
 /* solhint-enable max-states-count, ordering */

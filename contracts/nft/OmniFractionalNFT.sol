@@ -14,6 +14,10 @@ import {Ownable2Step, Ownable} from
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import {ERC20Burnable} from
     "@openzeppelin/contracts/token/ERC20/extensions/ERC20Burnable.sol";
+import {ERC2771Context} from
+    "@openzeppelin/contracts/metatx/ERC2771Context.sol";
+import {Context} from
+    "@openzeppelin/contracts/utils/Context.sol";
 
 /**
  * @title FractionToken
@@ -50,6 +54,24 @@ contract FractionToken is ERC20, ERC20Burnable {
         _mint(initialHolder, totalShares);
     }
 
+    // ── External functions ─────────────────────────────────────────────
+
+    /**
+     * @notice Burn tokens from an account without requiring ERC-20
+     *         allowance -- restricted to vault only.
+     * @dev M-03: Allows the vault to burn share tokens during redeem()
+     *      and executeBuyout() without the holder needing to call
+     *      approve() first. This improves UX by eliminating the extra
+     *      approval transaction while maintaining the same security
+     *      guarantee (only the vault can call this).
+     * @param account Account whose tokens will be burned.
+     * @param amount Amount of tokens to burn.
+     */
+    function vaultBurn(address account, uint256 amount) external {
+        if (msg.sender != VAULT) revert OnlyVault();
+        _burn(account, amount);
+    }
+
     // ── Public functions (overrides) ──────────────────────────────────
 
     /**
@@ -75,22 +97,6 @@ contract FractionToken is ERC20, ERC20Burnable {
         if (msg.sender != VAULT) revert OnlyVault();
         super.burnFrom(account, amount);
     }
-
-    /**
-     * @notice Burn tokens from an account without requiring ERC-20
-     *         allowance -- restricted to vault only.
-     * @dev M-03: Allows the vault to burn share tokens during redeem()
-     *      and executeBuyout() without the holder needing to call
-     *      approve() first. This improves UX by eliminating the extra
-     *      approval transaction while maintaining the same security
-     *      guarantee (only the vault can call this).
-     * @param account Account whose tokens will be burned.
-     * @param amount Amount of tokens to burn.
-     */
-    function vaultBurn(address account, uint256 amount) external {
-        if (msg.sender != VAULT) revert OnlyVault();
-        _burn(account, amount);
-    }
 }
 
 /**
@@ -103,7 +109,12 @@ contract FractionToken is ERC20, ERC20Burnable {
  *      once funded, remaining share-holders can claim their pro-rata
  *      share. Platform creation fee sent to the fee recipient.
  */
-contract OmniFractionalNFT is ERC721Holder, ReentrancyGuard, Ownable2Step {
+contract OmniFractionalNFT is
+    ERC721Holder,
+    ReentrancyGuard,
+    Ownable2Step,
+    ERC2771Context
+{
     using SafeERC20 for IERC20;
 
     // ── Structs ──────────────────────────────────────────────────────
@@ -240,11 +251,13 @@ contract OmniFractionalNFT is ERC721Holder, ReentrancyGuard, Ownable2Step {
      * @notice Deploy the fractionalization vault.
      * @param initialFeeRecipient Platform fee recipient.
      * @param initialFeeBps Fee in basis points (e.g. 100 = 1 %).
+     * @param trustedForwarder_ Trusted ERC-2771 forwarder address.
      */
     constructor(
         address initialFeeRecipient,
-        uint16 initialFeeBps
-    ) Ownable(msg.sender) {
+        uint16 initialFeeBps,
+        address trustedForwarder_
+    ) Ownable(msg.sender) ERC2771Context(trustedForwarder_) {
         // NFTSuite M-04: Validate fee recipient is non-zero
         if (initialFeeRecipient == address(0)) revert ZeroAddress();
         if (initialFeeBps > MAX_CREATION_FEE_BPS) revert FeeTooHigh();
@@ -272,6 +285,8 @@ contract OmniFractionalNFT is ERC721Holder, ReentrancyGuard, Ownable2Step {
     ) external nonReentrant returns (uint256 vaultId) {
         if (totalShares < 2) revert InvalidShareCount();
 
+        address caller = _msgSender();
+
         vaultId = nextVaultId;
         ++nextVaultId;
 
@@ -290,22 +305,22 @@ contract OmniFractionalNFT is ERC721Holder, ReentrancyGuard, Ownable2Step {
                 / BPS_DENOMINATOR;
             if (feeAmount > 0) {
                 IERC20(feeCurrency).safeTransferFrom(
-                    msg.sender, feeRecipient, feeAmount
+                    caller, feeRecipient, feeAmount
                 );
             }
         }
 
-        // Deploy fraction token — mints all shares to msg.sender
+        // Deploy fraction token — mints all shares to caller
         FractionToken token = new FractionToken(
             tokenName,
             tokenSymbol,
             address(this),
-            msg.sender,
+            caller,
             totalShares
         );
 
         vaults[vaultId] = Vault({
-            owner: msg.sender,
+            owner: caller,
             collection: collection,
             tokenId: tokenId,
             fractionToken: address(token),
@@ -322,14 +337,14 @@ contract OmniFractionalNFT is ERC721Holder, ReentrancyGuard, Ownable2Step {
 
         // Lock NFT in vault
         IERC721(collection).safeTransferFrom(
-            msg.sender,
+            caller,
             address(this),
             tokenId
         );
 
         emit Fractionalized(
             vaultId,
-            msg.sender,
+            caller,
             collection,
             tokenId,
             address(token),
@@ -346,23 +361,24 @@ contract OmniFractionalNFT is ERC721Holder, ReentrancyGuard, Ownable2Step {
         if (v.owner == address(0)) revert VaultNotFound();
         if (!v.active) revert VaultNotActive();
 
+        address caller = _msgSender();
         FractionToken token = FractionToken(v.fractionToken);
-        uint256 balance = token.balanceOf(msg.sender);
+        uint256 balance = token.balanceOf(caller);
         if (balance < v.totalShares) revert InsufficientShares();
 
         v.active = false;
 
         // M-03: Use vaultBurn to skip ERC-20 allowance requirement
-        token.vaultBurn(msg.sender, v.totalShares);
+        token.vaultBurn(caller, v.totalShares);
 
         // Return NFT
         IERC721(v.collection).safeTransferFrom(
             address(this),
-            msg.sender,
+            caller,
             v.tokenId
         );
 
-        emit Redeemed(vaultId, msg.sender);
+        emit Redeemed(vaultId, caller);
     }
 
     /**
@@ -386,10 +402,12 @@ contract OmniFractionalNFT is ERC721Holder, ReentrancyGuard, Ownable2Step {
         }
         if (totalPrice == 0) revert ZeroBuyoutPrice();
 
-        // H-04: Require proposer to hold >= 25 % of total shares
-        _validateProposerShares(v);
+        address caller = _msgSender();
 
-        v.buyoutProposer = msg.sender;
+        // H-04: Require proposer to hold >= 25 % of total shares
+        _validateProposerShares(v, caller);
+
+        v.buyoutProposer = caller;
         v.buyoutCurrency = currency;
 
         // H-02: Set buyout deadline
@@ -399,7 +417,7 @@ contract OmniFractionalNFT is ERC721Holder, ReentrancyGuard, Ownable2Step {
         uint256 balBefore =
             IERC20(currency).balanceOf(address(this));
         IERC20(currency).safeTransferFrom(
-            msg.sender,
+            caller,
             address(this),
             totalPrice
         );
@@ -407,7 +425,7 @@ contract OmniFractionalNFT is ERC721Holder, ReentrancyGuard, Ownable2Step {
             IERC20(currency).balanceOf(address(this)) - balBefore;
         v.buyoutPrice = received;
 
-        emit BuyoutProposed(vaultId, msg.sender, received);
+        emit BuyoutProposed(vaultId, caller, received);
     }
 
     /**
@@ -429,15 +447,17 @@ contract OmniFractionalNFT is ERC721Holder, ReentrancyGuard, Ownable2Step {
         }
         if (sharesToSell == 0) revert InvalidShareCount();
 
+        address caller = _msgSender();
+
         // H-04: Prevent proposer self-dealing
-        if (msg.sender == v.buyoutProposer) {
+        if (caller == v.buyoutProposer) {
             revert ProposerCannotSellToSelf();
         }
 
         // H-02: Ensure buyout has not expired
         _validateBuyoutNotExpired(v);
 
-        _processBuyoutSale(v, vaultId, sharesToSell);
+        _processBuyoutSale(v, vaultId, sharesToSell, caller);
     }
 
     /**
@@ -452,7 +472,7 @@ contract OmniFractionalNFT is ERC721Holder, ReentrancyGuard, Ownable2Step {
         if (v.buyoutProposer == address(0)) {
             revert NoBuyoutProposal();
         }
-        if (msg.sender != v.buyoutProposer) revert NotProposer();
+        if (_msgSender() != v.buyoutProposer) revert NotProposer();
 
         // Only allow cancellation after the deadline
         // solhint-disable-next-line not-rely-on-time
@@ -562,14 +582,16 @@ contract OmniFractionalNFT is ERC721Holder, ReentrancyGuard, Ownable2Step {
      * @param v Vault storage reference.
      * @param vaultId Vault identifier for events.
      * @param sharesToSell Number of shares to sell.
+     * @param caller The resolved caller address (via _msgSender).
      */
     function _processBuyoutSale(
         Vault storage v,
         uint256 vaultId,
-        uint256 sharesToSell
+        uint256 sharesToSell,
+        address caller
     ) internal {
         FractionToken token = FractionToken(v.fractionToken);
-        uint256 balance = token.balanceOf(msg.sender);
+        uint256 balance = token.balanceOf(caller);
         if (balance < sharesToSell) revert InsufficientShares();
 
         // Calculate pro-rata payment; protect against zero rounding
@@ -578,7 +600,7 @@ contract OmniFractionalNFT is ERC721Holder, ReentrancyGuard, Ownable2Step {
         if (payment == 0) revert PaymentTooSmall();
 
         // M-03: Use vaultBurn to skip ERC-20 allowance requirement
-        token.vaultBurn(msg.sender, sharesToSell);
+        token.vaultBurn(caller, sharesToSell);
 
         // M-02: If this seller is the last (totalSupply == 0 after
         // burn), give them the entire remaining buyout balance to
@@ -593,7 +615,7 @@ contract OmniFractionalNFT is ERC721Holder, ReentrancyGuard, Ownable2Step {
 
         // Pay seller
         IERC20(v.buyoutCurrency).safeTransfer(
-            msg.sender,
+            caller,
             payment
         );
 
@@ -626,12 +648,14 @@ contract OmniFractionalNFT is ERC721Holder, ReentrancyGuard, Ownable2Step {
      * @notice Validate proposer holds >= 25 % of total shares.
      * @dev Reverts with InsufficientProposerShares.
      * @param v Vault storage reference.
+     * @param caller The resolved caller address (via _msgSender).
      */
     function _validateProposerShares(
-        Vault storage v
+        Vault storage v,
+        address caller
     ) internal view {
         FractionToken token = FractionToken(v.fractionToken);
-        uint256 proposerBalance = token.balanceOf(msg.sender);
+        uint256 proposerBalance = token.balanceOf(caller);
         uint256 minRequired =
             (v.totalShares * MIN_PROPOSER_SHARE_BPS)
                 / BPS_DENOMINATOR;
@@ -652,5 +676,55 @@ contract OmniFractionalNFT is ERC721Holder, ReentrancyGuard, Ownable2Step {
         if (block.timestamp > v.buyoutDeadline) {
             revert BuyoutExpired();
         }
+    }
+
+    // ── ERC-2771 overrides (Context diamond resolution) ───────────
+
+    /**
+     * @notice Return the sender of the call, accounting for
+     *         ERC-2771 meta-transactions.
+     * @dev Delegates to ERC2771Context to extract the original
+     *      sender when the call comes from the trusted forwarder.
+     * @return The resolved sender address.
+     */
+    function _msgSender()
+        internal
+        view
+        override(Context, ERC2771Context)
+        returns (address)
+    {
+        return ERC2771Context._msgSender();
+    }
+
+    /**
+     * @notice Return the calldata of the call, accounting for
+     *         ERC-2771 meta-transactions.
+     * @dev Delegates to ERC2771Context to strip the appended
+     *      sender address when the call comes from the trusted
+     *      forwarder.
+     * @return The resolved calldata.
+     */
+    function _msgData()
+        internal
+        view
+        override(Context, ERC2771Context)
+        returns (bytes calldata)
+    {
+        return ERC2771Context._msgData();
+    }
+
+    /**
+     * @notice Return the context suffix length for ERC-2771.
+     * @dev ERC-2771 appends 20 bytes (the sender address) to
+     *      the calldata.
+     * @return Length of the context suffix (20).
+     */
+    function _contextSuffixLength()
+        internal
+        view
+        override(Context, ERC2771Context)
+        returns (uint256)
+    {
+        return ERC2771Context._contextSuffixLength();
     }
 }

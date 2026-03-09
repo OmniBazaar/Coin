@@ -14,7 +14,7 @@ describe("OmniCore", function () {
 
     // Deploy OmniCoin token
     const Token = await ethers.getContractFactory("OmniCoin");
-    token = await Token.deploy();
+    token = await Token.deploy(ethers.ZeroAddress);
     await token.initialize();
 
     // Deploy upgradeable OmniCore using proxy
@@ -22,20 +22,20 @@ describe("OmniCore", function () {
     core = await upgrades.deployProxy(
       OmniCore,
       [owner.address, token.target, owner.address, owner.address],
-      { initializer: "initialize" }
+      { initializer: "initialize", constructorArgs: [ethers.ZeroAddress] }
     );
 
     // Grant MINTER_ROLE to core contract so it can mint rewards
     await token.grantRole(await token.MINTER_ROLE(), core.target);
 
-    // Setup: Give users tokens
-    await token.mint(validator1.address, ethers.parseEther("10000"));
-    await token.mint(validator2.address, ethers.parseEther("10000"));
-    await token.mint(staker1.address, ethers.parseEther("10000"));
-    await token.mint(staker2.address, ethers.parseEther("10000"));
+    // Setup: Give users tokens (transfer from deployer's pre-minted supply)
+    await token.transfer(validator1.address, ethers.parseEther("10000"));
+    await token.transfer(validator2.address, ethers.parseEther("10000"));
+    await token.transfer(staker1.address, ethers.parseEther("10000"));
+    await token.transfer(staker2.address, ethers.parseEther("10000"));
 
-    // Mint some tokens to core for rewards distribution
-    await token.mint(core.target, ethers.parseEther("100000"));
+    // Transfer tokens to core for rewards distribution
+    await token.transfer(core.target, ethers.parseEther("100000"));
 
     // Approve core contract
     await token.connect(validator1).approve(core.target, ethers.parseEther("10000"));
@@ -73,7 +73,7 @@ describe("OmniCore", function () {
       const OmniCoreV2 = await ethers.getContractFactory("OmniCore", validator1);
 
       await expect(
-        upgrades.upgradeProxy(core.target, OmniCoreV2)
+        upgrades.upgradeProxy(core.target, OmniCoreV2, { constructorArgs: [ethers.ZeroAddress] })
       ).to.be.reverted;
     });
 

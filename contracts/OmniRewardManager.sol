@@ -15,6 +15,10 @@ import {ReentrancyGuardUpgradeable} from
     "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
 import {EIP712Upgradeable} from
     "@openzeppelin/contracts-upgradeable/utils/cryptography/EIP712Upgradeable.sol";
+import {ERC2771ContextUpgradeable} from
+    "@openzeppelin/contracts-upgradeable/metatx/ERC2771ContextUpgradeable.sol";
+import {ContextUpgradeable} from
+    "@openzeppelin/contracts-upgradeable/utils/ContextUpgradeable.sol";
 import {IOmniRegistration} from "./interfaces/IOmniRegistration.sol";
 
 /**
@@ -42,7 +46,8 @@ contract OmniRewardManager is
     UUPSUpgradeable,
     PausableUpgradeable,
     ReentrancyGuardUpgradeable,
-    EIP712Upgradeable
+    EIP712Upgradeable,
+    ERC2771ContextUpgradeable
 {
     using SafeERC20 for IERC20;
 
@@ -503,7 +508,9 @@ contract OmniRewardManager is
      * @dev Required for UUPS proxy pattern security
      * @custom:oz-upgrades-unsafe-allow constructor
      */
-    constructor() {
+    constructor(
+        address trustedForwarder_
+    ) ERC2771ContextUpgradeable(trustedForwarder_) {
         _disableInitializers();
     }
 
@@ -868,24 +875,26 @@ contract OmniRewardManager is
      * - ODDAO address must be set (required for referral distribution)
      */
     function claimWelcomeBonusPermissionless() external nonReentrant whenNotPaused {
+        address caller = _msgSender();
+
         if (address(registrationContract) == address(0)) {
             revert RegistrationContractNotSet();
         }
 
         // Get registration data from OmniRegistration contract
-        IOmniRegistration.Registration memory reg = registrationContract.getRegistration(msg.sender);
+        IOmniRegistration.Registration memory reg = registrationContract.getRegistration(caller);
 
         // Verify eligibility
-        if (reg.timestamp == 0) revert UserNotRegistered(msg.sender);
+        if (reg.timestamp == 0) revert UserNotRegistered(caller);
         if (reg.welcomeBonusClaimed) {
-            revert BonusAlreadyClaimed(msg.sender, PoolType.WelcomeBonus);
+            revert BonusAlreadyClaimed(caller, PoolType.WelcomeBonus);
         }
 
         // CRITICAL: Verify KYC Tier 1 completion (phone + social verified)
         // This prevents Sybil attacks where bots register and immediately claim bonuses
         // without completing any identity verification
-        if (!registrationContract.hasKycTier1(msg.sender)) {
-            revert KycTier1Required(msg.sender);
+        if (!registrationContract.hasKycTier1(caller)) {
+            revert KycTier1Required(caller);
         }
 
         // Check daily rate limit
@@ -907,25 +916,25 @@ contract OmniRewardManager is
         _validatePoolBalance(welcomeBonusPool, PoolType.WelcomeBonus, bonusAmount);
 
         // Mark as claimed in registration contract
-        registrationContract.markWelcomeBonusClaimed(msg.sender);
+        registrationContract.markWelcomeBonusClaimed(caller);
 
         // Mark as claimed locally (for backward compatibility)
-        welcomeBonusClaimed[msg.sender] = true;
+        welcomeBonusClaimed[caller] = true;
 
         // Increment claim count BEFORE transfer (for accurate tier calculation)
         ++welcomeBonusClaimCount;
 
         // Update pool and transfer
         _updatePoolAfterDistribution(welcomeBonusPool, bonusAmount);
-        omniCoin.safeTransfer(msg.sender, bonusAmount);
+        omniCoin.safeTransfer(caller, bonusAmount);
 
-        emit PermissionlessWelcomeBonusClaimed(msg.sender, bonusAmount, reg.referrer);
-        emit WelcomeBonusClaimed(msg.sender, bonusAmount, welcomeBonusPool.remaining);
+        emit PermissionlessWelcomeBonusClaimed(caller, bonusAmount, reg.referrer);
+        emit WelcomeBonusClaimed(caller, bonusAmount, welcomeBonusPool.remaining);
         _checkPoolThreshold(PoolType.WelcomeBonus, welcomeBonusPool);
 
         // Auto-trigger referral bonus if referrer exists (use effectiveClaims for tier calc)
         if (reg.referrer != address(0)) {
-            _distributeAutoReferralBonus(reg.referrer, msg.sender, effectiveClaims);
+            _distributeAutoReferralBonus(reg.referrer, caller, effectiveClaims);
         }
     }
 
@@ -950,25 +959,27 @@ contract OmniRewardManager is
      * - Bonus amount calculated based on registration number
      */
     function claimWelcomeBonusTrustless() external nonReentrant whenNotPaused {
+        address caller = _msgSender();
+
         if (address(registrationContract) == address(0)) {
             revert RegistrationContractNotSet();
         }
 
         // Get registration data from OmniRegistration contract
-        IOmniRegistration.Registration memory reg = registrationContract.getRegistration(msg.sender);
+        IOmniRegistration.Registration memory reg = registrationContract.getRegistration(caller);
 
         // Verify user is registered
-        if (reg.timestamp == 0) revert UserNotRegistered(msg.sender);
+        if (reg.timestamp == 0) revert UserNotRegistered(caller);
 
         // Verify welcome bonus not already claimed
         if (reg.welcomeBonusClaimed) {
-            revert BonusAlreadyClaimed(msg.sender, PoolType.WelcomeBonus);
+            revert BonusAlreadyClaimed(caller, PoolType.WelcomeBonus);
         }
 
         // CRITICAL: Verify KYC Tier 1 completion via on-chain verification
         // This checks that user has submitted phone AND social verification proofs on-chain
-        if (!registrationContract.hasKycTier1(msg.sender)) {
-            revert KycTier1Required(msg.sender);
+        if (!registrationContract.hasKycTier1(caller)) {
+            revert KycTier1Required(caller);
         }
 
         // Check daily rate limit
@@ -988,25 +999,25 @@ contract OmniRewardManager is
         _validatePoolBalance(welcomeBonusPool, PoolType.WelcomeBonus, bonusAmount);
 
         // Mark as claimed in registration contract
-        registrationContract.markWelcomeBonusClaimed(msg.sender);
+        registrationContract.markWelcomeBonusClaimed(caller);
 
         // Mark as claimed locally (for backward compatibility)
-        welcomeBonusClaimed[msg.sender] = true;
+        welcomeBonusClaimed[caller] = true;
 
         // Increment claim count BEFORE transfer (for accurate tier calculation)
         ++welcomeBonusClaimCount;
 
         // Update pool and transfer
         _updatePoolAfterDistribution(welcomeBonusPool, bonusAmount);
-        omniCoin.safeTransfer(msg.sender, bonusAmount);
+        omniCoin.safeTransfer(caller, bonusAmount);
 
-        emit TrustlessWelcomeBonusClaimed(msg.sender, bonusAmount, reg.referrer);
-        emit WelcomeBonusClaimed(msg.sender, bonusAmount, welcomeBonusPool.remaining);
+        emit TrustlessWelcomeBonusClaimed(caller, bonusAmount, reg.referrer);
+        emit WelcomeBonusClaimed(caller, bonusAmount, welcomeBonusPool.remaining);
         _checkPoolThreshold(PoolType.WelcomeBonus, welcomeBonusPool);
 
         // Auto-trigger referral bonus if referrer exists (use effectiveClaims for tier calc)
         if (reg.referrer != address(0)) {
-            _distributeAutoReferralBonus(reg.referrer, msg.sender, effectiveClaims);
+            _distributeAutoReferralBonus(reg.referrer, caller, effectiveClaims);
         }
     }
 
@@ -1149,11 +1160,12 @@ contract OmniRewardManager is
      * - Daily rate limit enforced
      */
     function claimReferralBonusPermissionless() external nonReentrant whenNotPaused {
-        uint256 pending = pendingReferralBonuses[msg.sender];
+        address caller = _msgSender();
+        uint256 pending = pendingReferralBonuses[caller];
 
         // Check has pending bonus
         if (pending == 0) {
-            revert NoPendingReferralBonus(msg.sender);
+            revert NoPendingReferralBonus(caller);
         }
 
         // Check daily rate limit
@@ -1164,13 +1176,13 @@ contract OmniRewardManager is
         ++dailyReferralBonusCount[today];
 
         // Clear pending bonus
-        pendingReferralBonuses[msg.sender] = 0;
+        pendingReferralBonuses[caller] = 0;
 
         // Transfer bonus
-        omniCoin.safeTransfer(msg.sender, pending);
+        omniCoin.safeTransfer(caller, pending);
 
-        emit ReferralBonusClaimedPermissionless(msg.sender, pending);
-        emit ReferralBonusClaimed(msg.sender, address(0), pending);
+        emit ReferralBonusClaimedPermissionless(caller, pending);
+        emit ReferralBonusClaimed(caller, address(0), pending);
         _checkPoolThreshold(PoolType.ReferralBonus, referralBonusPool);
     }
 
@@ -1255,22 +1267,24 @@ contract OmniRewardManager is
      *      by OmniRegistration.firstSaleCompleted (set by marketplace/escrow).
      */
     function claimFirstSaleBonusPermissionless() external nonReentrant whenNotPaused {
+        address caller = _msgSender();
+
         if (address(registrationContract) == address(0)) {
             revert RegistrationContractNotSet();
         }
 
         // Get registration data
-        IOmniRegistration.Registration memory reg = registrationContract.getRegistration(msg.sender);
+        IOmniRegistration.Registration memory reg = registrationContract.getRegistration(caller);
 
         // Verify eligibility
-        if (reg.timestamp == 0) revert UserNotRegistered(msg.sender);
+        if (reg.timestamp == 0) revert UserNotRegistered(caller);
         if (reg.firstSaleBonusClaimed) {
-            revert BonusAlreadyClaimed(msg.sender, PoolType.FirstSaleBonus);
+            revert BonusAlreadyClaimed(caller, PoolType.FirstSaleBonus);
         }
 
         // Verify user has actually completed a first sale
-        if (!registrationContract.hasCompletedFirstSale(msg.sender)) {
-            revert FirstSaleNotCompleted(msg.sender);
+        if (!registrationContract.hasCompletedFirstSale(caller)) {
+            revert FirstSaleNotCompleted(caller);
         }
 
         // Check daily rate limit
@@ -1290,14 +1304,14 @@ contract OmniRewardManager is
         _validatePoolBalance(firstSaleBonusPool, PoolType.FirstSaleBonus, bonusAmount);
 
         // Mark as claimed
-        registrationContract.markFirstSaleBonusClaimed(msg.sender);
-        firstSaleBonusClaimed[msg.sender] = true;
+        registrationContract.markFirstSaleBonusClaimed(caller);
+        firstSaleBonusClaimed[caller] = true;
 
         // Update pool and transfer
         _updatePoolAfterDistribution(firstSaleBonusPool, bonusAmount);
-        omniCoin.safeTransfer(msg.sender, bonusAmount);
+        omniCoin.safeTransfer(caller, bonusAmount);
 
-        emit FirstSaleBonusClaimed(msg.sender, bonusAmount, firstSaleBonusPool.remaining);
+        emit FirstSaleBonusClaimed(caller, bonusAmount, firstSaleBonusPool.remaining);
         _checkPoolThreshold(PoolType.FirstSaleBonus, firstSaleBonusPool);
     }
 
@@ -2042,5 +2056,53 @@ contract OmniRewardManager is
         if (!MerkleProof.verify(proof, merkleRoot, leaf)) {
             revert InvalidMerkleProof(user, poolType);
         }
+    }
+
+    // ============ ERC-2771 Context Overrides ============
+
+    /**
+     * @notice Resolve diamond inheritance for _msgSender()
+     * @dev Delegates to ERC2771ContextUpgradeable so that calls from
+     *      the trusted forwarder extract the real sender from calldata.
+     * @return The original sender when called via trusted forwarder,
+     *         otherwise msg.sender
+     */
+    function _msgSender()
+        internal
+        view
+        override(ContextUpgradeable, ERC2771ContextUpgradeable)
+        returns (address)
+    {
+        return ERC2771ContextUpgradeable._msgSender();
+    }
+
+    /**
+     * @notice Resolve diamond inheritance for _msgData()
+     * @dev Delegates to ERC2771ContextUpgradeable so that calls from
+     *      the trusted forwarder strip the appended sender address.
+     * @return The original calldata without the appended sender
+     */
+    function _msgData()
+        internal
+        view
+        override(ContextUpgradeable, ERC2771ContextUpgradeable)
+        returns (bytes calldata)
+    {
+        return ERC2771ContextUpgradeable._msgData();
+    }
+
+    /**
+     * @notice Resolve diamond inheritance for _contextSuffixLength()
+     * @dev Delegates to ERC2771ContextUpgradeable which returns 20
+     *      (the length of an address appended by ERC-2771 forwarders).
+     * @return The context suffix length (20 bytes for ERC-2771)
+     */
+    function _contextSuffixLength()
+        internal
+        view
+        override(ContextUpgradeable, ERC2771ContextUpgradeable)
+        returns (uint256)
+    {
+        return ERC2771ContextUpgradeable._contextSuffixLength();
     }
 }

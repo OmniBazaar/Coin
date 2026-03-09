@@ -17,6 +17,14 @@ import {
     UUPSUpgradeable
 } from "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
 import {
+    ERC2771ContextUpgradeable
+} from
+    "@openzeppelin/contracts-upgradeable/metatx/ERC2771ContextUpgradeable.sol";
+import {
+    ContextUpgradeable
+} from
+    "@openzeppelin/contracts-upgradeable/utils/ContextUpgradeable.sol";
+import {
     ECDSA
 } from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 import {
@@ -76,7 +84,8 @@ contract PrivateDEXSettlement is
     AccessControlUpgradeable,
     PausableUpgradeable,
     ReentrancyGuardUpgradeable,
-    UUPSUpgradeable
+    UUPSUpgradeable,
+    ERC2771ContextUpgradeable
 {
     using MpcCore for gtUint64;
     using MpcCore for ctUint64;
@@ -370,10 +379,18 @@ contract PrivateDEXSettlement is
     /**
      * @notice Constructor for PrivateDEXSettlement (upgradeable pattern)
      * @dev Disables initializers to prevent implementation contract
-     *      from being initialized directly.
+     *      from being initialized directly. Stores the trusted
+     *      forwarder address immutably in bytecode (safe for
+     *      proxies because immutables live in the implementation
+     *      bytecode, not in proxy storage).
+     * @param trustedForwarder_ OmniForwarder address for gasless
+     *        meta-transactions (ERC-2771). Use address(0) to
+     *        disable meta-transaction support.
      * @custom:oz-upgrades-unsafe-allow constructor
      */
-    constructor() {
+    constructor(
+        address trustedForwarder_
+    ) ERC2771ContextUpgradeable(trustedForwarder_) {
         _disableInitializers();
     }
 
@@ -646,13 +663,14 @@ contract PrivateDEXSettlement is
     function cancelPrivateIntent(
         bytes32 intentId
     ) external whenNotPaused nonReentrant {
+        address caller = _msgSender();
         PrivateCollateral storage col =
             privateCollateral[intentId];
 
         if (col.status != SettlementStatus.LOCKED) {
             revert CollateralNotLocked();
         }
-        if (msg.sender != col.trader) revert NotTrader();
+        if (caller != col.trader) revert NotTrader();
 
         // M-02: Enforce minimum lock period before cancellation
         // solhint-disable-next-line not-rely-on-time
@@ -662,7 +680,7 @@ contract PrivateDEXSettlement is
         }
 
         col.status = SettlementStatus.CANCELLED;
-        emit PrivateIntentCancelled(intentId, msg.sender);
+        emit PrivateIntentCancelled(intentId, caller);
     }
 
     /**
@@ -677,8 +695,10 @@ contract PrivateDEXSettlement is
      *      true for unsigned integers.
      */
     function claimFees() external nonReentrant {
+        address caller = _msgSender();
+
         // Load current accumulated fees for caller
-        ctUint64 encBalance = accumulatedFees[msg.sender];
+        ctUint64 encBalance = accumulatedFees[caller];
         gtUint64 gtBalance = MpcCore.onBoard(encBalance);
 
         // C-02: Use gt (strictly greater than) instead of ge
@@ -690,11 +710,11 @@ contract PrivateDEXSettlement is
         }
 
         // Reset accumulated fees to zero
-        accumulatedFees[msg.sender] = MpcCore.offBoard(gtZero);
+        accumulatedFees[caller] = MpcCore.offBoard(gtZero);
 
         // L-02: Include encrypted amount in event for bridge
         emit FeesClaimed(
-            msg.sender,
+            caller,
             bytes32(ctUint64.unwrap(encBalance))
         );
     }
@@ -878,9 +898,10 @@ contract PrivateDEXSettlement is
     function getAccumulatedFees(
         address recipient
     ) external view returns (ctUint64) {
+        address caller = _msgSender();
         if (
-            msg.sender != recipient &&
-            !hasRole(ADMIN_ROLE, msg.sender)
+            caller != recipient &&
+            !hasRole(ADMIN_ROLE, caller)
         ) {
             revert NotAuthorized();
         }
@@ -1002,5 +1023,62 @@ contract PrivateDEXSettlement is
             MessageHashUtils.toEthSignedMessageHash(commitment);
         address signer = ECDSA.recover(ethSignedHash, signature);
         if (signer != trader) revert InvalidTraderSignature();
+    }
+
+    // ====================================================================
+    // ERC-2771 CONTEXT OVERRIDES
+    // ====================================================================
+
+    /**
+     * @notice Return the true sender of the call
+     * @dev When called via the trusted forwarder the last 20 bytes
+     *      of calldata contain the original sender; otherwise falls
+     *      back to the standard msg.sender. Resolves the diamond
+     *      between ContextUpgradeable (AccessControlUpgradeable,
+     *      PausableUpgradeable) and ERC2771ContextUpgradeable.
+     * @return The address that initiated the current call
+     */
+    function _msgSender()
+        internal
+        view
+        override(ContextUpgradeable, ERC2771ContextUpgradeable)
+        returns (address)
+    {
+        return ERC2771ContextUpgradeable._msgSender();
+    }
+
+    /**
+     * @notice Return the true calldata of the call
+     * @dev When called via the trusted forwarder the trailing 20
+     *      bytes (original sender) are stripped; otherwise returns
+     *      the full msg.data. Resolves the diamond between
+     *      ContextUpgradeable and ERC2771ContextUpgradeable.
+     * @return The calldata without the appended sender address
+     */
+    function _msgData()
+        internal
+        view
+        override(ContextUpgradeable, ERC2771ContextUpgradeable)
+        returns (bytes calldata)
+    {
+        return ERC2771ContextUpgradeable._msgData();
+    }
+
+    /**
+     * @notice Return the length of the context suffix appended by
+     *         the trusted forwarder
+     * @dev Returns 20 (the sender address length) when a trusted
+     *      forwarder is configured, 0 otherwise. Resolves the
+     *      diamond between ContextUpgradeable and
+     *      ERC2771ContextUpgradeable.
+     * @return Length in bytes of the context suffix
+     */
+    function _contextSuffixLength()
+        internal
+        view
+        override(ContextUpgradeable, ERC2771ContextUpgradeable)
+        returns (uint256)
+    {
+        return ERC2771ContextUpgradeable._contextSuffixLength();
     }
 }

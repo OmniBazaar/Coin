@@ -40,7 +40,12 @@ describe("PrivateDEXSettlement", function () {
         const settlement = await upgrades.deployProxy(
             Factory,
             [admin.address, oddao.address, stakingPool.address],
-            { initializer: "initialize", kind: "uups" }
+            {
+                initializer: "initialize",
+                kind: "uups",
+                constructorArgs: [ethers.ZeroAddress],
+                unsafeAllow: ["constructor"],
+            }
         );
 
         // Grant SETTLER_ROLE to the dedicated settler signer
@@ -138,7 +143,12 @@ describe("PrivateDEXSettlement", function () {
                 upgrades.deployProxy(
                     Factory,
                     [ethers.ZeroAddress, oddao.address, stakingPool.address],
-                    { initializer: "initialize", kind: "uups" }
+                    {
+                initializer: "initialize",
+                kind: "uups",
+                constructorArgs: [ethers.ZeroAddress],
+                unsafeAllow: ["constructor"],
+            }
                 )
             ).to.be.revertedWithCustomError(Factory, "InvalidAddress");
         });
@@ -150,7 +160,12 @@ describe("PrivateDEXSettlement", function () {
                 upgrades.deployProxy(
                     Factory,
                     [admin.address, ethers.ZeroAddress, stakingPool.address],
-                    { initializer: "initialize", kind: "uups" }
+                    {
+                initializer: "initialize",
+                kind: "uups",
+                constructorArgs: [ethers.ZeroAddress],
+                unsafeAllow: ["constructor"],
+            }
                 )
             ).to.be.revertedWithCustomError(Factory, "InvalidAddress");
         });
@@ -162,7 +177,12 @@ describe("PrivateDEXSettlement", function () {
                 upgrades.deployProxy(
                     Factory,
                     [admin.address, oddao.address, ethers.ZeroAddress],
-                    { initializer: "initialize", kind: "uups" }
+                    {
+                initializer: "initialize",
+                kind: "uups",
+                constructorArgs: [ethers.ZeroAddress],
+                unsafeAllow: ["constructor"],
+            }
                 )
             ).to.be.revertedWithCustomError(Factory, "InvalidAddress");
         });

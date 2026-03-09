@@ -8,7 +8,7 @@ describe("MintController", function () {
 
     // Deploy OmniCoin
     const OmniCoin = await ethers.getContractFactory("OmniCoin");
-    const token = await OmniCoin.deploy();
+    const token = await OmniCoin.deploy(ethers.ZeroAddress);
     await token.waitForDeployment();
     await token.initialize();
 

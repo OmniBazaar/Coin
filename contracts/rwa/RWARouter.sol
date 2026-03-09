@@ -4,6 +4,8 @@ pragma solidity 0.8.24;
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import {ERC2771Context} from
+    "@openzeppelin/contracts/metatx/ERC2771Context.sol";
 import {IRWAAMM} from "./interfaces/IRWAAMM.sol";
 import {IRWAPool} from "./interfaces/IRWAPool.sol";
 
@@ -45,7 +47,7 @@ import {IRWAPool} from "./interfaces/IRWAPool.sol";
  * - Balance-delta measurement on all swap hops
  * - All swaps routed through RWAAMM (compliance, fees, pause)
  */
-contract RWARouter is ReentrancyGuard {
+contract RWARouter is ReentrancyGuard, ERC2771Context {
     using SafeERC20 for IERC20;
 
     // ========================================================================
@@ -190,8 +192,12 @@ contract RWARouter is ReentrancyGuard {
     /**
      * @notice Deploy the router
      * @param _amm Core AMM contract address
+     * @param trustedForwarder_ Trusted ERC-2771 forwarder address
      */
-    constructor(address _amm) {
+    constructor(
+        address _amm,
+        address trustedForwarder_
+    ) ERC2771Context(trustedForwarder_) {
         if (_amm == address(0)) revert ZeroAddress();
 
         AMM = IRWAAMM(_amm);
@@ -232,13 +238,15 @@ contract RWARouter is ReentrancyGuard {
         if (amountOutMin == 0) revert ZeroMinimumOutput();
         if (to == address(0)) revert ZeroAddress();
 
+        address caller = _msgSender();
+
         amounts = new uint256[](path.length);
         amounts[0] = amountIn;
 
         // Execute each hop through RWAAMM.
         // Every hop uses the balance-delta pattern to handle
         // fee-on-transfer tokens correctly on all hops, not
-        // just the first. The original msg.sender is passed
+        // just the first. The original caller is passed
         // for compliance context in the event emission.
         for (uint256 i = 0; i < path.length - 1; ++i) {
             // Determine recipient: next hop goes to router,
@@ -254,7 +262,7 @@ contract RWARouter is ReentrancyGuard {
                     address(this)
                 );
                 IERC20(path[i]).safeTransferFrom(
-                    msg.sender, address(this), amounts[i]
+                    caller, address(this), amounts[i]
                 );
                 uint256 actualReceived = IERC20(path[i]).balanceOf(
                     address(this)
@@ -312,7 +320,7 @@ contract RWARouter is ReentrancyGuard {
         }
 
         emit SwapExecuted(
-            msg.sender,
+            caller,
             path,
             amountIn,
             amounts[amounts.length - 1]
@@ -348,6 +356,8 @@ contract RWARouter is ReentrancyGuard {
         if (amountOut == 0) revert ZeroAmount();
         if (to == address(0)) revert ZeroAddress();
 
+        address caller = _msgSender();
+
         // Calculate required input amounts (reverse)
         amounts = getAmountsIn(amountOut, path);
 
@@ -363,7 +373,7 @@ contract RWARouter is ReentrancyGuard {
                 : to;
 
             IERC20(path[i]).safeTransferFrom(
-                i == 0 ? msg.sender : address(this),
+                i == 0 ? caller : address(this),
                 address(this),
                 amounts[i]
             );
@@ -398,7 +408,7 @@ contract RWARouter is ReentrancyGuard {
             );
         }
 
-        emit SwapExecuted(msg.sender, path, amounts[0], amountOut);
+        emit SwapExecuted(caller, path, amounts[0], amountOut);
     }
     /* solhint-enable code-complexity */
 
@@ -442,6 +452,8 @@ contract RWARouter is ReentrancyGuard {
         }
         if (to == address(0)) revert ZeroAddress();
 
+        address caller = _msgSender();
+
         // Verify pool exists (router does not auto-create pools)
         address pool = AMM.getPool(tokenA, tokenB);
         if (pool == address(0)) {
@@ -450,10 +462,10 @@ contract RWARouter is ReentrancyGuard {
 
         // Transfer tokens from user to this contract, then approve AMM
         IERC20(tokenA).safeTransferFrom(
-            msg.sender, address(this), amountADesired
+            caller, address(this), amountADesired
         );
         IERC20(tokenB).safeTransferFrom(
-            msg.sender, address(this), amountBDesired
+            caller, address(this), amountBDesired
         );
         IERC20(tokenA).forceApprove(address(AMM), amountADesired);
         IERC20(tokenB).forceApprove(address(AMM), amountBDesired);
@@ -479,14 +491,14 @@ contract RWARouter is ReentrancyGuard {
         uint256 remainingA = amountADesired - amountA;
         uint256 remainingB = amountBDesired - amountB;
         if (remainingA > 0) {
-            IERC20(tokenA).safeTransfer(msg.sender, remainingA);
+            IERC20(tokenA).safeTransfer(caller, remainingA);
         }
         if (remainingB > 0) {
-            IERC20(tokenB).safeTransfer(msg.sender, remainingB);
+            IERC20(tokenB).safeTransfer(caller, remainingB);
         }
 
         emit LiquidityAdded(
-            msg.sender, tokenA, tokenB,
+            caller, tokenA, tokenB,
             amountA, amountB, liquidity
         );
     }
@@ -523,6 +535,8 @@ contract RWARouter is ReentrancyGuard {
         if (to == address(0)) revert ZeroAddress();
         if (liquidity == 0) revert ZeroAmount();
 
+        address caller = _msgSender();
+
         address pool = AMM.getPool(tokenA, tokenB);
         if (pool == address(0)) {
             revert PoolDoesNotExist(tokenA, tokenB);
@@ -530,7 +544,7 @@ contract RWARouter is ReentrancyGuard {
 
         // Transfer LP tokens from user and approve AMM
         IERC20(pool).safeTransferFrom(
-            msg.sender, address(this), liquidity
+            caller, address(this), liquidity
         );
         IERC20(pool).forceApprove(address(AMM), liquidity);
 
@@ -556,7 +570,7 @@ contract RWARouter is ReentrancyGuard {
         }
 
         emit LiquidityRemoved(
-            msg.sender, tokenA, tokenB,
+            caller, tokenA, tokenB,
             amountA, amountB, liquidity
         );
     }

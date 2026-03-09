@@ -9,6 +9,10 @@ import {ReentrancyGuardUpgradeable} from
     "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
 import {PausableUpgradeable} from
     "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol";
+import {ERC2771ContextUpgradeable} from
+    "@openzeppelin/contracts-upgradeable/metatx/ERC2771ContextUpgradeable.sol";
+import {ContextUpgradeable} from
+    "@openzeppelin/contracts-upgradeable/utils/ContextUpgradeable.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from
     "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
@@ -228,7 +232,8 @@ contract OmniArbitration is
     AccessControlUpgradeable,
     UUPSUpgradeable,
     ReentrancyGuardUpgradeable,
-    PausableUpgradeable
+    PausableUpgradeable,
+    ERC2771ContextUpgradeable
 {
     using SafeERC20 for IERC20;
 
@@ -589,7 +594,9 @@ contract OmniArbitration is
     // ══════════════════════════════════════════════════════════════════
 
     /// @custom:oz-upgrades-unsafe-allow constructor
-    constructor() {
+    constructor(
+        address trustedForwarder_
+    ) ERC2771ContextUpgradeable(trustedForwarder_) {
         _disableInitializers();
     }
 
@@ -649,7 +656,9 @@ contract OmniArbitration is
     function registerArbitrator(
         uint256 amount
     ) external nonReentrant whenNotPaused {
-        if (!participation.canBeValidator(msg.sender)) {
+        address caller = _msgSender();
+
+        if (!participation.canBeValidator(caller)) {
             revert NotQualifiedArbitrator();
         }
         if (amount < minArbitratorStake) {
@@ -660,20 +669,20 @@ contract OmniArbitration is
         }
 
         xomToken.safeTransferFrom(
-            msg.sender,
+            caller,
             address(this),
             amount
         );
-        arbitratorStakes[msg.sender] += amount;
+        arbitratorStakes[caller] += amount;
 
-        if (!isInArbitratorPool[msg.sender]) {
-            isInArbitratorPool[msg.sender] = true;
-            arbitratorPoolIndex[msg.sender] =
+        if (!isInArbitratorPool[caller]) {
+            isInArbitratorPool[caller] = true;
+            arbitratorPoolIndex[caller] =
                 arbitratorPool.length;
-            arbitratorPool.push(msg.sender);
+            arbitratorPool.push(caller);
         }
 
-        emit ArbitratorRegistered(msg.sender, amount);
+        emit ArbitratorRegistered(caller, amount);
     }
 
     /**
@@ -686,31 +695,33 @@ contract OmniArbitration is
     function withdrawArbitratorStake(
         uint256 amount
     ) external nonReentrant {
+        address caller = _msgSender();
+
         // H-01: Block withdrawal while assigned to active disputes
-        if (activeDisputeCount[msg.sender] > 0) {
+        if (activeDisputeCount[caller] > 0) {
             revert ArbitratorBusyInDispute();
         }
 
-        if (arbitratorStakes[msg.sender] < amount) {
+        if (arbitratorStakes[caller] < amount) {
             revert InsufficientArbitratorStake(
-                arbitratorStakes[msg.sender],
+                arbitratorStakes[caller],
                 amount
             );
         }
 
-        arbitratorStakes[msg.sender] -= amount;
+        arbitratorStakes[caller] -= amount;
 
         // M-03: Remove from pool via swap-and-pop if below minimum
         if (
-            arbitratorStakes[msg.sender] < minArbitratorStake &&
-            isInArbitratorPool[msg.sender]
+            arbitratorStakes[caller] < minArbitratorStake &&
+            isInArbitratorPool[caller]
         ) {
-            _removeFromArbitratorPool(msg.sender);
+            _removeFromArbitratorPool(caller);
         }
 
-        xomToken.safeTransfer(msg.sender, amount);
+        xomToken.safeTransfer(caller, amount);
 
-        emit ArbitratorWithdrawn(msg.sender, amount);
+        emit ArbitratorWithdrawn(caller, amount);
     }
 
     // ══════════════════════════════════════════════════════════════════
@@ -731,6 +742,8 @@ contract OmniArbitration is
     function createDispute(
         uint256 escrowId
     ) external nonReentrant whenNotPaused {
+        address caller = _msgSender();
+
         // C-03: Prevent duplicate disputes per escrow
         if (escrowToDisputeId[escrowId] != 0) {
             revert EscrowAlreadyDisputed(escrowId);
@@ -741,7 +754,7 @@ contract OmniArbitration is
         uint256 amount = escrow.getAmount(escrowId);
 
         // Only buyer or seller can dispute
-        if (msg.sender != buyer && msg.sender != seller) {
+        if (caller != buyer && caller != seller) {
             revert NotEscrowParty();
         }
 
@@ -749,7 +762,7 @@ contract OmniArbitration is
         uint256 fee =
             (amount * ARBITRATION_FEE_BPS) / BPS;
         xomToken.safeTransferFrom(
-            msg.sender,
+            caller,
             address(this),
             fee
         );
@@ -853,6 +866,8 @@ contract OmniArbitration is
         uint256 disputeId,
         bytes32 ipfsCID
     ) external whenNotPaused {
+        address caller = _msgSender();
+
         Dispute storage d = disputes[disputeId];
         // M-05: Use createdAt instead of escrowId for existence
         if (d.createdAt == 0) revert DisputeNotFound(disputeId);
@@ -868,14 +883,14 @@ contract OmniArbitration is
 
         // Only parties or assigned arbitrators can submit
         bool authorized = (
-            msg.sender == d.buyer ||
-            msg.sender == d.seller
+            caller == d.buyer ||
+            caller == d.seller
         );
 
         // Check initial panel arbitrators
         if (!authorized) {
             for (uint256 i = 0; i < 3; ++i) {
-                if (d.arbitrators[i] == msg.sender) {
+                if (d.arbitrators[i] == caller) {
                     authorized = true;
                     break;
                 }
@@ -889,7 +904,7 @@ contract OmniArbitration is
         ) {
             Appeal storage a = appeals[disputeId];
             for (uint256 i = 0; i < 5; ++i) {
-                if (a.arbitrators[i] == msg.sender) {
+                if (a.arbitrators[i] == caller) {
                     authorized = true;
                     break;
                 }
@@ -899,11 +914,11 @@ contract OmniArbitration is
         if (!authorized) revert NotAssignedArbitrator();
 
         d.evidenceCIDs.push(ipfsCID);
-        evidenceSubmitters[disputeId][ipfsCID] = msg.sender;
+        evidenceSubmitters[disputeId][ipfsCID] = caller;
 
         emit EvidenceSubmitted(
             disputeId,
-            msg.sender,
+            caller,
             ipfsCID
         );
     }
@@ -926,6 +941,8 @@ contract OmniArbitration is
         uint256 disputeId,
         VoteType vote
     ) external nonReentrant whenNotPaused {
+        address caller = _msgSender();
+
         if (vote == VoteType.None) revert InvalidVoteType();
 
         Dispute storage d = disputes[disputeId];
@@ -944,7 +961,7 @@ contract OmniArbitration is
         // Verify caller is assigned arbitrator
         bool isArbitrator = false;
         for (uint256 i = 0; i < 3; ++i) {
-            if (d.arbitrators[i] == msg.sender) {
+            if (d.arbitrators[i] == caller) {
                 isArbitrator = true;
                 break;
             }
@@ -952,11 +969,11 @@ contract OmniArbitration is
         if (!isArbitrator) revert NotAssignedArbitrator();
 
         // Check not already voted
-        if (votes[disputeId][msg.sender] != VoteType.None) {
+        if (votes[disputeId][caller] != VoteType.None) {
             revert AlreadyVoted();
         }
 
-        votes[disputeId][msg.sender] = vote;
+        votes[disputeId][caller] = vote;
 
         if (vote == VoteType.Release) {
             ++d.releaseVotes;
@@ -964,7 +981,7 @@ contract OmniArbitration is
             ++d.refundVotes;
         }
 
-        emit VoteCast(disputeId, msg.sender, vote);
+        emit VoteCast(disputeId, caller, vote);
 
         // Check for 2-of-3 majority
         if (d.releaseVotes >= 2) {
@@ -996,6 +1013,8 @@ contract OmniArbitration is
     function fileAppeal(
         uint256 disputeId
     ) external nonReentrant whenNotPaused {
+        address caller = _msgSender();
+
         Dispute storage d = disputes[disputeId];
         // M-05: Use createdAt for existence check
         if (d.createdAt == 0) revert DisputeNotFound(disputeId);
@@ -1005,7 +1024,7 @@ contract OmniArbitration is
         if (d.appealed) revert AlreadyAppealed(disputeId);
 
         // Only buyer or seller can appeal
-        if (msg.sender != d.buyer && msg.sender != d.seller) {
+        if (caller != d.buyer && caller != d.seller) {
             revert NotEscrowParty();
         }
 
@@ -1017,7 +1036,7 @@ contract OmniArbitration is
 
         // Transfer appeal stake
         xomToken.safeTransferFrom(
-            msg.sender,
+            caller,
             address(this),
             appealStake
         );
@@ -1039,7 +1058,7 @@ contract OmniArbitration is
             refundVotes: 0,
             deadline: deadline,
             appealStake: appealStake,
-            appellant: msg.sender,
+            appellant: caller,
             resolved: false
         });
 
@@ -1053,7 +1072,7 @@ contract OmniArbitration is
 
         emit AppealFiled(
             disputeId,
-            msg.sender,
+            caller,
             appealArbitrators,
             appealStake,
             deadline
@@ -1074,6 +1093,8 @@ contract OmniArbitration is
         uint256 disputeId,
         VoteType vote
     ) external nonReentrant whenNotPaused {
+        address caller = _msgSender();
+
         if (vote == VoteType.None) revert InvalidVoteType();
 
         Appeal storage a = appeals[disputeId];
@@ -1089,7 +1110,7 @@ contract OmniArbitration is
         // Verify assigned appeal arbitrator
         bool isArbitrator = false;
         for (uint256 i = 0; i < 5; ++i) {
-            if (a.arbitrators[i] == msg.sender) {
+            if (a.arbitrators[i] == caller) {
                 isArbitrator = true;
                 break;
             }
@@ -1097,12 +1118,12 @@ contract OmniArbitration is
         if (!isArbitrator) revert NotAssignedArbitrator();
 
         if (
-            appealVotes[disputeId][msg.sender] != VoteType.None
+            appealVotes[disputeId][caller] != VoteType.None
         ) {
             revert AlreadyVoted();
         }
 
-        appealVotes[disputeId][msg.sender] = vote;
+        appealVotes[disputeId][caller] = vote;
 
         if (vote == VoteType.Release) {
             ++a.releaseVotes;
@@ -1110,7 +1131,7 @@ contract OmniArbitration is
             ++a.refundVotes;
         }
 
-        emit VoteCast(disputeId, msg.sender, vote);
+        emit VoteCast(disputeId, caller, vote);
 
         // Check for 3-of-5 majority
         if (a.releaseVotes >= 3 || a.refundVotes >= 3) {
@@ -1859,5 +1880,59 @@ contract OmniArbitration is
         // Clear pending upgrade
         pendingImplementation = address(0);
         upgradeScheduledAt = 0;
+    }
+
+    // ══════════════════════════════════════════════════════════════════
+    //                   ERC-2771 CONTEXT OVERRIDES
+    // ══════════════════════════════════════════════════════════════════
+
+    /**
+     * @notice Resolve _msgSender diamond between ContextUpgradeable
+     *         and ERC2771ContextUpgradeable
+     * @dev Delegates to ERC2771ContextUpgradeable which returns the
+     *      original sender appended by a trusted forwarder, or falls
+     *      back to msg.sender for direct calls.
+     * @return The effective sender address for this call
+     */
+    function _msgSender()
+        internal
+        view
+        override(ContextUpgradeable, ERC2771ContextUpgradeable)
+        returns (address)
+    {
+        return ERC2771ContextUpgradeable._msgSender();
+    }
+
+    /**
+     * @notice Resolve _msgData diamond between ContextUpgradeable
+     *         and ERC2771ContextUpgradeable
+     * @dev Delegates to ERC2771ContextUpgradeable which strips the
+     *      appended sender address from calldata when called via a
+     *      trusted forwarder.
+     * @return The effective calldata for this call
+     */
+    function _msgData()
+        internal
+        view
+        override(ContextUpgradeable, ERC2771ContextUpgradeable)
+        returns (bytes calldata)
+    {
+        return ERC2771ContextUpgradeable._msgData();
+    }
+
+    /**
+     * @notice Resolve _contextSuffixLength diamond between
+     *         ContextUpgradeable and ERC2771ContextUpgradeable
+     * @dev ERC-2771 specifies a 20-byte suffix (the forwarded sender
+     *      address). Base ContextUpgradeable returns 0.
+     * @return Length in bytes of the context suffix (20 for ERC-2771)
+     */
+    function _contextSuffixLength()
+        internal
+        view
+        override(ContextUpgradeable, ERC2771ContextUpgradeable)
+        returns (uint256)
+    {
+        return ERC2771ContextUpgradeable._contextSuffixLength();
     }
 }

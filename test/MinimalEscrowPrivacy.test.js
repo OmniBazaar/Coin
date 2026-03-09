@@ -9,7 +9,7 @@ describe("MinimalEscrow - Privacy Features", function () {
 
     // Deploy test tokens
     const OmniCoin = await ethers.getContractFactory("OmniCoin");
-    const xom = await OmniCoin.deploy();
+    const xom = await OmniCoin.deploy(ethers.ZeroAddress);
     await xom.initialize();
 
     // Deploy PrivateOmniCoin (pXOM) via UUPS proxy
@@ -30,19 +30,16 @@ describe("MinimalEscrow - Privacy Features", function () {
       await pxom.getAddress(),
       mockRegistry,
       owner.address, // feeCollector
-      100 // 1% marketplace fee
+      100, // 1% marketplace fee
+      ethers.ZeroAddress // trustedForwarder_ (disabled)
     );
 
     // Grant bridge role to escrow on pXOM
     const BRIDGE_ROLE = await pxom.BRIDGE_ROLE();
     await pxom.grantRole(BRIDGE_ROLE, await escrow.getAddress());
 
-    // Grant minter role to owner on XOM for minting test tokens
-    const MINTER_ROLE_XOM = await xom.MINTER_ROLE();
-    await xom.grantRole(MINTER_ROLE_XOM, owner.address);
-
-    // Transfer XOM tokens to buyer for testing
-    await xom.mint(buyer.address, ethers.parseEther("1000"));
+    // Transfer XOM tokens to buyer for testing (from deployer's pre-minted supply)
+    await xom.transfer(buyer.address, ethers.parseEther("1000"));
 
     // Mint pXOM to buyer for testing (deployer has MINTER_ROLE from initialize)
     await pxom.mint(buyer.address, ethers.parseEther("1000"));
@@ -75,7 +72,8 @@ describe("MinimalEscrow - Privacy Features", function () {
           await pxom.getAddress(),
           owner.address,
           owner.address,
-          100
+          100,
+          ethers.ZeroAddress // trustedForwarder_ (disabled)
         )
       ).to.be.revertedWithCustomError(MinimalEscrow, "InvalidAddress");
     });
@@ -90,7 +88,8 @@ describe("MinimalEscrow - Privacy Features", function () {
           ethers.ZeroAddress,
           owner.address,
           owner.address,
-          100
+          100,
+          ethers.ZeroAddress // trustedForwarder_ (disabled)
         )
       ).to.be.revertedWithCustomError(MinimalEscrow, "InvalidAddress");
     });
@@ -105,7 +104,8 @@ describe("MinimalEscrow - Privacy Features", function () {
           await pxom.getAddress(),
           ethers.ZeroAddress,
           owner.address,
-          100
+          100,
+          ethers.ZeroAddress // trustedForwarder_ (disabled)
         )
       ).to.be.revertedWithCustomError(MinimalEscrow, "InvalidAddress");
     });
