@@ -27,9 +27,42 @@ import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
  * a full UUPS upgrade. Applied to stake, unlock, deposit, withdraw,
  * and legacy claim functions.
  *
+ * V3 Upgrade (2026-03):
+ * - Added Bootstrap.sol integration for enumerable active node list
+ * - getActiveNodes() returns gateways + service nodes from Bootstrap
+ * - isValidator() falls back to Bootstrap if not in mapping
+ * - reinitializeV3() sets bootstrapContract address
+ *
  * @dev max-states-count disabled: Need 21+ states for comprehensive functionality.
  *      ordering disabled: Upgradeable contracts follow specific ordering pattern.
  */
+/**
+ * @title IBootstrap
+ * @author OmniBazaar Team
+ * @notice Minimal interface for Bootstrap.sol node registry
+ * @dev Used by OmniCore V3 to enumerate active validators.
+ *      Bootstrap.sol maintains an on-chain registry of gateway
+ *      (type 0), computation (type 1), and listing (type 2) nodes.
+ */
+interface IBootstrap {
+    /// @notice Check if a node is active and get its type
+    /// @param nodeAddress Address of the node to check
+    /// @return isActive Whether the node is currently active
+    /// @return nodeType Node type (0=gateway, 1=computation, 2=listing)
+    function isNodeActive(
+        address nodeAddress
+    ) external view returns (bool isActive, uint8 nodeType);
+
+    /// @notice Get active nodes of a specific type
+    /// @param nodeType Type of nodes to retrieve (0=gateway, 1=computation)
+    /// @param limit Maximum number of nodes to return (0 = no limit)
+    /// @return nodes Array of active node addresses
+    function getActiveNodes(
+        uint8 nodeType,
+        uint256 limit
+    ) external view returns (address[] memory nodes);
+}
+
 /* solhint-disable max-states-count, ordering */
 // solhint-disable-next-line use-natspec
 contract OmniCore is
@@ -142,9 +175,23 @@ contract OmniCore is
     ///      protection. Writes on stake() and unlock().
     mapping(address => Checkpoints.Trace224) private _stakeCheckpoints;
 
-    /// @notice Storage gap for future upgrades (reserve 47 slots)
-    /// @dev Reduced from 49 to 47 to accommodate _ossified + _stakeCheckpoints
-    uint256[47] private __gap;
+    /// @notice Bootstrap.sol contract for enumerable active node registry
+    /// @dev V3: Set via reinitializeV3(). Provides getActiveNodes() and
+    ///      isNodeActive() for validator enumeration and type lookups.
+    address public bootstrapContract;
+
+    /// @notice Pending admin address for two-step admin transfer
+    /// @dev V3 M-05 fix: Set by proposeAdminTransfer(), claimed via
+    ///      acceptAdminTransfer(). Prevents accidental admin lockout.
+    address public pendingAdmin;
+
+    /// @notice Timestamp after which pending admin transfer can be accepted
+    /// @dev V3: Must wait ADMIN_TRANSFER_DELAY (48h) after proposal
+    uint256 public adminTransferEta;
+
+    /// @notice Storage gap for future upgrades (reserve 44 slots)
+    /// @dev Reduced from 47 to 44: bootstrapContract + pendingAdmin + adminTransferEta
+    uint256[44] private __gap;
 
     // Events
     /// @notice Emitted when a service is registered or updated
@@ -293,6 +340,27 @@ contract OmniCore is
         address indexed newAddress
     );
 
+    /// @notice Emitted when an admin transfer is proposed
+    /// @param currentAdmin Address proposing the transfer
+    /// @param newAdmin Proposed new admin address
+    /// @param effectiveTimestamp When the transfer can be accepted
+    event AdminTransferProposed(
+        address indexed currentAdmin,
+        address indexed newAdmin,
+        uint256 indexed effectiveTimestamp
+    );
+
+    /// @notice Emitted when an admin transfer is accepted
+    /// @param oldAdmin Previous admin address
+    /// @param newAdmin New admin address
+    event AdminTransferAccepted(
+        address indexed oldAdmin,
+        address indexed newAdmin
+    );
+
+    /// @notice Emitted when a pending admin transfer is cancelled
+    event AdminTransferCancelled();
+
     // Custom errors
     error InvalidAddress();
     error InvalidAmount();
@@ -308,6 +376,10 @@ contract OmniCore is
     error InvalidDuration();
     /// @notice Thrown when contract is ossified and upgrade attempted
     error ContractIsOssified();
+    /// @notice Thrown when admin transfer conditions are not met
+    error AdminTransferNotReady();
+    /// @notice Thrown when caller is not the pending admin
+    error NotPendingAdmin();
 
     /**
      * @notice Constructor that disables initializers for the implementation contract
@@ -365,6 +437,21 @@ contract OmniCore is
     }
 
     /**
+     * @notice V3 initializer — sets Bootstrap.sol contract reference
+     * @dev Called once via upgradeToAndCall() to set the bootstrap contract
+     *      address for enumerable active node queries. Bootstrap provides
+     *      getActiveNodes() and isNodeActive() replacing the non-enumerable
+     *      validators mapping for node listing purposes.
+     * @param _bootstrap Address of the Bootstrap.sol contract on L1
+     */
+    function reinitializeV3(
+        address _bootstrap
+    ) external onlyRole(ADMIN_ROLE) reinitializer(3) {
+        if (_bootstrap == address(0)) revert InvalidAddress();
+        bootstrapContract = _bootstrap;
+    }
+
+    /**
      * @notice Permanently remove upgrade capability (one-way, irreversible)
      * @dev Can only be called by admin (through timelock). Once ossified,
      *      the contract can never be upgraded again.
@@ -394,6 +481,66 @@ contract OmniCore is
         onlyRole(ADMIN_ROLE)
     {
         if (_ossified) revert ContractIsOssified();
+    }
+
+    // =============================================================================
+    // Two-Step Admin Transfer (V3 M-05 fix)
+    // =============================================================================
+
+    /// @notice Delay for admin transfer (48 hours)
+    uint256 public constant ADMIN_TRANSFER_DELAY = 48 hours;
+
+    /**
+     * @notice Propose transfer of ADMIN_ROLE to a new address
+     * @dev V3 M-05 fix: Two-step admin transfer with 48h delay.
+     *      Step 1: Current admin calls proposeAdminTransfer(newAdmin).
+     *      Step 2: After 48h, newAdmin calls acceptAdminTransfer().
+     *      Can be cancelled by current admin before acceptance.
+     * @param newAdmin Address to receive admin role
+     */
+    function proposeAdminTransfer(
+        address newAdmin
+    ) external onlyRole(ADMIN_ROLE) {
+        if (newAdmin == address(0)) revert InvalidAddress();
+        // solhint-disable-next-line not-rely-on-time
+        uint256 eta = block.timestamp + ADMIN_TRANSFER_DELAY;
+        pendingAdmin = newAdmin;
+        adminTransferEta = eta;
+        emit AdminTransferProposed(msg.sender, newAdmin, eta);
+    }
+
+    /**
+     * @notice Accept pending admin role transfer
+     * @dev Must be called by the pending admin after the 48h delay.
+     *      Grants both DEFAULT_ADMIN_ROLE and ADMIN_ROLE to caller.
+     */
+    function acceptAdminTransfer() external {
+        if (msg.sender != pendingAdmin) revert NotPendingAdmin();
+        // solhint-disable-next-line not-rely-on-time
+        if (block.timestamp < adminTransferEta) {
+            revert AdminTransferNotReady();
+        }
+
+        address oldAdmin = pendingAdmin;
+        pendingAdmin = address(0);
+        adminTransferEta = 0;
+
+        _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
+        _grantRole(ADMIN_ROLE, msg.sender);
+        emit AdminTransferAccepted(oldAdmin, msg.sender);
+    }
+
+    /**
+     * @notice Cancel a pending admin transfer
+     * @dev Can only be called by current admin before acceptance.
+     */
+    function cancelAdminTransfer()
+        external
+        onlyRole(ADMIN_ROLE)
+    {
+        pendingAdmin = address(0);
+        adminTransferEta = 0;
+        emit AdminTransferCancelled();
     }
 
     // =============================================================================
@@ -822,11 +969,74 @@ contract OmniCore is
 
     /**
      * @notice Check if an address is an active validator
+     * @dev V3: Falls back to Bootstrap.sol if not in the validators mapping.
+     *      Checks node types 0 (gateway) and 1 (computation) as both
+     *      are valid validators. Existing setValidator() entries still work.
      * @param validator Address to check
      * @return active Whether the address is an active validator
      */
     function isValidator(address validator) external view returns (bool active) {
-        return validators[validator];
+        if (validators[validator]) return true;
+
+        // V3: Fallback to Bootstrap.sol if configured
+        if (bootstrapContract != address(0)) {
+            try IBootstrap(bootstrapContract).isNodeActive(validator)
+                returns (bool isActive, uint8 nodeType)
+            {
+                // Gateway (0) and computation (1) nodes are validators
+                return isActive && nodeType < 2;
+            } catch {
+                return false;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * @notice Get all active validator nodes from Bootstrap.sol
+     * @dev V3: Queries Bootstrap for gateway (type 0) and computation (type 1)
+     *      nodes, interleaves them for fair representation.
+     *      Used by OmniValidatorRewards for epoch reward distribution.
+     *      No per-type limit — Bootstrap.MAX_NODES (1000) bounds the total.
+     *      Interleaving ensures both node types get equal representation
+     *      when OmniValidatorRewards' MAX_VALIDATORS_PER_EPOCH truncates
+     *      the list. Reverts with InvalidAddress if Bootstrap is not set.
+     * @return nodes Interleaved array of active gateway + computation addresses
+     */
+    function getActiveNodes() external view returns (address[] memory nodes) {
+        if (bootstrapContract == address(0)) revert InvalidAddress();
+
+        IBootstrap bootstrap = IBootstrap(bootstrapContract);
+
+        // Fetch all active gateways (type 0) and computation nodes (type 1).
+        // No artificial per-type limit — Bootstrap.MAX_NODES (1000) is
+        // the only cap. OmniValidatorRewards applies its own
+        // MAX_VALIDATORS_PER_EPOCH cap during epoch processing.
+        address[] memory gateways = bootstrap.getActiveNodes(0, 0);
+        address[] memory serviceNodes = bootstrap.getActiveNodes(1, 0);
+
+        uint256 gLen = gateways.length;
+        uint256 sLen = serviceNodes.length;
+
+        // V2 M-03 fix: Interleave gateways and computation nodes
+        // for fair representation when MAX_VALIDATORS_PER_EPOCH
+        // truncates the list. Pattern: [g0, s0, g1, s1, ...].
+        // If one type has more nodes, its extras appear at the end.
+        nodes = new address[](gLen + sLen);
+        uint256 idx;
+        uint256 maxLen = gLen > sLen ? gLen : sLen;
+        for (uint256 i = 0; i < maxLen;) {
+            if (i < gLen) {
+                nodes[idx] = gateways[i];
+                ++idx;
+            }
+            if (i < sLen) {
+                nodes[idx] = serviceNodes[i];
+                ++idx;
+            }
+            unchecked { ++i; }
+        }
     }
 
     /**

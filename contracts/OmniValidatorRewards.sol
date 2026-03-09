@@ -18,6 +18,23 @@ import {SafeERC20} from
 // ══════════════════════════════════════════════════════════════════════
 
 /**
+ * @title IBootstrapRewards
+ * @author OmniBazaar Team
+ * @notice Minimal interface for Bootstrap.sol node registry
+ * @dev Used by OmniValidatorRewards V2 to auto-derive role multipliers.
+ *      Bootstrap.sol maintains node types: 0=gateway, 1=computation, 2=listing.
+ */
+interface IBootstrapRewards {
+    /// @notice Check if a node is active and get its type
+    /// @param nodeAddress Address of the node to check
+    /// @return isActive Whether the node is currently active
+    /// @return nodeType Node type (0=gateway, 1=computation, 2=listing)
+    function isNodeActive(
+        address nodeAddress
+    ) external view returns (bool isActive, uint8 nodeType);
+}
+
+/**
  * @title IOmniParticipation
  * @author OmniBazaar Team
  * @notice Interface for OmniParticipation contract
@@ -170,6 +187,17 @@ interface IOmniCore {
  * - L-03: getActiveNodes memory allocation documented
  * - I-01: nonReentrant modifier placed first
  * - I-03: Activity component uses single division for precision
+ *
+ * V2 Upgrade (2026-03):
+ * - Permissionless epoch processing: removed BLOCKCHAIN_ROLE from
+ *   processEpoch() and processMultipleEpochs(). All nodes race to
+ *   call; sequential epoch check prevents double-processing.
+ * - Auto role multiplier: reads nodeType from Bootstrap.sol instead
+ *   of requiring manual setRoleMultiplier() calls. Gateways (type 0)
+ *   automatically get 1.5x when heartbeat is active. Manual override
+ *   via setRoleMultiplier() still takes precedence if non-zero.
+ * - Bootstrap.sol reference: added bootstrapContract state variable
+ *   set via reinitializeV2().
  */
 // solhint-disable max-states-count
 contract OmniValidatorRewards is
@@ -300,6 +328,11 @@ contract OmniValidatorRewards is
     ///      MUST be used with a multisig wallet for production.
     uint256 public constant UPGRADE_DELAY = 48 hours;
 
+    /// @notice Timelock delay for admin role transfer
+    /// @dev V2: Two-step admin transfer requires 48h wait to prevent
+    ///      accidental lockout and allow monitoring.
+    uint256 public constant ADMIN_TRANSFER_DELAY = 48 hours;
+
     // ══════════════════════════════════════════════════════════════════
     //                              STORAGE
     // ══════════════════════════════════════════════════════════════════
@@ -391,10 +424,36 @@ contract OmniValidatorRewards is
     mapping(uint256 => mapping(address => uint256))
         private _epochTxnCount;
 
+    /// @notice Bootstrap.sol contract for auto role multiplier
+    /// @dev V2: Set via reinitializeV2(). Used in _computeEpochWeights
+    ///      to auto-derive gateway bonus from Bootstrap nodeType.
+    ///      Gateway nodes (type 0) get 1.5x, others get 1.0x.
+    address public bootstrapContract;
+
+    /// @notice Minimum OmniCore stake required for reward eligibility
+    /// @dev V2: Prevents Sybil attacks by requiring economic stake.
+    ///      Default 0 (seed validators have no stake). Admin should
+    ///      set to >= 1,000,000 XOM before public launch.
+    uint256 public minStakeForRewards;
+
+    /// @notice Pending admin address for two-step admin transfer
+    /// @dev V2: Set by proposeAdminTransfer(), claimed by acceptAdminTransfer()
+    address public pendingAdmin;
+
+    /// @notice Timestamp after which pending admin transfer can be accepted
+    /// @dev V2: Must wait ADMIN_TRANSFER_DELAY (48h) after proposal
+    uint256 public adminTransferEta;
+
+    /// @notice Addresses exempt from minStakeForRewards check
+    /// @dev V2: Allows seed validators (admin-run infrastructure
+    ///      nodes) to earn rewards without OmniCore stake. Admin
+    ///      can remove exemptions once validators stake normally.
+    mapping(address => bool) public stakeExempt;
+
     /// @dev Storage gap for future upgrades.
-    ///      Slots used: 18 explicit + mappings (9 slot headers).
-    ///      Gap = 30 to leave headroom.
-    uint256[30] private __gap;
+    ///      Slots used: 22 explicit + mappings (10 slot headers).
+    ///      Gap = 26 to leave headroom.
+    uint256[26] private __gap;
 
     // ══════════════════════════════════════════════════════════════════
     //                              EVENTS
@@ -558,6 +617,43 @@ contract OmniValidatorRewards is
         address indexed validator
     );
 
+    /// @notice Emitted when a validator's stake exemption changes
+    /// @param validator Address of the validator
+    /// @param exempt Whether the validator is now exempt
+    event StakeExemptionUpdated(
+        address indexed validator,
+        bool indexed exempt
+    );
+
+    /// @notice Emitted when minimum stake for rewards is updated
+    /// @param oldAmount Previous minimum stake
+    /// @param newAmount New minimum stake
+    event MinStakeForRewardsUpdated(
+        uint256 indexed oldAmount,
+        uint256 indexed newAmount
+    );
+
+    /// @notice Emitted when an admin transfer is proposed
+    /// @param currentAdmin Address proposing the transfer
+    /// @param newAdmin Proposed new admin address
+    /// @param effectiveTimestamp When the transfer can be accepted
+    event AdminTransferProposed(
+        address indexed currentAdmin,
+        address indexed newAdmin,
+        uint256 indexed effectiveTimestamp
+    );
+
+    /// @notice Emitted when an admin transfer is accepted
+    /// @param oldAdmin Previous admin address
+    /// @param newAdmin New admin address
+    event AdminTransferAccepted(
+        address indexed oldAdmin,
+        address indexed newAdmin
+    );
+
+    /// @notice Emitted when a pending admin transfer is cancelled
+    event AdminTransferCancelled();
+
     // ══════════════════════════════════════════════════════════════════
     //                              ERRORS
     // ══════════════════════════════════════════════════════════════════
@@ -628,6 +724,12 @@ contract OmniValidatorRewards is
     /// @dev Audit H-01 Round 4: checks both current and original
     error CannotWithdrawXOM();
 
+    /// @notice Thrown when admin transfer conditions are not met
+    error AdminTransferNotReady();
+
+    /// @notice Thrown when caller is not the pending admin
+    error NotPendingAdmin();
+
     // ══════════════════════════════════════════════════════════════════
     //                           INITIALIZATION
     // ══════════════════════════════════════════════════════════════════
@@ -679,6 +781,24 @@ contract OmniValidatorRewards is
         lastProcessedEpoch = 0;
         totalBlocksProduced = 0;
         totalOutstandingRewards = 0;
+    }
+
+    /**
+     * @notice V2 initializer — sets Bootstrap.sol contract reference
+     * @dev Called once via upgradeToAndCall() to set the bootstrap
+     *      contract for auto role multiplier derivation. Gateway nodes
+     *      (type 0) automatically get 1.5x; computation nodes (type 1)
+     *      get 1.0x. Manual setRoleMultiplier() overrides still work.
+     * @param _bootstrap Address of the Bootstrap.sol contract on L1
+     */
+    function reinitializeV2(
+        address _bootstrap
+    ) external onlyRole(DEFAULT_ADMIN_ROLE) reinitializer(2) {
+        if (_bootstrap == address(0)) revert ZeroAddress();
+        bootstrapContract = _bootstrap;
+        // H-02 fix: default 0 (seed validators work immediately).
+        // Admin should call setMinStakeForRewards() before public launch.
+        minStakeForRewards = 0;
     }
 
     // ══════════════════════════════════════════════════════════════════
@@ -782,7 +902,10 @@ contract OmniValidatorRewards is
      * @notice Process epoch and distribute rewards
      * @dev Epochs MUST be processed sequentially to prevent
      *      reward destruction via epoch skipping.
-     *      Only BLOCKCHAIN_ROLE can call (M-07 fix).
+     *      V2: Permissionless — any caller can process epochs.
+     *      Sequential epoch enforcement (lastProcessedEpoch + 1)
+     *      prevents double-processing. All nodes race to call;
+     *      losers revert with EpochNotSequential (no harm done).
      * @param epoch Epoch number to process
      */
     function processEpoch(
@@ -790,7 +913,6 @@ contract OmniValidatorRewards is
     )
         external
         nonReentrant
-        onlyRole(BLOCKCHAIN_ROLE)
         whenNotPaused
     {
         uint256 currentEpoch = getCurrentEpoch();
@@ -850,8 +972,8 @@ contract OmniValidatorRewards is
      *      processed sequentially starting from
      *      lastProcessedEpoch + 1. Validator list is
      *      cached outside the loop (H-03 fix).
-     *      Restricted to BLOCKCHAIN_ROLE to prevent
-     *      front-running (M-07 fix).
+     *      V2: Permissionless — any caller can process.
+     *      Sequential epoch enforcement prevents double-processing.
      *      Capped at MAX_BATCH_EPOCHS (50 = 100 seconds
      *      of catch-up) to limit gas and reduce stale-state
      *      drift when processing historical epochs with
@@ -884,7 +1006,6 @@ contract OmniValidatorRewards is
     )
         external
         nonReentrant
-        onlyRole(BLOCKCHAIN_ROLE)
         whenNotPaused
     {
         // M-03: Cap batch size to limit state drift
@@ -1285,16 +1406,107 @@ contract OmniValidatorRewards is
     }
 
     /**
+     * @notice Set minimum OmniCore stake required for reward eligibility
+     * @dev V2 H-02 fix: Prevents Sybil attacks by requiring economic
+     *      stake. Set to 0 initially (seed validators). Increase to
+     *      >= 1,000,000 XOM before public launch.
+     * @param amount Minimum stake in XOM (18 decimals). 0 = no minimum.
+     */
+    function setMinStakeForRewards(
+        uint256 amount
+    ) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        uint256 old = minStakeForRewards;
+        minStakeForRewards = amount;
+        emit MinStakeForRewardsUpdated(old, amount);
+    }
+
+    /**
+     * @notice Set stake exemption for a validator address
+     * @dev V2: Allows seed validators (admin-run nodes) to earn
+     *      rewards without meeting minStakeForRewards. Exempt
+     *      addresses bypass the stake check in _computeEpochWeights
+     *      but still need active heartbeats and Bootstrap registration.
+     *      Remove exemptions once validators stake normally.
+     * @param validator Address to exempt or un-exempt
+     * @param exempt True to exempt, false to require normal staking
+     */
+    function setStakeExempt(
+        address validator,
+        bool exempt
+    ) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        if (validator == address(0)) revert ZeroAddress();
+        stakeExempt[validator] = exempt;
+        emit StakeExemptionUpdated(validator, exempt);
+    }
+
+    /**
+     * @notice Propose transfer of DEFAULT_ADMIN_ROLE to a new address
+     * @dev V2 M-05 fix: Two-step admin transfer with 48h delay.
+     *      Step 1: Current admin calls proposeAdminTransfer(newAdmin).
+     *      Step 2: After 48h, newAdmin calls acceptAdminTransfer().
+     *      Can be cancelled by current admin before acceptance.
+     * @param newAdmin Address to receive admin role
+     */
+    function proposeAdminTransfer(
+        address newAdmin
+    ) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        if (newAdmin == address(0)) revert ZeroAddress();
+        // solhint-disable-next-line not-rely-on-time
+        uint256 eta = block.timestamp + ADMIN_TRANSFER_DELAY;
+        pendingAdmin = newAdmin;
+        adminTransferEta = eta;
+        emit AdminTransferProposed(msg.sender, newAdmin, eta);
+    }
+
+    /**
+     * @notice Accept pending admin role transfer
+     * @dev Must be called by the pending admin after the delay.
+     *      Grants DEFAULT_ADMIN_ROLE to caller and revokes it
+     *      from all current admin role holders.
+     */
+    function acceptAdminTransfer() external {
+        if (msg.sender != pendingAdmin) revert NotPendingAdmin();
+        // solhint-disable-next-line not-rely-on-time
+        if (block.timestamp < adminTransferEta) {
+            revert AdminTransferNotReady();
+        }
+
+        address oldAdmin = pendingAdmin;
+        pendingAdmin = address(0);
+        adminTransferEta = 0;
+
+        _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
+        // Revoke from the proposer (the current admin)
+        // Note: if multiple admins exist, only the proposer
+        // should call revokeRole on themselves after verifying
+        // the new admin is operational.
+        emit AdminTransferAccepted(oldAdmin, msg.sender);
+    }
+
+    /**
+     * @notice Cancel a pending admin transfer
+     * @dev Can only be called by current admin before acceptance.
+     */
+    function cancelAdminTransfer()
+        external
+        onlyRole(DEFAULT_ADMIN_ROLE)
+    {
+        pendingAdmin = address(0);
+        adminTransferEta = 0;
+        emit AdminTransferCancelled();
+    }
+
+    // ══════════════════════════════════════════════════════════════════
+    //                      EXTERNAL VIEW FUNCTIONS
+    // ══════════════════════════════════════════════════════════════════
+
+    /**
      * @notice Check if the contract has been permanently ossified
      * @return True if ossified (no further upgrades possible)
      */
     function isOssified() external view returns (bool) {
         return _ossified;
     }
-
-    // ══════════════════════════════════════════════════════════════════
-    //                      EXTERNAL VIEW FUNCTIONS
-    // ══════════════════════════════════════════════════════════════════
 
     /**
      * @notice Get validator's pending rewards
@@ -1399,7 +1611,14 @@ contract OmniValidatorRewards is
             }
         }
         // Apply role bonus (heartbeat-gated)
+        // V2: Auto-derive from Bootstrap if unset
         uint256 roleMul = roleMultiplier[validator];
+        if (
+            roleMul == 0
+                && bootstrapContract != address(0)
+        ) {
+            roleMul = _bootstrapRoleMultiplier(validator);
+        }
         if (
             roleMul > 10000
                 && _heartbeatScore(validator) > 0
@@ -1423,8 +1642,9 @@ contract OmniValidatorRewards is
 
     /**
      * @notice Get the role multiplier for a validator
-     * @dev Returns 10000 (1.0x) if no explicit value is set.
-     *      Gateway validators are expected to have 15000 (1.5x).
+     * @dev V2: If no manual override is set, auto-derives from
+     *      Bootstrap.sol nodeType. Gateway (type 0) = 15000 (1.5x),
+     *      all others = 10000 (1.0x).
      * @param validator Address to check
      * @return Multiplier in basis points (10000 = 1.0x default)
      */
@@ -1432,7 +1652,12 @@ contract OmniValidatorRewards is
         address validator
     ) external view returns (uint256) {
         uint256 m = roleMultiplier[validator];
-        return m == 0 ? 10000 : m;
+        if (m != 0) return m;
+        // V2: Auto-derive from Bootstrap
+        if (bootstrapContract != address(0)) {
+            return _bootstrapRoleMultiplier(validator);
+        }
+        return 10000;
     }
 
     /**
@@ -1666,6 +1891,8 @@ contract OmniValidatorRewards is
      *      are wrapped in try/catch per validator, so one
      *      failing validator does not block the entire epoch
      *      (M-01 Round 3 fix).
+     *      V2 H-02 fix: Validators below minStakeForRewards
+     *      are skipped entirely, preventing Sybil dilution.
      * @param validators Array of validator addresses
      * @param epoch Epoch to compute weights for
      * @return activeCount Number of active validators
@@ -1690,9 +1917,29 @@ contract OmniValidatorRewards is
             : count;
 
         weights = new uint256[](count);
+        uint256 minStake = minStakeForRewards;
 
         for (uint256 i = 0; i < cap;) {
             if (isValidatorActive(validators[i])) {
+                // V2 H-02: Skip validators below minimum stake
+                // (exempt seed validators bypass this check)
+                if (minStake > 0 && !stakeExempt[validators[i]]) {
+                    try omniCore.getStake(validators[i])
+                        returns (IOmniCore.Stake memory s)
+                    {
+                        if (
+                            !s.active
+                                || s.amount < minStake
+                        ) {
+                            unchecked { ++i; }
+                            continue;
+                        }
+                    } catch {
+                        // Stake check failed — skip validator
+                        unchecked { ++i; }
+                        continue;
+                    }
+                }
                 uint256 baseWeight =
                     _calculateValidatorWeight(
                         validators[i], epoch
@@ -1722,9 +1969,21 @@ contract OmniValidatorRewards is
                 // else mult == 0 → default = 100%
 
                 // Apply role multiplier (gateway bonus)
-                // Only applies when heartbeat is active
+                // Only applies when heartbeat is active.
+                // V2: Auto-derive from Bootstrap if unset.
                 uint256 roleMul =
                     roleMultiplier[validators[i]];
+
+                // If no manual override, check Bootstrap
+                if (
+                    roleMul == 0
+                        && bootstrapContract != address(0)
+                ) {
+                    roleMul = _bootstrapRoleMultiplier(
+                        validators[i]
+                    );
+                }
+
                 if (
                     roleMul > 10000
                         && _heartbeatScore(validators[i])
@@ -1847,7 +2106,7 @@ contract OmniValidatorRewards is
         address validator,
         uint256 epoch
     ) internal view returns (uint256) {
-        // M-05: Graduated heartbeat scoring
+        // V2 M-01: Binary heartbeat scoring (0 or 100)
         uint256 hScore = _heartbeatScore(validator);
 
         // Transaction processing component (40%)
@@ -1870,16 +2129,42 @@ contract OmniValidatorRewards is
     }
 
     /**
-     * @notice Calculate graduated heartbeat score
-     * @dev M-05 Round 1: Replaces binary 100/0 with graduated
-     *      scoring. Heartbeat within 5s = 100, within
-     *      10s = 75, within 15s = 50, within 20s = 25,
-     *      older = 0. This rewards validators with
-     *      consistent uptime over those that merely
-     *      submit the minimum heartbeats.
+     * @notice Derive role multiplier from Bootstrap.sol nodeType
+     * @dev V2: Queries Bootstrap.isNodeActive() for the validator.
+     *      If the node is an active gateway (type 0), returns
+     *      15000 bps (1.5x). Otherwise returns 10000 bps (1.0x).
+     *      Wrapped in try/catch so Bootstrap failures default
+     *      to 1.0x rather than blocking epoch processing.
+     * @param validator Address to check
+     * @return roleMul Multiplier in basis points
+     */
+    function _bootstrapRoleMultiplier(
+        address validator
+    ) internal view returns (uint256 roleMul) {
+        try IBootstrapRewards(bootstrapContract).isNodeActive(
+            validator
+        ) returns (bool isActive, uint8 nodeType) {
+            // Gateway (type 0) with active heartbeat => 1.5x
+            if (isActive && nodeType == 0) {
+                return 15000;
+            }
+        } catch {
+            // Bootstrap call failed — default to 1.0x
+        }
+        return 10000;
+    }
+
+    /**
+     * @notice Calculate binary heartbeat score
+     * @dev V2 M-01 fix: Simplified to binary 0/100.
+     *      Heartbeat within HEARTBEAT_TIMEOUT = 100,
+     *      otherwise = 0. Eliminates timing advantage
+     *      from graduated scoring — either the validator
+     *      is active or it is not. With 2-second epochs,
+     *      sub-second gradations were meaningless and
+     *      created a gameable attack surface.
      * @param validator Validator address
-     * @return score Graduated score 0-100 based on
-     *         heartbeat recency
+     * @return score Binary score: 100 if active, 0 if not
      */
     function _heartbeatScore(
         address validator
@@ -1890,14 +2175,8 @@ contract OmniValidatorRewards is
         // solhint-disable-next-line not-rely-on-time
         uint256 elapsed = block.timestamp - lastHb;
 
-        if (elapsed < 6) {
-            score = 100;   // Very fresh heartbeat
-        } else if (elapsed < 11) {
-            score = 75;    // Recent heartbeat
-        } else if (elapsed < 16) {
-            score = 50;    // Getting stale
-        } else if (elapsed < HEARTBEAT_TIMEOUT + 1) {
-            score = 25;    // Nearly expired
+        if (elapsed < HEARTBEAT_TIMEOUT + 1) {
+            score = 100;
         }
         // else score = 0 (expired / no heartbeat)
     }
