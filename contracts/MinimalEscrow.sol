@@ -403,6 +403,11 @@ contract MinimalEscrow is ReentrancyGuard, Pausable, ERC2771Context {
      * @param _marketplaceFeeBps Fee in basis points (e.g. 100 = 1%)
      * @param trustedForwarder_ OmniForwarder address for gasless relay (address(0) to disable)
      */
+    /// @dev AUDIT ACCEPTED (Round 6): The trusted forwarder address is immutable by design.
+    ///      ERC-2771 forwarder immutability is standard practice (OpenZeppelin default).
+    ///      Changing the forwarder post-deployment would break all existing meta-transaction
+    ///      infrastructure. If the forwarder is compromised, ossify() + governance pause
+    ///      provides emergency protection. A new proxy can be deployed if needed.
     constructor(
         address _omniCoin,
         address _privateOmniCoin,

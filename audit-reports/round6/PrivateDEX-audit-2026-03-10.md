@@ -88,7 +88,7 @@ All findings from this audit have been reviewed in the Round 6 remediation pass.
 | C-02 | Critical | No price re-validation in executePrivateTrade | **FIXED** -- MPC `ge(buyPrice, sellPrice)` at lines 700-709 with `PriceIncompatible()` revert |
 | H-01 | High | Unchecked MPC arithmetic (carried from R1) | **FIXED** -- `checkedAdd`/`checkedSub`/`checkedMul` used throughout |
 | H-02 | High | calculateTradeFees no access control | **FIXED** -- MATCHER_ROLE + `uint64 feeBps` type + `MAX_FEE_BPS` cap (lines 594-601) |
-| H-03 | High | uint64 precision (carried from R1) | **OPEN** -- Architectural |
+| H-03 | High | uint64 precision (carried from R1) | **ACCEPTED** -- COTI MPC uint64 constraint is fundamental to garbled circuits architecture; scaling factor maps amounts to safe range; NatSpec comment added |
 | M-01 | Medium | Ossification has no timelock | **FIXED** -- Two-step with `requestOssification()` + `confirmOssification()` + 7-day `OSSIFICATION_DELAY` (lines 946-988) |
 | M-02 | Medium | Double onboard of encMatchAmount | **FIXED** -- Match amount computed once internally; `_checkMinFill` accepts `gtUint64` directly (lines 732-733) |
 | M-03 | Medium | Trade ID uses abi.encodePacked | **FIXED** -- Uses `abi.encode` + `block.prevrandao` (lines 806-813) |

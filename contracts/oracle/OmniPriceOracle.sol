@@ -153,6 +153,13 @@ error TokenNotRegistered(address token);
 /// @param length Array length
 error OffsetOutOfBounds(uint256 offset, uint256 length);
 
+/// @notice Invalid parameter value (e.g., zero where non-zero required)
+error InvalidParameter();
+
+/// @notice Fewer than minimumSources validators have reported and no
+///         Chainlink fallback is available
+error InsufficientPriceSources();
+
 /**
  * @title OmniPriceOracle
  * @author OmniBazaar Team
@@ -352,8 +359,16 @@ contract OmniPriceOracle is
     /// @notice Timestamp when upgrade was scheduled
     uint256 public upgradeScheduledAt;
 
+    /// @notice Minimum number of validator price reports required before
+    ///         accepting a median price. If fewer sources have reported,
+    ///         the oracle falls back to Chainlink (if available) or reverts.
+    /// @dev AUDIT FIX (Round 6): Prevents a single compromised validator
+    ///      from controlling the price when few sources have reported.
+    ///      Default: 3. Admin can adjust via setMinimumSources().
+    uint256 public minimumSources;
+
     /// @notice Storage gap for future upgrades
-    uint256[50] private __gap;
+    uint256[49] private __gap;
 
     // ══════════════════════════════════════════════════════════════════
     //                              EVENTS
@@ -483,6 +498,11 @@ contract OmniPriceOracle is
         uint256 previousCount
     );
 
+    /// @notice Emitted when the minimumSources parameter is updated
+    /// @dev AUDIT FIX (Round 6): observability for threshold changes
+    /// @param minimumSourcesVal New minimum number of price sources
+    event MinimumSourcesUpdated(uint256 minimumSourcesVal);
+
     // ══════════════════════════════════════════════════════════════════
     //                           INITIALIZER
     // ══════════════════════════════════════════════════════════════════
@@ -516,6 +536,7 @@ contract OmniPriceOracle is
         circuitBreakerThreshold = 1000; // 10%
         chainlinkDeviationThreshold = 1000; // 10%
         twapWindow = 3600; // 1 hour
+        minimumSources = 3;
     }
 
     // ══════════════════════════════════════════════════════════════════
@@ -1099,6 +1120,22 @@ contract OmniPriceOracle is
         emit ViolationCountReset(validator, previousCount);
     }
 
+    /**
+     * @notice Set minimum number of price sources required
+     * @dev AUDIT FIX (Round 6): When fewer than minimumSources
+     *      validators have reported, _finalizeRound() falls back
+     *      to Chainlink or reverts. Prevents single-validator
+     *      price manipulation.
+     * @param _minimumSources New minimum (must be >= 1)
+     */
+    function setMinimumSources(
+        uint256 _minimumSources
+    ) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        if (_minimumSources == 0) revert InvalidParameter();
+        minimumSources = _minimumSources;
+        emit MinimumSourcesUpdated(_minimumSources);
+    }
+
     /// @notice Pause the oracle (emergency)
     function pause() external onlyRole(DEFAULT_ADMIN_ROLE) {
         _pause();
@@ -1147,6 +1184,24 @@ contract OmniPriceOracle is
         } else {
             median = (sorted[count / 2 - 1]
                 + sorted[count / 2]) / 2;
+        }
+
+        // AUDIT FIX (Round 6): Require minimum validator sources
+        if (count < minimumSources) {
+            // Fall back to Chainlink if available
+            ChainlinkConfig memory clConfig =
+                chainlinkFeeds[token];
+            if (clConfig.enabled) {
+                uint256 clPrice =
+                    _getChainlinkPrice(token, clConfig);
+                if (clPrice > 0) {
+                    median = clPrice;
+                } else {
+                    revert InsufficientPriceSources();
+                }
+            } else {
+                revert InsufficientPriceSources();
+            }
         }
 
         // Store finalized round

@@ -91,6 +91,11 @@ contract UnifiedFeeVault is
 {
     using SafeERC20 for IERC20;
 
+    /// @dev AUDIT ACCEPTED (Round 6): Fee-on-transfer and rebasing tokens are not
+    ///      supported. OmniCoin (XOM) is the primary token and does not have these
+    ///      features. Only vetted tokens (XOM, USDC, WBTC, WETH) are whitelisted
+    ///      for use in the platform. This is documented in deployment guides.
+
     // ════════════════════════════════════════════════════════════════════
     //                              ENUMS
     // ════════════════════════════════════════════════════════════════════
@@ -291,15 +296,22 @@ contract UnifiedFeeVault is
     /// @dev Zero means no pending change
     uint256 public bridgeModeChangeTime;
 
+    /// @notice Cumulative fees collected by this contract (in token wei)
+    /// @dev AUDIT FIX (Round 6 FEE-AP-10): Cross-contract fee accounting.
+    ///      Aggregates all fees across all tokens for a single total.
+    uint256 public totalFeesCollected;
+
     /// @notice Storage gap for future upgrades
     /// @dev Budget: 15 original + 4 new + 3 deprecated + 8 M-01-03
-    ///      = 30 slots used. Gap = 20. Total = 50 (standard OZ budget).
+    ///      + 1 totalFeesCollected = 31 slots used. Gap = 19.
+    ///      Total = 50 (standard OZ budget).
     ///      Pioneer Phase: 3 recipient-timelock state variables
     ///      were deprecated (not removed) to preserve UUPS storage
     ///      layout compatibility. See __deprecated_* above.
     ///      M-01/M-02/M-03 Round 6: 8 new state variables added.
+    ///      FEE-AP-10 Round 6: 1 new state variable added.
     ///      Reduce gap by N when adding N new state variables.
-    uint256[20] private __gap;
+    uint256[19] private __gap;
 
     // ════════════════════════════════════════════════════════════════════
     //                             EVENTS
@@ -591,6 +603,11 @@ contract UnifiedFeeVault is
      * @param trustedForwarder_ Address of the OmniForwarder
      *        contract for gasless relay
      */
+    /// @dev AUDIT ACCEPTED (Round 6): The trusted forwarder address is immutable by design.
+    ///      ERC-2771 forwarder immutability is standard practice (OpenZeppelin default).
+    ///      Changing the forwarder post-deployment would break all existing meta-transaction
+    ///      infrastructure. If the forwarder is compromised, ossify() + governance pause
+    ///      provides emergency protection. A new proxy can be deployed if needed.
     /// @custom:oz-upgrades-unsafe-allow constructor
     constructor(
         address trustedForwarder_
@@ -734,6 +751,8 @@ contract UnifiedFeeVault is
         // Effects: update state before transfers (CEI)
         pendingBridge[token] += oddaoShare;
         totalDistributed[token] += distributable;
+        // AUDIT FIX (Round 6 FEE-AP-10): Cross-contract fee accounting
+        totalFeesCollected += distributable;
 
         // Interactions: transfer staking and protocol shares.
         // M-03 audit fix: use try/catch to quarantine failed pushes
@@ -888,6 +907,8 @@ contract UnifiedFeeVault is
         pendingBridge[token] += listOddao;
 
         totalDistributed[token] += actualFee;
+        // AUDIT FIX (Round 6 FEE-AP-10): Cross-contract fee accounting
+        totalFeesCollected += actualFee;
 
         emit FeesDeposited(token, actualFee, caller);
     }
@@ -937,6 +958,8 @@ contract UnifiedFeeVault is
         pendingBridge[token] += oddaoShare;
 
         totalDistributed[token] += actualFee;
+        // AUDIT FIX (Round 6 FEE-AP-10): Cross-contract fee accounting
+        totalFeesCollected += actualFee;
 
         emit FeesDeposited(token, actualFee, arbCaller);
     }

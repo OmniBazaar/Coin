@@ -112,6 +112,12 @@ contract FeeSwapAdapter is
     /// @notice Default liquidity source identifier for single-hop
     bytes32 public defaultSource;
 
+    /// @notice Cumulative fees collected by this contract (in token wei)
+    /// @dev AUDIT FIX (Round 6 FEE-AP-10): Cross-contract fee accounting.
+    ///      Tracks the swap fees deducted by the underlying router
+    ///      during swapExactInput() calls.
+    uint256 public totalFeesCollected;
+
     /// @notice Pending router address awaiting timelock
     /// @dev M-02 audit fix: set via proposeRouter()
     address public pendingRouter;
@@ -277,18 +283,24 @@ contract FeeSwapAdapter is
 
         // 4. Execute swap — tokens sent to this contract for
         //    verification (M-01 Round 6: self-custody pattern)
-        router.swap(
-            IOmniSwapRouter.SwapParams({
-                tokenIn: tokenIn,
-                tokenOut: tokenOut,
-                amountIn: amountIn,
-                minAmountOut: amountOutMin,
-                path: path,
-                sources: sources,
-                deadline: deadline,
-                recipient: address(this)
-            })
-        );
+        IOmniSwapRouter.SwapResult memory swapResult =
+            router.swap(
+                IOmniSwapRouter.SwapParams({
+                    tokenIn: tokenIn,
+                    tokenOut: tokenOut,
+                    amountIn: amountIn,
+                    minAmountOut: amountOutMin,
+                    path: path,
+                    sources: sources,
+                    deadline: deadline,
+                    recipient: address(this)
+                })
+            );
+
+        // AUDIT FIX (Round 6 FEE-AP-10): Cross-contract fee accounting
+        if (swapResult.feeAmount > 0) {
+            totalFeesCollected += swapResult.feeAmount;
+        }
 
         // L-01: Reset residual approval to zero
         IERC20(tokenIn).forceApprove(address(router), 0);

@@ -48,7 +48,7 @@ The fragmented architecture means there is no single enforcement point for fee c
 
 | ID | Severity | Finding | Status |
 |----|----------|---------|--------|
-| AP-01 | High | Direct transfer fee bypass -- OmniCoin has no transfer fee | **ACKNOWLEDGED** -- Fundamental ERC20 design; accepted for now, economic incentives and P2P marketplace mitigations planned |
+| AP-01 | High | Direct transfer fee bypass -- OmniCoin has no transfer fee | **ACCEPTED** -- Fundamental ERC20 design; token contract cannot force fee collection on direct transfers without breaking ERC20 composability. Fee enforcement is handled at the application layer (escrow, DEX settlement). NatSpec comment added to OmniCoin.sol. |
 | AP-10 | High | Cross-contract fee accounting discrepancy | **PLANNED** -- Comprehensive admin dashboard plan created at Validator/delayed/ADD_ADMIN_DASHBOARD.md to aggregate fee analytics across all 5 pathways |
 | AP-03 | Medium | DEX fee evasion -- structuring trades to minimize fees | **FIXED** |
 | AP-04 | Medium | Escrow fee avoidance -- bypassing MinimalEscrow | **FIXED** |

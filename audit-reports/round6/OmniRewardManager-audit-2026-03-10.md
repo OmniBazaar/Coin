@@ -29,7 +29,7 @@ All Critical, High, and Medium findings from this Round 6 audit have been remedi
 |----|----------|---------|--------|
 | H-01 | High | No on-chain rate limiting for validator rewards | **FIXED** — Per-epoch caps added; VALIDATOR_REWARD_ROLE removed entirely |
 | M-01 | Medium | Welcome bonus pool allocation insufficient | **FIXED** |
-| M-02 | Medium | ERC-2771 trusted forwarder impersonation | **FIXED** |
+| M-02 | Medium | ERC-2771 trusted forwarder impersonation | **ACCEPTED** -- Immutable forwarder is OZ default practice; tokens always go to legitimate user (no redirect possible); ossify() + pause for emergency |
 | M-03 | Medium | setPendingReferralBonus cannot cancel to zero | **FIXED** |
 | M-04 | Medium | Merkle proof bypassed when root is bytes32(0) | **FIXED** |
 

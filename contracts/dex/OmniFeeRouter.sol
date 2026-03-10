@@ -69,6 +69,10 @@ contract OmniFeeRouter is Ownable2Step, ReentrancyGuard, ERC2771Context {
     ///      to prevent residual attack surface from arbitrary calldata.
     mapping(address => bool) public allowedRouters;
 
+    /// @notice Cumulative fees collected by this contract (in token wei)
+    /// @dev AUDIT FIX (Round 6 FEE-AP-10): Cross-contract fee accounting
+    uint256 public totalFeesCollected;
+
     /// @notice Pending fee collector for timelock (M-02 Round 6)
     address public pendingFeeCollector;
 
@@ -251,6 +255,8 @@ contract OmniFeeRouter is Ownable2Step, ReentrancyGuard, ERC2771Context {
 
         // --- Send fee to collector ---
         if (actualFee > 0) {
+            // AUDIT FIX (Round 6 FEE-AP-10): Cross-contract fee accounting
+            totalFeesCollected += actualFee;
             IERC20(inputToken).safeTransfer(feeCollector, actualFee);
         }
 

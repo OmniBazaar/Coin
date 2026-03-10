@@ -216,6 +216,16 @@ contract OmniParticipation is // solhint-disable-line max-states-count
     /// @dev Prevents unbounded state bloat from contribution spam
     uint256 public constant MAX_FORUM_CONTRIBUTIONS_PER_USER = 500;
 
+    /// @notice SYBIL: Maximum cumulative score-component increases per user per epoch
+    /// @dev Prevents sybil farming where a user rapidly inflates all score
+    ///      categories. Score components: reputation, publisher, marketplace,
+    ///      community, forum. A value of 20 allows realistic organic growth
+    ///      but blocks batch-gaming.
+    uint256 public constant MAX_SCORE_INCREASE_PER_EPOCH = 20;
+
+    /// @notice SYBIL: Epoch duration for score increase cap (7 days)
+    uint256 public constant SCORE_EPOCH_DURATION = 7 days;
+
     // ═══════════════════════════════════════════════════════════════════════
     //                              STORAGE
     // ═══════════════════════════════════════════════════════════════════════
@@ -494,10 +504,25 @@ contract OmniParticipation is // solhint-disable-line max-states-count
     /// @notice ATK-M22: Caller is not a service node (not a validator)
     error NotServiceNode();
 
+    /// @notice SYBIL: User exceeded per-epoch score increase limit
+    /// @param user The user who hit the limit
+    /// @param currentIncrease Current epoch increase amount
+    /// @param limit Maximum allowed per epoch
+    error EpochScoreLimitExceeded(
+        address user,
+        uint256 currentIncrease,
+        uint256 limit
+    );
+
     // ═══════════════════════════════════════════════════════════════════════
     //                           INITIALIZATION
     // ═══════════════════════════════════════════════════════════════════════
 
+    /// @dev AUDIT ACCEPTED (Round 6): The trusted forwarder address is immutable by design.
+    ///      ERC-2771 forwarder immutability is standard practice (OpenZeppelin default).
+    ///      Changing the forwarder post-deployment would break all existing meta-transaction
+    ///      infrastructure. If the forwarder is compromised, ossify() + governance pause
+    ///      provides emergency protection. A new proxy can be deployed if needed.
     /// @custom:oz-upgrades-unsafe-allow constructor
     constructor(
         address trustedForwarder_
@@ -540,6 +565,13 @@ contract OmniParticipation is // solhint-disable-line max-states-count
      * @dev This IS a reputation claim - submitting review updates scores.
      *      ATK-H12/K01: Enforces MAX_REVIEWS_PER_USER array cap.
      */
+    /// @dev AUDIT ACCEPTED (Round 6 ATK-M23): Transaction hash validation cannot
+    ///      be performed fully on-chain. Fabricated hashes are mitigated by:
+    ///      (1) VERIFIER_ROLE verification before score credit
+    ///      (2) Daily verifier rate limits (MAX_VERIFIER_CHANGES_PER_DAY)
+    ///      (3) Global daily change cap (MAX_GLOBAL_CHANGES_PER_DAY)
+    ///      (4) Per-user array caps preventing state bloat
+    ///      Full hash validation happens off-chain in the Validator node.
     function submitReview( // solhint-disable-line code-complexity
         address reviewed,
         uint8 stars,
@@ -599,6 +631,9 @@ contract OmniParticipation is // solhint-disable-line max-states-count
 
         Review storage review = reviewHistory[reviewed][reviewIndex];
         if (review.verified) revert AlreadyVerified();
+
+        // SYBIL: Enforce per-epoch score increase cap
+        _checkEpochScoreIncrease(reviewed, 1);
 
         review.verified = true;
 
@@ -776,6 +811,11 @@ contract OmniParticipation is // solhint-disable-line max-states-count
             );
         }
 
+        // SYBIL: Enforce per-epoch score increase cap (only on increases)
+        if (count > currentCount) {
+            _checkEpochScoreIncrease(user, 1);
+        }
+
         publisherListingCount[user] = count;
 
         emit PublisherListingCountUpdated(
@@ -792,6 +832,13 @@ contract OmniParticipation is // solhint-disable-line max-states-count
      * @param transactionHashes Array of transaction hashes to claim
      * @dev User initiates claim, admin verifies later
      */
+    /// @dev AUDIT ACCEPTED (Round 6 ATK-M23): Transaction hash validation cannot
+    ///      be performed fully on-chain. Fabricated hashes are mitigated by:
+    ///      (1) VERIFIER_ROLE verification before score credit
+    ///      (2) Daily verifier rate limits (MAX_VERIFIER_CHANGES_PER_DAY)
+    ///      (3) Global daily change cap (MAX_GLOBAL_CHANGES_PER_DAY)
+    ///      (4) Per-user array caps preventing state bloat
+    ///      Full hash validation happens off-chain in the Validator node.
     function claimMarketplaceTransactions(
         bytes32[] calldata transactionHashes
     ) external {
@@ -846,6 +893,9 @@ contract OmniParticipation is // solhint-disable-line max-states-count
 
         TransactionClaim storage claim = transactionClaims[user][claimIndex];
         if (claim.verified) revert AlreadyVerified();
+
+        // SYBIL: Enforce per-epoch score increase cap
+        _checkEpochScoreIncrease(user, 1);
 
         claim.verified = true;
 
@@ -961,6 +1011,8 @@ contract OmniParticipation is // solhint-disable-line max-states-count
 
         // Update incremental counter for valid reports only
         if (isValid) {
+            // SYBIL: Enforce per-epoch score increase cap
+            _checkEpochScoreIncrease(reporter, 1);
             ++validatedReportCount[reporter];
         }
 
@@ -1075,6 +1127,9 @@ contract OmniParticipation is // solhint-disable-line max-states-count
 
         ForumContribution storage contribution = forumContributions[user][contributionIndex];
         if (contribution.verified) revert AlreadyVerified();
+
+        // SYBIL: Enforce per-epoch score increase cap
+        _checkEpochScoreIncrease(user, 1);
 
         contribution.verified = true;
 
@@ -1592,6 +1647,30 @@ contract OmniParticipation is // solhint-disable-line max-states-count
     }
 
     /**
+     * @notice SYBIL: Check and increment per-user per-epoch score increase
+     * @dev Called by all score-increasing verification functions. Reverts
+     *      if the user would exceed MAX_SCORE_INCREASE_PER_EPOCH.
+     * @param user Address whose score is being increased
+     * @param points Number of points being added (typically 1)
+     */
+    function _checkEpochScoreIncrease(
+        address user,
+        uint256 points
+    ) internal {
+        // solhint-disable-next-line not-rely-on-time
+        uint256 epoch = block.timestamp / SCORE_EPOCH_DURATION;
+        uint256 current = _epochScoreIncrease[user][epoch];
+        if (current + points > MAX_SCORE_INCREASE_PER_EPOCH) {
+            revert EpochScoreLimitExceeded(
+                user,
+                current + points,
+                MAX_SCORE_INCREASE_PER_EPOCH
+            );
+        }
+        _epochScoreIncrease[user][epoch] = current + points;
+    }
+
+    /**
      * @notice Authorize contract upgrade
      * @param newImplementation Address of new implementation contract
      * @dev Reverts if contract is ossified or new implementation is zero.
@@ -1664,15 +1743,21 @@ contract OmniParticipation is // solhint-disable-line max-states-count
     //                        UPGRADE GAP
     // ═══════════════════════════════════════════════════════════════════════
 
+    /// @notice SYBIL: Per-user per-epoch cumulative score increase tracking
+    /// @dev Maps user => epoch_number => total_score_points_increased
+    mapping(address => mapping(uint256 => uint256))
+        private _epochScoreIncrease;
+
     /**
      * @notice Reserved storage gap for future upgrades.
      * @dev Prevents storage collisions when new state variables are
      *      added in future implementations. Follows the OpenZeppelin
      *      upgradeable contract pattern.
-     *      Reduced from 50 to 47 to accommodate:
+     *      Reduced from 50 to 46 to accommodate:
      *      - _ossified (bool, 1 slot)
      *      - _verifierDailyChanges (mapping, 1 slot) [ATK-H04]
      *      - _globalDailyChanges (mapping, 1 slot) [M-02]
+     *      - _epochScoreIncrease (mapping, 1 slot) [SYBIL]
      */
-    uint256[47] private __gap;
+    uint256[46] private __gap;
 }

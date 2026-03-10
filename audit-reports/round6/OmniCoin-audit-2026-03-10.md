@@ -41,12 +41,12 @@ The contract is now well-structured, leveraging battle-tested OpenZeppelin v5 co
 
 ## Round 6 Post-Audit Remediation (2026-03-10)
 
-All Medium findings from this Round 6 audit have been remediated. Compilation clean, all tests passing.
+All Medium findings from this Round 6 audit have been reviewed. Compilation clean, all tests passing.
 
 | ID | Severity | Finding | Status |
 |----|----------|---------|--------|
-| M-01 | Medium | BURNER_ROLE allowance bypass remains a critical trust dependency | **FIXED** |
-| M-02 | Medium | ERC2771 trusted forwarder is immutable -- cannot be rotated if compromised | **FIXED** |
+| M-01 | Medium | BURNER_ROLE allowance bypass remains a critical trust dependency | **ACCEPTED** -- BURNER_ROLE granted only to OmniCore for migration; revoked after completion; can only burn, not transfer |
+| M-02 | Medium | ERC2771 trusted forwarder is immutable -- cannot be rotated if compromised | **ACCEPTED** -- Immutability is OZ default; prevents admin swap to malicious forwarder; ossify() + pause provides emergency protection |
 
 ---
 

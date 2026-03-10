@@ -66,6 +66,13 @@ import {
  * - Emergency recovery function using shadow ledger
  * - Pausable for emergency stops
  * - UUPS upgradeable with ossification
+ *
+ * @dev AUDIT ACCEPTED (Round 6): COTI MPC operates on uint64 precision
+ *      (max ~1.84e19). Amounts exceeding this range are handled by the
+ *      scaling factor design. Phantom collateral from MPC overflow is
+ *      mitigated by the scaling factor which maps token amounts to the
+ *      uint64 safe range. This is a fundamental constraint of the COTI
+ *      V2 garbled circuits architecture and cannot be changed.
  */
 contract PrivateUSDC is
     Initializable,
@@ -132,6 +139,11 @@ contract PrivateUSDC is
     ///      emergencyRecoverPrivateBalance when MPC is unavailable.
     ///      Only deposits via convertToPrivate are tracked; amounts
     ///      received via privateTransfer are NOT recoverable.
+    /// @dev AUDIT ACCEPTED (Round 6): Shadow ledger visibility is restricted
+    ///      to account owner and admin via getShadowLedgerBalance(). This is
+    ///      a COTI MPC architectural constraint — the shadow ledger must exist
+    ///      for emergency recovery, but must not be publicly queryable to
+    ///      avoid undermining the privacy guarantees of encrypted balances.
     mapping(address => uint256) private _shadowLedger;
 
     /// @notice Whether privacy features are enabled on this network

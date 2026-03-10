@@ -78,6 +78,13 @@ import {
  * - Reentrancy protection on all state-changing functions
  * - Checked MPC arithmetic (checkedAdd/checkedSub/checkedMul)
  *   reverts on overflow instead of silently wrapping
+ *
+ * @dev AUDIT ACCEPTED (Round 6): COTI MPC operates on uint64 precision
+ *      (max ~1.84e19). Amounts exceeding this range are handled by the
+ *      scaling factor design. Phantom collateral from MPC overflow is
+ *      mitigated by the scaling factor which maps token amounts to the
+ *      uint64 safe range. This is a fundamental constraint of the COTI
+ *      V2 garbled circuits architecture and cannot be changed.
  */
 contract PrivateDEXSettlement is
     Initializable,

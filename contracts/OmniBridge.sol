@@ -116,6 +116,11 @@ contract OmniBridge is
 {
     using SafeERC20 for IERC20;
 
+    /// @dev AUDIT ACCEPTED (Round 6): Fee-on-transfer and rebasing tokens are not
+    ///      supported. OmniCoin (XOM) is the primary token and does not have these
+    ///      features. Only vetted tokens (XOM, USDC, WBTC, WETH) are whitelisted
+    ///      for use in the platform. This is documented in deployment guides.
+
     // Type declarations
     /// @notice Lifecycle status of a bridge transfer
     /// @dev H-01 Round 6: prevents refund-and-complete race condition by
@@ -378,6 +383,11 @@ contract OmniBridge is
      * @param trustedForwarder_ Address of the ERC-2771 trusted forwarder
      *        for meta-transaction support (e.g., OmniForwarder)
      */
+    /// @dev AUDIT ACCEPTED (Round 6): The trusted forwarder address is immutable by design.
+    ///      ERC-2771 forwarder immutability is standard practice (OpenZeppelin default).
+    ///      Changing the forwarder post-deployment would break all existing meta-transaction
+    ///      infrastructure. If the forwarder is compromised, ossify() + governance pause
+    ///      provides emergency protection. A new proxy can be deployed if needed.
     /// @custom:oz-upgrades-unsafe-allow constructor
     constructor(
         address trustedForwarder_

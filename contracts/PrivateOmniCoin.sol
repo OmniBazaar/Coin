@@ -73,6 +73,13 @@ import {
  * - offBoard: Convert from computation (gt) to storage (ct) type
  * - setPublic64: Create encrypted value from plain value
  * - decrypt: Reveal encrypted value (authorized only)
+ *
+ * @dev AUDIT ACCEPTED (Round 6): COTI MPC operates on uint64 precision
+ *      (max ~1.84e19). Amounts exceeding this range are handled by the
+ *      scaling factor design. Phantom collateral from MPC overflow is
+ *      mitigated by the scaling factor which maps token amounts to the
+ *      uint64 safe range. This is a fundamental constraint of the COTI
+ *      V2 garbled circuits architecture and cannot be changed.
  */
 contract PrivateOmniCoin is
     Initializable,
@@ -272,14 +279,18 @@ contract PrivateOmniCoin is
     /// @notice Emitted when a pending privacy disable is cancelled
     event PrivacyDisableCancelled();
 
-    /// @notice Emitted when shadow ledger is updated during transfer
-    /// @param from Sender whose ledger was debited
-    /// @param to Recipient whose ledger was credited
-    /// @param scaledAmount Amount transferred (6-decimal scaled)
+    /// @notice Emitted when the shadow ledger is updated (no amounts
+    ///         revealed to preserve privacy)
+    /// @dev AUDIT FIX (Round 6 PRIV-ATK-02): Plaintext amounts removed
+    ///      from event to prevent balance-change correlation attacks.
+    ///      Off-chain indexers can track shadow ledger changes by
+    ///      monitoring this event and querying getShadowLedgerBalance()
+    ///      with appropriate authorization.
+    /// @param user Address whose shadow ledger was updated
+    /// @param isDeposit True if deposit (convertToPrivate), false if withdrawal
     event PrivateLedgerUpdated(
-        address indexed from,
-        address indexed to,
-        uint256 scaledAmount
+        address indexed user,
+        bool indexed isDeposit
     );
 
     // ====================================================================
@@ -602,9 +613,8 @@ contract PrivateOmniCoin is
         }
         privateDepositLedger[to] += transferAmount;
 
-        emit PrivateLedgerUpdated(
-            msg.sender, to, transferAmount
-        );
+        emit PrivateLedgerUpdated(msg.sender, false);
+        emit PrivateLedgerUpdated(to, true);
         emit PrivateTransfer(msg.sender, to);
     }
 

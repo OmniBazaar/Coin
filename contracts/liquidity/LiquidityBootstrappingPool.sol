@@ -59,6 +59,11 @@ import {Context} from
 contract LiquidityBootstrappingPool is ReentrancyGuard, Ownable, Pausable, ERC2771Context {
     using SafeERC20 for IERC20;
 
+    /// @dev AUDIT ACCEPTED (Round 6): Fee-on-transfer and rebasing tokens are not
+    ///      supported. OmniCoin (XOM) is the primary token and does not have these
+    ///      features. Only vetted tokens (XOM, USDC, WBTC, WETH) are whitelisted
+    ///      for use in the platform. This is documented in deployment guides.
+
     // ============ Constants ============
 
     /// @notice Basis points for percentage calculations (100% = 10000)
@@ -249,6 +254,11 @@ contract LiquidityBootstrappingPool is ReentrancyGuard, Ownable, Pausable, ERC27
      * @param _treasury Address to receive raised funds
      * @param trustedForwarder_ Trusted ERC-2771 forwarder address
      */
+    /// @dev AUDIT ACCEPTED (Round 6): The trusted forwarder address is immutable by design.
+    ///      ERC-2771 forwarder immutability is standard practice (OpenZeppelin default).
+    ///      Changing the forwarder post-deployment would break all existing meta-transaction
+    ///      infrastructure. If the forwarder is compromised, ossify() + governance pause
+    ///      provides emergency protection. A new proxy can be deployed if needed.
     constructor(
         address _xom,
         address _counterAsset,

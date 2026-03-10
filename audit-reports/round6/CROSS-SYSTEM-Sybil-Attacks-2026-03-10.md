@@ -35,7 +35,7 @@ The most dangerous finding is **Attack Path #1 (Welcome Bonus Farming via truste
 | #1 / SYBIL-AP-01 | Critical | Welcome bonus farming via trustedVerificationKey compromise | **ACKNOWLEDGED** -- trustedVerificationKey SPOF; M-of-N migration planned |
 | #3 / SYBIL-AP-03 | Critical | Validator reward pool instant drainage | **FIXED** -- VALIDATOR_REWARD_ROLE removed entirely from OmniRewardManager; validator rewards handled exclusively by OmniValidatorRewards |
 | #2 / SYBIL-AP-02 | High | Referral bonus circular farming | **PLANNED** -- Comprehensive anti-sybil plan created covering KYC Tier 1 requirement for referrers, OmniSybilGuard contract revival, off-chain fraud detection |
-| #5 / SYBIL-AP-04 | High | Participation score manipulation via sybil accounts | **ACKNOWLEDGED** -- Accepted as ongoing monitoring challenge |
+| #5 / SYBIL-AP-04 | High | Participation score manipulation via sybil accounts | **ACCEPTED** -- Mitigated by VERIFIER_ROLE rate limits, daily caps, per-user array caps; off-chain Validator node provides full transaction hash validation |
 | #4 / SYBIL-AP-05 | High | First sale bonus wash trading | **FIXED** -- markFirstSaleCompleted() updated with 3 anti-wash-trading checks: min 100 XOM sale, 7-day account age, shared-referrer check |
 | #6 | Medium | Validator qualification gaming via sybil scores | **FIXED** |
 | #7 | Medium | Governance vote amplification | **FIXED** |

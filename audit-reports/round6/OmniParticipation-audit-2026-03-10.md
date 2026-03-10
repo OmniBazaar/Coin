@@ -40,7 +40,7 @@ Since the Round 3 audit, significant remediation has been completed:
 | ATK-H04 | VERIFIER_ROLE unchecked power | **PARTIALLY FIXED** -- Rate limit (50/day) + listing delta cap (1000) added |
 | ATK-H12 | Unbounded storage arrays | **FIXED** -- Per-user array caps (1000/1000/500/500) |
 | ATK-M22 | Service node heartbeat no validator check | **FIXED** -- `isValidator()` check added (line 658) |
-| ATK-M23 | Fabricated transaction hashes | **ACKNOWLEDGED** -- Documented limitation; off-chain proof required |
+| ATK-M23 | Fabricated transaction hashes | **ACCEPTED** -- Transaction hash validation cannot be performed fully on-chain; mitigated by VERIFIER_ROLE, daily rate limits, global change caps, and per-user array caps; full validation in Validator node |
 
 **This Round 6 audit found: 0 Critical, 1 High, 3 Medium, 3 Low, 4 Informational findings.**
 

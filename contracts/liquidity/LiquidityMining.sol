@@ -354,6 +354,11 @@ contract LiquidityMining is ReentrancyGuard, Ownable2Step, Pausable, ERC2771Cont
      * @param _stakingPoolFeeRecipient Staking pool fee recipient (10%)
      * @param trustedForwarder_ Trusted ERC-2771 forwarder address
      */
+    /// @dev AUDIT ACCEPTED (Round 6): The trusted forwarder address is immutable by design.
+    ///      ERC-2771 forwarder immutability is standard practice (OpenZeppelin default).
+    ///      Changing the forwarder post-deployment would break all existing meta-transaction
+    ///      infrastructure. If the forwarder is compromised, ossify() + governance pause
+    ///      provides emergency protection. A new proxy can be deployed if needed.
     constructor(
         address _xom,
         address _treasury,

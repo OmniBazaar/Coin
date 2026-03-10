@@ -1,6 +1,6 @@
 {
-  "timestamp": "2026-03-10T18:39:48.763Z",
-  "duration": "58.22s",
+  "timestamp": "2026-03-10T20:11:49.224Z",
+  "duration": "60.17s",
   "summary": {
     "total": 28,
     "passed": 0,
@@ -63,7 +63,7 @@
       {
         "status": "failed",
         "file": "test/UnifiedFeeVault.test.js",
-        "error": "An unexpected error occurred:\nError: Lock file is already being held\n    at /home/omnirick/OmniBazaar/node_modules/proper-lockfile/lib/lockfile.js:68:47\n    at callback (/home/omnirick/OmniBazaar/node_modules/graceful-fs/polyfills.js:306:20)\n    at FSReqCallback.oncomplete (node:fs:197:5) {\n  code: 'ELOCKED',\n  file: '/home/omnirick/OmniBazaar/Coin/cache/validations.json'\n}\n"
+        "error": ""
       },
       {
         "status": "failed",
@@ -105,12 +105,12 @@
       {
         "status": "failed",
         "file": "test/predictions/OmniPredictionRouter.test.js",
-        "error": ""
+        "error": "An unexpected error occurred:\nError: Lock file is already being held\n    at /home/omnirick/OmniBazaar/node_modules/proper-lockfile/lib/lockfile.js:68:47\n    at callback (/home/omnirick/OmniBazaar/node_modules/graceful-fs/polyfills.js:306:20)\n    at FSReqCallback.oncomplete (node:fs:197:5) {\n  code: 'ELOCKED',\n  file: '/home/omnirick/OmniBazaar/Coin/cache/validations.json'\n}\n"
       },
       {
         "status": "failed",
         "file": "test/reputation/ReputationCredential.test.js",
-        "error": ""
+        "error": "An unexpected error occurred:\nError: Lock file is already being held\n    at /home/omnirick/OmniBazaar/node_modules/proper-lockfile/lib/lockfile.js:68:47\n    at callback (/home/omnirick/OmniBazaar/node_modules/graceful-fs/polyfills.js:306:20)\n    at FSReqCallback.oncomplete (node:fs:197:5) {\n  code: 'ELOCKED',\n  file: '/home/omnirick/OmniBazaar/Coin/cache/validations.json'\n}\n"
       },
       {
         "status": "failed",

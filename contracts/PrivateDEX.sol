@@ -83,6 +83,13 @@ import {
  * - Order prices encrypted (ctUint64)
  * - Filled amounts encrypted
  * - Only trader can decrypt their own data
+ *
+ * @dev AUDIT ACCEPTED (Round 6): COTI MPC operates on uint64 precision
+ *      (max ~1.84e19). Amounts exceeding this range are handled by the
+ *      scaling factor design. Phantom collateral from MPC overflow is
+ *      mitigated by the scaling factor which maps token amounts to the
+ *      uint64 safe range. This is a fundamental constraint of the COTI
+ *      V2 garbled circuits architecture and cannot be changed.
  */
 contract PrivateDEX is
     Initializable,
@@ -862,6 +869,48 @@ contract PrivateDEX is
         emit PrivateOrderCancelled(orderId, caller);
     }
 
+    /**
+     * @notice Remove terminal (FILLED/CANCELLED) order IDs from the
+     *         caller's userOrders array to reclaim storage
+     * @dev AUDIT FIX (Round 6 M-02): Provides a voluntary cleanup
+     *      mechanism so users can compact their order history. Uses
+     *      swap-and-pop to remove terminal entries. Only the order
+     *      owner can clean up their own orders. Processes up to
+     *      `maxCleanup` entries per call to bound gas cost.
+     *
+     *      NOTE: This changes the ordering of userOrders[msg.sender].
+     *      Off-chain indexers should use events, not array indexes.
+     *
+     * @param maxCleanup Maximum number of entries to process
+     * @return removed Number of terminal order IDs removed
+     */
+    function cleanupUserOrders(
+        uint256 maxCleanup
+    ) external returns (uint256 removed) {
+        address caller = _msgSender();
+        bytes32[] storage arr = userOrders[caller];
+        uint256 len = arr.length;
+        uint256 processed = 0;
+        uint256 i = 0;
+
+        while (i < len && processed < maxCleanup) {
+            OrderStatus status = orders[arr[i]].status;
+            if (
+                status == OrderStatus.FILLED ||
+                status == OrderStatus.CANCELLED
+            ) {
+                // Swap with last element and pop
+                arr[i] = arr[len - 1];
+                arr.pop();
+                --len;
+                ++removed;
+            } else {
+                ++i;
+            }
+            ++processed;
+        }
+    }
+
     // ====================================================================
     // QUERY FUNCTIONS (non-view external)
     // ====================================================================
@@ -1013,6 +1062,48 @@ contract PrivateDEX is
         uint256 activeOrdersCount
     ) {
         return (totalOrders, totalTrades, totalActiveOrders);
+    }
+
+    /**
+     * @notice Get a paginated slice of a user's order IDs
+     * @dev Returns up to `limit` order IDs starting from `offset`.
+     *      The full userOrders array is append-only so indexes are
+     *      stable. Intended for off-chain / eth_call use.
+     *
+     *      AUDIT FIX (Round 6 M-01): Replaces unbounded iteration
+     *      of the full userOrders array with O(limit) gas cost.
+     *
+     * @param user Address to query
+     * @param offset Starting index in the user's order array
+     * @param limit Maximum number of order IDs to return
+     * @return orderIdSlice Array of order IDs in the requested range
+     * @return total Total number of orders for this user
+     */
+    function getUserOrdersPaginated(
+        address user,
+        uint256 offset,
+        uint256 limit
+    ) external view returns (
+        bytes32[] memory orderIdSlice,
+        uint256 total
+    ) {
+        bytes32[] storage allOrders = userOrders[user];
+        total = allOrders.length;
+
+        if (offset >= total || limit == 0) {
+            return (new bytes32[](0), total);
+        }
+
+        uint256 end = offset + limit;
+        if (end > total) {
+            end = total;
+        }
+        uint256 count = end - offset;
+
+        orderIdSlice = new bytes32[](count);
+        for (uint256 i = 0; i < count; ++i) {
+            orderIdSlice[i] = allOrders[offset + i];
+        }
     }
 
     /**

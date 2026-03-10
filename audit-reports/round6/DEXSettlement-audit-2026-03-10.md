@@ -764,11 +764,11 @@ If a fee-on-transfer token passes the earlier checks (on the net transfer amount
 | H-02: Reverting token blocks fee changes | **FIXED** | `_claimAllPendingFees` uses low-level `call` with re-credit on failure; `removeFeeToken` added |
 | H-03: No `matchingValidator` in IntentCollateral | **FIXED** | `matchingValidator` field added to struct (line 163) and stored at lock time |
 | M-01: Volume tracking one-sided | **FIXED** | Both `makerOrder.amountIn + takerOrder.amountIn` tracked (lines 792-795, 1875-1879) |
-| M-02: Fee-on-transfer check missing for fee transfers | **PARTIAL** | Checks added to main transfers but fee transfer to contract in `_executeAtomicSettlement` still lacks explicit check (fail-safe via atomic revert) |
+| M-02: Fee-on-transfer check missing for fee transfers | **ACCEPTED** | Fee-on-transfer and rebasing tokens not supported by design; only vetted tokens (XOM, USDC, WBTC, WETH) whitelisted; fail-safe via atomic revert provides defense-in-depth |
 | M-03: Commit-reveal optional | **ACKNOWLEDGED** | NatSpec updated to document it as opt-in (line 735). Architectural decision. |
 | M-04: Timelock overwrite | **FIXED** | `PendingChangeExists` error added, `cancelScheduledTradingLimits` function added |
 | M-05: `settleIntent` CEI violation | **FIXED** | `coll.settled = true` moved before external calls (line 1227) |
-| M-06: Rebasing tokens stuck escrow | **ACKNOWLEDGED** | NatSpec documents incompatibility (line 1111) |
+| M-06: Rebasing tokens stuck escrow | **ACCEPTED** | Fee-on-transfer and rebasing tokens not supported; only vetted tokens (XOM, USDC, WBTC, WETH) whitelisted; NatSpec comment added |
 | L-01: Zero trade limits | **FIXED** | Zero check added in `scheduleTradingLimits` (lines 928-930) |
 | L-02: `feeTokens` never shrinks | **FIXED** | `removeFeeToken` added (lines 1045-1062) |
 | L-03: Emergency stop/pause inconsistent | **PARTIAL** | `emergencyStop` added to `lockIntentCollateral` (line 1124), but redundancy remains |

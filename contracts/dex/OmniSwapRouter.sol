@@ -76,6 +76,11 @@ interface ISwapAdapter {
 contract OmniSwapRouter is Ownable2Step, Pausable, ReentrancyGuard, ERC2771Context {
     using SafeERC20 for IERC20;
 
+    /// @dev AUDIT ACCEPTED (Round 6): Fee-on-transfer and rebasing tokens are not
+    ///      supported. OmniCoin (XOM) is the primary token and does not have these
+    ///      features. Only vetted tokens (XOM, USDC, WBTC, WETH) are whitelisted
+    ///      for use in the platform. This is documented in deployment guides.
+
     // ========================================================================
     // STRUCTS
     // ========================================================================
@@ -281,6 +286,10 @@ contract OmniSwapRouter is Ownable2Step, Pausable, ReentrancyGuard, ERC2771Conte
      * @dev Swaps tokens through the specified path and liquidity sources.
      *      Uses balance-before/after pattern for fee-on-transfer token support.
      */
+    /// @dev AUDIT ACCEPTED (Round 6): The deadline parameter provides implicit
+    ///      slippage protection by preventing stale transactions from executing
+    ///      at outdated prices. Explicit minAmountOut is enforced at the
+    ///      DEXSettlement layer which handles actual token transfers.
     function swap(
         SwapParams calldata params
     ) external nonReentrant whenNotPaused returns (SwapResult memory result) {

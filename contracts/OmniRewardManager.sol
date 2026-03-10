@@ -111,6 +111,13 @@ contract OmniRewardManager is
     /// @notice Maximum first sale bonuses per day (rate limiting)
     uint256 public constant MAX_DAILY_FIRST_SALE_BONUSES = 500;
 
+    /// @notice SYBIL-AP-02: Maximum referral bonuses a single referrer can earn per epoch
+    /// @dev Prevents sybil farming where attacker creates many accounts to farm referral bonuses
+    uint256 public constant MAX_REFERRAL_BONUSES_PER_EPOCH = 50;
+
+    /// @notice SYBIL-AP-02: Duration of one referral rate-limit epoch (7 days)
+    uint256 public constant REFERRAL_EPOCH_DURATION = 7 days;
+
     /// @notice EIP-712 typehash for trustless welcome bonus claim
     /// @dev ClaimWelcomeBonus(address user,uint256 nonce,uint256 deadline)
     bytes32 public constant CLAIM_WELCOME_BONUS_TYPEHASH = keccak256(
@@ -231,10 +238,13 @@ contract OmniRewardManager is
     ///      without a valid merkle proof once this flag is set.
     bool public merkleRootsRequired;
 
+    /// @notice SYBIL-AP-02: Per-referrer per-epoch referral bonus count
+    /// @dev Maps referrer => epoch_number => count. Epoch = timestamp / REFERRAL_EPOCH_DURATION
+    mapping(address => mapping(uint256 => uint256)) public epochReferralCount;
+
     /// @dev Reserved storage gap for future upgrades
-    /// @custom:storage-preserved Size unchanged at 26 - removed validator slots are
-    ///         preserved inline as __gap_removed_* variables above
-    uint256[26] private __gap;
+    /// @custom:storage-preserved Size reduced from 26 to 25 for epochReferralCount mapping
+    uint256[25] private __gap;
 
     // ============ Events ============
 
@@ -382,6 +392,16 @@ contract OmniRewardManager is
         address referee
     );
 
+    /// @notice SYBIL-AP-02: Emitted when referral epoch count is updated
+    /// @param referrer Address of the referrer
+    /// @param epoch Epoch number
+    /// @param count New count in this epoch
+    event ReferralEpochCountUpdated(
+        address indexed referrer,
+        uint256 indexed epoch,
+        uint256 indexed count
+    );
+
     /// @notice Emitted when referrer claims their accumulated bonus
     /// @param referrer Address who claimed the bonus
     /// @param amount Amount transferred to referrer
@@ -481,6 +501,11 @@ contract OmniRewardManager is
     /// @param user User address
     error NoPendingReferralBonus(address user);
 
+    /// @notice SYBIL-AP-02: Referrer exceeded per-epoch referral bonus limit
+    /// @param referrer Address that hit the limit
+    /// @param limit The maximum allowed per epoch
+    error EpochReferralLimitExceeded(address referrer, uint256 limit);
+
     /// @notice Thrown when contract token balance is insufficient for declared pools (M-02)
     /// @param required Total pool allocation declared
     /// @param actual Actual token balance held by contract
@@ -509,8 +534,13 @@ contract OmniRewardManager is
     /**
      * @notice Disables initializers for the implementation contract
      * @dev Required for UUPS proxy pattern security
-     * @custom:oz-upgrades-unsafe-allow constructor
      */
+    /// @dev AUDIT ACCEPTED (Round 6): The trusted forwarder address is immutable by design.
+    ///      ERC-2771 forwarder immutability is standard practice (OpenZeppelin default).
+    ///      Changing the forwarder post-deployment would break all existing meta-transaction
+    ///      infrastructure. If the forwarder is compromised, ossify() + governance pause
+    ///      provides emergency protection. A new proxy can be deployed if needed.
+    /// @custom:oz-upgrades-unsafe-allow constructor
     constructor(
         address trustedForwarder_
     ) ERC2771ContextUpgradeable(trustedForwarder_) {
@@ -1194,6 +1224,11 @@ contract OmniRewardManager is
      */
     function claimReferralBonusPermissionless() external nonReentrant whenNotPaused {
         address caller = _msgSender();
+
+        // SYBIL-AP-02: Require KYC Tier 1 for referral bonus claiming
+        if (address(registrationContract) == address(0)) revert RegistrationContractNotSet();
+        if (!registrationContract.hasKycTier1(caller)) revert KycTier1Required(caller);
+
         uint256 pending = pendingReferralBonuses[caller];
 
         // Check has pending bonus
@@ -1264,6 +1299,10 @@ contract OmniRewardManager is
         if (recoveredSigner != user) {
             revert InvalidUserSignature(user, recoveredSigner);
         }
+
+        // SYBIL-AP-02: Require KYC Tier 1 for referral bonus claiming
+        if (address(registrationContract) == address(0)) revert RegistrationContractNotSet();
+        if (!registrationContract.hasKycTier1(user)) revert KycTier1Required(user);
 
         // 4. Check has pending bonus
         uint256 pending = pendingReferralBonuses[user];
@@ -1832,6 +1871,17 @@ contract OmniRewardManager is
             return;
         }
         ++dailyAutoReferralCount[today];
+
+        // SYBIL-AP-02: Per-referrer epoch rate limit
+        // solhint-disable-next-line not-rely-on-time
+        uint256 epoch = block.timestamp / REFERRAL_EPOCH_DURATION;
+        if (epochReferralCount[referrer][epoch] >= MAX_REFERRAL_BONUSES_PER_EPOCH) {
+            // Skip if referrer hit epoch limit (don't revert - welcome bonus already claimed)
+            return;
+        }
+        ++epochReferralCount[referrer][epoch];
+
+        emit ReferralEpochCountUpdated(referrer, epoch, epochReferralCount[referrer][epoch]);
 
         // Calculate total referral bonus
         uint256 referralAmount = _calculateReferralBonus(registrationNumber);

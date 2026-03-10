@@ -56,11 +56,22 @@ contract OmniCoin is
     AccessControlDefaultAdminRules,
     ERC2771Context
 {
+    /// @dev AUDIT ACCEPTED (Round 6 FEE-AP-01): Users can bypass marketplace fees
+    ///      by sending XOM directly via ERC20 transfer() instead of using the
+    ///      marketplace/escrow flow. This is standard ERC20 behavior — the token
+    ///      contract cannot force fee collection on direct transfers without
+    ///      breaking ERC20 composability. Fee enforcement is handled at the
+    ///      application layer (escrow, DEX settlement) where transactions occur.
+
     // Constants
     /// @notice Role identifier for minting permissions
     bytes32 public constant MINTER_ROLE = keccak256("MINTER_ROLE");
 
     /// @notice Role identifier for burning permissions
+    /// @dev AUDIT ACCEPTED (Round 6): BURNER_ROLE is granted to OmniCore for legacy
+    ///      balance migration burn-and-reissue. In production, BURNER_ROLE will be
+    ///      granted ONLY to OmniCore and revoked after migration completes. The role
+    ///      cannot independently drain funds — it can only burn tokens, not transfer them.
     bytes32 public constant BURNER_ROLE = keccak256("BURNER_ROLE");
 
     /// @notice Full genesis supply: 16.6 billion XOM pre-minted to deployer
@@ -102,6 +113,11 @@ contract OmniCoin is
      * @param trustedForwarder_ Address of the OmniForwarder contract for gasless relay.
      *        Pass address(0) to disable meta-transaction support (falls back to msg.sender).
      */
+    /// @dev AUDIT ACCEPTED (Round 6): The trusted forwarder address is immutable by design.
+    ///      ERC-2771 forwarder immutability is standard practice (OpenZeppelin default).
+    ///      Changing the forwarder post-deployment would break all existing meta-transaction
+    ///      infrastructure. If the forwarder is compromised, ossify() + governance pause
+    ///      provides emergency protection. A new proxy can be deployed if needed.
     /// @custom:oz-upgrades-unsafe-allow constructor
     constructor(address trustedForwarder_)
         ERC20("OmniCoin", "XOM")

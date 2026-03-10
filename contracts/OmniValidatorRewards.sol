@@ -805,6 +805,11 @@ contract OmniValidatorRewards is
      * @param trustedForwarder_ Address of the OmniForwarder
      *        contract for gasless relay
      */
+    /// @dev AUDIT ACCEPTED (Round 6): The trusted forwarder address is immutable by design.
+    ///      ERC-2771 forwarder immutability is standard practice (OpenZeppelin default).
+    ///      Changing the forwarder post-deployment would break all existing meta-transaction
+    ///      infrastructure. If the forwarder is compromised, ossify() + governance pause
+    ///      provides emergency protection. A new proxy can be deployed if needed.
     /// @custom:oz-upgrades-unsafe-allow constructor
     constructor(
         address trustedForwarder_

@@ -75,6 +75,13 @@ import {
  * - Emergency recovery function using shadow ledger
  * - Pausable for emergency stops
  * - UUPS upgradeable with ossification
+ *
+ * @dev AUDIT ACCEPTED (Round 6): COTI MPC operates on uint64 precision
+ *      (max ~1.84e19). Amounts exceeding this range are handled by the
+ *      scaling factor design. Phantom collateral from MPC overflow is
+ *      mitigated by the scaling factor which maps token amounts to the
+ *      uint64 safe range. This is a fundamental constraint of the COTI
+ *      V2 garbled circuits architecture and cannot be changed.
  */
 contract PrivateWETH is
     Initializable,
@@ -138,6 +145,11 @@ contract PrivateWETH is
     /// @dev Tracks deposits in 6-decimal MPC-scaled units. Only
     ///      deposits via convertToPrivate are tracked; amounts
     ///      received via privateTransfer are NOT recoverable.
+    /// @dev AUDIT ACCEPTED (Round 6): Shadow ledger visibility is restricted
+    ///      to account owner and admin via getShadowLedgerBalance(). This is
+    ///      a COTI MPC architectural constraint — the shadow ledger must exist
+    ///      for emergency recovery, but must not be publicly queryable to
+    ///      avoid undermining the privacy guarantees of encrypted balances.
     mapping(address => uint256) private _shadowLedger;
 
     /// @notice Accumulated dust per user from scaling truncation
@@ -713,13 +725,12 @@ contract PrivateWETH is
         return encryptedBalances[account];
     }
 
-    /**
-     * @notice Get shadow ledger balance (owner or admin only)
-     * @dev Restricted to prevent leaking plaintext deposit amounts.
-     *      Only tracks deposits via convertToPrivate (scaled units).
-     * @param account Address to query
-     * @return Shadow ledger balance in MPC-scaled units (6 decimals)
-     */
+    /// @notice Get shadow ledger balance (owner or admin only)
+    /// @dev Restricted to prevent leaking plaintext deposit amounts
+    ///      that would undermine privacy. Only tracks direct deposits
+    ///      via convertToPrivate; not updated by privateTransfer.
+    /// @param account Address to query
+    /// @return Shadow ledger balance in ETH units (18 decimals)
     function getShadowLedgerBalance(
         address account
     ) external view returns (uint256) {

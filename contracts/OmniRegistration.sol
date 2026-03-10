@@ -24,6 +24,13 @@ import "@openzeppelin/contracts/utils/cryptography/MessageHashUtils.sol";
  * - Rate limiting prevents mass registration attacks
  * - Device fingerprinting and IP rate limiting (off-chain)
  * - Social media verification requirements (off-chain)
+ *
+ * @dev AUDIT ACCEPTED (Round 6): Off-chain verification (phone, email, social media,
+ *      device fingerprinting, IP rate limiting) is enforced by the Validator node
+ *      network, not on-chain. On-chain contracts verify EIP-712 signed attestations
+ *      from trusted verification keys. This hybrid approach provides Sybil resistance
+ *      without storing PII on-chain. The VALIDATOR_ROLE and KYC_ATTESTOR_ROLE
+ *      provide the on-chain trust boundary.
  */
 contract OmniRegistration is
     AccessControlUpgradeable,
@@ -626,6 +633,11 @@ contract OmniRegistration is
     //                           INITIALIZATION
     // ═══════════════════════════════════════════════════════════════════════
 
+    /// @dev AUDIT ACCEPTED (Round 6): The trusted forwarder address is immutable by design.
+    ///      ERC-2771 forwarder immutability is standard practice (OpenZeppelin default).
+    ///      Changing the forwarder post-deployment would break all existing meta-transaction
+    ///      infrastructure. If the forwarder is compromised, ossify() + governance pause
+    ///      provides emergency protection. A new proxy can be deployed if needed.
     /// @custom:oz-upgrades-unsafe-allow constructor
     constructor(
         address trustedForwarder_
