@@ -218,9 +218,14 @@ describe("UUPS Governance System", function () {
       expect(await timelock.isCriticalSelector(unpauseSel)).to.be.true;
     });
 
-    it("Should report 10 initial critical selectors", async function () {
-      // 7 original + updateDelay + addCriticalSelector + removeCriticalSelector
-      expect(await timelock.criticalSelectorCount()).to.equal(10);
+    it("Should classify ossify() as critical (GOV-ATK-H02)", async function () {
+      const ossifySel = "0x32e3a7b4"; // bytes4(keccak256("ossify()"))
+      expect(await timelock.isCriticalSelector(ossifySel)).to.be.true;
+    });
+
+    it("Should report 11 initial critical selectors", async function () {
+      // 7 original + updateDelay + addCriticalSelector + removeCriticalSelector + ossify
+      expect(await timelock.criticalSelectorCount()).to.equal(11);
     });
 
     it("Should return ROUTINE_DELAY for non-critical calldata", async function () {
@@ -1061,13 +1066,37 @@ describe("UUPS Governance System", function () {
         expect(currentState).to.equal(5); // Executed
       });
 
-      it("Should cancel proposal by proposer", async function () {
+      it("Should reject proposer cancel after voting ends (M-02 R6)", async function () {
+        // After voting ends (Succeeded state), proposer cannot cancel
         await expect(
           governance.connect(proposer).cancel(proposalId)
-        ).to.emit(governance, "ProposalCancelled")
-          .withArgs(proposalId);
+        ).to.be.revertedWithCustomError(governance, "NotAuthorizedToCancel");
+      });
 
-        const currentState = await governance.state(proposalId);
+      it("Should allow proposer cancel during Pending state (M-02 R6)", async function () {
+        // Create a fresh proposal and cancel before voting starts
+        const targets = [token.target];
+        const values = [0];
+        const calldatas = [
+          token.interface.encodeFunctionData(
+            "transfer", [voter3.address, ethers.parseEther("5")]
+          )
+        ];
+
+        const tx = await governance.connect(proposer).propose(
+          0, targets, values, calldatas, "Cancel test"
+        );
+        const receipt = await tx.wait();
+        const newProposalId = receipt.logs.find(
+          log => log.fragment && log.fragment.name === "ProposalCreated"
+        ).args.proposalId;
+
+        await expect(
+          governance.connect(proposer).cancel(newProposalId)
+        ).to.emit(governance, "ProposalCancelled")
+          .withArgs(newProposalId);
+
+        const currentState = await governance.state(newProposalId);
         expect(currentState).to.equal(6); // Cancelled
       });
 

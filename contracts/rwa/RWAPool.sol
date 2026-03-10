@@ -50,7 +50,8 @@ interface IRWAPoolCallee {
  *   donations from RWAAMM (70% of the 0.30% protocol fee).
  * - Cumulative price oracles (TWAP support via UQ112x112 fixed-point)
  * - Reentrancy protection via lock modifier
- * - Flash swap support via callback
+ * - Flash swaps disabled for RWA compliance (audit fix H-02)
+ * - Rate-limited sync() to resist oracle manipulation (audit fix H-01)
  * - Factory-only access control on critical functions
  *
  * Relationship to RWAAMM:
@@ -83,8 +84,17 @@ contract RWAPool is ERC20, IRWAPool {
     /// @notice Minimum initial deposit to prevent share inflation attacks
     /// @dev First depositor must provide at least this much liquidity
     ///      (sqrt(amount0 * amount1) >= MINIMUM_INITIAL_DEPOSIT).
-    ///      For low-decimal tokens (e.g. 6 decimals), MINIMUM_LIQUIDITY
-    ///      alone is insufficient protection.
+    ///
+    ///      Audit M-01: For low-decimal RWA tokens (6-8 decimals),
+    ///      a higher threshold is used compared to Uniswap V2's 1000.
+    ///      With MINIMUM_INITIAL_DEPOSIT = 10_000, the first depositor
+    ///      must provide sqrt(amount0 * amount1) >= 10_000. For a pair
+    ///      of 6-decimal tokens, this requires at least ~0.01 of each
+    ///      token (10_000 * 10_000 = 1e8 in 6-decimal units). For
+    ///      high-value RWA pairs, pool creators should deposit
+    ///      substantially more than the minimum to ensure the first-
+    ///      depositor rounding advantage is negligible relative to
+    ///      pool size.
     uint256 public constant MINIMUM_INITIAL_DEPOSIT = 10_000;
 
     /// @notice Address to lock minimum liquidity (dead address)
@@ -120,10 +130,23 @@ contract RWAPool is ERC20, IRWAPool {
     uint256 public price1CumulativeLast;
 
     /// @inheritdoc IRWAPool
+    /// @dev Audit M-03: kLast stores the product of reserves (K-value)
+    ///      after each mint/burn operation. It is exposed for external
+    ///      consumers (e.g., protocol fee calculations, analytics) but
+    ///      is NOT used for any security-critical validation within the
+    ///      pool itself. The K-invariant check in swap() uses live
+    ///      balances, not kLast. External protocols MUST NOT rely on
+    ///      kLast for security-critical calculations as it may be stale
+    ///      between mint/burn operations.
     uint256 public kLast;
 
     /// @notice Reentrancy lock state (1 = unlocked, 0 = locked)
     uint256 private unlocked = 1;
+
+    /// @notice Block number of the last sync() call (audit fix H-01)
+    /// @dev Limits sync() to once per block to prevent donation-based
+    ///      TWAP oracle manipulation within a single block.
+    uint256 private _lastSyncBlock;
 
     // ========================================================================
     // ERRORS
@@ -142,6 +165,16 @@ contract RWAPool is ERC20, IRWAPool {
     /// @param provided Amount of liquidity provided (sqrt)
     /// @param required Minimum required (MINIMUM_INITIAL_DEPOSIT)
     error InitialDepositTooSmall(uint256 provided, uint256 required);
+
+    /// @notice Thrown when flash swaps are attempted (audit fix H-02)
+    /// @dev Flash swaps are incompatible with RWA compliance because
+    ///      tokens are transferred before compliance verification.
+    error FlashSwapsDisabled();
+
+    /// @notice Thrown when sync() is called more than once per block
+    /// @dev Audit fix H-01: Prevents donation-based oracle manipulation
+    ///      by limiting sync() to one call per block.
+    error SyncRateLimited();
 
     // ========================================================================
     // MODIFIERS
@@ -311,7 +344,18 @@ contract RWAPool is ERC20, IRWAPool {
      *      The constant-product formula guarantees that the pool's value
      *      never decreases. Fees are handled upstream by RWAAMM, so the
      *      pool's K-check uses raw balances without fee adjustment.
-     *      Supports flash swaps via the data callback parameter.
+     *
+     *      Flash swaps are disabled (audit fix H-02): passing non-empty
+     *      data will revert with FlashSwapsDisabled(). Flash swaps are
+     *      incompatible with RWA compliance because tokens are sent to
+     *      the recipient before any compliance verification occurs.
+     *
+     *      Audit M-02 (read-only reentrancy): The optimistic transfer
+     *      pattern means getReserves() returns stale values during
+     *      token transfer callbacks. External protocols MUST NOT use
+     *      getReserves() for real-time pricing during active swap
+     *      transactions. The lock modifier prevents direct reentrancy
+     *      into the pool but does not protect external readers.
      */
     function swap(
         uint256 amount0Out,
@@ -336,11 +380,13 @@ contract RWAPool is ERC20, IRWAPool {
             IERC20(token1).safeTransfer(to, amount1Out);
         }
 
-        // Flash swap callback (if data provided)
+        // Audit fix H-02: Flash swaps are disabled for RWA pools.
+        // Flash swaps transfer tokens to the recipient BEFORE any
+        // compliance verification occurs. Even if the callback repays,
+        // the non-compliant user has already received regulated
+        // securities, creating a securities law violation.
         if (data.length > 0) {
-            IRWAPoolCallee(to).rwaPoolCall(
-                msg.sender, amount0Out, amount1Out, data
-            );
+            revert FlashSwapsDisabled();
         }
 
         // Get updated balances and verify invariants
@@ -355,11 +401,23 @@ contract RWAPool is ERC20, IRWAPool {
      *      Sync event with the updated reserve values. This function
      *      is intentionally permissionless (no onlyFactory) following
      *      the Uniswap V2 convention, serving as an escape hatch to
-     *      recover from balance/reserve mismatches. Note: TWAP oracle
-     *      data from this pool should not be used for on-chain pricing
-     *      decisions, as donations + sync() can manipulate TWAP.
+     *      recover from balance/reserve mismatches.
+     *
+     *      Audit fix H-01: Rate-limited to once per block to resist
+     *      donation-based TWAP oracle manipulation. An attacker cannot
+     *      donate tokens and call sync() multiple times in the same
+     *      block to skew the cumulative price accumulators. Note that
+     *      TWAP data from this pool should still not be used for
+     *      on-chain pricing decisions without additional safeguards.
      */
     function sync() external override lock {
+        // Audit fix H-01: Limit sync() to once per block to prevent
+        // donation-based oracle manipulation within a single block.
+        if (_lastSyncBlock == block.number) {
+            revert SyncRateLimited();
+        }
+        _lastSyncBlock = block.number;
+
         uint256 balance0 = IERC20(token0).balanceOf(address(this));
         uint256 balance1 = IERC20(token1).balanceOf(address(this));
         _update(

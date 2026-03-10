@@ -338,6 +338,18 @@ contract OmniValidatorRewards is
     ///      accidental lockout and allow monitoring.
     uint256 public constant ADMIN_TRANSFER_DELAY = 48 hours;
 
+    /// @notice Total validator reward pool (6.089 billion XOM)
+    /// @dev H-01 Round 6: Hard cap on total distributable rewards.
+    ///      OmniRewardManager pre-funds this contract with exactly
+    ///      this amount. Distribution MUST NOT exceed this total.
+    uint256 public constant TOTAL_VALIDATOR_POOL =
+        6_089_000_000 ether;
+
+    /// @notice Threshold in basis points for low-pool warnings
+    /// @dev H-01 Round 6: Emits PoolRunningLow when remaining
+    ///      pool drops below 10% (1000 bps) of TOTAL_VALIDATOR_POOL.
+    uint256 public constant POOL_LOW_THRESHOLD_BPS = 1000;
+
     // ══════════════════════════════════════════════════════════════════
     //                              STORAGE
     // ══════════════════════════════════════════════════════════════════
@@ -455,10 +467,30 @@ contract OmniValidatorRewards is
     ///      can remove exemptions once validators stake normally.
     mapping(address => bool) public stakeExempt;
 
+    /// @notice Address of the admin who proposed the transfer (M-01 R6)
+    /// @dev Stored so acceptAdminTransfer can atomically revoke the
+    ///      old admin's role. Without this, the old admin retains
+    ///      DEFAULT_ADMIN_ROLE indefinitely after transfer.
+    address public adminTransferProposer;
+
+    /// @notice Epoch at which each validator last submitted a heartbeat (M-02 R6)
+    /// @dev Used in _computeEpochWeights to verify the validator was active
+    ///      at the time of the epoch being processed, not just at block.timestamp.
+    ///      Prevents offline validators from submitting a heartbeat and then
+    ///      retroactively claiming rewards for historical unprocessed epochs.
+    mapping(address => uint256) public lastHeartbeatEpoch;
+
+    /// @notice Cumulative XOM distributed across all epochs
+    /// @dev H-01 Round 6: Tracks total rewards distributed to
+    ///      prevent over-allocation beyond TOTAL_VALIDATOR_POOL.
+    ///      Compared against the pool cap in _distributeRewards.
+    uint256 public totalDistributed;
+
     /// @dev Storage gap for future upgrades.
-    ///      Slots used: 22 explicit + mappings (10 slot headers).
-    ///      Gap = 26 to leave headroom.
-    uint256[26] private __gap;
+    ///      Slots used: 25 explicit + mappings (11 slot headers).
+    ///      Gap = 23 to leave headroom. Reduced by 2 for adminTransferProposer
+    ///      and lastHeartbeatEpoch.
+    uint256[23] private __gap;
 
     // ══════════════════════════════════════════════════════════════════
     //                              EVENTS
@@ -659,6 +691,31 @@ contract OmniValidatorRewards is
     /// @notice Emitted when a pending admin transfer is cancelled
     event AdminTransferCancelled();
 
+    /// @notice Emitted when the validator reward pool is running low
+    /// @dev H-01 Round 6: Warns operators when remaining pool
+    ///      drops below POOL_LOW_THRESHOLD_BPS (10%) of total.
+    /// @param remainingPool XOM remaining in the reward pool
+    /// @param totalDistributedSoFar Cumulative XOM distributed
+    /// @param percentRemainingBps Remaining pool as basis points
+    event PoolRunningLow(
+        uint256 indexed remainingPool,
+        uint256 indexed totalDistributedSoFar,
+        uint256 indexed percentRemainingBps
+    );
+
+    /// @notice Emitted when epoch reward is capped due to pool
+    ///         depletion
+    /// @dev H-01 Round 6: Indicates that the calculated epoch
+    ///      reward exceeded available pool balance and was reduced.
+    /// @param epoch The affected epoch
+    /// @param requestedReward Originally calculated reward
+    /// @param actualReward Capped reward after solvency check
+    event EpochRewardCapped(
+        uint256 indexed epoch,
+        uint256 indexed requestedReward,
+        uint256 indexed actualReward
+    );
+
     // ══════════════════════════════════════════════════════════════════
     //                              ERRORS
     // ══════════════════════════════════════════════════════════════════
@@ -833,6 +890,9 @@ contract OmniValidatorRewards is
 
         // solhint-disable-next-line not-rely-on-time
         lastHeartbeat[msg.sender] = block.timestamp;
+
+        // M-02 R6: Record epoch for historical active-status checks
+        lastHeartbeatEpoch[msg.sender] = getCurrentEpoch();
 
         /* solhint-disable not-rely-on-time */
         emit ValidatorHeartbeat(
@@ -1472,6 +1532,9 @@ contract OmniValidatorRewards is
         uint256 eta = block.timestamp + ADMIN_TRANSFER_DELAY;
         pendingAdmin = newAdmin;
         adminTransferEta = eta;
+        // M-01 R6: Store the proposer so acceptAdminTransfer can
+        // atomically revoke their role
+        adminTransferProposer = msg.sender;
         emit AdminTransferProposed(msg.sender, newAdmin, eta);
     }
 
@@ -1488,15 +1551,22 @@ contract OmniValidatorRewards is
             revert AdminTransferNotReady();
         }
 
-        address oldAdmin = pendingAdmin;
+        // M-01 R6: Store the old admin (proposer) before clearing state
+        address oldAdmin = adminTransferProposer;
+
+        // Clear pending state
         pendingAdmin = address(0);
         adminTransferEta = 0;
+        adminTransferProposer = address(0);
 
+        // Grant to new admin first, then revoke from old admin
         _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
-        // Revoke from the proposer (the current admin)
-        // Note: if multiple admins exist, only the proposer
-        // should call revokeRole on themselves after verifying
-        // the new admin is operational.
+        // M-01 R6: Atomically revoke the old admin's role to prevent
+        // both addresses holding DEFAULT_ADMIN_ROLE simultaneously
+        if (oldAdmin != address(0) && oldAdmin != msg.sender) {
+            _revokeRole(DEFAULT_ADMIN_ROLE, oldAdmin);
+        }
+
         emit AdminTransferAccepted(oldAdmin, msg.sender);
     }
 
@@ -1510,6 +1580,7 @@ contract OmniValidatorRewards is
     {
         pendingAdmin = address(0);
         adminTransferEta = 0;
+        adminTransferProposer = address(0);
         emit AdminTransferCancelled();
     }
 
@@ -1865,6 +1936,15 @@ contract OmniValidatorRewards is
      * @dev Updates totalOutstandingRewards for solvency
      *      tracking (M-02 Round 3 fix). Emits per-validator
      *      RewardDistributed events.
+     *
+     *      H-01 Round 6: Added solvency guard to prevent
+     *      over-allocation beyond TOTAL_VALIDATOR_POOL. Before
+     *      distributing, verifies that sufficient pool balance
+     *      remains. If the epoch reward would exceed available
+     *      balance, it is proportionally reduced to what remains.
+     *      Emits PoolRunningLow when pool drops below 10%.
+     *      Emits EpochRewardCapped when reward is reduced.
+     *
      * @param validators Array of validator addresses
      * @param weights Per-validator weight array
      * @param totalWeight Sum of all weights
@@ -1880,14 +1960,51 @@ contract OmniValidatorRewards is
     ) internal {
         if (totalWeight == 0) return;
 
+        // H-01 R6: Solvency guard — cap epoch reward to
+        // remaining pool and available contract balance
+        uint256 poolRemaining = 0;
+        if (TOTAL_VALIDATOR_POOL > totalDistributed) {
+            poolRemaining =
+                TOTAL_VALIDATOR_POOL - totalDistributed;
+        }
+
+        uint256 contractBalance =
+            xomToken.balanceOf(address(this));
+        uint256 availableForRewards = contractBalance;
+        if (availableForRewards > totalOutstandingRewards) {
+            availableForRewards -= totalOutstandingRewards;
+        } else {
+            availableForRewards = 0;
+        }
+
+        // Use the lesser of pool remaining and available balance
+        uint256 maxDistributable = poolRemaining < availableForRewards
+            ? poolRemaining
+            : availableForRewards;
+
+        uint256 effectiveReward = epochReward;
+        if (effectiveReward > maxDistributable) {
+            effectiveReward = maxDistributable;
+            emit EpochRewardCapped(
+                epoch, epochReward, effectiveReward
+            );
+        }
+
+        // Nothing to distribute if pool is exhausted
+        if (effectiveReward == 0) return;
+
+        uint256 epochDistributed = 0;
+
         for (uint256 i = 0; i < validators.length;) {
             if (weights[i] > 0) {
                 uint256 validatorReward =
-                    (epochReward * weights[i]) / totalWeight;
+                    (effectiveReward * weights[i])
+                    / totalWeight;
                 accumulatedRewards[validators[i]] +=
                     validatorReward;
                 // M-02 R3: Track outstanding obligations
                 totalOutstandingRewards += validatorReward;
+                epochDistributed += validatorReward;
 
                 emit RewardDistributed(
                     validators[i],
@@ -1897,6 +2014,23 @@ contract OmniValidatorRewards is
                 );
             }
             unchecked { ++i; }
+        }
+
+        // H-01 R6: Update cumulative distribution tracker
+        totalDistributed += epochDistributed;
+
+        // H-01 R6: Emit warning when pool drops below 10%
+        uint256 newRemaining = 0;
+        if (TOTAL_VALIDATOR_POOL > totalDistributed) {
+            newRemaining =
+                TOTAL_VALIDATOR_POOL - totalDistributed;
+        }
+        uint256 percentBps =
+            (newRemaining * 10_000) / TOTAL_VALIDATOR_POOL;
+        if (percentBps < POOL_LOW_THRESHOLD_BPS) {
+            emit PoolRunningLow(
+                newRemaining, totalDistributed, percentBps
+            );
         }
     }
 
@@ -1936,8 +2070,37 @@ contract OmniValidatorRewards is
         weights = new uint256[](count);
         uint256 minStake = minStakeForRewards;
 
+        // M-02 R6: Calculate the maximum epoch for which a heartbeat
+        // is considered valid. A validator with lastHeartbeatEpoch = E
+        // is considered active for epochs up to E + heartbeatEpochWindow.
+        uint256 heartbeatEpochWindow =
+            HEARTBEAT_TIMEOUT / EPOCH_DURATION;
+
         for (uint256 i = 0; i < cap;) {
-            if (isValidatorActive(validators[i])) {
+            // M-02 R6: Check epoch-based heartbeat validity instead of
+            // block.timestamp to prevent offline validators from earning
+            // retroactive rewards after coming back online
+            uint256 hbEpoch = lastHeartbeatEpoch[validators[i]];
+            bool epochActive = hbEpoch > 0
+                && epoch <= hbEpoch + heartbeatEpochWindow;
+
+            // Fall back to timestamp-based check for validators who
+            // submitted heartbeats before the V3 upgrade recorded epochs
+            if (!epochActive) {
+                epochActive = isValidatorActive(validators[i]);
+                // Only allow timestamp fallback if this is a recent
+                // epoch (within heartbeat timeout of current epoch)
+                if (epochActive) {
+                    uint256 currentEp = getCurrentEpoch();
+                    if (
+                        currentEp > epoch + heartbeatEpochWindow
+                    ) {
+                        epochActive = false;
+                    }
+                }
+            }
+
+            if (epochActive) {
                 // V2 H-02: Skip validators below minimum stake
                 // (exempt seed validators bypass this check)
                 if (minStake > 0 && !stakeExempt[validators[i]]) {

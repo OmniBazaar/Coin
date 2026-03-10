@@ -227,8 +227,7 @@ async function fundRewardsContract(deployer) {
   if (balance < needed) {
     console.log(`ERROR: Deployer only has ${ethers.formatEther(balance)} XOM.`);
     console.log(`Need ${ethers.formatEther(needed)} XOM more.`);
-    console.log('Consider using OmniRewardManager.distributeValidatorReward()');
-    console.log('to transfer from the validator rewards pool.');
+    console.log('Ensure the deployer wallet holds sufficient XOM before running this script.');
     return;
   }
 

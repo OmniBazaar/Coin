@@ -88,6 +88,15 @@ describe('RWAAMM Protocol', function () {
         router = await Router.deploy(await amm.getAddress(), ethers.ZeroAddress);
         await router.waitForDeployment();
 
+        // Register tokens with compliance oracle (audit fix H-02:
+        // pool creation now requires at least one registered token)
+        await complianceOracle.connect(owner).registerToken(
+            await xomToken.getAddress(), ethers.ZeroAddress,
+        );
+        await complianceOracle.connect(owner).registerToken(
+            await rwaToken.getAddress(), ethers.ZeroAddress,
+        );
+
         // Mint tokens to users
         await xomToken.mint(owner.address, ethers.parseEther('1000000'));
         await xomToken.mint(user1.address, ethers.parseEther('100000'));
@@ -149,6 +158,7 @@ describe('RWAAMM Protocol', function () {
                 0n,
                 0n,
                 deadline,
+                ethers.ZeroAddress, // onBehalfOf: use msg.sender
             );
 
             // Check pool exists
@@ -174,6 +184,7 @@ describe('RWAAMM Protocol', function () {
                     0n,
                     0n,
                     deadline,
+                    ethers.ZeroAddress,
                 )
             ).to.emit(amm, 'PoolCreated');
         });
@@ -194,6 +205,7 @@ describe('RWAAMM Protocol', function () {
                     0n,
                     0n,
                     deadline,
+                    ethers.ZeroAddress,
                 ),
             ).to.be.revertedWithCustomError(amm, 'IdenticalTokens');
         });
@@ -217,6 +229,7 @@ describe('RWAAMM Protocol', function () {
                 0n,
                 0n,
                 deadline,
+                ethers.ZeroAddress, // onBehalfOf: use msg.sender
             );
         });
 
@@ -238,6 +251,7 @@ describe('RWAAMM Protocol', function () {
                     0n,
                     0n,
                     deadline,
+                    ethers.ZeroAddress,
                 ),
             ).to.emit(amm, 'LiquidityAdded');
         });
@@ -269,6 +283,7 @@ describe('RWAAMM Protocol', function () {
                     0n,
                     0n,
                     deadline,
+                    ethers.ZeroAddress,
                 ),
             ).to.emit(amm, 'LiquidityRemoved');
         });
@@ -292,6 +307,7 @@ describe('RWAAMM Protocol', function () {
                 0n,
                 0n,
                 deadline,
+                ethers.ZeroAddress, // onBehalfOf: use msg.sender
             );
         });
 
@@ -311,6 +327,7 @@ describe('RWAAMM Protocol', function () {
                 SWAP_AMOUNT,
                 0n, // No minimum (for testing)
                 deadline,
+                ethers.ZeroAddress, // onBehalfOf: use msg.sender
             );
 
             const user1RwaAfter = await rwaToken.balanceOf(user1.address);
@@ -332,6 +349,7 @@ describe('RWAAMM Protocol', function () {
                     SWAP_AMOUNT,
                     0n,
                     deadline,
+                    ethers.ZeroAddress,
                 ),
             ).to.emit(amm, 'Swap');
         });
@@ -353,6 +371,7 @@ describe('RWAAMM Protocol', function () {
                     SWAP_AMOUNT,
                     0n,
                     expiredDeadline,
+                    ethers.ZeroAddress,
                 ),
             ).to.be.revertedWithCustomError(amm, 'DeadlineExpired');
         });
@@ -373,6 +392,7 @@ describe('RWAAMM Protocol', function () {
                     SWAP_AMOUNT,
                     unreasonableMinOut,
                     deadline,
+                    ethers.ZeroAddress,
                 ),
             ).to.be.revertedWithCustomError(amm, 'SlippageExceeded');
         });
@@ -396,6 +416,7 @@ describe('RWAAMM Protocol', function () {
                 0n,
                 0n,
                 deadline,
+                ethers.ZeroAddress, // onBehalfOf: use msg.sender
             );
         });
 
@@ -448,19 +469,19 @@ describe('RWAAMM Protocol', function () {
         });
 
         it('Should register token', async function () {
-            const xomAddr = await xomToken.getAddress();
+            // Use WAVAX (not already registered in beforeEach)
+            const wavaxAddr = await wavax.getAddress();
 
             await expect(
-                complianceOracle.connect(owner).registerToken(xomAddr, ethers.ZeroAddress)
+                complianceOracle.connect(owner).registerToken(wavaxAddr, ethers.ZeroAddress)
             ).to.emit(complianceOracle, 'TokenRegistered');
 
-            expect(await complianceOracle.isTokenRegistered(xomAddr)).to.be.true;
+            expect(await complianceOracle.isTokenRegistered(wavaxAddr)).to.be.true;
         });
 
         it('Should check compliance for registered token', async function () {
+            // XOM is already registered in beforeEach (audit fix H-02)
             const xomAddr = await xomToken.getAddress();
-
-            await complianceOracle.connect(owner).registerToken(xomAddr, ethers.ZeroAddress);
 
             const result = await complianceOracle.checkCompliance(user1.address, xomAddr);
             // ERC20 tokens are always compliant
@@ -495,6 +516,7 @@ describe('RWAAMM Protocol', function () {
                 0n,
                 0n,
                 deadline,
+                ethers.ZeroAddress, // onBehalfOf: use msg.sender
             );
         });
 

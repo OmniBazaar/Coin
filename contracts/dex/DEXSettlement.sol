@@ -279,6 +279,12 @@ contract DEXSettlement is
     /// @notice Timestamp when pending trading limits can be applied
     uint256 public tradingLimitsTimelockExpiry;
 
+    /// @notice Pending fee recipients (M-01 Round 6: timelock)
+    FeeRecipients public pendingFeeRecipients;
+
+    /// @notice Timestamp when pending fee recipients can be applied
+    uint256 public feeRecipientsTimelockExpiry;
+
     // ================================================================
     // EVENTS
     // ================================================================
@@ -432,6 +438,27 @@ contract DEXSettlement is
      *         is cancelled (M-04)
      */
     event TradingLimitsChangeCancelled();
+
+    /**
+     * @notice Emitted when a fee recipients change is scheduled
+     *         (M-01 Round 6: timelock)
+     * @param newLiquidityPool Proposed LP pool address
+     * @param newOddao Proposed ODDAO address
+     * @param newProtocolTreasury Proposed protocol treasury address
+     * @param effectiveAt Timestamp when change can be applied
+     */
+    event FeeRecipientsChangeScheduled(
+        address indexed newLiquidityPool,
+        address indexed newOddao,
+        address newProtocolTreasury,
+        uint256 effectiveAt
+    );
+
+    /**
+     * @notice Emitted when a scheduled fee recipients change
+     *         is cancelled (M-01 Round 6: timelock)
+     */
+    event FeeRecipientsChangeCancelled();
 
     /**
      * @notice Emitted when a fee token is removed from tracking
@@ -731,6 +758,10 @@ contract DEXSettlement is
      * @dev Verifies signatures, matching, and executes
      *      atomic swap. Fees are deducted from input token
      *      amounts (H-04 fix).
+     *      H-01 (Round 6) fix: All state updates (filledOrders,
+     *      nonces, volume) are performed BEFORE external token
+     *      transfers to comply with CEI (Checks-Effects-
+     *      Interactions) pattern and prevent read-only reentrancy.
      *      Note: Commit-reveal is opt-in; MEV protection is
      *      not guaranteed without it (M-03).
      */
@@ -741,6 +772,8 @@ contract DEXSettlement is
         bytes calldata takerSignature
     ) external nonReentrant whenNotPaused {
         if (emergencyStop) revert EmergencyStopActive();
+
+        // === CHECKS ===
 
         _validateOrders(makerOrder, takerOrder);
 
@@ -770,16 +803,13 @@ contract DEXSettlement is
         uint256 takerFee = (takerOrder.amountIn
             * SPOT_TAKER_FEE) / BASIS_POINTS_DIVISOR;
 
-        _executeAtomicSettlement(
-            makerOrder,
-            takerOrder,
-            takerFee
-        );
-
+        // Compute hashes before state updates
         bytes32 makerHash =
             _hashTypedDataV4(_hashOrder(makerOrder));
         bytes32 takerHash =
             _hashTypedDataV4(_hashOrder(takerOrder));
+
+        // === EFFECTS (before external calls) ===
 
         filledOrders[makerHash] = true;
         filledOrders[takerHash] = true;
@@ -793,6 +823,14 @@ contract DEXSettlement is
             makerOrder.amountIn + takerOrder.amountIn;
         dailyVolumeUsed +=
             makerOrder.amountIn + takerOrder.amountIn;
+
+        // === INTERACTIONS (after all state updates) ===
+
+        _executeAtomicSettlement(
+            makerOrder,
+            takerOrder,
+            takerFee
+        );
 
         // Distribute net fee (takerFee - makerRebate)
         // with rebate paid to maker
@@ -867,20 +905,22 @@ contract DEXSettlement is
     // ================================================================
 
     /**
-     * @notice Update fee recipient addresses (Pioneer Phase)
+     * @notice Schedule fee recipient address change (M-01 Round 6)
      * @param _liquidityPool New LP pool address (70% of net)
      * @param _oddao New ODDAO address (20% of net)
      * @param _protocolTreasury New protocol treasury address (10%)
-     * @dev Force-claims all pending fees to old recipients
-     *      before updating addresses (H-05 audit fix preserved).
-     *      Pioneer Phase: no timelock. Will be replaced with
-     *      timelocked version before multi-sig handoff.
+     * @dev Queues the change with a 48-hour timelock. Call
+     *      `applyFeeRecipients()` after the delay to apply.
+     *      Reverts if a pending change already exists.
      */
-    function setFeeRecipients(
+    function scheduleFeeRecipients(
         address _liquidityPool,
         address _oddao,
         address _protocolTreasury
-    ) external nonReentrant onlyOwner {
+    ) external onlyOwner {
+        if (feeRecipientsTimelockExpiry != 0) {
+            revert PendingChangeExists();
+        }
         if (
             _liquidityPool == address(0)
                 || _oddao == address(0)
@@ -889,22 +929,68 @@ contract DEXSettlement is
             revert InvalidAddress();
         }
 
+        pendingFeeRecipients = FeeRecipients({
+            liquidityPool: _liquidityPool,
+            oddao: _oddao,
+            protocolTreasury: _protocolTreasury
+        });
+        feeRecipientsTimelockExpiry = block.timestamp + TIMELOCK_DELAY; // solhint-disable-line not-rely-on-time
+
+        emit FeeRecipientsChangeScheduled(
+            _liquidityPool,
+            _oddao,
+            _protocolTreasury,
+            feeRecipientsTimelockExpiry
+        );
+    }
+
+    /**
+     * @notice Apply pending fee recipients after timelock
+     *         has elapsed (M-01 Round 6)
+     * @dev Force-claims all pending fees to old recipients
+     *      before updating addresses (H-05 audit fix preserved).
+     */
+    function applyFeeRecipients()
+        external
+        nonReentrant
+        onlyOwner
+    {
+        if (feeRecipientsTimelockExpiry == 0) {
+            revert NoPendingChange();
+        }
+        if (block.timestamp < feeRecipientsTimelockExpiry) { // solhint-disable-line not-rely-on-time
+            revert TimelockNotElapsed();
+        }
+
         // H-05: Force-claim pending fees to old recipients
         _claimAllPendingFees(feeRecipients.liquidityPool);
         _claimAllPendingFees(feeRecipients.oddao);
         _claimAllPendingFees(feeRecipients.protocolTreasury);
 
-        feeRecipients = FeeRecipients({
-            liquidityPool: _liquidityPool,
-            oddao: _oddao,
-            protocolTreasury: _protocolTreasury
-        });
+        feeRecipients = pendingFeeRecipients;
+        feeRecipientsTimelockExpiry = 0;
 
         emit FeeRecipientsUpdated(
-            _liquidityPool,
-            _oddao,
-            _protocolTreasury
+            feeRecipients.liquidityPool,
+            feeRecipients.oddao,
+            feeRecipients.protocolTreasury
         );
+    }
+
+    /**
+     * @notice Cancel a pending fee recipients change (M-01 Round 6)
+     * @dev Only callable by owner. Resets the pending state.
+     */
+    function cancelScheduledFeeRecipients()
+        external
+        onlyOwner
+    {
+        if (feeRecipientsTimelockExpiry == 0) {
+            revert NoPendingChange();
+        }
+        feeRecipientsTimelockExpiry = 0;
+        delete pendingFeeRecipients;
+        emit FeeRecipientsChangeCancelled();
     }
 
     /**
@@ -1227,8 +1313,13 @@ contract DEXSettlement is
         coll.settled = true;
 
         // C-01: Trader (maker equivalent) earns rebate,
-        // solver (taker equivalent) pays fee
-        uint256 traderRebate = (coll.traderAmount
+        // solver (taker equivalent) pays fee.
+        // H-02 (Round 6): Both rebate and fee are calculated
+        // on solverAmount (tokenOut) so they share the same
+        // denomination, preventing cross-token accounting
+        // errors when tokenIn and tokenOut have different
+        // decimals or valuations.
+        uint256 traderRebate = (coll.solverAmount
             * SPOT_MAKER_REBATE) / BASIS_POINTS_DIVISOR;
         uint256 solverFee = (coll.solverAmount
             * SPOT_TAKER_FEE) / BASIS_POINTS_DIVISOR;
@@ -1539,9 +1630,14 @@ contract DEXSettlement is
      * @param makerOrder Maker's order
      * @param takerOrder Taker's order
      * @param takerFee Fee from taker's input (0.20%)
-     * @dev Maker sends FULL amountIn (no fee deduction).
-     *      Taker sends (amountIn - takerFee) to maker,
-     *      takerFee stays in contract for distribution.
+     * @dev Maker sends FULL amountIn to taker (no fee).
+     *      Taker sends full amountIn to this contract in a
+     *      single safeTransferFrom, then the contract distributes
+     *      (amountIn - takerFee) to maker; takerFee stays in
+     *      contract for distribution.
+     *      M-03 Round 6: Consolidated taker transfer to a single
+     *      pull, preventing griefing via allowance manipulation
+     *      and reducing external calls.
      *      M-07: Uses balance-before/after to detect and
      *      reject fee-on-transfer tokens.
      */
@@ -1565,31 +1661,32 @@ contract DEXSettlement is
             revert FeeOnTransferNotSupported();
         }
 
-        // Taker sends (amountIn - fee) to maker
-        uint256 takerNet = takerOrder.amountIn - takerFee;
-
+        // M-03 Round 6: Single pull from taker to contract,
+        // then distribute internally. Prevents griefing via
+        // allowance manipulation between two separate pulls.
         // M-07: Check taker's transfer for fee-on-transfer
         balBefore = IERC20(takerOrder.tokenIn)
-            .balanceOf(makerOrder.trader);
+            .balanceOf(address(this));
         IERC20(takerOrder.tokenIn).safeTransferFrom(
             takerOrder.trader,
-            makerOrder.trader,
-            takerNet
+            address(this),
+            takerOrder.amountIn
         );
         balAfter = IERC20(takerOrder.tokenIn)
-            .balanceOf(makerOrder.trader);
-        if (balAfter - balBefore != takerNet) {
+            .balanceOf(address(this));
+        if (balAfter - balBefore != takerOrder.amountIn) {
             revert FeeOnTransferNotSupported();
         }
 
-        // Taker fee to contract
-        if (takerFee > 0) {
-            IERC20(takerOrder.tokenIn).safeTransferFrom(
-                takerOrder.trader,
-                address(this),
-                takerFee
+        // Distribute net amount to maker from contract
+        uint256 takerNet = takerOrder.amountIn - takerFee;
+        if (takerNet > 0) {
+            IERC20(takerOrder.tokenIn).safeTransfer(
+                makerOrder.trader,
+                takerNet
             );
         }
+        // takerFee remains in contract for fee distribution
     }
 
     /**
@@ -1731,9 +1828,12 @@ contract DEXSettlement is
                 // Low-level call handles both reverting
                 // tokens (H-02) and tokens that return
                 // false without reverting (VP-26).
+                // M-04 Round 6: Gas stipend prevents a
+                // malicious token from consuming all gas
+                // and DOSing fee recipient changes.
                 // solhint-disable-next-line avoid-low-level-calls
                 (bool ok, bytes memory ret) =
-                    token.call(
+                    token.call{gas: 100_000}(
                         abi.encodeWithSelector(
                             IERC20.transfer.selector,
                             recipient,

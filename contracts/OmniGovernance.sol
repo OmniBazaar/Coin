@@ -596,10 +596,23 @@ contract OmniGovernance is
 
         // L-03: Use dedicated authorization error
         address caller = _msgSender();
-        bool isProposer = caller == proposal.proposer;
         bool isAdmin = hasRole(ADMIN_ROLE, caller);
 
-        if (!isProposer && !isAdmin) {
+        if (isAdmin) {
+            // Admin (timelock) can always cancel at any stage
+        } else if (caller == proposal.proposer) {
+            // M-02 (Round 6): Proposer can only cancel during Pending or Active.
+            // After voting ends and a proposal has Succeeded or been Queued,
+            // the community has spoken and the proposer should not be able to
+            // unilaterally veto the decision. Governor Bravo pattern.
+            ProposalState currentState = state(proposalId);
+            if (
+                currentState != ProposalState.Pending &&
+                currentState != ProposalState.Active
+            ) {
+                revert NotAuthorizedToCancel();
+            }
+        } else {
             revert NotAuthorizedToCancel();
         }
 
@@ -794,15 +807,20 @@ contract OmniGovernance is
         address timelockAddr = timelock;
         if (timelockAddr == address(0)) revert InvalidAddress();
 
+        // M-01 audit fix: use _msgSender() for ERC-2771 consistency.
+        // The onlyRole modifier uses _msgSender() internally, so the
+        // revocation must target the same address that passed the check.
+        address caller = _msgSender();
+
         // Grant admin roles to the timelock
         _grantRole(ADMIN_ROLE, timelockAddr);
         _grantRole(DEFAULT_ADMIN_ROLE, timelockAddr);
 
         // Revoke admin roles from the caller
-        _revokeRole(ADMIN_ROLE, msg.sender);
-        _revokeRole(DEFAULT_ADMIN_ROLE, msg.sender);
+        _revokeRole(ADMIN_ROLE, caller);
+        _revokeRole(DEFAULT_ADMIN_ROLE, caller);
 
-        emit AdminTransferredToTimelock(msg.sender, timelockAddr);
+        emit AdminTransferredToTimelock(caller, timelockAddr);
     }
 
     // =========================================================================

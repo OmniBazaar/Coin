@@ -511,12 +511,12 @@ describe("OmniCore", function () {
         username, staker1.address, nonce, [signature]
       );
 
-      // Try to claim again
+      // Try to claim again -- M-01 nonce replay check hits InvalidSignature first
       await expect(
         core.connect(staker1).claimLegacyBalance(
           username, staker1.address, nonce, [signature]
         )
-      ).to.be.revertedWithCustomError(core, "InvalidAmount");
+      ).to.be.revertedWithCustomError(core, "InvalidSignature");
     });
   });
 

@@ -25,7 +25,8 @@ import {IOmniRegistration} from "./interfaces/IOmniRegistration.sol";
  * @title OmniRewardManager
  * @author OmniCoin Development Team
  * @notice Unified manager for all pre-minted reward pools in OmniCoin ecosystem
- * @dev Manages Welcome Bonus, Referral Bonus, First Sale Bonus, and Validator Rewards pools.
+ * @dev Manages Welcome Bonus, Referral Bonus, and First Sale Bonus pools.
+ *      Validator rewards are handled separately by OmniValidatorRewards contract.
  *      All pools are pre-minted at genesis - distribution is by transfer, not minting.
  *      This design eliminates infinite mint attack vectors and provides transparent,
  *      on-chain verifiable pool balances.
@@ -39,7 +40,6 @@ import {IOmniRegistration} from "./interfaces/IOmniRegistration.sol";
  *      - Welcome Bonus: 1,383,457,500 XOM
  *      - Referral Bonus: 2,995,000,000 XOM
  *      - First Sale Bonus: 2,000,000,000 XOM
- *      - Validator Rewards: 6,089,000,000 XOM (40-year emission)
  */
 contract OmniRewardManager is
     AccessControlUpgradeable,
@@ -57,8 +57,7 @@ contract OmniRewardManager is
     enum PoolType {
         WelcomeBonus,
         ReferralBonus,
-        FirstSaleBonus,
-        ValidatorRewards
+        FirstSaleBonus
     }
 
     /// @notice State for each reward pool (reduces individual state variables)
@@ -77,16 +76,6 @@ contract OmniRewardManager is
         uint256 secondaryAmount;
     }
 
-    /// @notice Parameters for validator reward distribution
-    struct ValidatorRewardParams {
-        address validator;
-        uint256 validatorAmount;
-        address stakingPool;
-        uint256 stakingAmount;
-        address oddao;
-        uint256 oddaoAmount;
-    }
-
     // ============ Constants ============
 
     /// @notice Original total supply before 2019 burn (for historical documentation)
@@ -100,9 +89,6 @@ contract OmniRewardManager is
 
     /// @notice Role for distributing user bonuses (welcome, referral, first sale)
     bytes32 public constant BONUS_DISTRIBUTOR_ROLE = keccak256("BONUS_DISTRIBUTOR_ROLE");
-
-    /// @notice Role for distributing validator rewards (called by OmniCore/scheduler)
-    bytes32 public constant VALIDATOR_REWARD_ROLE = keccak256("VALIDATOR_REWARD_ROLE");
 
     /// @notice Role for upgrading the contract implementation
     bytes32 public constant UPGRADER_ROLE = keccak256("UPGRADER_ROLE");
@@ -157,8 +143,9 @@ contract OmniRewardManager is
     /// @notice First sale bonus pool state
     PoolState public firstSaleBonusPool;
 
-    /// @notice Validator rewards pool state
-    PoolState public validatorRewardsPool;
+    /// @dev Reserved storage gap for removed validatorRewardsPool (4 slots: PoolState struct)
+    /// @custom:storage-preserved UUPS upgrade safety - do not remove or reorder
+    uint256[4] private __gap_removed_validatorPool; // solhint-disable-line var-name-mixedcase
 
     /// @notice Tracks whether a user has claimed their welcome bonus
     mapping(address => bool) public welcomeBonusClaimed;
@@ -169,8 +156,9 @@ contract OmniRewardManager is
     /// @notice Tracks total referral bonuses claimed by each referrer
     mapping(address => uint256) public referralBonusesEarned;
 
-    /// @notice Current virtual block height for validator reward tracking
-    uint256 public currentVirtualBlockHeight;
+    /// @dev Reserved storage gap for removed currentVirtualBlockHeight (1 slot)
+    /// @custom:storage-preserved UUPS upgrade safety - do not remove or reorder
+    uint256 private __gap_removed_virtualBlockHeight; // solhint-disable-line var-name-mixedcase
 
     /// @notice Reference to OmniRegistration contract for secure bonus claiming
     IOmniRegistration public registrationContract;
@@ -224,8 +212,29 @@ contract OmniRewardManager is
     /// @notice Whether contract is ossified (permanently non-upgradeable)
     bool private _ossified;
 
-    /// @dev Reserved storage gap for future upgrades (reduced by 1 for _ossified)
-    uint256[30] private __gap;
+    /// @dev Reserved storage gap for removed maxBlockReward (1 slot)
+    /// @custom:storage-preserved UUPS upgrade safety - do not remove or reorder
+    uint256 private __gap_removed_maxBlockReward; // solhint-disable-line var-name-mixedcase
+
+    /// @dev Reserved storage gap for removed minRewardInterval (1 slot)
+    /// @custom:storage-preserved UUPS upgrade safety - do not remove or reorder
+    uint256 private __gap_removed_minRewardInterval; // solhint-disable-line var-name-mixedcase
+
+    /// @dev Reserved storage gap for removed lastRewardTimestamp (1 slot)
+    /// @custom:storage-preserved UUPS upgrade safety - do not remove or reorder
+    uint256 private __gap_removed_lastRewardTimestamp; // solhint-disable-line var-name-mixedcase
+
+    /// @notice Whether merkle roots are required for role-based claims (M-04 R6)
+    /// @dev When true, BONUS_DISTRIBUTOR_ROLE claims revert if the pool's
+    ///      merkle root is bytes32(0). Provides defense-in-depth: even a
+    ///      compromised BONUS_DISTRIBUTOR_ROLE cannot claim arbitrary amounts
+    ///      without a valid merkle proof once this flag is set.
+    bool public merkleRootsRequired;
+
+    /// @dev Reserved storage gap for future upgrades
+    /// @custom:storage-preserved Size unchanged at 26 - removed validator slots are
+    ///         preserved inline as __gap_removed_* variables above
+    uint256[26] private __gap;
 
     // ============ Events ============
 
@@ -257,16 +266,6 @@ contract OmniRewardManager is
         address indexed seller,
         uint256 indexed amount,
         uint256 indexed remainingPool
-    );
-
-    /// @notice Emitted when validator rewards are distributed (every 2 seconds)
-    /// @param virtualBlockHeight Virtual block height for this distribution
-    /// @param validator Address of the selected validator
-    /// @param totalAmount Combined amount distributed (validator + staking + oddao)
-    event ValidatorRewardDistributed(
-        uint256 indexed virtualBlockHeight,
-        address indexed validator,
-        uint256 indexed totalAmount
     );
 
     /// @notice Emitted when a pool balance drops below warning threshold
@@ -501,6 +500,10 @@ contract OmniRewardManager is
     /// @notice Thrown when contract is ossified and upgrade attempted
     error ContractIsOssified();
 
+    /// @notice Thrown when merkle root is required but not set (M-04 R6)
+    /// @param poolType The pool type with missing merkle root
+    error MerkleRootRequired(PoolType poolType);
+
     // ============ Constructor ============
 
     /**
@@ -520,11 +523,11 @@ contract OmniRewardManager is
      * @notice Initialize the OmniRewardManager with pool allocations
      * @dev Must be called immediately after proxy deployment. Caller must have
      *      already transferred the total pool amount to this contract.
+     *      Validator rewards are handled by a separate OmniValidatorRewards contract.
      * @param _omniCoin Address of the OmniCoin ERC20 token
      * @param _welcomeBonusPool Initial size of welcome bonus pool
      * @param _referralBonusPool Initial size of referral bonus pool
      * @param _firstSaleBonusPool Initial size of first sale bonus pool
-     * @param _validatorRewardsPool Initial size of validator rewards pool
      * @param _admin Address to receive all admin roles
      */
     function initialize(
@@ -532,7 +535,6 @@ contract OmniRewardManager is
         uint256 _welcomeBonusPool,
         uint256 _referralBonusPool,
         uint256 _firstSaleBonusPool,
-        uint256 _validatorRewardsPool,
         address _admin
     ) external initializer {
         _validateInitParams(_omniCoin, _admin);
@@ -546,8 +548,7 @@ contract OmniRewardManager is
         omniCoin = IERC20(_omniCoin);
 
         // M-02: Verify contract holds enough tokens for all declared pools
-        uint256 totalPool = _welcomeBonusPool + _referralBonusPool +
-            _firstSaleBonusPool + _validatorRewardsPool;
+        uint256 totalPool = _welcomeBonusPool + _referralBonusPool + _firstSaleBonusPool;
         uint256 actualBalance = IERC20(_omniCoin).balanceOf(address(this));
         if (actualBalance < totalPool) {
             revert InsufficientInitialBalance(totalPool, actualBalance);
@@ -556,7 +557,6 @@ contract OmniRewardManager is
         _initializePool(welcomeBonusPool, _welcomeBonusPool);
         _initializePool(referralBonusPool, _referralBonusPool);
         _initializePool(firstSaleBonusPool, _firstSaleBonusPool);
-        _initializePool(validatorRewardsPool, _validatorRewardsPool);
 
         _setupRoles(_admin);
 
@@ -663,29 +663,6 @@ contract OmniRewardManager is
 
         emit FirstSaleBonusClaimed(seller, amount, firstSaleBonusPool.remaining);
         _checkPoolThreshold(PoolType.FirstSaleBonus, firstSaleBonusPool);
-    }
-
-    // ============ External Functions - Validator Rewards ============
-
-    /**
-     * @notice Distribute validator reward for a virtual block
-     * @dev Called every 2 seconds by VirtualRewardScheduler via OmniCore.
-     *      Splits reward between validator, staking pool, and ODDAO.
-     * @param params Struct containing validator reward distribution parameters
-     */
-    function distributeValidatorReward(
-        ValidatorRewardParams calldata params
-    ) external onlyRole(VALIDATOR_REWARD_ROLE) nonReentrant whenNotPaused {
-        uint256 totalAmount = params.validatorAmount + params.stakingAmount + params.oddaoAmount;
-        _validateValidatorParams(params, totalAmount);
-        _validatePoolBalance(validatorRewardsPool, PoolType.ValidatorRewards, totalAmount);
-
-        ++currentVirtualBlockHeight;
-        _updatePoolAfterDistribution(validatorRewardsPool, totalAmount);
-        _distributeValidatorRewards(params);
-
-        emit ValidatorRewardDistributed(currentVirtualBlockHeight, params.validator, totalAmount);
-        _checkPoolThreshold(PoolType.ValidatorRewards, validatorRewardsPool);
     }
 
     // ============ External Functions - Admin ============
@@ -837,9 +814,12 @@ contract OmniRewardManager is
         uint256 amount
     ) external onlyRole(DEFAULT_ADMIN_ROLE) {
         if (referrer == address(0)) revert ZeroAddressNotAllowed();
-        if (amount == 0) revert ZeroAmountNotAllowed();
 
         uint256 oldPending = pendingReferralBonuses[referrer];
+
+        // M-03 R6: Allow zero amount for cancellation, but prevent
+        // no-op calls (setting 0 when already 0)
+        if (amount == 0 && oldPending == 0) revert ZeroAmountNotAllowed();
 
         if (amount > oldPending) {
             // Increasing pending bonus: deduct the increase from pool
@@ -857,6 +837,26 @@ contract OmniRewardManager is
         pendingReferralBonuses[referrer] = amount;
 
         emit ReferralBonusMigrated(referrer, oldPending, amount);
+    }
+
+    /**
+     * @notice Set whether merkle roots are required for role-based claims (M-04 R6)
+     * @dev When enabled, BONUS_DISTRIBUTOR_ROLE claims will revert if the pool's
+     *      merkle root is bytes32(0). This provides defense-in-depth against a
+     *      compromised BONUS_DISTRIBUTOR_ROLE: even with the role, arbitrary-amount
+     *      claims are impossible without a valid merkle proof.
+     *
+     *      Recommended to enable after setting initial merkle roots for all pools.
+     *      Once enabled, merkle roots must be set before any role-based claim can
+     *      succeed. Permissionless and relayed claims are unaffected (they use
+     *      on-chain registration data, not merkle proofs).
+     *
+     * @param required True to require merkle roots, false to allow claims without them
+     */
+    function setMerkleRootsRequired(
+        bool required
+    ) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        merkleRootsRequired = required;
     }
 
     // ============ External Functions - Permissionless Claiming ============
@@ -1148,6 +1148,39 @@ contract OmniRewardManager is
     }
 
     /**
+     * @notice Estimate how many users the welcome bonus pool can serve (M-01 R6)
+     * @dev Calculates the approximate user count at which the welcome bonus pool
+     *      will be exhausted, based on the current remaining balance and the tier
+     *      structure. Returns both the user count and any remaining balance.
+     *
+     *      This addresses the M-01 R6 audit finding that the welcome bonus pool
+     *      (1,383,457,500 XOM) is insufficient to serve all users through Tier 4.
+     *      The pool is exhausted at approximately user 982,766.
+     *
+     * @return estimatedUsers Approximate number of users the pool can still serve
+     * @return currentRemaining Current remaining balance in the welcome bonus pool
+     */
+    function getWelcomeBonusPoolExhaustionEstimate()
+        external
+        view
+        returns (uint256 estimatedUsers, uint256 currentRemaining)
+    {
+        currentRemaining = welcomeBonusPool.remaining;
+        uint256 remaining = currentRemaining;
+        uint256 effectiveClaims = welcomeBonusClaimCount + legacyBonusClaimsCount;
+        if (effectiveClaims == 0) effectiveClaims = 1;
+
+        // Simulate claims until pool is exhausted or tiers are done
+        while (remaining > 0 && effectiveClaims < 10_000_000) {
+            uint256 bonus = _calculateWelcomeBonus(effectiveClaims);
+            if (bonus == 0 || bonus > remaining) break;
+            remaining -= bonus;
+            ++effectiveClaims;
+            ++estimatedUsers;
+        }
+    }
+
+    /**
      * @notice Claim accumulated referral bonuses (permissionless)
      * @dev Referrers call this to claim their accumulated bonuses from successful referrals.
      *      No role required - anyone can claim their own pending bonuses.
@@ -1420,7 +1453,6 @@ contract OmniRewardManager is
      * @return welcomeBonus Remaining welcome bonus pool balance
      * @return referralBonus Remaining referral bonus pool balance
      * @return firstSaleBonus Remaining first sale bonus pool balance
-     * @return validatorRewards Remaining validator rewards pool balance
      */
     function getPoolBalances()
         external
@@ -1428,15 +1460,13 @@ contract OmniRewardManager is
         returns (
             uint256 welcomeBonus,
             uint256 referralBonus,
-            uint256 firstSaleBonus,
-            uint256 validatorRewards
+            uint256 firstSaleBonus
         )
     {
         return (
             welcomeBonusPool.remaining,
             referralBonusPool.remaining,
-            firstSaleBonusPool.remaining,
-            validatorRewardsPool.remaining
+            firstSaleBonusPool.remaining
         );
     }
 
@@ -1447,8 +1477,7 @@ contract OmniRewardManager is
     function getTotalUndistributed() external view returns (uint256 total) {
         return welcomeBonusPool.remaining +
             referralBonusPool.remaining +
-            firstSaleBonusPool.remaining +
-            validatorRewardsPool.remaining;
+            firstSaleBonusPool.remaining;
     }
 
     /**
@@ -1458,8 +1487,7 @@ contract OmniRewardManager is
     function getTotalDistributed() external view returns (uint256 total) {
         return welcomeBonusPool.distributed +
             referralBonusPool.distributed +
-            firstSaleBonusPool.distributed +
-            validatorRewardsPool.distributed;
+            firstSaleBonusPool.distributed;
     }
 
     /**
@@ -1564,30 +1592,27 @@ contract OmniRewardManager is
         external
         view
         returns (
-            uint256[4] memory initialAmounts,
-            uint256[4] memory remainingAmounts,
-            uint256[4] memory distributedAmounts
+            uint256[3] memory initialAmounts,
+            uint256[3] memory remainingAmounts,
+            uint256[3] memory distributedAmounts
         )
     {
         initialAmounts = [
             welcomeBonusPool.initial,
             referralBonusPool.initial,
-            firstSaleBonusPool.initial,
-            validatorRewardsPool.initial
+            firstSaleBonusPool.initial
         ];
 
         remainingAmounts = [
             welcomeBonusPool.remaining,
             referralBonusPool.remaining,
-            firstSaleBonusPool.remaining,
-            validatorRewardsPool.remaining
+            firstSaleBonusPool.remaining
         ];
 
         distributedAmounts = [
             welcomeBonusPool.distributed,
             referralBonusPool.distributed,
-            firstSaleBonusPool.distributed,
-            validatorRewardsPool.distributed
+            firstSaleBonusPool.distributed
         ];
     }
 
@@ -1678,35 +1703,16 @@ contract OmniRewardManager is
     }
 
     /**
-     * @notice Distribute validator rewards to recipients
-     * @param params Validator reward parameters
-     */
-    function _distributeValidatorRewards(ValidatorRewardParams calldata params) internal {
-        if (params.validatorAmount != 0) {
-            omniCoin.safeTransfer(params.validator, params.validatorAmount);
-        }
-
-        if (params.stakingAmount != 0) {
-            omniCoin.safeTransfer(params.stakingPool, params.stakingAmount);
-        }
-
-        if (params.oddaoAmount != 0) {
-            omniCoin.safeTransfer(params.oddao, params.oddaoAmount);
-        }
-    }
-
-    /**
      * @notice Setup initial admin role only
      * @dev Only grants DEFAULT_ADMIN_ROLE. Other roles (BONUS_DISTRIBUTOR_ROLE,
-     *      VALIDATOR_REWARD_ROLE, UPGRADER_ROLE, PAUSER_ROLE) must be granted
-     *      separately to distinct addresses via grantRole().
+     *      UPGRADER_ROLE, PAUSER_ROLE) must be granted separately to distinct
+     *      addresses via grantRole().
      *
      *      SECURITY: admin MUST be a multi-sig wallet (Gnosis Safe 3-of-5 minimum)
-     *      with TimelockController for all sensitive operations. Granting all five
+     *      with TimelockController for all sensitive operations. Granting all four
      *      roles to a single EOA creates a single point of compromise. The admin
      *      should grant operational roles to separate, purpose-specific addresses:
      *      - BONUS_DISTRIBUTOR_ROLE -> validator service account
-     *      - VALIDATOR_REWARD_ROLE  -> OmniCore scheduler contract
      *      - UPGRADER_ROLE          -> timelock-controlled upgrade multisig
      *      - PAUSER_ROLE            -> emergency response multisig
      *
@@ -1920,12 +1926,8 @@ contract OmniRewardManager is
 
     /**
      * @notice Verify merkle proof for referral claims
-     * @param params Referral parameters
-     * @param proof Merkle proof
-     */
-    /**
-     * @notice Verify merkle proof for referral claims
      * @dev M-01: When merkleRoot is bytes32(0), the proof array MUST be empty.
+     *      M-04 R6: When merkleRootsRequired is true, reverts if root is unset.
      * @param params Referral parameters
      * @param proof Merkle proof
      */
@@ -1934,6 +1936,8 @@ contract OmniRewardManager is
         bytes32[] calldata proof
     ) internal view {
         if (referralBonusPool.merkleRoot == bytes32(0)) {
+            // M-04 R6: If merkle roots are required, revert when root is not set
+            if (merkleRootsRequired) revert MerkleRootRequired(PoolType.ReferralBonus);
             // M-01: No root set - require empty proof (role-gated callers only)
             if (proof.length != 0) {
                 revert InvalidMerkleProof(params.referrer, PoolType.ReferralBonus);
@@ -2006,34 +2010,12 @@ contract OmniRewardManager is
     }
 
     /**
-     * @notice Validate validator reward parameters
-     * @param params Validator reward parameters
-     * @param totalAmount Total amount to distribute
-     */
-    function _validateValidatorParams(
-        ValidatorRewardParams calldata params,
-        uint256 totalAmount
-    ) internal pure {
-        if (params.validator == address(0)) revert ZeroAddressNotAllowed();
-        if (params.stakingPool == address(0)) revert ZeroAddressNotAllowed();
-        if (params.oddao == address(0)) revert ZeroAddressNotAllowed();
-        if (totalAmount == 0) revert ZeroAmountNotAllowed();
-    }
-
-    /**
-     * @notice Verify merkle proof for simple claims (user + amount)
-     * @param merkleRoot Root to verify against
-     * @param user User address
-     * @param amount Claim amount
-     * @param proof Merkle proof
-     * @param poolType Pool type for error reporting
-     */
-    /**
      * @notice Verify merkle proof for simple claims (user + amount)
      * @dev M-01: When merkleRoot is bytes32(0), the proof array MUST be empty.
      *      This allows initial operation before roots are set (role-gated callers only)
      *      while preventing arbitrary amount claims with fabricated proofs.
      *      Once a merkle root is set, proof verification is enforced.
+     *      M-04 R6: When merkleRootsRequired is true, reverts if root is unset.
      * @param merkleRoot Root to verify against
      * @param user User address
      * @param amount Claim amount
@@ -2046,8 +2028,10 @@ contract OmniRewardManager is
         uint256 amount,
         bytes32[] calldata proof,
         PoolType poolType
-    ) internal pure {
+    ) internal view {
         if (merkleRoot == bytes32(0)) {
+            // M-04 R6: If merkle roots are required, revert when root is not set
+            if (merkleRootsRequired) revert MerkleRootRequired(poolType);
             // M-01: No root set - require empty proof (role-gated callers only)
             if (proof.length != 0) revert InvalidMerkleProof(user, poolType);
             return;

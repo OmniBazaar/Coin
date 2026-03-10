@@ -544,7 +544,33 @@ describe("UpdateRegistry", function () {
   // ================================================================
 
   describe("setMinimumVersion", function () {
+    /**
+     * Helper: publish version "2.0.0" so that setMinimumVersion can reference
+     * an existing release (required by R6 M-01 VersionNotFound guard).
+     */
+    async function publishVersion200() {
+      // First publish 1.0.0 if not already done (needed for ordering)
+      let nonce = await getNonce(registry);
+      let sigs = await signRelease(
+        registry, [signer1, signer2],
+        COMPONENT, VERSION, BINARY_HASH, MIN_VERSION, nonce
+      );
+      await registry.publishRelease(COMPONENT, VERSION, BINARY_HASH, MIN_VERSION, CHANGELOG_CID, nonce, sigs);
+
+      // Now publish 2.0.0
+      nonce = await getNonce(registry);
+      const binaryHash2 = ethers.keccak256(ethers.toUtf8Bytes("release-artifact-v2.0.0"));
+      sigs = await signRelease(
+        registry, [signer1, signer2],
+        COMPONENT, "2.0.0", binaryHash2, "1.0.0", nonce
+      );
+      await registry.publishRelease(COMPONENT, "2.0.0", binaryHash2, "1.0.0", CHANGELOG_CID, nonce, sigs);
+    }
+
     it("should set minimum version with valid signatures", async function () {
+      // R6 M-01: version must exist as a published release
+      await publishVersion200();
+
       const nonce = await getNonce(registry);
       const sigs = await signMinVersion(
         registry, [signer1, signer2],
@@ -592,6 +618,9 @@ describe("UpdateRegistry", function () {
     });
 
     it("should increment nonce after setting min version", async function () {
+      // R6 M-01: version must exist as a published release
+      await publishVersion200();
+
       const nonceBefore = await getNonce(registry);
       const sigs = await signMinVersion(
         registry, [signer1, signer2],

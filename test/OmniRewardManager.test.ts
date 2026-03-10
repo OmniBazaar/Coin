@@ -7,7 +7,6 @@
  * - Welcome bonus claims (with merkle proofs)
  * - Referral bonus distribution (two-level)
  * - First sale bonus claims
- * - Validator reward distribution
  * - Admin functions (merkle roots, pause/unpause)
  * - Pool depletion scenarios
  * - Access control
@@ -41,9 +40,8 @@ describe('OmniRewardManager', function () {
     const WELCOME_BONUS_POOL = ethers.parseEther('10000000');       // 10M XOM
     const REFERRAL_BONUS_POOL = ethers.parseEther('10000000');      // 10M XOM
     const FIRST_SALE_BONUS_POOL = ethers.parseEther('10000000');    // 10M XOM
-    const VALIDATOR_REWARDS_POOL = ethers.parseEther('10000000');   // 10M XOM
     const TOTAL_POOL_SIZE = WELCOME_BONUS_POOL + REFERRAL_BONUS_POOL +
-                           FIRST_SALE_BONUS_POOL + VALIDATOR_REWARDS_POOL;
+                           FIRST_SALE_BONUS_POOL;
 
     // Test amounts
     const WELCOME_BONUS_AMOUNT = ethers.parseEther('10000');    // 10,000 XOM
@@ -54,7 +52,6 @@ describe('OmniRewardManager', function () {
     // Role constants
     const DEFAULT_ADMIN_ROLE = ethers.ZeroHash;
     const BONUS_DISTRIBUTOR_ROLE = keccak256(ethers.toUtf8Bytes('BONUS_DISTRIBUTOR_ROLE'));
-    const VALIDATOR_REWARD_ROLE = keccak256(ethers.toUtf8Bytes('VALIDATOR_REWARD_ROLE'));
     const UPGRADER_ROLE = keccak256(ethers.toUtf8Bytes('UPGRADER_ROLE'));
     const PAUSER_ROLE = keccak256(ethers.toUtf8Bytes('PAUSER_ROLE'));
 
@@ -63,7 +60,6 @@ describe('OmniRewardManager', function () {
         WelcomeBonus: 0,
         ReferralBonus: 1,
         FirstSaleBonus: 2,
-        ValidatorRewards: 3,
     };
 
     /**
@@ -137,7 +133,6 @@ describe('OmniRewardManager', function () {
                 WELCOME_BONUS_POOL,
                 REFERRAL_BONUS_POOL,
                 FIRST_SALE_BONUS_POOL,
-                VALIDATOR_REWARDS_POOL,
                 admin.address,
             ],
             {
@@ -159,13 +154,11 @@ describe('OmniRewardManager', function () {
             WELCOME_BONUS_POOL,
             REFERRAL_BONUS_POOL,
             FIRST_SALE_BONUS_POOL,
-            VALIDATOR_REWARDS_POOL,
             admin.address
         );
 
         // Grant operational roles to admin (audit M-02 reduced _setupRoles to only DEFAULT_ADMIN_ROLE)
         await rewardManager.connect(admin).grantRole(BONUS_DISTRIBUTOR_ROLE, admin.address);
-        await rewardManager.connect(admin).grantRole(VALIDATOR_REWARD_ROLE, admin.address);
         await rewardManager.connect(admin).grantRole(UPGRADER_ROLE, admin.address);
         await rewardManager.connect(admin).grantRole(PAUSER_ROLE, admin.address);
     });
@@ -176,19 +169,17 @@ describe('OmniRewardManager', function () {
 
     describe('Initialization', function () {
         it('should initialize with correct pool sizes', async function () {
-            const [welcome, referral, firstSale, validatorRewards] =
+            const [welcome, referral, firstSale] =
                 await rewardManager.getPoolBalances();
 
             expect(welcome).to.equal(WELCOME_BONUS_POOL);
             expect(referral).to.equal(REFERRAL_BONUS_POOL);
             expect(firstSale).to.equal(FIRST_SALE_BONUS_POOL);
-            expect(validatorRewards).to.equal(VALIDATOR_REWARDS_POOL);
         });
 
         it('should set up all roles correctly', async function () {
             expect(await rewardManager.hasRole(DEFAULT_ADMIN_ROLE, admin.address)).to.be.true;
             expect(await rewardManager.hasRole(BONUS_DISTRIBUTOR_ROLE, admin.address)).to.be.true;
-            expect(await rewardManager.hasRole(VALIDATOR_REWARD_ROLE, admin.address)).to.be.true;
             expect(await rewardManager.hasRole(UPGRADER_ROLE, admin.address)).to.be.true;
             expect(await rewardManager.hasRole(PAUSER_ROLE, admin.address)).to.be.true;
         });
@@ -218,7 +209,6 @@ describe('OmniRewardManager', function () {
                         WELCOME_BONUS_POOL,
                         REFERRAL_BONUS_POOL,
                         FIRST_SALE_BONUS_POOL,
-                        VALIDATOR_REWARDS_POOL,
                         admin.address,
                     ],
                     { initializer: 'initialize', kind: 'uups', constructorArgs: [ethers.ZeroAddress] }
@@ -237,7 +227,6 @@ describe('OmniRewardManager', function () {
                         WELCOME_BONUS_POOL,
                         REFERRAL_BONUS_POOL,
                         FIRST_SALE_BONUS_POOL,
-                        VALIDATOR_REWARDS_POOL,
                         ZeroAddress,
                     ],
                     { initializer: 'initialize', kind: 'uups', constructorArgs: [ethers.ZeroAddress] }
@@ -252,7 +241,6 @@ describe('OmniRewardManager', function () {
                     WELCOME_BONUS_POOL,
                     REFERRAL_BONUS_POOL,
                     FIRST_SALE_BONUS_POOL,
-                    VALIDATOR_REWARDS_POOL,
                     admin.address
                 )
             ).to.be.revertedWithCustomError(rewardManager, 'InvalidInitialization');
@@ -706,178 +694,6 @@ describe('OmniRewardManager', function () {
     });
 
     // ========================================
-    // Validator Rewards Tests
-    // ========================================
-
-    describe('Validator Rewards', function () {
-        const validatorAmount = ethers.parseEther('6');   // ~40% to validator
-        const stakingAmount = ethers.parseEther('7.5');   // ~50% to staking pool
-        const oddaoAmount = ethers.parseEther('1.5');     // 10% to ODDAO
-
-        it('should distribute to validator, staking, and oddao', async function () {
-            const validatorBalanceBefore = await omniCoin.balanceOf(validator.address);
-            const stakingBalanceBefore = await omniCoin.balanceOf(stakingPool.address);
-            const oddaoBalanceBefore = await omniCoin.balanceOf(oddao.address);
-
-            await rewardManager.connect(admin).distributeValidatorReward({
-                validator: validator.address,
-                validatorAmount,
-                stakingPool: stakingPool.address,
-                stakingAmount,
-                oddao: oddao.address,
-                oddaoAmount,
-            });
-
-            expect(await omniCoin.balanceOf(validator.address))
-                .to.equal(validatorBalanceBefore + validatorAmount);
-            expect(await omniCoin.balanceOf(stakingPool.address))
-                .to.equal(stakingBalanceBefore + stakingAmount);
-            expect(await omniCoin.balanceOf(oddao.address))
-                .to.equal(oddaoBalanceBefore + oddaoAmount);
-        });
-
-        it('should emit ValidatorRewardDistributed event', async function () {
-            const totalAmount = validatorAmount + stakingAmount + oddaoAmount;
-
-            await expect(
-                rewardManager.connect(admin).distributeValidatorReward({
-                    validator: validator.address,
-                    validatorAmount,
-                    stakingPool: stakingPool.address,
-                    stakingAmount,
-                    oddao: oddao.address,
-                    oddaoAmount,
-                })
-            )
-                .to.emit(rewardManager, 'ValidatorRewardDistributed')
-                .withArgs(BigInt(1), validator.address, totalAmount);
-        });
-
-        it('should increment virtual block height', async function () {
-            expect(await rewardManager.currentVirtualBlockHeight()).to.equal(0);
-
-            await rewardManager.connect(admin).distributeValidatorReward({
-                validator: validator.address,
-                validatorAmount,
-                stakingPool: stakingPool.address,
-                stakingAmount,
-                oddao: oddao.address,
-                oddaoAmount,
-            });
-
-            expect(await rewardManager.currentVirtualBlockHeight()).to.equal(1);
-
-            // Second distribution
-            await rewardManager.connect(admin).distributeValidatorReward({
-                validator: validator.address,
-                validatorAmount,
-                stakingPool: stakingPool.address,
-                stakingAmount,
-                oddao: oddao.address,
-                oddaoAmount,
-            });
-
-            expect(await rewardManager.currentVirtualBlockHeight()).to.equal(2);
-        });
-
-        it('should reject insufficient pool balance', async function () {
-            const hugeAmount = VALIDATOR_REWARDS_POOL + BigInt(1);
-
-            await expect(
-                rewardManager.connect(admin).distributeValidatorReward({
-                    validator: validator.address,
-                    validatorAmount: hugeAmount,
-                    stakingPool: stakingPool.address,
-                    stakingAmount: BigInt(0),
-                    oddao: oddao.address,
-                    oddaoAmount: BigInt(0),
-                })
-            )
-                .to.be.revertedWithCustomError(rewardManager, 'InsufficientPoolBalance')
-                .withArgs(PoolType.ValidatorRewards, hugeAmount, VALIDATOR_REWARDS_POOL);
-        });
-
-        it('should reject zero validator address', async function () {
-            await expect(
-                rewardManager.connect(admin).distributeValidatorReward({
-                    validator: ZeroAddress,
-                    validatorAmount,
-                    stakingPool: stakingPool.address,
-                    stakingAmount,
-                    oddao: oddao.address,
-                    oddaoAmount,
-                })
-            ).to.be.revertedWithCustomError(rewardManager, 'ZeroAddressNotAllowed');
-        });
-
-        it('should reject zero staking pool address', async function () {
-            await expect(
-                rewardManager.connect(admin).distributeValidatorReward({
-                    validator: validator.address,
-                    validatorAmount,
-                    stakingPool: ZeroAddress,
-                    stakingAmount,
-                    oddao: oddao.address,
-                    oddaoAmount,
-                })
-            ).to.be.revertedWithCustomError(rewardManager, 'ZeroAddressNotAllowed');
-        });
-
-        it('should reject zero oddao address', async function () {
-            await expect(
-                rewardManager.connect(admin).distributeValidatorReward({
-                    validator: validator.address,
-                    validatorAmount,
-                    stakingPool: stakingPool.address,
-                    stakingAmount,
-                    oddao: ZeroAddress,
-                    oddaoAmount,
-                })
-            ).to.be.revertedWithCustomError(rewardManager, 'ZeroAddressNotAllowed');
-        });
-
-        it('should reject zero total amount', async function () {
-            await expect(
-                rewardManager.connect(admin).distributeValidatorReward({
-                    validator: validator.address,
-                    validatorAmount: BigInt(0),
-                    stakingPool: stakingPool.address,
-                    stakingAmount: BigInt(0),
-                    oddao: oddao.address,
-                    oddaoAmount: BigInt(0),
-                })
-            ).to.be.revertedWithCustomError(rewardManager, 'ZeroAmountNotAllowed');
-        });
-
-        it('should reject unauthorized callers', async function () {
-            await expect(
-                rewardManager.connect(unauthorized).distributeValidatorReward({
-                    validator: validator.address,
-                    validatorAmount,
-                    stakingPool: stakingPool.address,
-                    stakingAmount,
-                    oddao: oddao.address,
-                    oddaoAmount,
-                })
-            ).to.be.revertedWithCustomError(rewardManager, 'AccessControlUnauthorizedAccount');
-        });
-
-        it('should allow partial amounts (e.g., zero validator amount)', async function () {
-            // Only distribute to staking and ODDAO
-            await expect(
-                rewardManager.connect(admin).distributeValidatorReward({
-                    validator: validator.address,
-                    validatorAmount: BigInt(0),
-                    stakingPool: stakingPool.address,
-                    stakingAmount,
-                    oddao: oddao.address,
-                    oddaoAmount,
-                })
-            ).to.not.be.reverted;
-        });
-    });
-
-    // ========================================
     // Admin Functions Tests
     // ========================================
 
@@ -920,17 +736,6 @@ describe('OmniRewardManager', function () {
                 )
                     .to.emit(rewardManager, 'MerkleRootUpdated')
                     .withArgs(PoolType.FirstSaleBonus, ethers.ZeroHash, newRoot);
-            });
-
-            it('should reject merkle root updates for validator rewards', async function () {
-                const newRoot = keccak256(ethers.toUtf8Bytes('new-merkle-root'));
-
-                await expect(
-                    rewardManager.connect(admin).updateMerkleRoot(
-                        PoolType.ValidatorRewards,
-                        newRoot
-                    )
-                ).to.be.revertedWithCustomError(rewardManager, 'InvalidPoolTypeForMerkle');
             });
 
             it('should reject unauthorized merkle root updates', async function () {
@@ -976,21 +781,6 @@ describe('OmniRewardManager', function () {
                 ).to.be.revertedWithCustomError(rewardManager, 'EnforcedPause');
             });
 
-            it('should block validator rewards when paused', async function () {
-                await rewardManager.connect(admin).pause();
-
-                await expect(
-                    rewardManager.connect(admin).distributeValidatorReward({
-                        validator: validator.address,
-                        validatorAmount: ethers.parseEther('10'),
-                        stakingPool: stakingPool.address,
-                        stakingAmount: ethers.parseEther('5'),
-                        oddao: oddao.address,
-                        oddaoAmount: ethers.parseEther('1'),
-                    })
-                ).to.be.revertedWithCustomError(rewardManager, 'EnforcedPause');
-            });
-
             it('should reject unauthorized pause', async function () {
                 await expect(
                     rewardManager.connect(unauthorized).pause()
@@ -1013,36 +803,32 @@ describe('OmniRewardManager', function () {
 
     describe('View Functions', function () {
         it('should return correct pool balances', async function () {
-            const [welcome, referral, firstSale, validatorRewards] =
+            const [welcome, referral, firstSale] =
                 await rewardManager.getPoolBalances();
 
             expect(welcome).to.equal(WELCOME_BONUS_POOL);
             expect(referral).to.equal(REFERRAL_BONUS_POOL);
             expect(firstSale).to.equal(FIRST_SALE_BONUS_POOL);
-            expect(validatorRewards).to.equal(VALIDATOR_REWARDS_POOL);
         });
 
         it('should return correct pool statistics', async function () {
             const [initialAmounts, remainingAmounts, distributedAmounts] =
                 await rewardManager.getPoolStatistics();
 
-            // Check initial amounts
+            // Check initial amounts (3 pools)
             expect(initialAmounts[0]).to.equal(WELCOME_BONUS_POOL);
             expect(initialAmounts[1]).to.equal(REFERRAL_BONUS_POOL);
             expect(initialAmounts[2]).to.equal(FIRST_SALE_BONUS_POOL);
-            expect(initialAmounts[3]).to.equal(VALIDATOR_REWARDS_POOL);
 
             // Check remaining (should equal initial since nothing distributed)
             expect(remainingAmounts[0]).to.equal(WELCOME_BONUS_POOL);
             expect(remainingAmounts[1]).to.equal(REFERRAL_BONUS_POOL);
             expect(remainingAmounts[2]).to.equal(FIRST_SALE_BONUS_POOL);
-            expect(remainingAmounts[3]).to.equal(VALIDATOR_REWARDS_POOL);
 
             // Check distributed (should be zero)
             expect(distributedAmounts[0]).to.equal(0);
             expect(distributedAmounts[1]).to.equal(0);
             expect(distributedAmounts[2]).to.equal(0);
-            expect(distributedAmounts[3]).to.equal(0);
         });
 
         it('should return correct total undistributed', async function () {
@@ -1077,7 +863,6 @@ describe('OmniRewardManager', function () {
                     smallPool,
                     smallPool,
                     smallPool,
-                    smallPool,
                     admin.address,
                 ],
                 { initializer: false, kind: 'uups', constructorArgs: [ethers.ZeroAddress] }
@@ -1087,12 +872,12 @@ describe('OmniRewardManager', function () {
             const smallRewardManager = OmniRewardManagerFactory.attach(await proxy.getAddress());
 
             // Fund the contract before initialization (M-02 balance check)
-            const totalSmall = smallPool * BigInt(4);
+            const totalSmall = smallPool * BigInt(3);
             await omniCoin.transfer(await smallRewardManager.getAddress(), totalSmall);
 
             // Initialize after funding
             await smallRewardManager.initialize(
-                await omniCoin.getAddress(), smallPool, smallPool, smallPool, smallPool, admin.address
+                await omniCoin.getAddress(), smallPool, smallPool, smallPool, admin.address
             );
             // Grant roles (audit reduced _setupRoles to DEFAULT_ADMIN_ROLE only)
             await smallRewardManager.connect(admin).grantRole(BONUS_DISTRIBUTOR_ROLE, admin.address);
@@ -1138,7 +923,6 @@ describe('OmniRewardManager', function () {
                     exactPool,
                     exactPool,
                     exactPool,
-                    exactPool,
                     admin.address,
                 ],
                 { initializer: false, kind: 'uups', constructorArgs: [ethers.ZeroAddress] }
@@ -1148,11 +932,11 @@ describe('OmniRewardManager', function () {
             const smallRewardManager = OmniRewardManagerFactory.attach(await proxy.getAddress());
 
             // Fund before initialization (M-02 balance check)
-            await omniCoin.transfer(await smallRewardManager.getAddress(), exactPool * BigInt(4));
+            await omniCoin.transfer(await smallRewardManager.getAddress(), exactPool * BigInt(3));
 
             // Initialize after funding
             await smallRewardManager.initialize(
-                await omniCoin.getAddress(), exactPool, exactPool, exactPool, exactPool, admin.address
+                await omniCoin.getAddress(), exactPool, exactPool, exactPool, admin.address
             );
             // Grant roles (audit reduced _setupRoles to DEFAULT_ADMIN_ROLE only)
             await smallRewardManager.connect(admin).grantRole(BONUS_DISTRIBUTOR_ROLE, admin.address);
@@ -1201,17 +985,13 @@ describe('OmniRewardManager', function () {
         });
 
         it('should preserve state after upgrade', async function () {
-            // Distribute some rewards first
-            await rewardManager.connect(admin).distributeValidatorReward({
-                validator: validator.address,
-                validatorAmount: ethers.parseEther('10'),
-                stakingPool: stakingPool.address,
-                stakingAmount: ethers.parseEther('5'),
-                oddao: oddao.address,
-                oddaoAmount: ethers.parseEther('1'),
-            });
+            // Distribute some rewards first (claim a welcome bonus)
+            const result = generateMerkleProof(user1.address, WELCOME_BONUS_AMOUNT, ['w1']);
+            await rewardManager.connect(admin).updateMerkleRoot(PoolType.WelcomeBonus, result.root);
+            await rewardManager.connect(admin).claimWelcomeBonus(
+                user1.address, WELCOME_BONUS_AMOUNT, result.proof
+            );
 
-            const blockHeightBefore = await rewardManager.currentVirtualBlockHeight();
             const distributedBefore = await rewardManager.getTotalDistributed();
 
             // Upgrade
@@ -1223,8 +1003,8 @@ describe('OmniRewardManager', function () {
             );
 
             // Verify state preserved
-            expect(await upgraded.currentVirtualBlockHeight()).to.equal(blockHeightBefore);
             expect(await upgraded.getTotalDistributed()).to.equal(distributedBefore);
+            expect(await upgraded.hasClaimedWelcomeBonus(user1.address)).to.be.true;
         });
     });
 
@@ -1317,17 +1097,8 @@ describe('OmniRewardManager', function () {
             await rewardManager.connect(admin).updateMerkleRoot(PoolType.FirstSaleBonus, firstSale.root);
             await rewardManager.connect(admin).claimFirstSaleBonus(user2.address, FIRST_SALE_AMOUNT, firstSale.proof);
 
-            await rewardManager.connect(admin).distributeValidatorReward({
-                validator: validator.address,
-                validatorAmount: ethers.parseEther('10'),
-                stakingPool: stakingPool.address,
-                stakingAmount: ethers.parseEther('5'),
-                oddao: oddao.address,
-                oddaoAmount: ethers.parseEther('1'),
-            });
-
             const totalDistributed = await rewardManager.getTotalDistributed();
-            const expectedTotal = WELCOME_BONUS_AMOUNT + FIRST_SALE_AMOUNT + ethers.parseEther('16');
+            const expectedTotal = WELCOME_BONUS_AMOUNT + FIRST_SALE_AMOUNT;
 
             expect(totalDistributed).to.equal(expectedTotal);
         });
@@ -1615,7 +1386,6 @@ describe('OmniRewardManager', function () {
                     WELCOME_BONUS_POOL,
                     REFERRAL_BONUS_POOL,
                     FIRST_SALE_BONUS_POOL,
-                    VALIDATOR_REWARDS_POOL,
                     admin.address,
                 ],
                 { initializer: false, kind: 'uups', constructorArgs: [ethers.ZeroAddress] }
@@ -1630,7 +1400,6 @@ describe('OmniRewardManager', function () {
                 WELCOME_BONUS_POOL,
                 REFERRAL_BONUS_POOL,
                 FIRST_SALE_BONUS_POOL,
-                VALIDATOR_REWARDS_POOL,
                 admin.address
             );
 

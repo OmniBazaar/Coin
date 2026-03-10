@@ -161,21 +161,16 @@ contract OmniPrivacyBridge is
     // ========================================================================
 
     /// @notice Emitted when XOM is converted to pXOM
+    /// @dev Amount details intentionally omitted to protect user privacy.
+    ///      Bridge volume can be tracked via totalConvertedToPrivate state variable.
     /// @param user Address performing the conversion
-    /// @param amountIn Amount of XOM provided
-    /// @param amountOut Amount of pXOM credited (after fee)
-    /// @param fee Fee charged for conversion
-    event ConvertedToPrivate(
-        address indexed user,
-        uint256 amountIn,
-        uint256 amountOut,
-        uint256 fee
-    );
+    event ConvertedToPrivate(address indexed user);
 
     /// @notice Emitted when pXOM is converted to XOM
+    /// @dev Amount details intentionally omitted to protect user privacy.
+    ///      Bridge volume can be tracked via totalConvertedToPublic state variable.
     /// @param user Address performing the conversion
-    /// @param amountOut Amount of XOM released
-    event ConvertedToPublic(address indexed user, uint256 amountOut);
+    event ConvertedToPublic(address indexed user);
 
     /// @notice Emitted when max conversion limit is updated
     /// @param oldLimit Previous limit
@@ -340,9 +335,7 @@ contract OmniPrivacyBridge is
         // Track bridge-minted pXOM (excludes genesis supply)
         bridgeMintedPXOM += amountAfterFee;
 
-        emit ConvertedToPrivate(
-            caller, amount, amountAfterFee, fee
-        );
+        emit ConvertedToPrivate(caller);
     }
 
     /**
@@ -384,7 +377,7 @@ contract OmniPrivacyBridge is
         // Transfer XOM tokens to the user
         omniCoin.safeTransfer(caller, amount);
 
-        emit ConvertedToPublic(caller, amount);
+        emit ConvertedToPublic(caller);
     }
 
     // ========================================================================

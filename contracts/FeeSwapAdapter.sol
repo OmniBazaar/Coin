@@ -252,9 +252,12 @@ contract FeeSwapAdapter is
         // solhint-disable-next-line not-rely-on-time
         if (block.timestamp > deadline) revert DeadlineExpired();
 
-        // H-01: Record balance before swap
+        // M-01 Round 6: Record balance at address(this) instead
+        // of recipient to prevent donation/inflation attacks.
+        // Tokens are routed through this contract and then
+        // forwarded to the recipient manually.
         uint256 balanceBefore =
-            IERC20(tokenOut).balanceOf(recipient);
+            IERC20(tokenOut).balanceOf(address(this));
 
         // 1. Pull input tokens from caller (vault)
         IERC20(tokenIn).safeTransferFrom(
@@ -272,7 +275,8 @@ contract FeeSwapAdapter is
         bytes32[] memory sources = new bytes32[](1);
         sources[0] = defaultSource;
 
-        // 4. Execute swap — recipient receives tokenOut directly
+        // 4. Execute swap — tokens sent to this contract for
+        //    verification (M-01 Round 6: self-custody pattern)
         router.swap(
             IOmniSwapRouter.SwapParams({
                 tokenIn: tokenIn,
@@ -282,16 +286,17 @@ contract FeeSwapAdapter is
                 path: path,
                 sources: sources,
                 deadline: deadline,
-                recipient: recipient
+                recipient: address(this)
             })
         );
 
         // L-01: Reset residual approval to zero
         IERC20(tokenIn).forceApprove(address(router), 0);
 
-        // H-01: Verify actual balance change
+        // H-01 + M-01 Round 6: Verify actual balance change
+        // at address(this), immune to donation attacks
         uint256 balanceAfter =
-            IERC20(tokenOut).balanceOf(recipient);
+            IERC20(tokenOut).balanceOf(address(this));
         amountOut = balanceAfter - balanceBefore;
 
         // 5. Enforce slippage protection on actual output
@@ -299,6 +304,11 @@ contract FeeSwapAdapter is
             revert InsufficientOutput(
                 amountOut, amountOutMin
             );
+        }
+
+        // 6. Forward output tokens to the recipient
+        if (amountOut > 0) {
+            IERC20(tokenOut).safeTransfer(recipient, amountOut);
         }
     }
 

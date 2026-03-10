@@ -306,17 +306,24 @@ contract OmniSwapRouter is Ownable2Step, Pausable, ReentrancyGuard, ERC2771Conte
             IERC20(params.tokenIn).safeTransfer(feeRecipient, feeAmount);
         }
 
-        // Execute swap through the path
-        uint256 amountOut = _executeSwapPath(
-            params.path, params.sources, swapAmount
-        );
+        // H-02: Record output token balance before swap execution
+        uint256 outBalanceBefore =
+            IERC20(params.tokenOut).balanceOf(address(this));
 
-        // Check slippage protection
+        // Execute swap through the path
+        _executeSwapPath(params.path, params.sources, swapAmount);
+
+        // H-02: Derive actual output from balance change, not adapter return
+        uint256 amountOut =
+            IERC20(params.tokenOut).balanceOf(address(this))
+            - outBalanceBefore;
+
+        // Slippage protection on ACTUAL received amount
         if (amountOut < params.minAmountOut) {
             revert InsufficientOutputAmount();
         }
 
-        // Transfer output tokens to recipient
+        // Transfer verified output tokens to recipient
         IERC20(params.tokenOut).safeTransfer(params.recipient, amountOut);
 
         // Calculate route identifier
@@ -522,7 +529,17 @@ contract OmniSwapRouter is Ownable2Step, Pausable, ReentrancyGuard, ERC2771Conte
      * @return amountOut Final output amount after all hops
      * @dev Executes swaps sequentially through the path. Each hop calls the
      *      registered {ISwapAdapter} for the corresponding liquidity source.
-     *      Tokens must be approved to adapters or held by this contract.
+     *
+     *      Security (H-01 remediation): Residual token approvals are reset
+     *      to zero after each hop to prevent a compromised or malicious
+     *      adapter from draining leftover allowance via `transferFrom`.
+     *
+     *      Security (H-02 remediation): Per-hop balance-before/after
+     *      verification ensures the actual tokens received from each adapter
+     *      are used as the input for the next hop, rather than trusting the
+     *      adapter-reported return value. This protects against malicious
+     *      adapters reporting inflated output and handles fee-on-transfer
+     *      intermediate tokens in multi-hop paths.
      */
     function _executeSwapPath(
         address[] calldata path,
@@ -538,13 +555,25 @@ contract OmniSwapRouter is Ownable2Step, Pausable, ReentrancyGuard, ERC2771Conte
             // Approve the adapter to spend input tokens for this hop
             IERC20(path[i]).forceApprove(adapter, amountOut);
 
+            // H-02: Record balance of output token before the hop
+            uint256 hopBalanceBefore =
+                IERC20(path[i + 1]).balanceOf(address(this));
+
             // Execute swap via the adapter
-            amountOut = ISwapAdapter(adapter).executeSwap(
+            ISwapAdapter(adapter).executeSwap(
                 path[i],
                 path[i + 1],
                 amountOut,
                 address(this)
             );
+
+            // H-01: Reset residual approval to zero after each hop
+            IERC20(path[i]).forceApprove(adapter, 0);
+
+            // H-02: Use actual received amount, not adapter-reported value
+            amountOut =
+                IERC20(path[i + 1]).balanceOf(address(this))
+                - hopBalanceBefore;
         }
     }
 

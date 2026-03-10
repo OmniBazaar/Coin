@@ -75,6 +75,10 @@ contract OmniNFTCollection is
     /// @notice Clone-specific collection symbol.
     string private _collectionSymbol;
 
+    /// @notice Pending owner for 2-step transfer (audit fix M-01).
+    /// @dev Set by transferOwnership(), cleared by acceptOwnership().
+    address public pendingOwner;
+
     /// @notice Currently active minting phase (0 = paused).
     uint8 public activePhase;
 
@@ -142,11 +146,22 @@ contract OmniNFTCollection is
     error BatchSizeExceeded();
     /// @dev Thrown when the owner address is zero (M-04).
     error ZeroAddress();
+    /// @dev Thrown when the caller is not the pending owner (M-01).
+    error NotPendingOwner();
+
+    /// @notice Emitted when a 2-step ownership transfer is initiated.
+    /// @param previousOwner Current owner who initiated transfer.
+    /// @param newOwner Proposed new owner who must call acceptOwnership.
+    event OwnershipTransferStarted(
+        address indexed previousOwner,
+        address indexed newOwner
+    );
 
     // ── Modifiers ────────────────────────────────────────────────────
-    /// @dev Restricts to the collection owner.
+    /// @dev Restricts to the collection owner. Uses _msgSender() for
+    ///      ERC-2771 meta-transaction compatibility (audit fix M-02).
     modifier onlyOwner() {
-        if (msg.sender != owner) revert NotOwner();
+        if (_msgSender() != owner) revert NotOwner();
         _;
     }
 
@@ -347,14 +362,29 @@ contract OmniNFTCollection is
     }
 
     /**
-     * @notice Transfer ownership of the collection.
-     * @param newOwner The new owner address.
+     * @notice Initiate a 2-step ownership transfer (audit fix M-01).
+     * @dev Sets `pendingOwner`; the new owner must call
+     *      `acceptOwnership()` to complete the transfer. This
+     *      prevents accidental loss of ownership due to typos.
+     * @param newOwner The proposed new owner address.
      */
     function transferOwnership(
         address newOwner
     ) external onlyOwner {
-        if (newOwner == address(0)) revert TransferFailed();
-        owner = newOwner;
+        if (newOwner == address(0)) revert ZeroAddress();
+        pendingOwner = newOwner;
+        emit OwnershipTransferStarted(owner, newOwner);
+    }
+
+    /**
+     * @notice Accept ownership of the collection (audit fix M-01).
+     * @dev Completes the 2-step transfer. Only the address set via
+     *      `transferOwnership()` may call this.
+     */
+    function acceptOwnership() external {
+        if (_msgSender() != pendingOwner) revert NotPendingOwner();
+        owner = pendingOwner;
+        pendingOwner = address(0);
     }
 
     // ── External view helpers ──────────────────────────────────────

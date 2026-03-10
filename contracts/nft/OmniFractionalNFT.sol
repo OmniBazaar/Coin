@@ -269,6 +269,12 @@ contract OmniFractionalNFT is
 
     /**
      * @notice Lock an NFT and create ERC-20 fraction tokens.
+     * @dev Audit M-02: The creation fee is denominated in `feeCurrency`
+     *      and calculated as `totalShares * creationFeeBps / 10000`.
+     *      This is intentionally share-based (not NFT-value-based) to
+     *      discourage excessive fractionalization. Creators choosing
+     *      fewer shares pay proportionally less. The fee is a flat
+     *      deterrent, not a valuation mechanism.
      * @param collection NFT collection address.
      * @param tokenId Token ID to fractionalize.
      * @param totalShares Number of ERC-20 shares to mint (> 1).
@@ -476,7 +482,7 @@ contract OmniFractionalNFT is
 
         // Only allow cancellation after the deadline
         // solhint-disable-next-line not-rely-on-time
-        if (block.timestamp < v.buyoutDeadline + 1) {
+        if (block.timestamp <= v.buyoutDeadline) {
             revert BuyoutStillActive();
         }
 
@@ -484,9 +490,16 @@ contract OmniFractionalNFT is
         address proposer = v.buyoutProposer;
         address currency = v.buyoutCurrency;
 
-        // Calculate remaining funds (some may have been paid out)
-        uint256 refundAmount =
-            IERC20(currency).balanceOf(address(this));
+        // Audit fix M-01: Calculate remaining buyout funds from
+        // vault-specific data rather than contract-wide balance.
+        // This prevents draining funds belonging to other vaults
+        // or creation fees held in the same currency.
+        FractionToken token = FractionToken(v.fractionToken);
+        uint256 sharesBurned =
+            v.totalShares - token.totalSupply();
+        uint256 alreadyPaid =
+            (v.buyoutPrice * sharesBurned) / v.totalShares;
+        uint256 refundAmount = v.buyoutPrice - alreadyPaid;
 
         // Reset buyout state
         v.buyoutProposer = address(0);

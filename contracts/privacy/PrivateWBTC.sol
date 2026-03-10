@@ -110,6 +110,12 @@ contract PrivateWBTC is
     /// @notice Token decimals (public representation, matches WBTC)
     uint8 public constant TOKEN_DECIMALS = 8;
 
+    /// @notice Delay before privacy can be disabled (7 days)
+    /// @dev M-02 Round 6: Gives users time to exit private positions
+    ///      via convertToPublic() before emergency recovery becomes
+    ///      possible. Matches PrivateOmniCoin pattern.
+    uint256 public constant PRIVACY_DISABLE_DELAY = 7 days;
+
     // ====================================================================
     // STATE VARIABLES
     // ====================================================================
@@ -148,15 +154,21 @@ contract PrivateWBTC is
     /// @notice Whether contract is permanently non-upgradeable
     bool private _ossified;
 
+    /// @notice Timestamp after which privacy can be disabled (0 = no
+    ///         pending proposal). Set by proposePrivacyDisable(),
+    ///         cleared by executePrivacyDisable() or cancelPrivacyDisable().
+    /// @dev M-02 Round 6: 7-day timelock matching PrivateOmniCoin pattern.
+    uint256 public privacyDisableScheduledAt;
+
     /// @dev Storage gap for future upgrades.
-    /// Current state variables: 9 (underlyingToken, encryptedBalances,
+    /// Current state variables: 10 (underlyingToken, encryptedBalances,
     /// totalPublicSupply, publicBalances, _shadowLedger, dustBalances,
-    /// privacyEnabled, _ossified, + inherited).
-    /// Gap size: 50 - 9 = 41 slots reserved.
+    /// privacyEnabled, _ossified, privacyDisableScheduledAt, + inherited).
+    /// Gap size: 50 - 10 = 40 slots reserved.
     /// When adding new state variables, decrease __gap by the same
     /// count. Track gap changes independently from sibling contracts
     /// (PrivateUSDC, PrivateWETH).
-    uint256[41] private __gap;
+    uint256[40] private __gap;
 
     // ====================================================================
     // EVENTS
@@ -216,6 +228,17 @@ contract PrivateWBTC is
     /// @param contractAddress This contract address
     event ContractOssified(address indexed contractAddress);
 
+    /// @notice Emitted when privacy disable is proposed (starts 7-day
+    ///         timelock)
+    /// @param executeAfter Timestamp after which disable can execute
+    event PrivacyDisableProposed(uint256 executeAfter);
+
+    /// @notice Emitted when privacy is disabled after timelock
+    event PrivacyDisabled();
+
+    /// @notice Emitted when a pending privacy disable is cancelled
+    event PrivacyDisableCancelled();
+
     /* solhint-enable gas-indexed-events */
 
     // ====================================================================
@@ -257,6 +280,12 @@ contract PrivateWBTC is
 
     /// @notice Thrown when user has no dust to claim
     error NoDustToClaim();
+
+    /// @notice Thrown when no privacy disable proposal is pending
+    error NoPendingChange();
+
+    /// @notice Thrown when the 7-day timelock has not yet elapsed
+    error TimelockActive();
 
     // ====================================================================
     // CONSTRUCTOR & INITIALIZATION
@@ -375,15 +404,18 @@ contract PrivateWBTC is
             revert AmountTooLarge();
         }
 
-        // Track dust from scaling truncation
+        // M-03 Round 6 fix: Track dust from scaling truncation.
+        // Debit the full requested amount from publicBalances (not
+        // just usedAmount) to prevent double-counting when the user
+        // later calls claimDust() which re-credits publicBalances.
         uint256 usedAmount = scaledAmount * SCALING_FACTOR;
         uint256 dust = amount - usedAmount;
 
-        // Debit the actual amount used (excluding refundable dust)
-        publicBalances[msg.sender] -= usedAmount;
-        totalPublicSupply -= usedAmount;
+        // Debit the full amount (usedAmount + dust) from public balance
+        publicBalances[msg.sender] -= amount;
+        totalPublicSupply -= amount;
 
-        // Track dust for later refund
+        // Track dust for later refund via claimDust()
         if (dust > 0) {
             dustBalances[msg.sender] += dust;
         }
@@ -525,16 +557,70 @@ contract PrivateWBTC is
     // ====================================================================
 
     /**
-     * @notice Enable or disable privacy features
-     * @dev Only admin can change. Disabling privacy is required
-     *      before emergency recovery can be used.
-     * @param enabled Whether to enable privacy
+     * @notice Enable privacy features (instant)
+     * @dev Re-enabling privacy is instant because it does not affect
+     *      user funds -- users can immediately resume private operations.
      */
-    function setPrivacyEnabled(
-        bool enabled
-    ) external onlyRole(DEFAULT_ADMIN_ROLE) {
-        privacyEnabled = enabled;
-        emit PrivacyStatusChanged(enabled);
+    function enablePrivacy()
+        external
+        onlyRole(DEFAULT_ADMIN_ROLE)
+    {
+        privacyEnabled = true;
+        emit PrivacyStatusChanged(true);
+    }
+
+    /**
+     * @notice Propose disabling privacy (starts 7-day timelock)
+     * @dev M-02 Round 6: Privacy cannot be disabled instantly.
+     *      Admin must propose, wait 7 days, then execute. This gives
+     *      users time to convertToPublic() and exit their private
+     *      positions before emergency recovery becomes possible.
+     *      Enabling privacy remains instant (see enablePrivacy()).
+     *      Matches PrivateOmniCoin pattern.
+     */
+    function proposePrivacyDisable()
+        external
+        onlyRole(DEFAULT_ADMIN_ROLE)
+    {
+        /* solhint-disable not-rely-on-time */
+        privacyDisableScheduledAt =
+            block.timestamp + PRIVACY_DISABLE_DELAY;
+        /* solhint-enable not-rely-on-time */
+        emit PrivacyDisableProposed(privacyDisableScheduledAt);
+    }
+
+    /**
+     * @notice Execute privacy disable after timelock delay
+     * @dev Can only be called after PRIVACY_DISABLE_DELAY has
+     *      elapsed since proposePrivacyDisable() was called.
+     */
+    function executePrivacyDisable()
+        external
+        onlyRole(DEFAULT_ADMIN_ROLE)
+    {
+        if (privacyDisableScheduledAt == 0) {
+            revert NoPendingChange();
+        }
+        // solhint-disable-next-line not-rely-on-time
+        if (block.timestamp < privacyDisableScheduledAt) {
+            revert TimelockActive();
+        }
+        privacyEnabled = false;
+        delete privacyDisableScheduledAt;
+        emit PrivacyDisabled();
+    }
+
+    /**
+     * @notice Cancel a pending privacy disable proposal
+     * @dev Allows admin to abort the privacy disable before the
+     *      timelock expires.
+     */
+    function cancelPrivacyDisable()
+        external
+        onlyRole(DEFAULT_ADMIN_ROLE)
+    {
+        delete privacyDisableScheduledAt;
+        emit PrivacyDisableCancelled();
     }
 
     /**

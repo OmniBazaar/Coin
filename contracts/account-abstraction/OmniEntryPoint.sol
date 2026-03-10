@@ -39,11 +39,17 @@ contract OmniEntryPoint is IEntryPoint, ReentrancyGuard {
     ///      Set to 100 ETH equivalent -- adjust for OmniCoin L1 economics.
     uint256 internal constant MAX_OP_COST = 100 ether;
 
-    /// @notice Fixed gas overhead added to actualGasCost to cover post-execution
-    ///         bookkeeping (deposit deduction, postOp call, event emission, refund)
-    /// @dev Without this overhead, bundlers are systematically undercompensated
-    ///      because gas consumed after the cost snapshot is not accounted for.
+    /// @notice Gas overhead for operations without a paymaster.
+    /// @dev Covers post-execution bookkeeping: deposit deduction, event emission,
+    ///      and beneficiary refund. Calibrated for the no-paymaster path where
+    ///      postOp is not called.
     uint256 internal constant GAS_OVERHEAD = 40_000;
+
+    /// @notice Gas overhead for operations with a paymaster.
+    /// @dev Higher than GAS_OVERHEAD to cover the additional cost of
+    ///      calling paymaster.postOp() (including potential revert + retry).
+    ///      Without this, bundlers are undercompensated on paymaster operations.
+    uint256 internal constant GAS_OVERHEAD_WITH_PAYMASTER = 60_000;
 
     // ══════════════════════════════════════════════════════════════
     //                      STATE VARIABLES
@@ -118,6 +124,9 @@ contract OmniEntryPoint is IEntryPoint, ReentrancyGuard {
     /// @notice Invalid beneficiary address
     error InvalidBeneficiary();
 
+    /// @notice Caller is not this contract (handleSingleOp called externally)
+    error OnlySelf();
+
     /// @notice Gas limits exceed maximum
     error GasLimitExceeded();
 
@@ -132,6 +141,10 @@ contract OmniEntryPoint is IEntryPoint, ReentrancyGuard {
     /// @dev Credits the sender's deposit balance. To fund a different account,
     ///      use depositTo(). Direct ETH transfers credit the sender's EOA, NOT
     ///      a smart account -- use depositTo() for smart account funding.
+    ///      Does NOT use nonReentrant because accounts send prefund payments
+    ///      via plain ETH transfer during validateUserOp, which occurs inside
+    ///      handleOps (where nonReentrant is already held). Adding nonReentrant
+    ///      here would block legitimate prefund payments.
     receive() external payable { // solhint-disable-line no-complex-fallback
         _deposits[msg.sender] += msg.value;
         emit Deposited(msg.sender, _deposits[msg.sender]);
@@ -227,9 +240,11 @@ contract OmniEntryPoint is IEntryPoint, ReentrancyGuard {
         UserOperation calldata op,
         address payable beneficiary
     ) external {
-        // Only callable by this contract (from handleOps try/catch)
+        // M-01 R6: Only callable by this contract (from handleOps try/catch).
+        // Uses a dedicated error to distinguish unauthorized access from
+        // an invalid beneficiary, improving debugging and monitoring.
         if (msg.sender != address(this)) {
-            revert InvalidBeneficiary();
+            revert OnlySelf();
         }
         _handleSingleOp(op, beneficiary);
     }
@@ -466,7 +481,13 @@ contract OmniEntryPoint is IEntryPoint, ReentrancyGuard {
         bool success,
         address payable beneficiary
     ) internal {
-        uint256 actualGasUsed = (gasStart - gasleft()) + GAS_OVERHEAD;
+        // M-02 R6: Use dynamic overhead based on paymaster presence.
+        // Paymaster operations incur additional gas from postOp calls
+        // (including potential revert + retry), so a higher overhead is needed.
+        uint256 overhead = paymaster != address(0)
+            ? GAS_OVERHEAD_WITH_PAYMASTER
+            : GAS_OVERHEAD;
+        uint256 actualGasUsed = (gasStart - gasleft()) + overhead;
         uint256 actualGasCost = actualGasUsed * tx.gasprice;
         address payer = paymaster != address(0)
             ? paymaster

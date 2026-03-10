@@ -4,7 +4,7 @@ pragma solidity 0.8.24;
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
-import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
+import {Ownable2Step, Ownable} from "@openzeppelin/contracts/access/Ownable2Step.sol";
 import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
 import {ERC2771Context} from
     "@openzeppelin/contracts/metatx/ERC2771Context.sol";
@@ -65,7 +65,7 @@ import {Context} from
  *
  * Inspired by Olympus DAO bonding mechanism.
  */
-contract OmniBonding is ReentrancyGuard, Ownable, Pausable, ERC2771Context {
+contract OmniBonding is ReentrancyGuard, Ownable2Step, Pausable, ERC2771Context {
     using SafeERC20 for IERC20;
 
     // ============ Structs ============
@@ -697,6 +697,14 @@ contract OmniBonding is ReentrancyGuard, Ownable, Pausable, ERC2771Context {
      *      make 10 sequential calls, changing price by ~65% in one
      *      block. With the cooldown, effective max change is ~10%
      *      per 6 hours. The admin SHOULD be a multisig or timelock.
+     *
+     *      M-02 Round 6 FRONT-RUNNING MITIGATION: MEV bots can
+     *      front-run price increases to bond at the stale (lower)
+     *      price. The recommended operational procedure is:
+     *      1. Call pause() to halt bonding
+     *      2. Call setXomPrice() to update the price
+     *      3. Call unpause() to resume bonding at the new price
+     *      This eliminates the front-running window entirely.
      * @param newPrice New price in 18 decimals
      */
     function setXomPrice(uint256 newPrice) external onlyOwner {
@@ -795,6 +803,13 @@ contract OmniBonding is ReentrancyGuard, Ownable, Pausable, ERC2771Context {
      */
     function withdrawXom(uint256 amount) external onlyOwner {
         uint256 balance = XOM.balanceOf(address(this));
+        // M-01 Round 6: safe check prevents underflow panic when
+        // balance < totalXomOutstanding (should not happen under
+        // normal operation but provides a descriptive error instead
+        // of an opaque arithmetic panic).
+        if (balance < totalXomOutstanding) {
+            revert InsufficientXomBalance();
+        }
         uint256 excess = balance - totalXomOutstanding;
         if (amount > excess) revert InsufficientXomBalance();
         XOM.safeTransfer(treasury, amount);
@@ -1023,6 +1038,18 @@ contract OmniBonding is ReentrancyGuard, Ownable, Pausable, ERC2771Context {
         returns (uint256 price)
     {
         return fixedXomPrice;
+    }
+
+    // ============ Public Pure Functions ============
+
+    /**
+     * @notice Disable renounceOwnership to prevent accidental lockout
+     * @dev H-01 Round 6: with Ownable2Step, renouncing ownership would
+     *      permanently brick all admin functions including bond pricing,
+     *      treasury management, and pause/unpause. Always reverts.
+     */
+    function renounceOwnership() public pure override {
+        revert InvalidParameters();
     }
 
     // ============ Internal Functions ============

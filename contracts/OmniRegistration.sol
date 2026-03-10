@@ -58,6 +58,14 @@ contract OmniRegistration is
     /// @dev Can be increased if Sybil attacks become problematic
     uint256 public constant REGISTRATION_DEPOSIT = 0;
 
+    /// @notice Minimum sale amount required for first sale bonus eligibility (100 XOM)
+    /// @dev SYBIL-H05: Prevents wash trading with trivial amounts to claim first sale bonus
+    uint256 public constant MIN_FIRST_SALE_AMOUNT = 100 * 10 ** 18;
+
+    /// @notice Minimum time after registration before first sale qualifies (7 days)
+    /// @dev SYBIL-H05: Cooling period prevents rapid sybil account creation + instant first sale
+    uint256 public constant MIN_FIRST_SALE_AGE = 7 days;
+
     /// @notice EIP-712 typehash for phone verification proof
     /// @dev Used by submitPhoneVerification() for trustless phone verification
     bytes32 public constant PHONE_VERIFICATION_TYPEHASH = keccak256(
@@ -610,6 +618,10 @@ contract OmniRegistration is
     /// @notice Thrown when contract is ossified and upgrade attempted
     error ContractIsOssified();
 
+    /// @notice Thrown when first sale doesn't meet minimum requirements
+    /// @dev SYBIL-H05: Sale amount too low, account too new, or shared referrer detected
+    error FirstSaleRequirementsNotMet();
+
     // ═══════════════════════════════════════════════════════════════════════
     //                           INITIALIZATION
     // ═══════════════════════════════════════════════════════════════════════
@@ -970,6 +982,14 @@ contract OmniRegistration is
         if (tier < 2 || tier > 4) revert InvalidKYCTier();
         if (tier <= registrations[user].kycTier) revert InvalidKYCTier();
 
+        // H-01: Enforce sequential tier progression -- users cannot skip tiers.
+        // Each tier requires the previous tier to be completed first.
+        // This prevents 3 colluding KYC_ATTESTOR_ROLE holders from jumping
+        // a user directly from Tier 0 to Tier 4 without any identity verification.
+        if (tier == 2 && kycTier1CompletedAt[user] == 0) revert PreviousTierRequired();
+        if (tier == 3 && kycTier2CompletedAt[user] == 0) revert PreviousTierRequired();
+        if (tier == 4 && kycTier3CompletedAt[user] == 0) revert PreviousTierRequired();
+
         // Attestor cannot attest for users they registered (self-dealing prevention)
         if (registrations[user].registeredBy == msg.sender) {
             revert ValidatorCannotBeReferrer();
@@ -1042,6 +1062,9 @@ contract OmniRegistration is
         bytes calldata signature
     ) external nonReentrant {
         address caller = _msgSender();
+
+        // M-02: Require caller to be registered before consuming global state
+        if (registrations[caller].timestamp == 0) revert NotRegistered();
 
         // 1. Check trusted verification key is set
         if (trustedVerificationKey == address(0)) {
@@ -1121,6 +1144,9 @@ contract OmniRegistration is
         bytes calldata signature
     ) external nonReentrant {
         address caller = _msgSender();
+
+        // M-02: Require caller to be registered before consuming global state
+        if (registrations[caller].timestamp == 0) revert NotRegistered();
 
         // 1. Check trusted verification key is set
         if (trustedVerificationKey == address(0)) {
@@ -1213,6 +1239,9 @@ contract OmniRegistration is
         uint256 deadline,
         bytes calldata signature
     ) external nonReentrant {
+        // M-02: Require user to be registered before consuming global state
+        if (registrations[user].timestamp == 0) revert NotRegistered();
+
         // 1. Check trusted verification key is set
         if (trustedVerificationKey == address(0)) {
             revert TrustedVerificationKeyNotSet();
@@ -1294,6 +1323,9 @@ contract OmniRegistration is
         uint256 deadline,
         bytes calldata signature
     ) external nonReentrant {
+        // M-02: Require user to be registered before consuming global state
+        if (registrations[user].timestamp == 0) revert NotRegistered();
+
         // 1. Check trusted verification key is set
         if (trustedVerificationKey == address(0)) {
             revert TrustedVerificationKeyNotSet();
@@ -1408,6 +1440,9 @@ contract OmniRegistration is
     ) external nonReentrant {
         address caller = _msgSender();
 
+        // M-02: Require caller to be registered before consuming global state
+        if (registrations[caller].timestamp == 0) revert NotRegistered();
+
         // 1. Check trusted verification key is set
         if (trustedVerificationKey == address(0)) revert TrustedVerificationKeyNotSet();
 
@@ -1477,6 +1512,9 @@ contract OmniRegistration is
         uint256 deadline,
         bytes calldata signature
     ) external nonReentrant {
+        // M-02: Require user to be registered before consuming global state
+        if (registrations[user].timestamp == 0) revert NotRegistered();
+
         // 1. Check trusted verification key is set
         if (trustedVerificationKey == address(0)) revert TrustedVerificationKeyNotSet();
 
@@ -1550,6 +1588,9 @@ contract OmniRegistration is
     ) external nonReentrant {
         address caller = _msgSender();
 
+        // M-02: Require caller to be registered before consuming global state
+        if (registrations[caller].timestamp == 0) revert NotRegistered();
+
         // 1. Check trusted verification key is set
         if (trustedVerificationKey == address(0)) revert TrustedVerificationKeyNotSet();
 
@@ -1621,6 +1662,9 @@ contract OmniRegistration is
         bytes calldata signature
     ) external nonReentrant {
         address caller = _msgSender();
+
+        // M-02: Require caller to be registered before consuming global state
+        if (registrations[caller].timestamp == 0) revert NotRegistered();
 
         // 1. Check trusted verification key is set
         if (trustedVerificationKey == address(0)) revert TrustedVerificationKeyNotSet();
@@ -1694,6 +1738,9 @@ contract OmniRegistration is
         uint256 deadline,
         bytes calldata signature
     ) external nonReentrant {
+        // M-02: Require user to be registered before consuming global state
+        if (registrations[user].timestamp == 0) revert NotRegistered();
+
         // 1. Check trusted verification key is set
         if (trustedVerificationKey == address(0)) revert TrustedVerificationKeyNotSet();
 
@@ -1766,6 +1813,9 @@ contract OmniRegistration is
         uint256 deadline,
         bytes calldata signature
     ) external nonReentrant {
+        // M-02: Require user to be registered before consuming global state
+        if (registrations[user].timestamp == 0) revert NotRegistered();
+
         // 1. Check trusted verification key is set
         if (trustedVerificationKey == address(0)) revert TrustedVerificationKeyNotSet();
 
@@ -2195,14 +2245,45 @@ contract OmniRegistration is
      * @dev Only callable by TRANSACTION_RECORDER_ROLE (marketplace/escrow contracts).
      *      This flag gates the first sale bonus in OmniRewardManager, ensuring
      *      that users cannot claim the bonus without actually completing a sale.
-     * @param user The seller's address who completed the sale
+     *      SYBIL-H05: Validates minimum sale amount, account age, and that
+     *      buyer and seller don't share the same referrer (wash trade indicator).
+     * @param seller The seller's address who completed the sale
+     * @param saleAmount The sale amount in token units (18 decimals)
+     * @param buyer The buyer's address in the transaction
      */
     function markFirstSaleCompleted(
-        address user
+        address seller,
+        uint256 saleAmount,
+        address buyer
     ) external onlyRole(TRANSACTION_RECORDER_ROLE) {
-        Registration storage reg = registrations[user];
+        Registration storage reg = registrations[seller];
         if (reg.timestamp == 0) revert NotRegistered();
-        firstSaleCompleted[user] = true;
+
+        // SYBIL-H05: Minimum sale amount (prevents trivial wash trades)
+        if (saleAmount < MIN_FIRST_SALE_AMOUNT) {
+            revert FirstSaleRequirementsNotMet();
+        }
+
+        // SYBIL-H05: Account must be at least MIN_FIRST_SALE_AGE old
+        // solhint-disable-next-line not-rely-on-time
+        if (block.timestamp < reg.timestamp + MIN_FIRST_SALE_AGE) {
+            revert FirstSaleRequirementsNotMet();
+        }
+
+        // SYBIL-H05: Buyer and seller must not share the same referrer
+        // (strong indicator of wash trading between sybil accounts)
+        if (buyer != address(0)) {
+            Registration storage buyerReg = registrations[buyer];
+            if (
+                buyerReg.referrer != address(0) &&
+                reg.referrer != address(0) &&
+                buyerReg.referrer == reg.referrer
+            ) {
+                revert FirstSaleRequirementsNotMet();
+            }
+        }
+
+        firstSaleCompleted[seller] = true;
     }
 
     /**
@@ -2689,6 +2770,14 @@ contract OmniRegistration is
         if (addrHash != bytes32(0)) {
             usedAddressHashes[addrHash] = false;
             delete userAddressHashes[user];
+        }
+
+        // M-03: Clear KYC attestation arrays for tiers 2-4 to prevent
+        // attestation progress from persisting across unregister/re-register cycles.
+        // delete on a dynamic storage array sets its length to zero.
+        for (uint8 tier = 2; tier <= 4; ++tier) {
+            bytes32 attestationKey = keccak256(abi.encodePacked(user, tier));
+            delete kycAttestations[attestationKey];
         }
 
         // Clear verification state

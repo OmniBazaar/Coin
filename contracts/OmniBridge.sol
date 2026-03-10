@@ -117,6 +117,19 @@ contract OmniBridge is
     using SafeERC20 for IERC20;
 
     // Type declarations
+    /// @notice Lifecycle status of a bridge transfer
+    /// @dev H-01 Round 6: prevents refund-and-complete race condition by
+    ///      ensuring each transfer can only be finalized once (either
+    ///      completed on the destination chain or refunded on the source).
+    enum TransferStatus {
+        /// @notice Transfer is active and awaiting completion or refund
+        PENDING,
+        /// @notice Transfer was completed on the destination chain
+        COMPLETED,
+        /// @notice Transfer was refunded on the source chain
+        REFUNDED
+    }
+
     /// @notice Bridge transfer information (packed for gas efficiency)
     struct BridgeTransfer {
         address sender;         // slot 1: 20 bytes
@@ -219,8 +232,15 @@ contract OmniBridge is
     /// @notice Address of UnifiedFeeVault for fee distribution
     address public feeVault;
 
+    /// @notice Status of each bridge transfer (prevents refund-and-complete race)
+    /// @dev H-01 Round 6 remediation: tracks per-transfer lifecycle to prevent
+    ///      double-claiming via concurrent refund and completion paths.
+    ///      0 = PENDING (default), 1 = COMPLETED, 2 = REFUNDED
+    mapping(uint256 => TransferStatus) public transferStatus;
+
     /// @notice Storage gap for future upgrades
-    uint256[43] private __gap;
+    /// @dev Reduced by 1 slot to account for the transferStatus mapping added above.
+    uint256[42] private __gap;
 
     // Events
     /// @notice Emitted when transfer is initiated
@@ -350,6 +370,8 @@ contract OmniBridge is
     error NoFeesToDistribute();
     /// @notice Thrown when contract is ossified and upgrade attempted
     error ContractIsOssified();
+    /// @notice Thrown when a transfer has already been refunded on the source chain
+    error TransferAlreadyRefunded();
 
     /**
      * @notice Disable initializers on implementation contract
@@ -498,6 +520,11 @@ contract OmniBridge is
                 (uint256, address, address, uint256, uint256, bool)
             );
 
+        // M-03 Round 6: Validate recipient is not zero address to
+        // prevent tokens from being irretrievably burned on the
+        // destination chain.
+        if (recipient == address(0)) revert InvalidRecipient();
+
         // Verify this chain is the target
         if (targetChainId != block.chainid) revert InvalidChainId();
 
@@ -507,6 +534,13 @@ contract OmniBridge is
         );
         if (processedMessages[messageHash]) revert AlreadyProcessed();
         processedMessages[messageHash] = true;
+
+        // H-01 Round 6: prevent completion if this transfer was already
+        // refunded or completed (guards against cross-chain race condition)
+        if (transferStatus[transferId] != TransferStatus.PENDING) {
+            revert TransferAlreadyCompleted();
+        }
+        transferStatus[transferId] = TransferStatus.COMPLETED;
 
         // H-04: Enforce independent inbound rate limiting
         uint256 sourceChainId = blockchainToChainId[
@@ -542,11 +576,20 @@ contract OmniBridge is
         uint256 transferFee,
         address teleporterAddress
     ) external {
-        // Only admin can update
+        // M-01 Round 6: Admin functions deliberately use msg.sender
+        // (not _msgSender()) because admin operations should not be
+        // relayed via meta-transactions. This prevents the trusted
+        // forwarder from executing privileged operations on behalf of
+        // an admin, which would expand the trust surface.
         if (!core.hasRole(core.ADMIN_ROLE(), msg.sender)) {
             revert InvalidRecipient();
         }
 
+        // M-02 Round 6: Reject chain ID 0 as it collides with the
+        // default mapping value in blockchainToChainId, making it
+        // impossible to distinguish "not registered" from "registered
+        // as chain 0".
+        if (chainId == 0) revert InvalidChainId();
         if (transferFee > MAX_FEE) revert InvalidFee();
         // solhint-disable-next-line gas-strict-inequalities
         if (minTransfer >= maxTransfer) revert InvalidAmount();
@@ -591,6 +634,8 @@ contract OmniBridge is
         address token,
         uint256 amount
     ) external nonReentrant {
+        // M-01 Round 6: Uses msg.sender deliberately; see
+        // updateChainConfig() NatSpec for rationale.
         if (!core.hasRole(core.ADMIN_ROLE(), msg.sender)) {
             revert InvalidRecipient();
         }
@@ -636,6 +681,8 @@ contract OmniBridge is
     function setFeeVault(
         address _feeVault
     ) external {
+        // M-01 Round 6: Uses msg.sender deliberately; see
+        // updateChainConfig() NatSpec for rationale.
         if (!core.hasRole(core.ADMIN_ROLE(), msg.sender)) {
             revert InvalidRecipient();
         }
@@ -659,12 +706,18 @@ contract OmniBridge is
 
         if (t.sender != caller) revert InvalidRecipient();
         if (t.completed) revert TransferAlreadyCompleted();
+        // H-01 Round 6: prevent refund if transfer was already refunded
+        if (transferStatus[transferId] != TransferStatus.PENDING) {
+            revert TransferAlreadyCompleted();
+        }
         // solhint-disable-next-line not-rely-on-time
         if (block.timestamp < t.timestamp + REFUND_DELAY) {
             revert TransferTooEarly();
         }
 
         t.completed = true;
+        // H-01 Round 6: mark transfer as refunded to prevent completion
+        transferStatus[transferId] = TransferStatus.REFUNDED;
 
         // Resolve token and refund the net amount
         bytes32 tokenService = transferUsePrivacy[transferId]
@@ -688,6 +741,8 @@ contract OmniBridge is
         bytes32 srcBlockchainId,
         address bridgeAddress
     ) external {
+        // M-01 Round 6: Uses msg.sender deliberately; see
+        // updateChainConfig() NatSpec for rationale.
         if (!core.hasRole(core.ADMIN_ROLE(), msg.sender)) {
             revert InvalidRecipient();
         }
@@ -698,6 +753,8 @@ contract OmniBridge is
     /**
      * @notice Pause all bridge operations
      * @dev Only admin can pause. Halts initiateTransfer and processWarpMessage.
+     *      M-01 Round 6: Uses msg.sender deliberately; see
+     *      updateChainConfig() NatSpec for rationale.
      */
     function pause() external {
         if (!core.hasRole(core.ADMIN_ROLE(), msg.sender)) {
@@ -709,6 +766,8 @@ contract OmniBridge is
     /**
      * @notice Unpause bridge operations
      * @dev Only admin can unpause. Resumes initiateTransfer and processWarpMessage.
+     *      M-01 Round 6: Uses msg.sender deliberately; see
+     *      updateChainConfig() NatSpec for rationale.
      */
     function unpause() external {
         if (!core.hasRole(core.ADMIN_ROLE(), msg.sender)) {

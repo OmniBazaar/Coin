@@ -10,10 +10,42 @@ const testCategories = {
   ],
   'Business Logic': [
     'test/MinimalEscrow.test.js',
-    'test/OmniGovernance.test.js'
+    'test/UUPSGovernance.test.js',
+    'test/OmniArbitration.test.js',
+    'test/OmniMarketplace.test.js'
   ],
   'Cross-Chain': [
-    'test/OmniBridge.test.js'
+    'test/OmniBridge.test.js',
+    'test/OmniPrivacyBridge.test.js'
+  ],
+  'Fee & DEX': [
+    'test/UnifiedFeeVault.test.js',
+    'test/OmniTreasury.test.js',
+    'test/OmniChatFee.test.js',
+    'test/dex/OmniFeeRouter.test.js'
+  ],
+  'Infrastructure': [
+    'test/Bootstrap.test.js',
+    'test/OmniPriceOracle.test.js',
+    'test/UpdateRegistry.test.js',
+    'test/OmniENS.test.js',
+    'test/predictions/OmniPredictionRouter.test.js',
+    'test/reputation/ReputationCredential.test.js',
+    'test/yield/OmniYieldFeeCollector.test.js'
+  ],
+  'NFT': [
+    'test/nft/OmniNFTFactory.test.js',
+    'test/nft/OmniNFTCollection.test.js',
+    'test/nft/OmniFractionalNFT.test.js',
+    'test/nft/OmniNFTStaking.test.js',
+    'test/nft/OmniNFTLending.test.js'
+  ],
+  'RWA': [
+    'test/rwa/RWAAMM.test.js',
+    'test/rwa/RWAPool.test.js'
+  ],
+  'Account Abstraction': [
+    'test/account-abstraction/AccountAbstraction.test.js'
   ]
 };
 

@@ -446,9 +446,10 @@ contract EmergencyGuardian {
      * @notice Execute the cancel on the timelock controller
      * @dev Called internally when CANCEL_THRESHOLD signatures are collected.
      *      Uses a low-level call to TimelockController.cancel(bytes32).
-     *      L-03: If the cancel call fails (operation already executed or
-     *      no longer pending), emits CancelAttemptFailed instead of
-     *      reverting, so the signature state remains consistent.
+     *      M-01 (Round 6): If the cancel call fails (operation already
+     *      executed or no longer pending), emits CancelAttemptFailed
+     *      and returns without reverting, so the signature state remains
+     *      consistent and the 3rd guardian's transaction succeeds.
      * @param operationId The timelock operation to cancel
      * @param cancelKey The epoch-scoped cancel key for event data
      */
@@ -459,23 +460,21 @@ contract EmergencyGuardian {
         // Call timelock.cancel(operationId)
         // The EmergencyGuardian must have CANCELLER_ROLE on the timelock
         // solhint-disable-next-line avoid-low-level-calls
-        (bool success, bytes memory returndata) = TIMELOCK.call(
+        (bool success, ) = TIMELOCK.call(
             abi.encodeWithSignature("cancel(bytes32)", operationId)
         );
 
         if (!success) {
-            // L-03: Emit event on cancel failure instead of reverting
-            if (returndata.length > 0) {
-                // Bubble up the revert reason
-                // solhint-disable-next-line no-inline-assembly
-                assembly {
-                    revert(
-                        add(32, returndata),
-                        mload(returndata)
-                    )
-                }
-            }
-            revert CancelFailed();
+            // M-01 (Round 6): Emit event on cancel failure instead
+            // of reverting. This preserves the 3rd guardian's
+            // signature in state and provides a clean audit trail
+            // when the timelock operation is no longer pending
+            // (e.g., raced with normal execution).
+            emit CancelAttemptFailed(
+                operationId,
+                "cancel failed: not pending"
+            );
+            return;
         }
 
         emit OperationCancelled(

@@ -1,10 +1,10 @@
 {
-  "timestamp": "2026-03-09T19:59:21.796Z",
-  "duration": "10.93s",
+  "timestamp": "2026-03-10T18:39:48.763Z",
+  "duration": "58.22s",
   "summary": {
-    "total": 6,
+    "total": 28,
     "passed": 0,
-    "failed": 6,
+    "failed": 28,
     "skipped": 0
   },
   "categories": {
@@ -33,14 +33,134 @@
       },
       {
         "status": "failed",
-        "file": "test/OmniGovernance.test.js",
-        "error": "An unexpected error occurred:\nError: Cannot find module '/home/omnirick/OmniBazaar/Coin/test/OmniGovernance.test.js'\nRequire stack:\n- /home/omnirick/OmniBazaar/node_modules/mocha/lib/mocha.js\n- /home/omnirick/OmniBazaar/node_modules/mocha/index.js\n- /home/omnirick/OmniBazaar/node_modules/hardhat/builtin-tasks/test.js\n- /home/omnirick/OmniBazaar/node_modules/hardhat/internal/core/tasks/builtin-tasks.js\n- /home/omnirick/OmniBazaar/node_modules/hardhat/internal/core/config/config-loading.js\n- /home/omnirick/OmniBazaar/node_modules/hardhat/internal/cli/cli.js\n- /home/omnirick/OmniBazaar/node_modules/hardhat/internal/cli/bootstrap.js\n    at Function._resolveFilename (node:internal/modules/cjs/loader:1383:15)\n    at defaultResolveImpl (node:internal/modules/cjs/loader:1025:19)\n    at resolveForCJSWithHooks (node:internal/modules/cjs/loader:1030:22)\n    at Function._load (node:internal/modules/cjs/loader:1192:37)\n    at TracingChannel.traceSync (node:diagnostics_channel:328:14)\n    at wrapModuleLoad (node:internal/modules/cjs/loader:237:24)\n    at Module.require (node:internal/modules/cjs/loader:1463:12)\n    at require (node:internal/modules/helpers:147:16)\n    at /home/omnirick/OmniBazaar/node_modules/mocha/lib/mocha.js:416:36\n    at Array.forEach (<anonymous>) {\n  code: 'MODULE_NOT_FOUND',\n  requireStack: [\n    '/home/omnirick/OmniBazaar/node_modules/mocha/lib/mocha.js',\n    '/home/omnirick/OmniBazaar/node_modules/mocha/index.js',\n    '/home/omnirick/OmniBazaar/node_modules/hardhat/builtin-tasks/test.js',\n    '/home/omnirick/OmniBazaar/node_modules/hardhat/internal/core/tasks/builtin-tasks.js',\n    '/home/omnirick/OmniBazaar/node_modules/hardhat/internal/core/config/config-loading.js',\n    '/home/omnirick/OmniBazaar/node_modules/hardhat/internal/cli/cli.js',\n    '/home/omnirick/OmniBazaar/node_modules/hardhat/internal/cli/bootstrap.js'\n  ]\n}\n"
+        "file": "test/UUPSGovernance.test.js",
+        "error": ""
+      },
+      {
+        "status": "failed",
+        "file": "test/OmniArbitration.test.js",
+        "error": ""
+      },
+      {
+        "status": "failed",
+        "file": "test/OmniMarketplace.test.js",
+        "error": ""
       }
     ],
     "Cross-Chain": [
       {
         "status": "failed",
         "file": "test/OmniBridge.test.js",
+        "error": ""
+      },
+      {
+        "status": "failed",
+        "file": "test/OmniPrivacyBridge.test.js",
+        "error": ""
+      }
+    ],
+    "Fee & DEX": [
+      {
+        "status": "failed",
+        "file": "test/UnifiedFeeVault.test.js",
+        "error": "An unexpected error occurred:\nError: Lock file is already being held\n    at /home/omnirick/OmniBazaar/node_modules/proper-lockfile/lib/lockfile.js:68:47\n    at callback (/home/omnirick/OmniBazaar/node_modules/graceful-fs/polyfills.js:306:20)\n    at FSReqCallback.oncomplete (node:fs:197:5) {\n  code: 'ELOCKED',\n  file: '/home/omnirick/OmniBazaar/Coin/cache/validations.json'\n}\n"
+      },
+      {
+        "status": "failed",
+        "file": "test/OmniTreasury.test.js",
+        "error": ""
+      },
+      {
+        "status": "failed",
+        "file": "test/OmniChatFee.test.js",
+        "error": ""
+      },
+      {
+        "status": "failed",
+        "file": "test/dex/OmniFeeRouter.test.js",
+        "error": ""
+      }
+    ],
+    "Infrastructure": [
+      {
+        "status": "failed",
+        "file": "test/Bootstrap.test.js",
+        "error": ""
+      },
+      {
+        "status": "failed",
+        "file": "test/OmniPriceOracle.test.js",
+        "error": ""
+      },
+      {
+        "status": "failed",
+        "file": "test/UpdateRegistry.test.js",
+        "error": ""
+      },
+      {
+        "status": "failed",
+        "file": "test/OmniENS.test.js",
+        "error": ""
+      },
+      {
+        "status": "failed",
+        "file": "test/predictions/OmniPredictionRouter.test.js",
+        "error": ""
+      },
+      {
+        "status": "failed",
+        "file": "test/reputation/ReputationCredential.test.js",
+        "error": ""
+      },
+      {
+        "status": "failed",
+        "file": "test/yield/OmniYieldFeeCollector.test.js",
+        "error": ""
+      }
+    ],
+    "NFT": [
+      {
+        "status": "failed",
+        "file": "test/nft/OmniNFTFactory.test.js",
+        "error": ""
+      },
+      {
+        "status": "failed",
+        "file": "test/nft/OmniNFTCollection.test.js",
+        "error": ""
+      },
+      {
+        "status": "failed",
+        "file": "test/nft/OmniFractionalNFT.test.js",
+        "error": ""
+      },
+      {
+        "status": "failed",
+        "file": "test/nft/OmniNFTStaking.test.js",
+        "error": ""
+      },
+      {
+        "status": "failed",
+        "file": "test/nft/OmniNFTLending.test.js",
+        "error": ""
+      }
+    ],
+    "RWA": [
+      {
+        "status": "failed",
+        "file": "test/rwa/RWAAMM.test.js",
+        "error": ""
+      },
+      {
+        "status": "failed",
+        "file": "test/rwa/RWAPool.test.js",
+        "error": ""
+      }
+    ],
+    "Account Abstraction": [
+      {
+        "status": "failed",
+        "file": "test/account-abstraction/AccountAbstraction.test.js",
         "error": ""
       }
     ]
@@ -50,7 +170,29 @@
     "test/PrivateOmniCoin.test.js",
     "test/OmniCore.test.js",
     "test/MinimalEscrow.test.js",
-    "test/OmniGovernance.test.js",
-    "test/OmniBridge.test.js"
+    "test/UUPSGovernance.test.js",
+    "test/OmniArbitration.test.js",
+    "test/OmniMarketplace.test.js",
+    "test/OmniBridge.test.js",
+    "test/OmniPrivacyBridge.test.js",
+    "test/UnifiedFeeVault.test.js",
+    "test/OmniTreasury.test.js",
+    "test/OmniChatFee.test.js",
+    "test/dex/OmniFeeRouter.test.js",
+    "test/Bootstrap.test.js",
+    "test/OmniPriceOracle.test.js",
+    "test/UpdateRegistry.test.js",
+    "test/OmniENS.test.js",
+    "test/predictions/OmniPredictionRouter.test.js",
+    "test/reputation/ReputationCredential.test.js",
+    "test/yield/OmniYieldFeeCollector.test.js",
+    "test/nft/OmniNFTFactory.test.js",
+    "test/nft/OmniNFTCollection.test.js",
+    "test/nft/OmniFractionalNFT.test.js",
+    "test/nft/OmniNFTStaking.test.js",
+    "test/nft/OmniNFTLending.test.js",
+    "test/rwa/RWAAMM.test.js",
+    "test/rwa/RWAPool.test.js",
+    "test/account-abstraction/AccountAbstraction.test.js"
   ]
 }

@@ -127,6 +127,10 @@ interface IOmniRegistration {
     /// @notice Bonus already claimed
     error BonusAlreadyClaimed();
 
+    /// @notice Thrown when first sale doesn't meet minimum requirements
+    /// @dev SYBIL-H05: Sale amount too low, account too new, or shared referrer detected
+    error FirstSaleRequirementsNotMet();
+
     // ═══════════════════════════════════════════════════════════════════════
     //                              FUNCTIONS
     // ═══════════════════════════════════════════════════════════════════════
@@ -168,6 +172,21 @@ interface IOmniRegistration {
      * @param user The user who claimed
      */
     function markFirstSaleBonusClaimed(address user) external;
+
+    /**
+     * @notice Mark a user as having completed their first marketplace sale
+     * @dev Only callable by TRANSACTION_RECORDER_ROLE (marketplace/escrow contracts).
+     *      SYBIL-H05: Validates minimum sale amount, account age, and that
+     *      buyer and seller don't share the same referrer (wash trade indicator).
+     * @param seller The seller's address who completed the sale
+     * @param saleAmount The sale amount in token units (18 decimals)
+     * @param buyer The buyer's address in the transaction
+     */
+    function markFirstSaleCompleted(
+        address seller,
+        uint256 saleAmount,
+        address buyer
+    ) external;
 
     /**
      * @notice Get full registration data for a user

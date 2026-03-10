@@ -390,14 +390,22 @@ describe("OmniNFTCollection", function () {
     });
 
     it("Should transfer ownership", async function () {
+      // R6 M-01: 2-step ownership transfer — transferOwnership sets
+      // pendingOwner, then the new owner must call acceptOwnership.
       await coll.connect(creator).transferOwnership(user1.address);
+      // Owner has not changed yet — only pendingOwner is set
+      expect(await coll.owner()).to.equal(creator.address);
+      expect(await coll.pendingOwner()).to.equal(user1.address);
+
+      // New owner accepts
+      await coll.connect(user1).acceptOwnership();
       expect(await coll.owner()).to.equal(user1.address);
     });
 
     it("Should reject transfer to zero address", async function () {
       await expect(
         coll.connect(creator).transferOwnership(ethers.ZeroAddress)
-      ).to.be.revertedWithCustomError(coll, "TransferFailed");
+      ).to.be.revertedWithCustomError(coll, "ZeroAddress");
     });
   });
 });

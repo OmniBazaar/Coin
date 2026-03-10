@@ -240,12 +240,20 @@ interface IRWAAMM {
     // ========================================================================
 
     /**
-     * @notice Execute token swap
+     * @notice Execute token swap with end-user compliance verification
+     * @dev When called by a trusted contract (e.g., RWARouter), the
+     *      `onBehalfOf` parameter identifies the actual end user for
+     *      compliance checking, preventing the router-as-msg.sender
+     *      bypass (audit finding C-01/C-02). When called directly by
+     *      an end user, `onBehalfOf` should be `address(0)` or the
+     *      caller's own address.
      * @param tokenIn Input token address
      * @param tokenOut Output token address
      * @param amountIn Input amount
      * @param amountOutMin Minimum output amount (slippage protection)
      * @param deadline Transaction deadline
+     * @param onBehalfOf Actual end user address for compliance checks.
+     *        Use `address(0)` to default to `msg.sender`.
      * @return result Swap result information
      */
     function swap(
@@ -253,7 +261,8 @@ interface IRWAAMM {
         address tokenOut,
         uint256 amountIn,
         uint256 amountOutMin,
-        uint256 deadline
+        uint256 deadline,
+        address onBehalfOf
     ) external returns (SwapResult memory result);
 
     // ========================================================================
@@ -261,7 +270,10 @@ interface IRWAAMM {
     // ========================================================================
 
     /**
-     * @notice Add liquidity to pool
+     * @notice Add liquidity to pool with end-user compliance verification
+     * @dev The `onBehalfOf` parameter identifies the actual end user for
+     *      compliance checking when called via a router contract
+     *      (audit finding C-01/C-02).
      * @param token0 First token address
      * @param token1 Second token address
      * @param amount0Desired Desired amount of token0
@@ -269,6 +281,8 @@ interface IRWAAMM {
      * @param amount0Min Minimum amount of token0
      * @param amount1Min Minimum amount of token1
      * @param deadline Transaction deadline
+     * @param onBehalfOf Actual end user address for compliance checks.
+     *        Use `address(0)` to default to `msg.sender`.
      * @return amount0 Actual token0 deposited
      * @return amount1 Actual token1 deposited
      * @return liquidity LP tokens minted
@@ -280,7 +294,8 @@ interface IRWAAMM {
         uint256 amount1Desired,
         uint256 amount0Min,
         uint256 amount1Min,
-        uint256 deadline
+        uint256 deadline,
+        address onBehalfOf
     ) external returns (
         uint256 amount0,
         uint256 amount1,
@@ -288,13 +303,18 @@ interface IRWAAMM {
     );
 
     /**
-     * @notice Remove liquidity from pool
+     * @notice Remove liquidity from pool with end-user compliance
+     * @dev The `onBehalfOf` parameter identifies the actual end user for
+     *      compliance checking when called via a router contract
+     *      (audit finding C-01/C-02).
      * @param token0 First token address
      * @param token1 Second token address
      * @param liquidity LP tokens to burn
      * @param amount0Min Minimum token0 to receive
      * @param amount1Min Minimum token1 to receive
      * @param deadline Transaction deadline
+     * @param onBehalfOf Actual end user address for compliance checks.
+     *        Use `address(0)` to default to `msg.sender`.
      * @return amount0 Token0 received
      * @return amount1 Token1 received
      */
@@ -304,7 +324,8 @@ interface IRWAAMM {
         uint256 liquidity,
         uint256 amount0Min,
         uint256 amount1Min,
-        uint256 deadline
+        uint256 deadline,
+        address onBehalfOf
     ) external returns (
         uint256 amount0,
         uint256 amount1

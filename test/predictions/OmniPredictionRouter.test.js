@@ -62,7 +62,7 @@ describe("OmniPredictionRouter", function () {
 
   describe("Constructor", function () {
     it("should deploy with valid feeCollector and maxFeeBps", async function () {
-      expect(await router.FEE_COLLECTOR()).to.equal(feeCollector.address);
+      expect(await router.feeCollector()).to.equal(feeCollector.address);
       expect(await router.MAX_FEE_BPS()).to.equal(MAX_FEE_BPS);
     });
 
@@ -94,7 +94,7 @@ describe("OmniPredictionRouter", function () {
 
   describe("Immutable getters", function () {
     it("should return the correct feeCollector", async function () {
-      expect(await router.FEE_COLLECTOR()).to.equal(feeCollector.address);
+      expect(await router.feeCollector()).to.equal(feeCollector.address);
     });
 
     it("should return the correct MAX_FEE_BPS", async function () {
@@ -107,18 +107,19 @@ describe("OmniPredictionRouter", function () {
   // ---------------------------------------------------------------------------
 
   describe("setPlatformApproval", function () {
-    it("should allow feeCollector to approve a platform", async function () {
-      await router.connect(feeCollector).setPlatformApproval(
+    it("should allow owner to approve a platform", async function () {
+      // R6: setPlatformApproval is now onlyOwner
+      await router.connect(owner).setPlatformApproval(
         platformTarget.address, true
       );
       expect(await router.approvedPlatforms(platformTarget.address)).to.equal(true);
     });
 
-    it("should allow feeCollector to revoke a platform", async function () {
-      await router.connect(feeCollector).setPlatformApproval(
+    it("should allow owner to revoke a platform", async function () {
+      await router.connect(owner).setPlatformApproval(
         platformTarget.address, true
       );
-      await router.connect(feeCollector).setPlatformApproval(
+      await router.connect(owner).setPlatformApproval(
         platformTarget.address, false
       );
       expect(await router.approvedPlatforms(platformTarget.address)).to.equal(false);
@@ -126,7 +127,7 @@ describe("OmniPredictionRouter", function () {
 
     it("should emit PlatformApprovalChanged on approval", async function () {
       await expect(
-        router.connect(feeCollector).setPlatformApproval(
+        router.connect(owner).setPlatformApproval(
           platformTarget.address, true
         )
       ).to.emit(router, "PlatformApprovalChanged")
@@ -134,23 +135,24 @@ describe("OmniPredictionRouter", function () {
     });
 
     it("should emit PlatformApprovalChanged on revocation", async function () {
-      await router.connect(feeCollector).setPlatformApproval(
+      await router.connect(owner).setPlatformApproval(
         platformTarget.address, true
       );
       await expect(
-        router.connect(feeCollector).setPlatformApproval(
+        router.connect(owner).setPlatformApproval(
           platformTarget.address, false
         )
       ).to.emit(router, "PlatformApprovalChanged")
         .withArgs(platformTarget.address, false);
     });
 
-    it("should revert when called by non-feeCollector", async function () {
+    it("should revert when called by non-owner", async function () {
+      // R6: setPlatformApproval is now onlyOwner, so non-owner gets OwnableUnauthorizedAccount
       await expect(
         router.connect(user).setPlatformApproval(
           platformTarget.address, true
         )
-      ).to.be.revertedWithCustomError(router, "InvalidFeeCollector");
+      ).to.be.revertedWithCustomError(router, "OwnableUnauthorizedAccount");
     });
 
     it("should revert when called by attacker", async function () {
@@ -158,12 +160,12 @@ describe("OmniPredictionRouter", function () {
         router.connect(attacker).setPlatformApproval(
           platformTarget.address, true
         )
-      ).to.be.revertedWithCustomError(router, "InvalidFeeCollector");
+      ).to.be.revertedWithCustomError(router, "OwnableUnauthorizedAccount");
     });
 
     it("should revert when platform is the zero address", async function () {
       await expect(
-        router.connect(feeCollector).setPlatformApproval(
+        router.connect(owner).setPlatformApproval(
           ethers.ZeroAddress, true
         )
       ).to.be.revertedWithCustomError(router, "InvalidPlatformTarget");
@@ -250,7 +252,7 @@ describe("OmniPredictionRouter", function () {
       const deadline = await futureDeadline();
       const collateralAddress = await collateral.getAddress();
       // Approve the collateral address as a platform (admin mistake)
-      await router.connect(feeCollector).setPlatformApproval(
+      await router.connect(owner).setPlatformApproval(
         collateralAddress, true
       );
       await expect(
@@ -269,7 +271,7 @@ describe("OmniPredictionRouter", function () {
       const deadline = await futureDeadline();
       const routerAddress = await router.getAddress();
       // Approve the router address as a platform (admin mistake)
-      await router.connect(feeCollector).setPlatformApproval(
+      await router.connect(owner).setPlatformApproval(
         routerAddress, true
       );
       await expect(
@@ -293,7 +295,7 @@ describe("OmniPredictionRouter", function () {
       const dummyPlatform = await MockERC20.deploy("Platform", "PLT");
       const platformAddr = await dummyPlatform.getAddress();
       // Approve the platform so we reach the fee check
-      await router.connect(feeCollector).setPlatformApproval(platformAddr, true);
+      await router.connect(owner).setPlatformApproval(platformAddr, true);
       await expect(
         router.connect(user).buyWithFee(
           await collateral.getAddress(),
@@ -316,7 +318,7 @@ describe("OmniPredictionRouter", function () {
       const dummyPlatform = await MockERC20.deploy("Platform", "PLT");
       const platformAddr = await dummyPlatform.getAddress();
       // Approve the platform so we reach the fee cap check
-      await router.connect(feeCollector).setPlatformApproval(platformAddr, true);
+      await router.connect(owner).setPlatformApproval(platformAddr, true);
       await expect(
         router.connect(user).buyWithFee(
           await collateral.getAddress(),
@@ -332,10 +334,10 @@ describe("OmniPredictionRouter", function () {
     it("should revert with InvalidPlatformTarget after platform is revoked", async function () {
       const deadline = await futureDeadline();
       // Approve then revoke
-      await router.connect(feeCollector).setPlatformApproval(
+      await router.connect(owner).setPlatformApproval(
         platformTarget.address, true
       );
-      await router.connect(feeCollector).setPlatformApproval(
+      await router.connect(owner).setPlatformApproval(
         platformTarget.address, false
       );
       await expect(
@@ -356,13 +358,14 @@ describe("OmniPredictionRouter", function () {
   // ---------------------------------------------------------------------------
 
   describe("rescueTokens", function () {
-    it("should revert when called by non-feeCollector", async function () {
+    it("should revert when called by non-owner", async function () {
+      // R6: rescueTokens is now onlyOwner, so non-owner gets OwnableUnauthorizedAccount
       await expect(
         router.connect(user).rescueTokens(await collateral.getAddress())
-      ).to.be.revertedWithCustomError(router, "InvalidFeeCollector");
+      ).to.be.revertedWithCustomError(router, "OwnableUnauthorizedAccount");
     });
 
-    it("should allow feeCollector to rescue tokens", async function () {
+    it("should allow owner to rescue tokens", async function () {
       const collateralAddress = await collateral.getAddress();
       const routerAddress = await router.getAddress();
 
@@ -375,8 +378,8 @@ describe("OmniPredictionRouter", function () {
 
       const balanceBefore = await collateral.balanceOf(feeCollector.address);
 
-      // feeCollector rescues the tokens
-      await router.connect(feeCollector).rescueTokens(collateralAddress);
+      // R6: rescueTokens is now onlyOwner — owner rescues the tokens
+      await router.connect(owner).rescueTokens(collateralAddress);
 
       expect(await collateral.balanceOf(routerAddress)).to.equal(0);
       expect(await collateral.balanceOf(feeCollector.address)).to.equal(

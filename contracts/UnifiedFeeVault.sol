@@ -139,6 +139,12 @@ contract UnifiedFeeVault is
     /// @dev Used for swap router and privacy bridge timelocks
     uint256 public constant RECIPIENT_CHANGE_DELAY = 48 hours;
 
+    /// @notice Minimum sale amount for marketplace fees (M-04 Round 6)
+    /// @dev Prevents rounding loss on extremely small sales.
+    ///      10000 ensures totalFee >= 100, providing adequate
+    ///      precision for all 70/20/10 sub-splits.
+    uint256 public constant MIN_SALE_AMOUNT = 10_000;
+
     // ════════════════════════════════════════════════════════════════════
     //                         STATE VARIABLES
     // ════════════════════════════════════════════════════════════════════
@@ -248,14 +254,52 @@ contract UnifiedFeeVault is
     ///      Zero means no pending ossification.
     uint256 public ossificationScheduledAt;
 
+    // ── Timelock: Recipients (M-01 Round 6) ─────────────────────
+
+    /// @notice Proposed staking pool address awaiting timelock
+    /// @dev M-01 Round 6: replaces deprecated pendingStakingPool
+    address public pendingNewStakingPool;
+
+    /// @notice Proposed protocol treasury address awaiting timelock
+    /// @dev M-01 Round 6: replaces deprecated pendingProtocolTreasury
+    address public pendingNewProtocolTreasury;
+
+    /// @notice Timestamp when proposed recipients can be applied
+    /// @dev Zero means no pending change
+    uint256 public recipientChangeTime;
+
+    // ── Timelock: XOM Token (M-02 Round 6) ──────────────────────
+
+    /// @notice Proposed XOM token address awaiting timelock
+    /// @dev M-02 Round 6: prevents instant swap target manipulation
+    address public pendingXomToken;
+
+    /// @notice Timestamp when proposed XOM token can be applied
+    /// @dev Zero means no pending change
+    uint256 public xomTokenChangeTime;
+
+    // ── Timelock: Bridge Mode (M-03 Round 6) ────────────────────
+
+    /// @notice Token for pending bridge mode change
+    /// @dev M-03 Round 6: prevents instant bridge mode manipulation
+    address public pendingBridgeModeToken;
+
+    /// @notice Proposed bridge mode awaiting timelock
+    BridgeMode public pendingBridgeMode;
+
+    /// @notice Timestamp when proposed bridge mode can be applied
+    /// @dev Zero means no pending change
+    uint256 public bridgeModeChangeTime;
+
     /// @notice Storage gap for future upgrades
-    /// @dev Budget: 15 original + 4 new + 3 deprecated = 22 slots.
-    ///      Gap = 28. Total = 50 (standard OZ budget).
+    /// @dev Budget: 15 original + 4 new + 3 deprecated + 8 M-01-03
+    ///      = 30 slots used. Gap = 20. Total = 50 (standard OZ budget).
     ///      Pioneer Phase: 3 recipient-timelock state variables
     ///      were deprecated (not removed) to preserve UUPS storage
     ///      layout compatibility. See __deprecated_* above.
+    ///      M-01/M-02/M-03 Round 6: 8 new state variables added.
     ///      Reduce gap by N when adding N new state variables.
-    uint256[28] private __gap;
+    uint256[20] private __gap;
 
     // ════════════════════════════════════════════════════════════════════
     //                             EVENTS
@@ -418,6 +462,34 @@ contract UnifiedFeeVault is
     /// @param effectiveTimestamp When ossification can be confirmed
     event OssificationProposed(uint256 indexed effectiveTimestamp);
 
+    /// @notice Emitted when a recipient change is proposed (M-01 Round 6)
+    /// @param stakingPool Proposed staking pool address
+    /// @param protocolTreasury Proposed protocol treasury address
+    /// @param effectiveTimestamp When the change can be applied
+    event RecipientsProposed(
+        address indexed stakingPool,
+        address indexed protocolTreasury,
+        uint256 indexed effectiveTimestamp
+    );
+
+    /// @notice Emitted when a XOM token change is proposed (M-02 Round 6)
+    /// @param xom Proposed XOM token address
+    /// @param effectiveTimestamp When the change can be applied
+    event XOMTokenProposed(
+        address indexed xom,
+        uint256 indexed effectiveTimestamp
+    );
+
+    /// @notice Emitted when a bridge mode change is proposed (M-03 Round 6)
+    /// @param token Token whose mode is being changed
+    /// @param mode Proposed bridge mode
+    /// @param effectiveTimestamp When the change can be applied
+    event BridgeModeProposed(
+        address indexed token,
+        BridgeMode indexed mode,
+        uint256 indexed effectiveTimestamp
+    );
+
     /// @notice Emitted when a pending claim is redirected by admin
     /// @param originalClaimant Address that originally held the claim
     /// @param newRecipient Address receiving the redirected claim
@@ -503,6 +575,9 @@ contract UnifiedFeeVault is
     /// @notice Thrown when privacy bridge is not configured
     error PrivacyBridgeNotSet();
 
+    /// @notice Thrown when sale amount is below minimum (M-04 Round 6)
+    error SaleAmountTooSmall();
+
     // ════════════════════════════════════════════════════════════════════
     //                      CONSTRUCTOR & INITIALIZER
     // ════════════════════════════════════════════════════════════════════
@@ -577,15 +652,16 @@ contract UnifiedFeeVault is
         if (token == address(0)) revert ZeroAddress();
         if (amount == 0) revert ZeroAmount();
 
+        address caller = _msgSender();
         uint256 balBefore =
             IERC20(token).balanceOf(address(this));
         IERC20(token).safeTransferFrom(
-            msg.sender, address(this), amount
+            caller, address(this), amount
         );
         uint256 actualReceived =
             IERC20(token).balanceOf(address(this)) - balBefore;
 
-        emit FeesDeposited(token, actualReceived, msg.sender);
+        emit FeesDeposited(token, actualReceived, caller);
     }
 
     /**
@@ -605,7 +681,7 @@ contract UnifiedFeeVault is
         if (token == address(0)) revert ZeroAddress();
         if (amount == 0) revert ZeroAmount();
 
-        emit FeesNotified(token, amount, msg.sender);
+        emit FeesNotified(token, amount, _msgSender());
     }
 
     /**
@@ -737,16 +813,24 @@ contract UnifiedFeeVault is
     ) external nonReentrant onlyRole(DEPOSITOR_ROLE) whenNotPaused {
         if (token == address(0)) revert ZeroAddress();
         if (saleAmount == 0) revert ZeroAmount();
+        // M-04 Round 6: Reject sub-dust sales that lose
+        // precision in the 70/20/10 sub-splits
+        if (saleAmount < MIN_SALE_AMOUNT) {
+            revert SaleAmountTooSmall();
+        }
 
         // Total fee = 1% of sale amount
         uint256 totalFee = saleAmount / 100;
         if (totalFee == 0) revert ZeroAmount();
 
+        // H-01 audit fix: use _msgSender() for ERC-2771 meta-tx support
+        address caller = _msgSender();
+
         // M-02 audit fix: balance-before/after for fee-on-transfer
         uint256 balBefore =
             IERC20(token).balanceOf(address(this));
         IERC20(token).safeTransferFrom(
-            msg.sender, address(this), totalFee
+            caller, address(this), totalFee
         );
         uint256 actualFee =
             IERC20(token).balanceOf(address(this)) - balBefore;
@@ -805,7 +889,7 @@ contract UnifiedFeeVault is
 
         totalDistributed[token] += actualFee;
 
-        emit FeesDeposited(token, actualFee, msg.sender);
+        emit FeesDeposited(token, actualFee, caller);
     }
 
     /**
@@ -830,11 +914,14 @@ contract UnifiedFeeVault is
         uint256 totalFee = (disputeAmount * 500) / 10000; // 5%
         if (totalFee == 0) revert ZeroAmount();
 
+        // H-01 audit fix: use _msgSender() for ERC-2771 meta-tx support
+        address arbCaller = _msgSender();
+
         // M-02 audit fix: balance-before/after for fee-on-transfer
         uint256 balBefore =
             IERC20(token).balanceOf(address(this));
         IERC20(token).safeTransferFrom(
-            msg.sender, address(this), totalFee
+            arbCaller, address(this), totalFee
         );
         uint256 actualFee =
             IERC20(token).balanceOf(address(this)) - balBefore;
@@ -851,7 +938,7 @@ contract UnifiedFeeVault is
 
         totalDistributed[token] += actualFee;
 
-        emit FeesDeposited(token, actualFee, msg.sender);
+        emit FeesDeposited(token, actualFee, arbCaller);
     }
 
     // ════════════════════════════════════════════════════════════════════
@@ -949,22 +1036,55 @@ contract UnifiedFeeVault is
     // ════════════════════════════════════════════════════════════════════
 
     /**
-     * @notice Set staking pool and protocol treasury addresses
-     * @dev Pioneer Phase: direct setter without timelock.
-     *      Will be replaced with timelocked version before
-     *      multi-sig handoff.
-     * @param _stakingPool StakingRewardPool contract address (20%)
-     * @param _protocolTreasury Protocol treasury address (10%)
+     * @notice Propose new staking pool and protocol treasury
+     *         addresses with timelock (M-01 Round 6)
+     * @dev Queues the change with a 48-hour timelock. Call
+     *      `applyRecipients()` after the delay to apply.
+     * @param _stakingPool Proposed StakingRewardPool address (20%)
+     * @param _protocolTreasury Proposed protocol treasury address (10%)
      */
-    function setRecipients(
+    function proposeRecipients(
         address _stakingPool,
         address _protocolTreasury
     ) external onlyRole(ADMIN_ROLE) {
         if (_stakingPool == address(0)) revert ZeroAddress();
         if (_protocolTreasury == address(0)) revert ZeroAddress();
 
-        stakingPool = _stakingPool;
-        protocolTreasury = _protocolTreasury;
+        pendingNewStakingPool = _stakingPool;
+        pendingNewProtocolTreasury = _protocolTreasury;
+        // solhint-disable-next-line not-rely-on-time
+        recipientChangeTime = block.timestamp + RECIPIENT_CHANGE_DELAY;
+
+        emit RecipientsProposed(
+            _stakingPool,
+            _protocolTreasury,
+            recipientChangeTime
+        );
+    }
+
+    /**
+     * @notice Apply pending recipient change after timelock
+     *         (M-01 Round 6)
+     * @dev Reverts if timelock has not elapsed or no pending
+     *      change exists.
+     */
+    function applyRecipients()
+        external
+        onlyRole(ADMIN_ROLE)
+    {
+        if (pendingNewStakingPool == address(0)) {
+            revert NoPendingChange();
+        }
+        // solhint-disable-next-line not-rely-on-time
+        if (block.timestamp < recipientChangeTime) {
+            revert TimelockNotExpired();
+        }
+
+        stakingPool = pendingNewStakingPool;
+        protocolTreasury = pendingNewProtocolTreasury;
+        delete pendingNewStakingPool;
+        delete pendingNewProtocolTreasury;
+        delete recipientChangeTime;
 
         emit RecipientsUpdated(stakingPool, protocolTreasury);
     }
@@ -1055,26 +1175,61 @@ contract UnifiedFeeVault is
 
         _ossified = true;
         delete ossificationScheduledAt;
-        emit ContractOssified(msg.sender);
+        emit ContractOssified(_msgSender());
     }
 
     // ── In-Kind / Swap-to-XOM Admin Configuration ────────────────
 
     /**
-     * @notice Set the bridge mode for a specific token
-     * @dev IN_KIND (0) bridges the token as-is (default).
-     *      SWAP_TO_XOM (1) swaps to XOM before bridging.
-     * @param token ERC20 token whose mode to set
-     * @param mode Desired bridge mode
+     * @notice Propose a bridge mode change for a specific token
+     *         (M-03 Round 6)
+     * @dev Queues the change with a 48-hour timelock. Call
+     *      `applyTokenBridgeMode()` after the delay to apply.
+     *      Prevents instant bridge mode manipulation.
+     * @param token ERC20 token whose mode to change
+     * @param mode Proposed bridge mode
      */
-    function setTokenBridgeMode(
+    function proposeTokenBridgeMode(
         address token,
         BridgeMode mode
     ) external onlyRole(ADMIN_ROLE) {
         if (token == address(0)) revert ZeroAddress();
 
-        tokenBridgeMode[token] = mode;
-        emit TokenBridgeModeSet(token, mode);
+        pendingBridgeModeToken = token;
+        pendingBridgeMode = mode;
+        // solhint-disable-next-line not-rely-on-time
+        bridgeModeChangeTime = block.timestamp + RECIPIENT_CHANGE_DELAY;
+
+        emit BridgeModeProposed(token, mode, bridgeModeChangeTime);
+    }
+
+    /**
+     * @notice Apply pending bridge mode change after timelock
+     *         (M-03 Round 6)
+     * @dev Reverts if timelock has not elapsed or no pending
+     *      change exists.
+     */
+    function applyTokenBridgeMode()
+        external
+        onlyRole(ADMIN_ROLE)
+    {
+        if (pendingBridgeModeToken == address(0)) {
+            revert NoPendingChange();
+        }
+        // solhint-disable-next-line not-rely-on-time
+        if (block.timestamp < bridgeModeChangeTime) {
+            revert TimelockNotExpired();
+        }
+
+        tokenBridgeMode[pendingBridgeModeToken] = pendingBridgeMode;
+
+        emit TokenBridgeModeSet(
+            pendingBridgeModeToken, pendingBridgeMode
+        );
+
+        delete pendingBridgeModeToken;
+        delete pendingBridgeMode;
+        delete bridgeModeChangeTime;
     }
 
     /**
@@ -1125,16 +1280,49 @@ contract UnifiedFeeVault is
     }
 
     /**
-     * @notice Set the XOM token address (swap target)
-     * @param _xomToken OmniCoin ERC20 address
+     * @notice Propose a new XOM token address with timelock
+     *         (M-02 Round 6)
+     * @dev Queues the change with a 48-hour timelock. Call
+     *      `applyXomToken()` after the delay to apply.
+     *      Prevents instant swap target manipulation by a
+     *      compromised admin key.
+     * @param _xomToken Proposed OmniCoin ERC20 address
      */
-    function setXomToken(
+    function proposeXomToken(
         address _xomToken
     ) external onlyRole(ADMIN_ROLE) {
         if (_xomToken == address(0)) revert ZeroAddress();
 
-        xomToken = _xomToken;
-        emit XOMTokenUpdated(_xomToken);
+        pendingXomToken = _xomToken;
+        // solhint-disable-next-line not-rely-on-time
+        xomTokenChangeTime = block.timestamp + RECIPIENT_CHANGE_DELAY;
+
+        emit XOMTokenProposed(_xomToken, xomTokenChangeTime);
+    }
+
+    /**
+     * @notice Apply pending XOM token change after timelock
+     *         (M-02 Round 6)
+     * @dev Reverts if timelock has not elapsed or no pending
+     *      change exists.
+     */
+    function applyXomToken()
+        external
+        onlyRole(ADMIN_ROLE)
+    {
+        if (pendingXomToken == address(0)) {
+            revert NoPendingChange();
+        }
+        // solhint-disable-next-line not-rely-on-time
+        if (block.timestamp < xomTokenChangeTime) {
+            revert TimelockNotExpired();
+        }
+
+        xomToken = pendingXomToken;
+        delete pendingXomToken;
+        delete xomTokenChangeTime;
+
+        emit XOMTokenUpdated(xomToken);
     }
 
     /**

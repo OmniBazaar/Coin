@@ -26,18 +26,20 @@ import {IRWAPool} from "./interfaces/IRWAPool.sol";
  * Multi-Hop Routing:
  *   For paths longer than 2 tokens (e.g., A -> B -> C), each hop
  *   is executed sequentially through AMM.swap(). The router holds
- *   intermediate tokens between hops without unnecessary self-transfers.
- *   Balance deltas are measured on all hops to handle fee-on-transfer
- *   tokens correctly. The final output is verified against amountOutMin.
+ *   intermediate tokens between hops. Balance deltas are measured
+ *   on ALL hops (including the final hop) to handle fee-on-transfer
+ *   tokens correctly and ensure actual received amounts are used
+ *   (audit fix H-01/H-02). Intermediate hops verify the router's
+ *   balance rather than performing wasteful self-transfers. The
+ *   final output is verified against amountOutMin.
  *
- * Compliance Note:
- *   RWAAMM compliance checks verify msg.sender, which is this router
- *   contract (not the end user or the `to` recipient). For production
- *   use with regulated securities, the router address must be
- *   whitelisted in the compliance oracle, and integrators should
- *   implement additional off-chain compliance verification for the
- *   actual human user and final recipient. A future AMM upgrade may
- *   add an `onBehalfOf` parameter for on-chain end-user compliance.
+ * Compliance (Audit Fix C-01/C-02):
+ *   The router passes `_msgSender()` (the actual end user) as the
+ *   `onBehalfOf` parameter to all RWAAMM calls. The AMM verifies
+ *   compliance against this address rather than `msg.sender` (which
+ *   would resolve to this router contract). This ensures that
+ *   non-compliant users cannot trade regulated securities by routing
+ *   through this contract.
  *
  * Security Features:
  * - Reentrancy protection
@@ -217,6 +219,14 @@ contract RWARouter is ReentrancyGuard, ERC2771Context {
      *      self-transfer since the router already holds the tokens
      *      from the previous AMM.swap() output. The final output
      *      is verified against amountOutMin after all hops complete.
+     *
+     *      Audit M-02: Intermediate hops pass `amountOutMin = 0` to
+     *      AMM.swap(). Slippage protection is enforced only on the
+     *      final output via `amountOutMin`. This is standard Uniswap
+     *      V2 router behavior: per-hop minimums would over-constrain
+     *      multi-hop swaps and cause unnecessary reverts when the
+     *      total path output is acceptable. Users should set tight
+     *      `amountOutMin` values to limit total MEV extraction.
      * @param amountIn Exact input amount
      * @param amountOutMin Minimum output amount (slippage protection)
      * @param path Array of token addresses (swap route, min length 2)
@@ -243,21 +253,15 @@ contract RWARouter is ReentrancyGuard, ERC2771Context {
         amounts = new uint256[](path.length);
         amounts[0] = amountIn;
 
-        // Execute each hop through RWAAMM.
-        // Every hop uses the balance-delta pattern to handle
-        // fee-on-transfer tokens correctly on all hops, not
-        // just the first. The original caller is passed
-        // for compliance context in the event emission.
+        // Execute each hop through RWAAMM. Uses balance-delta on
+        // all hops for FOT token correctness. Passes actual user
+        // as onBehalfOf for compliance (audit fix C-01/C-02).
         for (uint256 i = 0; i < path.length - 1; ++i) {
-            // Determine recipient: next hop goes to router,
-            // last hop goes to final recipient
             address recipient = i < path.length - 2
-                ? address(this)
-                : to;
+                ? address(this) : to;
 
             if (i == 0) {
-                // First hop: transfer from user to router and
-                // measure actual received via balance delta
+                // First hop: transfer from user, measure via delta
                 uint256 balBefore = IERC20(path[i]).balanceOf(
                     address(this)
                 );
@@ -267,47 +271,42 @@ contract RWARouter is ReentrancyGuard, ERC2771Context {
                 uint256 actualReceived = IERC20(path[i]).balanceOf(
                     address(this)
                 ) - balBefore;
-
-                // Adjust for fee-on-transfer tokens
                 if (actualReceived < amounts[i]) {
                     amounts[i] = actualReceived;
                 }
             }
-            // Intermediate hops: router already holds tokens from
-            // previous AMM.swap() output -- no self-transfer needed
 
             IERC20(path[i]).forceApprove(address(AMM), amounts[i]);
 
-            // Route through AMM (compliance + fees + pause enforced)
-            IRWAAMM.SwapResult memory result = AMM.swap(
+            // Audit fix H-02: Measure balance-delta on ALL hops
+            // including the last one. The AMM sends output tokens to
+            // msg.sender (this router), so we always measure the
+            // router's balance change regardless of hop position.
+            // This correctly handles fee-on-transfer tokens and
+            // prevents using result.amountOut (the calculated, not
+            // actual, amount) for the final transfer.
+            uint256 outputBalBefore = IERC20(path[i + 1]).balanceOf(
+                address(this)
+            );
+
+            AMM.swap(
                 path[i],
                 path[i + 1],
                 amounts[i],
                 0, // Min checked at end for full path
-                deadline
+                deadline,
+                caller // onBehalfOf: actual end user
             );
 
-            // Measure actual output via balance delta to handle
-            // fee-on-transfer tokens on intermediate hops
-            uint256 outputBalBefore = (recipient != address(this))
-                ? 0
-                : IERC20(path[i + 1]).balanceOf(address(this));
-            // AMM.swap() has already transferred output to this
-            // contract (msg.sender of AMM call). For intermediate
-            // hops, verify via balance delta.
-            if (i < path.length - 2) {
-                uint256 actualOutput = IERC20(path[i + 1]).balanceOf(
-                    address(this)
-                ) - outputBalBefore;
-                amounts[i + 1] = actualOutput;
-            } else {
-                amounts[i + 1] = result.amountOut;
-            }
+            uint256 actualOutput = IERC20(path[i + 1]).balanceOf(
+                address(this)
+            ) - outputBalBefore;
+            amounts[i + 1] = actualOutput;
 
-            // Transfer output to final recipient on last hop
+            // Transfer to final recipient on last hop
             if (recipient != address(this)) {
                 IERC20(path[i + 1]).safeTransfer(
-                    recipient, amounts[i + 1]
+                    recipient, actualOutput
                 );
             }
         }
@@ -366,33 +365,64 @@ contract RWARouter is ReentrancyGuard, ERC2771Context {
             revert ExcessiveInputAmount(amounts[0], amountInMax);
         }
 
-        // Execute forward through AMM (same as swapExact)
+        // Execute forward through AMM (same as swapExact).
+        // Audit fix H-01: For intermediate hops (i > 0), verify the
+        // router holds sufficient tokens via balance check instead of
+        // doing a wasteful self-transfer. This prevents using residual
+        // tokens from unrelated operations and provides accurate
+        // accounting.
         for (uint256 i = 0; i < path.length - 1; ++i) {
             address recipient = i < path.length - 2
                 ? address(this)
                 : to;
 
-            IERC20(path[i]).safeTransferFrom(
-                i == 0 ? caller : address(this),
-                address(this),
-                amounts[i]
-            );
+            if (i == 0) {
+                // First hop: transfer from user to router
+                IERC20(path[i]).safeTransferFrom(
+                    caller, address(this), amounts[i]
+                );
+            } else {
+                // Audit fix H-01: Verify the router actually holds
+                // enough tokens from the previous hop's output.
+                // Do NOT do a self-transfer; instead check balance.
+                uint256 routerBal = IERC20(path[i]).balanceOf(
+                    address(this)
+                );
+                if (routerBal < amounts[i]) {
+                    revert InsufficientOutputAmount(
+                        routerBal, amounts[i]
+                    );
+                }
+            }
+
             IERC20(path[i]).forceApprove(address(AMM), amounts[i]);
 
-            IRWAAMM.SwapResult memory result = AMM.swap(
+            // Audit fix H-02: Measure balance-delta on ALL hops
+            // (including the last) to use actual received amounts
+            // rather than the calculated result.amountOut.
+            uint256 outputBalBefore = IERC20(path[i + 1]).balanceOf(
+                address(this)
+            );
+
+            // Route through AMM with end-user compliance
+            // (audit fix C-01/C-02: pass actual user, not router)
+            AMM.swap(
                 path[i],
                 path[i + 1],
                 amounts[i],
                 0,
-                deadline
+                deadline,
+                caller // onBehalfOf: actual end user
             );
 
-            // Update actual output (may differ slightly from quote)
-            amounts[i + 1] = result.amountOut;
+            uint256 actualOutput = IERC20(path[i + 1]).balanceOf(
+                address(this)
+            ) - outputBalBefore;
+            amounts[i + 1] = actualOutput;
 
             if (recipient != address(this)) {
                 IERC20(path[i + 1]).safeTransfer(
-                    recipient, result.amountOut
+                    recipient, actualOutput
                 );
             }
         }
@@ -470,7 +500,8 @@ contract RWARouter is ReentrancyGuard, ERC2771Context {
         IERC20(tokenA).forceApprove(address(AMM), amountADesired);
         IERC20(tokenB).forceApprove(address(AMM), amountBDesired);
 
-        // Delegate to AMM (compliance + pause enforced)
+        // Delegate to AMM with end-user compliance
+        // (audit fix C-01/C-02: pass actual user, not router)
         (amountA, amountB, liquidity) = AMM.addLiquidity(
             tokenA,
             tokenB,
@@ -478,7 +509,8 @@ contract RWARouter is ReentrancyGuard, ERC2771Context {
             amountBDesired,
             amountAMin,
             amountBMin,
-            deadline
+            deadline,
+            caller // onBehalfOf: actual end user
         );
 
         // Transfer LP tokens to recipient (AMM mints to msg.sender
@@ -548,14 +580,16 @@ contract RWARouter is ReentrancyGuard, ERC2771Context {
         );
         IERC20(pool).forceApprove(address(AMM), liquidity);
 
-        // Delegate to AMM (compliance enforced)
+        // Delegate to AMM with end-user compliance
+        // (audit fix C-01/C-02: pass actual user, not router)
         (amountA, amountB) = AMM.removeLiquidity(
             tokenA,
             tokenB,
             liquidity,
             amountAMin,
             amountBMin,
-            deadline
+            deadline,
+            caller // onBehalfOf: actual end user
         );
 
         // Transfer underlying to final recipient (AMM sends to
@@ -708,6 +742,46 @@ contract RWARouter is ReentrancyGuard, ERC2771Context {
         address tokenB
     ) external view returns (address pool) {
         return AMM.getPool(tokenA, tokenB);
+    }
+
+    // ========================================================================
+    // DUST RECOVERY
+    // ========================================================================
+
+    /// @notice Emitted when residual tokens are swept from the router.
+    /// @param token Token address swept.
+    /// @param to Recipient of swept tokens.
+    /// @param amount Amount swept.
+    event TokensSwept(
+        address indexed token,
+        address indexed to,
+        uint256 indexed amount
+    );
+
+    /**
+     * @notice Sweep residual token dust from the router (audit fix M-01).
+     * @dev Routers can accumulate small dust amounts from rounding in
+     *      swap and liquidity operations. For RWA tokens, holding
+     *      regulated securities without a specific owner creates a
+     *      compliance issue. This function allows anyone to recover
+     *      dust to a specified recipient. Since the router should
+     *      never hold user funds between transactions, this is safe
+     *      as a permissionless function.
+     * @param token ERC-20 token address to sweep.
+     * @param to Recipient address for swept tokens.
+     */
+    function sweepTokens(
+        address token,
+        address to
+    ) external nonReentrant {
+        if (token == address(0)) revert ZeroAddress();
+        if (to == address(0)) revert ZeroAddress();
+        uint256 balance = IERC20(token).balanceOf(address(this));
+        if (balance == 0) revert ZeroAmount();
+
+        IERC20(token).safeTransfer(to, balance);
+
+        emit TokensSwept(token, to, balance);
     }
 
     // ========================================================================

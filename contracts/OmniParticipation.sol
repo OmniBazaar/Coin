@@ -192,6 +192,10 @@ contract OmniParticipation is // solhint-disable-line max-states-count
     /// @dev Prevents a compromised verifier from mass-inflating sybil scores
     uint256 public constant MAX_VERIFIER_CHANGES_PER_DAY = 50;
 
+    /// @notice M-02: Maximum aggregate score changes across all verifiers per day
+    /// @dev Prevents coordinated attack via multiple VERIFIER_ROLE holders
+    uint256 public constant MAX_GLOBAL_CHANGES_PER_DAY = 200;
+
     /// @notice ATK-H04: Maximum delta for listing count per call
     /// @dev Prevents a verifier from instantly setting 100K listings
     uint256 public constant MAX_LISTING_COUNT_DELTA = 1000;
@@ -289,6 +293,11 @@ contract OmniParticipation is // solhint-disable-line max-states-count
     ///      Day number = block.timestamp / 1 days (86400 seconds).
     mapping(address => mapping(uint256 => uint256))
         private _verifierDailyChanges;
+
+    /// @notice M-02: Global daily change counter across all verifiers
+    /// @dev Maps day number => total changes by all verifiers that day.
+    ///      Prevents coordinated attack via multiple VERIFIER_ROLE holders.
+    mapping(uint256 => uint256) private _globalDailyChanges;
 
     /// @notice Score decay period (90 days of inactivity = 1 point decay)
     uint256 public constant DECAY_PERIOD = 90 days;
@@ -466,6 +475,9 @@ contract OmniParticipation is // solhint-disable-line max-states-count
     /// @notice ATK-H04: Verifier exceeded daily score change limit
     error DailyVerifierLimitExceeded();
 
+    /// @notice M-02: Global daily verifier change limit exceeded
+    error DailyGlobalLimitExceeded();
+
     /// @notice ATK-H04: Listing count change exceeds max delta per call
     /// @param delta The attempted change amount
     /// @param maxDelta The maximum allowed delta
@@ -615,18 +627,20 @@ contract OmniParticipation is // solhint-disable-line max-states-count
             return;
         }
 
-        // Calculate average star rating from counters
-        uint256 avgStars = verifiedStarSum[user] / vCount;
+        // M-01: Fixed-point arithmetic for gradient scaling between star levels.
+        // Multiply by 1000 for 3 decimal places of precision before dividing.
+        uint256 avgStars1000 = (verifiedStarSum[user] * 1000) / vCount;
 
-        // Convert to -10 to +10 scale
-        // 1 star = -10, 2 stars = -5, 3 stars = 0, 4 stars = +5, 5 stars = +10
-        int8 newReputation;
-        if (avgStars == 1) newReputation = -10;
-        else if (avgStars == 2) newReputation = -5;
-        else if (avgStars == 3) newReputation = 0;
-        else if (avgStars == 4) newReputation = 5;
-        else newReputation = 10;
+        // M-01: Linear interpolation: map 1000 (1 star) to -10, 5000 (5 stars) to +10.
+        // Formula: reputation = (avgStars1000 - 3000) / 200
+        // At 1000: (1000-3000)/200 = -10
+        // At 3000: (3000-3000)/200 = 0
+        // At 5000: (5000-3000)/200 = +10
+        int256 reputation = (int256(avgStars1000) - 3000) / 200;
+        if (reputation < -10) reputation = -10;
+        if (reputation > 10) reputation = 10;
 
+        int8 newReputation = int8(reputation);
         components[user].marketplaceReputation = newReputation;
         components[user].lastUpdate = block.timestamp; // solhint-disable-line not-rely-on-time
 
@@ -652,18 +666,20 @@ contract OmniParticipation is // solhint-disable-line max-states-count
      *      updatePublisherActivity(): 100/1K/10K/100K listings.
      */
     function submitServiceNodeHeartbeat() external {
-        if (!registration.isRegistered(msg.sender)) revert NotRegistered();
+        // H-01 audit fix: use _msgSender() for ERC-2771 meta-tx support
+        address caller = _msgSender();
+        if (!registration.isRegistered(caller)) revert NotRegistered();
         // ATK-M22: Only validators can submit service node heartbeats.
         // Prevents any registered user from inflating publisher score.
-        if (!omniCore.isValidator(msg.sender)) revert NotServiceNode();
+        if (!omniCore.isValidator(caller)) revert NotServiceNode();
 
-        lastServiceNodeHeartbeat[msg.sender] = block.timestamp; // solhint-disable-line not-rely-on-time
+        lastServiceNodeHeartbeat[caller] = block.timestamp; // solhint-disable-line not-rely-on-time
 
         // Mark as operational if heartbeat within timeout
-        operationalServiceNodes[msg.sender] = true;
+        operationalServiceNodes[caller] = true;
 
         // M-02: Graduated scoring based on listing count (not flat 4)
-        uint256 listings = publisherListingCount[msg.sender];
+        uint256 listings = publisherListingCount[caller];
         // solhint-disable gas-strict-inequalities
         uint8 score;
         if (listings >= 100_000) score = 4;
@@ -673,12 +689,12 @@ contract OmniParticipation is // solhint-disable-line max-states-count
         else score = 0;
         // solhint-enable gas-strict-inequalities
 
-        components[msg.sender].publisherActivity = score;
-        components[msg.sender].lastUpdate = block.timestamp; // solhint-disable-line not-rely-on-time
+        components[caller].publisherActivity = score;
+        components[caller].lastUpdate = block.timestamp; // solhint-disable-line not-rely-on-time
 
-        emit ServiceNodeHeartbeat(msg.sender, block.timestamp); // solhint-disable-line not-rely-on-time
+        emit ServiceNodeHeartbeat(caller, block.timestamp); // solhint-disable-line not-rely-on-time
         emit ScoreComponentUpdated(
-            msg.sender,
+            caller,
             "publisherActivity",
             int256(uint256(score))
         );
@@ -763,7 +779,7 @@ contract OmniParticipation is // solhint-disable-line max-states-count
         publisherListingCount[user] = count;
 
         emit PublisherListingCountUpdated(
-            user, currentCount, count, msg.sender
+            user, currentCount, count, _msgSender()
         );
     }
 
@@ -1117,27 +1133,29 @@ contract OmniParticipation is // solhint-disable-line max-states-count
      * @dev Should be called every ~10 epochs (20 seconds)
      */
     function submitValidatorHeartbeat() external {
-        if (!omniCore.isValidator(msg.sender)) revert NotValidator();
+        // H-01 audit fix: use _msgSender() for ERC-2771 meta-tx support
+        address caller = _msgSender();
+        if (!omniCore.isValidator(caller)) revert NotValidator();
 
-        uint256 lastBeat = lastValidatorHeartbeat[msg.sender];
-        lastValidatorHeartbeat[msg.sender] = block.timestamp; // solhint-disable-line not-rely-on-time
+        uint256 lastBeat = lastValidatorHeartbeat[caller];
+        lastValidatorHeartbeat[caller] = block.timestamp; // solhint-disable-line not-rely-on-time
 
         // Update uptime tracking
         if (lastBeat > 0) {
             // solhint-disable-next-line not-rely-on-time
             uint256 elapsedBlocks = (block.timestamp - lastBeat) / 2; // 2 second blocks
-            totalBlocks[msg.sender] += elapsedBlocks;
+            totalBlocks[caller] += elapsedBlocks;
 
             // Assume online if heartbeat within expected window
             // solhint-disable-next-line not-rely-on-time,gas-strict-inequalities
             if (block.timestamp - lastBeat <= VALIDATOR_TIMEOUT) {
-                uptimeBlocks[msg.sender] += elapsedBlocks;
+                uptimeBlocks[caller] += elapsedBlocks;
             }
         }
 
-        _updateReliability(msg.sender);
+        _updateReliability(caller);
 
-        emit ValidatorHeartbeat(msg.sender, block.timestamp); // solhint-disable-line not-rely-on-time
+        emit ValidatorHeartbeat(caller, block.timestamp); // solhint-disable-line not-rely-on-time
     }
 
     /**
@@ -1370,23 +1388,40 @@ contract OmniParticipation is // solhint-disable-line max-states-count
     // ═══════════════════════════════════════════════════════════════════════
 
     /**
-     * @notice Enforce per-verifier daily rate limit on score changes
+     * @notice Enforce per-verifier and global daily rate limits on score changes
      * @dev ATK-H04: Prevents a compromised VERIFIER_ROLE holder from
      *      mass-inflating sybil accounts' scores in a single day.
      *      Tracks changes per verifier per calendar day (UTC).
-     *      Reverts with DailyVerifierLimitExceeded if limit reached.
+     *      M-02: Also enforces a global daily cap across all verifiers,
+     *      preventing coordinated attacks via multiple VERIFIER_ROLE holders.
+     *      Reverts with DailyVerifierLimitExceeded if per-verifier limit reached.
+     *      Reverts with DailyGlobalLimitExceeded if global limit reached.
      */
     function _enforceVerifierRateLimit() internal {
+        // H-01 audit fix: use _msgSender() for ERC-2771 meta-tx support.
+        // This ensures the rate limit is tracked against the actual verifier
+        // address, not the trusted forwarder, preventing rate limit bypass.
+        address verifier = _msgSender();
         // solhint-disable-next-line not-rely-on-time
         uint256 today = block.timestamp / 1 days;
+
+        // Per-verifier daily limit
         uint256 dailyCount =
-            _verifierDailyChanges[msg.sender][today];
+            _verifierDailyChanges[verifier][today];
         // solhint-disable-next-line gas-strict-inequalities
         if (dailyCount >= MAX_VERIFIER_CHANGES_PER_DAY) {
             revert DailyVerifierLimitExceeded();
         }
-        _verifierDailyChanges[msg.sender][today] =
+        _verifierDailyChanges[verifier][today] =
             dailyCount + 1;
+
+        // M-02: Global daily limit across all verifiers
+        uint256 globalCount = _globalDailyChanges[today];
+        // solhint-disable-next-line gas-strict-inequalities
+        if (globalCount >= MAX_GLOBAL_CHANGES_PER_DAY) {
+            revert DailyGlobalLimitExceeded();
+        }
+        _globalDailyChanges[today] = globalCount + 1;
     }
 
     /**
@@ -1465,7 +1500,18 @@ contract OmniParticipation is // solhint-disable-line max-states-count
             comp.forumActivity,
             comp.lastUpdate
         );
+        // M-03: Apply decay to positive reliability scores. A validator who
+        // has not sent a heartbeat should see reliability decay toward 0.
+        // Negative reliability is not decayed (penalties persist until reset).
         reliability = comp.reliability;
+        if (reliability > 0) {
+            uint8 absReliability = uint8(int8(reliability));
+            absReliability = _applyDecay(
+                absReliability,
+                comp.lastUpdate
+            );
+            reliability = int8(absReliability);
+        }
 
         // Sum all components
         int256 total = int256(uint256(kycTrust)) +
@@ -1623,9 +1669,10 @@ contract OmniParticipation is // solhint-disable-line max-states-count
      * @dev Prevents storage collisions when new state variables are
      *      added in future implementations. Follows the OpenZeppelin
      *      upgradeable contract pattern.
-     *      Reduced from 50 to 48 to accommodate:
+     *      Reduced from 50 to 47 to accommodate:
      *      - _ossified (bool, 1 slot)
      *      - _verifierDailyChanges (mapping, 1 slot) [ATK-H04]
+     *      - _globalDailyChanges (mapping, 1 slot) [M-02]
      */
-    uint256[48] private __gap;
+    uint256[47] private __gap;
 }

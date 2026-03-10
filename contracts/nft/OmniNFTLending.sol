@@ -280,6 +280,10 @@ contract OmniNFTLending is
     ///      (fee-on-transfer token protection).
     error TransferAmountMismatch();
 
+    /// @dev Loan has expired past the grace period and can no longer
+    ///      be repaid (audit fix M-02). The lender may now liquidate.
+    error LoanExpired();
+
     // ── Constructor ──────────────────────────────────────────────────────
 
     /**
@@ -456,6 +460,17 @@ contract OmniNFTLending is
         if (loan.repaid || loan.liquidated) revert LoanNotActive();
         address caller = _msgSender();
         if (caller != loan.borrower) revert NotBorrower();
+
+        // Audit fix M-02: Block repayment after the grace period has
+        // ended. Once the lender can liquidate, the borrower cannot
+        // repay to prevent front-running race conditions.
+        // solhint-disable-next-line not-rely-on-time
+        if (
+            block.timestamp
+                > loan.dueTime + LIQUIDATION_GRACE_PERIOD
+        ) {
+            revert LoanExpired();
+        }
 
         loan.repaid = true;
 
@@ -722,6 +737,14 @@ contract OmniNFTLending is
      * @dev C-02: Verifies actual received amount matches expected.
      *      Reverts with TransferAmountMismatch if a fee-on-transfer token
      *      causes less than the expected amount to arrive.
+     *
+     *      Audit M-01: Fee-on-transfer (FOT) tokens are intentionally NOT
+     *      supported. The strict equality check is a deliberate design
+     *      choice: in a lending protocol, FOT tokens create complex
+     *      accounting issues where the principal returned on repayment
+     *      does not match the principal deposited, potentially causing
+     *      insolvency. Tokens such as PAXG or STA will revert at offer
+     *      creation. This is the safest approach for a lending protocol.
      * @param token ERC-20 token to transfer
      * @param from Sender address
      * @param amount Expected transfer amount

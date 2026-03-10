@@ -41,17 +41,39 @@ contract OmniFeeRouter is Ownable2Step, ReentrancyGuard, ERC2771Context {
     using SafeERC20 for IERC20;
 
     // -----------------------------------------------------------------------
-    // State Variables
+    // Constants & Immutables
     // -----------------------------------------------------------------------
 
     /// @notice Basis-point denominator constant.
     uint256 private constant BPS_DENOMINATOR = 10_000;
 
-    /// @notice Address that receives all collected fees.
-    address public feeCollector;
+    /// @notice Timelock delay for fee collector changes (24 hours)
+    uint256 public constant FEE_COLLECTOR_DELAY = 24 hours;
+
+    /// @notice Minimum total swap amount (M-03 Round 6)
+    /// @dev Prevents dust swaps that result in zero fees
+    uint256 public constant MIN_SWAP_AMOUNT = 1e15;
 
     /// @notice Maximum fee in basis points (e.g., 100 = 1.00%).
     uint256 public immutable maxFeeBps; // solhint-disable-line immutable-vars-naming
+
+    // -----------------------------------------------------------------------
+    // State Variables
+    // -----------------------------------------------------------------------
+
+    /// @notice Address that receives all collected fees.
+    address public feeCollector;
+
+    /// @notice Allowlist of approved external DEX routers (M-01 Round 6)
+    /// @dev Restricts which contracts can be called via swapWithFee()
+    ///      to prevent residual attack surface from arbitrary calldata.
+    mapping(address => bool) public allowedRouters;
+
+    /// @notice Pending fee collector for timelock (M-02 Round 6)
+    address public pendingFeeCollector;
+
+    /// @notice Timestamp when pending fee collector can be applied
+    uint256 public feeCollectorChangeTime;
 
     // -----------------------------------------------------------------------
     // Events
@@ -88,6 +110,22 @@ contract OmniFeeRouter is Ownable2Step, ReentrancyGuard, ERC2771Context {
         address indexed newCollector
     );
 
+    /// @notice Emitted when a router's allowlist status changes (M-01 Round 6).
+    /// @param router The router address.
+    /// @param allowed Whether the router is now allowed.
+    event RouterAllowlistUpdated(
+        address indexed router,
+        bool indexed allowed
+    );
+
+    /// @notice Emitted when a fee collector change is proposed (M-02 Round 6).
+    /// @param proposedCollector Proposed new fee collector address.
+    /// @param effectiveTime When the change can be applied.
+    event FeeCollectorProposed(
+        address indexed proposedCollector,
+        uint256 indexed effectiveTime
+    );
+
     // -----------------------------------------------------------------------
     // Custom Errors
     // -----------------------------------------------------------------------
@@ -118,6 +156,18 @@ contract OmniFeeRouter is Ownable2Step, ReentrancyGuard, ERC2771Context {
 
     /// @notice Thrown when the transaction deadline has passed (M-01).
     error DeadlineExpired();
+
+    /// @notice Thrown when the router is not on the allowlist (M-01 Round 6).
+    error RouterNotAllowed();
+
+    /// @notice Thrown when the timelock has not yet elapsed (M-02 Round 6).
+    error TimelockNotExpired();
+
+    /// @notice Thrown when no pending fee collector change exists (M-02 Round 6).
+    error NoPendingChange();
+
+    /// @notice Thrown when swap amount is below minimum (M-03 Round 6).
+    error AmountTooSmall();
 
     // -----------------------------------------------------------------------
     // Constructor
@@ -230,19 +280,59 @@ contract OmniFeeRouter is Ownable2Step, ReentrancyGuard, ERC2771Context {
     }
 
     /**
-     * @notice Update the fee collector address
-     * @param _feeCollector New fee collector address
-     * @dev Pioneer Phase: no timelock. Will be replaced with
-     *      timelocked version before multi-sig handoff.
+     * @notice Propose a new fee collector address with timelock
+     *         (M-02 Round 6)
+     * @param _feeCollector Proposed new fee collector address
+     * @dev Queues the change with a 24-hour timelock. Call
+     *      `applyFeeCollector()` after the delay to apply.
      */
-    function setFeeCollector(
+    function proposeFeeCollector(
         address _feeCollector
     ) external onlyOwner {
         if (_feeCollector == address(0)) revert InvalidFeeCollector();
 
+        pendingFeeCollector = _feeCollector;
+        // solhint-disable-next-line not-rely-on-time
+        feeCollectorChangeTime = block.timestamp + FEE_COLLECTOR_DELAY;
+        emit FeeCollectorProposed(_feeCollector, feeCollectorChangeTime);
+    }
+
+    /**
+     * @notice Apply the pending fee collector change after timelock
+     *         (M-02 Round 6)
+     * @dev Reverts if timelock has not elapsed or no pending change
+     *      exists.
+     */
+    function applyFeeCollector() external onlyOwner {
+        if (pendingFeeCollector == address(0)) {
+            revert NoPendingChange();
+        }
+        // solhint-disable-next-line not-rely-on-time
+        if (block.timestamp < feeCollectorChangeTime) {
+            revert TimelockNotExpired();
+        }
+
         address oldCollector = feeCollector;
-        feeCollector = _feeCollector;
-        emit FeeCollectorUpdated(oldCollector, _feeCollector);
+        feeCollector = pendingFeeCollector;
+        delete pendingFeeCollector;
+        delete feeCollectorChangeTime;
+        emit FeeCollectorUpdated(oldCollector, feeCollector);
+    }
+
+    /**
+     * @notice Add or remove a router from the allowlist (M-01 Round 6)
+     * @param router Address of the external DEX router
+     * @param allowed Whether the router is allowed
+     * @dev Only allowlisted routers can be called via swapWithFee().
+     */
+    function setRouterAllowed(
+        address router,
+        bool allowed
+    ) external onlyOwner {
+        if (router == address(0)) revert InvalidRouterAddress();
+
+        allowedRouters[router] = allowed;
+        emit RouterAllowlistUpdated(router, allowed);
     }
 
     /**
@@ -265,6 +355,56 @@ contract OmniFeeRouter is Ownable2Step, ReentrancyGuard, ERC2771Context {
      */
     function renounceOwnership() public pure override {
         revert InvalidFeeCollector();
+    }
+
+    // -----------------------------------------------------------------------
+    // ERC2771Context Overrides (internal view -- before private per style)
+    // -----------------------------------------------------------------------
+
+    /**
+     * @notice Resolve _msgSender between Context (via Ownable)
+     *         and ERC2771Context
+     * @dev ERC2771Context overrides _msgSender() to extract the
+     *      original signer from trusted-forwarder calldata.
+     * @return sender The original transaction signer
+     */
+    function _msgSender()
+        internal
+        view
+        override(Context, ERC2771Context)
+        returns (address sender)
+    {
+        return ERC2771Context._msgSender();
+    }
+
+    /**
+     * @notice Resolve _msgData between Context (via Ownable)
+     *         and ERC2771Context
+     * @return The original calldata (stripped of appended
+     *         sender when forwarded)
+     */
+    function _msgData()
+        internal
+        view
+        override(Context, ERC2771Context)
+        returns (bytes calldata)
+    {
+        return ERC2771Context._msgData();
+    }
+
+    /**
+     * @notice Resolve _contextSuffixLength between Context
+     *         and ERC2771Context
+     * @return Length of the context suffix (20 bytes when
+     *         called via trusted forwarder, 0 otherwise)
+     */
+    function _contextSuffixLength()
+        internal
+        view
+        override(Context, ERC2771Context)
+        returns (uint256)
+    {
+        return ERC2771Context._contextSuffixLength();
     }
 
     // -----------------------------------------------------------------------
@@ -348,6 +488,10 @@ contract OmniFeeRouter is Ownable2Step, ReentrancyGuard, ERC2771Context {
         if (routerAddress.code.length == 0) {
             revert InvalidRouterAddress();
         }
+        // M-01 Round 6: Only allowlisted routers can be called
+        if (!allowedRouters[routerAddress]) {
+            revert RouterNotAllowed();
+        }
     }
 
     /**
@@ -361,6 +505,8 @@ contract OmniFeeRouter is Ownable2Step, ReentrancyGuard, ERC2771Context {
         uint256 feeAmount
     ) private view {
         if (totalAmount == 0) revert ZeroAmount();
+        // M-03 Round 6: Reject dust amounts that round fee to zero
+        if (totalAmount < MIN_SWAP_AMOUNT) revert AmountTooSmall();
         if (feeAmount > totalAmount) {
             revert FeeExceedsTotal(feeAmount, totalAmount);
         }
@@ -384,56 +530,5 @@ contract OmniFeeRouter is Ownable2Step, ReentrancyGuard, ERC2771Context {
         if (inputToken == address(0)) revert InvalidTokenAddress();
         if (outputToken == address(0)) revert InvalidTokenAddress();
         if (inputToken == outputToken) revert InvalidTokenAddress();
-    }
-
-    // -----------------------------------------------------------------------
-    // ERC2771Context Overrides
-    // (resolve Context vs ERC2771Context diamond)
-    // -----------------------------------------------------------------------
-
-    /**
-     * @notice Resolve _msgSender between Context (via Ownable)
-     *         and ERC2771Context
-     * @dev ERC2771Context overrides _msgSender() to extract the
-     *      original signer from trusted-forwarder calldata.
-     * @return sender The original transaction signer
-     */
-    function _msgSender()
-        internal
-        view
-        override(Context, ERC2771Context)
-        returns (address sender)
-    {
-        return ERC2771Context._msgSender();
-    }
-
-    /**
-     * @notice Resolve _msgData between Context (via Ownable)
-     *         and ERC2771Context
-     * @return The original calldata (stripped of appended
-     *         sender when forwarded)
-     */
-    function _msgData()
-        internal
-        view
-        override(Context, ERC2771Context)
-        returns (bytes calldata)
-    {
-        return ERC2771Context._msgData();
-    }
-
-    /**
-     * @notice Resolve _contextSuffixLength between Context
-     *         and ERC2771Context
-     * @return Length of the context suffix (20 bytes when
-     *         called via trusted forwarder, 0 otherwise)
-     */
-    function _contextSuffixLength()
-        internal
-        view
-        override(Context, ERC2771Context)
-        returns (uint256)
-    {
-        return ERC2771Context._contextSuffixLength();
     }
 }

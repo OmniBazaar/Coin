@@ -125,6 +125,12 @@ contract LiquidityMining is ReentrancyGuard, Ownable2Step, Pausable, ERC2771Cont
     ///      safety cap, not a practical operational limit.
     uint256 public constant MAX_REWARD_PER_SECOND = 1e24;
 
+    /// @notice Minimum staking duration before withdrawal is allowed
+    /// @dev H-01 Round 6: prevents flash-stake reward extraction where
+    ///      an attacker stakes and withdraws within the same block to
+    ///      capture rewards without meaningful time commitment.
+    uint256 public constant MIN_STAKE_DURATION = 1 days;
+
     // ============ Immutables ============
 
     /// @notice XOM reward token used to distribute staking rewards
@@ -154,7 +160,23 @@ contract LiquidityMining is ReentrancyGuard, Ownable2Step, Pausable, ERC2771Cont
     uint256 public emergencyWithdrawFeeBps;
 
     /// @notice Total XOM committed to users (pending immediate + unvested)
+    /// @dev M-01 Round 6 accounting note: totalCommittedRewards may drift
+    ///      slightly above the actual sum of user obligations due to
+    ///      rounding errors in the vesting append path. Each append
+    ///      operation can introduce up to 1 wei of conservative drift
+    ///      (over-committing). Over thousands of operations, the
+    ///      cumulative drift could reach a few thousand wei -- negligible
+    ///      in value terms. The drift is always in the safe direction:
+    ///      the contract holds slightly more XOM than necessary, never
+    ///      less. The owner's withdrawRewards() function can only
+    ///      withdraw excess above totalCommittedRewards, so this
+    ///      locked dust is inaccessible but does not affect solvency.
     uint256 public totalCommittedRewards;
+
+    /// @notice Timestamp of user's most recent stake per pool
+    /// @dev H-01 Round 6: tracks when each user last staked to enforce
+    ///      MIN_STAKE_DURATION before withdrawal is permitted.
+    mapping(uint256 => mapping(address => uint256)) public stakeTimestamp;
 
     // ============ Events ============
 
@@ -274,6 +296,25 @@ contract LiquidityMining is ReentrancyGuard, Ownable2Step, Pausable, ERC2771Cont
         address indexed newRecipient
     );
 
+    /* solhint-disable gas-indexed-events */
+
+    /// @notice Emitted when totalCommittedRewards clamping occurs during
+    ///         emergency withdrawal, indicating accounting drift
+    /// @dev M-02 Round 6: provides observability when forfeited rewards
+    ///      exceed totalCommittedRewards, which should not happen under
+    ///      normal operation but may occur due to rounding drift (M-01).
+    ///      Parameters are not indexed because filtering by numeric
+    ///      values is less useful than filtering by address, and this
+    ///      event is expected to be extremely rare.
+    /// @param totalCommitted The totalCommittedRewards value at the time
+    /// @param forfeited The calculated forfeited amount that exceeded it
+    event CommittedRewardsDrift(
+        uint256 totalCommitted,
+        uint256 forfeited
+    );
+
+    /* solhint-enable gas-indexed-events */
+
     // ============ Errors ============
 
     /// @notice Thrown when pool doesn't exist
@@ -299,6 +340,9 @@ contract LiquidityMining is ReentrancyGuard, Ownable2Step, Pausable, ERC2771Cont
 
     /// @notice Thrown when withdrawing more than available uncommitted rewards
     error InsufficientRewards();
+
+    /// @notice Thrown when withdrawal is attempted before MIN_STAKE_DURATION
+    error MinStakeDurationNotMet();
 
     // ============ Constructor ============
 
@@ -508,6 +552,10 @@ contract LiquidityMining is ReentrancyGuard, Ownable2Step, Pausable, ERC2771Cont
         user.rewardDebt =
             (user.amount * pool.accRewardPerShare) / REWARD_PRECISION;
 
+        // H-01 Round 6: record stake timestamp for MIN_STAKE_DURATION
+        // solhint-disable-next-line not-rely-on-time
+        stakeTimestamp[poolId][caller] = block.timestamp;
+
         // Update pool total
         pool.totalStaked += received;
 
@@ -533,6 +581,16 @@ contract LiquidityMining is ReentrancyGuard, Ownable2Step, Pausable, ERC2771Cont
         UserStake storage user = userStakes[poolId][caller];
 
         if (user.amount < amount) revert InsufficientStake();
+
+        // H-01 Round 6: enforce minimum staking duration to prevent
+        // flash-stake reward extraction
+        if (
+            // solhint-disable-next-line not-rely-on-time
+            block.timestamp
+                < stakeTimestamp[poolId][caller] + MIN_STAKE_DURATION
+        ) {
+            revert MinStakeDurationNotMet();
+        }
 
         _updatePool(poolId);
 
@@ -676,17 +734,21 @@ contract LiquidityMining is ReentrancyGuard, Ownable2Step, Pausable, ERC2771Cont
         if (amount == 0) revert InsufficientStake();
 
         // Calculate forfeited rewards and decrement committed tracker.
-        // Use min(forfeited, totalCommittedRewards) to partially
-        // correct the tracker rather than skipping entirely when
-        // totalCommittedRewards < forfeited due to accounting drift.
+        // M-02 Round 6: emit CommittedRewardsDrift when clamping occurs
+        // to provide observability for accounting anomalies rather than
+        // silently masking them.
         uint256 forfeited = user.pendingImmediate +
             user.vestingTotal -
             user.vestingClaimed;
         if (forfeited > 0) {
-            uint256 decrement = forfeited > totalCommittedRewards
-                ? totalCommittedRewards
-                : forfeited;
-            totalCommittedRewards -= decrement;
+            if (forfeited > totalCommittedRewards) {
+                emit CommittedRewardsDrift(
+                    totalCommittedRewards, forfeited
+                );
+                totalCommittedRewards = 0;
+            } else {
+                totalCommittedRewards -= forfeited;
+            }
         }
 
         // Calculate fee

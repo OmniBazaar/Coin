@@ -35,6 +35,12 @@ error ZeroBaseFee();
 /// @notice Both recipient addresses are zero (no-op)
 error NoRecipientsProvided();
 
+/// @notice Recipient update timelock has not elapsed
+error RecipientTimelockActive();
+
+/// @notice No recipient update has been scheduled
+error NoRecipientUpdateScheduled();
+
 /**
  * @title OmniChatFee
  * @author OmniBazaar Team
@@ -48,7 +54,7 @@ error NoRecipientsProvided();
  * Features:
  * - Pay-per-message: user calls payMessageFee(channelId)
  * - Free tier: first 20 messages/month tracked on-chain
- * - Fee distribution: 70% validator, 20% staking pool, 10% ODDAO
+ * - Fee distribution: 70% Validator, 20% Staking Pool, 10% ODDAO
  * - Proof of payment: hasValidPayment() for validator verification
  * - Bulk messaging: 10x fee for broadcast (anti-spam, always paid)
  * - Monthly reset: based on block.timestamp month boundaries
@@ -74,14 +80,16 @@ contract OmniChatFee is ReentrancyGuard, Ownable2Step, ERC2771Context {
     /// @notice Bulk message fee multiplier (10x)
     uint256 public constant BULK_FEE_MULTIPLIER = 10;
 
-    /// @notice Fee split: ODDAO treasury (7000 = 70%)
-    uint256 public constant ODDAO_SHARE = 7000;
+    /// @notice Fee split: validator hosting the channel (7000 = 70%)
+    /// @dev M-01 Round 6: corrected from ODDAO to validator per
+    ///      documented tokenomics (CLAUDE.md Chat Fees section)
+    uint256 public constant VALIDATOR_SHARE = 7000;
 
     /// @notice Fee split: staking pool (2000 = 20%)
     uint256 public constant STAKING_SHARE = 2000;
 
-    /// @notice Fee split: protocol treasury (1000 = 10%)
-    uint256 public constant PROTOCOL_SHARE = 1000;
+    /// @notice Fee split: ODDAO treasury (1000 = 10%)
+    uint256 public constant ODDAO_SHARE = 1000;
 
     /// @notice Basis points denominator
     uint256 private constant BPS = 10_000;
@@ -93,6 +101,13 @@ contract OmniChatFee is ReentrancyGuard, Ownable2Step, ERC2771Context {
     /// @dev Prevents precision loss when fee splits round to zero
     uint256 public constant MIN_FEE = 1e15;
 
+    /// @notice Timelock delay for recipient address changes (24 hours)
+    /// @dev M-02 Round 6: prevents a compromised owner key from
+    ///      immediately redirecting all fee revenue. Gives the
+    ///      community 24 hours to detect and react to malicious
+    ///      recipient changes.
+    uint256 public constant RECIPIENT_TIMELOCK = 24 hours;
+
     // ══════════════════════════════════════════════════════════════════
     //                          STATE VARIABLES
     // ══════════════════════════════════════════════════════════════════
@@ -103,10 +118,10 @@ contract OmniChatFee is ReentrancyGuard, Ownable2Step, ERC2771Context {
     /// @notice Staking pool address (receives 20%)
     address public stakingPool;
 
-    /// @notice ODDAO treasury (receives 70%)
+    /// @notice ODDAO treasury (receives 10%)
     address public oddaoTreasury;
 
-    /// @notice Protocol treasury (receives 10%)
+    /// @notice Protocol treasury (legacy, kept for interface compat)
     address public protocolTreasury;
 
     /// @notice Base fee per message in XOM (18 decimals)
@@ -126,6 +141,16 @@ contract OmniChatFee is ReentrancyGuard, Ownable2Step, ERC2771Context {
 
     /// @notice Total fees collected
     uint256 public totalFeesCollected;
+
+    /// @notice Pending staking pool address for timelocked update
+    address public pendingStakingPool;
+
+    /// @notice Pending ODDAO treasury address for timelocked update
+    address public pendingOddaoTreasury;
+
+    /// @notice Timestamp when recipient update was scheduled
+    /// @dev Zero means no update is pending
+    uint256 public recipientUpdateScheduledAt;
 
     // ══════════════════════════════════════════════════════════════════
     //                              EVENTS
@@ -172,6 +197,19 @@ contract OmniChatFee is ReentrancyGuard, Ownable2Step, ERC2771Context {
         address protocolTreasury
     );
 
+    /// @notice Emitted when a recipient update is scheduled
+    /// @param newStakingPool Pending staking pool address
+    /// @param newOddaoTreasury Pending ODDAO treasury address
+    /// @param readyAt Timestamp when the update can be executed
+    event RecipientUpdateScheduled(
+        address newStakingPool,
+        address newOddaoTreasury,
+        uint256 readyAt
+    );
+
+    /// @notice Emitted when a scheduled recipient update is cancelled
+    event RecipientUpdateCancelled();
+
     // ══════════════════════════════════════════════════════════════════
     //                           CONSTRUCTOR
     // ══════════════════════════════════════════════════════════════════
@@ -182,8 +220,8 @@ contract OmniChatFee is ReentrancyGuard, Ownable2Step, ERC2771Context {
      *      minimum threshold.
      * @param _xomToken XOM token address
      * @param _stakingPool Staking pool address (20%)
-     * @param _oddaoTreasury ODDAO treasury address (70%)
-     * @param _protocolTreasury Protocol treasury address (10%)
+     * @param _oddaoTreasury ODDAO treasury address (10%)
+     * @param _protocolTreasury Protocol treasury address (legacy)
      * @param _baseFee Base fee per message in XOM (18 decimals)
      * @param trustedForwarder_ OmniForwarder address for gasless
      *        relay (address(0) to disable)
@@ -369,38 +407,84 @@ contract OmniChatFee is ReentrancyGuard, Ownable2Step, ERC2771Context {
     }
 
     /**
-     * @notice Update fee recipient addresses
-     * @dev L-02 fix: Emits RecipientsUpdated event on any change.
-     *      Reverts if all addresses are zero (no-op guard).
-     *      Pass address(0) for any param to leave it unchanged.
+     * @notice Schedule a recipient address update with timelock
+     * @dev M-02 Round 6: recipient updates are timelocked to prevent
+     *      a compromised owner from immediately redirecting fees.
+     *      Pass address(0) for any param to leave it unchanged when
+     *      the update is executed.
      * @param _stakingPool New staking pool address (0 = no change)
      * @param _oddaoTreasury New ODDAO treasury address (0 = no change)
-     * @param _protocolTreasury New protocol treasury (0 = no change)
      */
-    function updateRecipients(
+    function scheduleRecipientUpdate(
         address _stakingPool,
-        address _oddaoTreasury,
-        address _protocolTreasury
+        address _oddaoTreasury
     ) external onlyOwner {
         if (
             _stakingPool == address(0) &&
-            _oddaoTreasury == address(0) &&
-            _protocolTreasury == address(0)
+            _oddaoTreasury == address(0)
         ) {
             revert NoRecipientsProvided();
         }
-        if (_stakingPool != address(0)) {
-            stakingPool = _stakingPool;
+        pendingStakingPool = _stakingPool;
+        pendingOddaoTreasury = _oddaoTreasury;
+        // solhint-disable-next-line not-rely-on-time
+        recipientUpdateScheduledAt = block.timestamp;
+
+        emit RecipientUpdateScheduled(
+            _stakingPool,
+            _oddaoTreasury,
+            block.timestamp + RECIPIENT_TIMELOCK // solhint-disable-line not-rely-on-time
+        );
+    }
+
+    /**
+     * @notice Execute a previously scheduled recipient update
+     * @dev Can only be called after RECIPIENT_TIMELOCK has elapsed.
+     *      Applies the pending addresses and clears the schedule.
+     */
+    function executeRecipientUpdate() external onlyOwner {
+        if (recipientUpdateScheduledAt == 0) {
+            revert NoRecipientUpdateScheduled();
         }
-        if (_oddaoTreasury != address(0)) {
-            oddaoTreasury = _oddaoTreasury;
+        if (
+            // solhint-disable-next-line not-rely-on-time
+            block.timestamp
+                < recipientUpdateScheduledAt + RECIPIENT_TIMELOCK
+        ) {
+            revert RecipientTimelockActive();
         }
-        if (_protocolTreasury != address(0)) {
-            protocolTreasury = _protocolTreasury;
+
+        if (pendingStakingPool != address(0)) {
+            stakingPool = pendingStakingPool;
         }
+        if (pendingOddaoTreasury != address(0)) {
+            oddaoTreasury = pendingOddaoTreasury;
+        }
+
+        // Clear pending state
+        pendingStakingPool = address(0);
+        pendingOddaoTreasury = address(0);
+        recipientUpdateScheduledAt = 0;
+
         emit RecipientsUpdated(
             stakingPool, oddaoTreasury, protocolTreasury
         );
+    }
+
+    /**
+     * @notice Cancel a previously scheduled recipient update
+     * @dev Clears the pending addresses and schedule timestamp
+     */
+    function cancelRecipientUpdate() external onlyOwner {
+        if (recipientUpdateScheduledAt == 0) {
+            revert NoRecipientUpdateScheduled();
+        }
+
+        pendingStakingPool = address(0);
+        pendingOddaoTreasury = address(0);
+        recipientUpdateScheduledAt = 0;
+
+        emit RecipientUpdateCancelled();
     }
 
     // ══════════════════════════════════════════════════════════════════
@@ -409,41 +493,36 @@ contract OmniChatFee is ReentrancyGuard, Ownable2Step, ERC2771Context {
 
     /**
      * @notice Collect fee from user and distribute
-     * @dev Enforces MIN_FEE floor on all splits to prevent
-     *      precision loss from rounding the fee to zero.
-     *      70% ODDAO, 20% Staking Pool, 10% Protocol Treasury.
+     * @dev M-01 Round 6: corrected fee split to match documented
+     *      tokenomics. 70% goes to the validator hosting the channel,
+     *      20% to staking pool, 10% to ODDAO treasury. Enforces
+     *      MIN_FEE floor to prevent precision-loss rounding to zero.
      * @param user User paying the fee
      * @param fee Total fee amount
-     * @param validator Validator hosting the channel (for event)
+     * @param validator Validator hosting the channel (receives 70%)
      */
     function _collectFee(
         address user,
         uint256 fee,
         address validator
     ) internal {
-        // Suppress unused variable warning — validator is used
-        // in the caller's event emission, not in fee distribution
-        validator;
-
-        // M-01 (precision): Enforce minimum fee
+        // Enforce minimum fee to prevent precision loss
         if (fee < MIN_FEE) fee = MIN_FEE;
 
         // Transfer full fee from user to this contract
         xomToken.safeTransferFrom(user, address(this), fee);
 
-        // Calculate splits
+        // Calculate splits per documented tokenomics
         uint256 stakingAmount = (fee * STAKING_SHARE) / BPS;
-        uint256 protocolAmount = (fee * PROTOCOL_SHARE) / BPS;
-        // ODDAO gets remainder (avoids rounding dust)
-        uint256 oddaoAmount =
-            fee - stakingAmount - protocolAmount;
+        uint256 oddaoAmount = (fee * ODDAO_SHARE) / BPS;
+        // Validator gets remainder (avoids rounding dust)
+        uint256 validatorAmount =
+            fee - stakingAmount - oddaoAmount;
 
-        // Distribute (push pattern — all immediate transfers)
-        xomToken.safeTransfer(oddaoTreasury, oddaoAmount);
+        // Distribute: 70% validator, 20% staking, 10% ODDAO
+        xomToken.safeTransfer(validator, validatorAmount);
         xomToken.safeTransfer(stakingPool, stakingAmount);
-        xomToken.safeTransfer(
-            protocolTreasury, protocolAmount
-        );
+        xomToken.safeTransfer(oddaoTreasury, oddaoAmount);
 
         totalFeesCollected += fee;
     }

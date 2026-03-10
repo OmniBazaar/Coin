@@ -110,7 +110,14 @@ contract LegacyBalanceClaim is
     /// @notice Whether the contract has been initialized with legacy balances
     bool public initialized;
 
-    /// @notice Per-user nonce for claim signature replay protection
+    /// @notice Per-address nonce for claim signature replay protection
+    /// @dev R6 M-01: The nonce is keyed to ethAddress, NOT usernameHash.
+    ///      This means if multiple legacy usernames target the SAME ethAddress,
+    ///      claims must be submitted strictly in the order their nonces were
+    ///      signed. An out-of-order submission invalidates all subsequent
+    ///      pre-signed proofs for that address. For best results, each legacy
+    ///      username should claim to a unique ethAddress. If consolidation is
+    ///      needed, use different addresses for each claim, then transfer.
     mapping(address => uint256) public claimNonces;
 
     /// @notice Mapping from username hash to legacy balance (in Wei)

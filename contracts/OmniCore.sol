@@ -175,6 +175,12 @@ contract OmniCore is
     /// @notice Whether contract is ossified (permanently non-upgradeable)
     bool private _ossified;
 
+    /// @notice Used legacy claim nonces (M-01: prevents signature replay)
+    /// @dev Tracks nonces submitted via claimLegacyBalance() to prevent
+    ///      reuse of validator-signed claim messages if the function is
+    ///      ever repurposed in a future upgrade.
+    mapping(bytes32 => bool) private _usedClaimNonces;
+
     /// @notice Checkpointed staking amounts for governance snapshot queries
     /// @dev Used by OmniGovernance.getVotingPowerAt() for flash-loan
     ///      protection. Writes on stake() and unlock().
@@ -194,9 +200,15 @@ contract OmniCore is
     /// @dev V3: Must wait ADMIN_TRANSFER_DELAY (48h) after proposal
     uint256 public adminTransferEta;
 
-    /// @notice Storage gap for future upgrades (reserve 44 slots)
-    /// @dev Reduced from 47 to 44: bootstrapContract + pendingAdmin + adminTransferEta
-    uint256[44] private __gap;
+    /// @notice Address of the admin who proposed the current pending transfer
+    /// @dev V3 H-01 fix: Stored at proposal time so acceptAdminTransfer() can
+    ///      revoke ADMIN_ROLE and DEFAULT_ADMIN_ROLE from the old admin.
+    address public adminTransferProposer;
+
+    /// @notice Storage gap for future upgrades (reserve 42 slots)
+    /// @dev Reduced from 47 to 42: bootstrapContract + pendingAdmin
+    ///      + adminTransferEta + adminTransferProposer + _usedClaimNonces
+    uint256[42] private __gap;
 
     // Events
     /// @notice Emitted when a service is registered or updated
@@ -506,6 +518,11 @@ contract OmniCore is
      *      Step 1: Current admin calls proposeAdminTransfer(newAdmin).
      *      Step 2: After 48h, newAdmin calls acceptAdminTransfer().
      *      Can be cancelled by current admin before acceptance.
+     *      H-01 fix: Stores proposer address so acceptAdminTransfer()
+     *      can revoke roles from the old admin.
+     *      M-03: Uses msg.sender explicitly (not _msgSender()) to prevent
+     *      admin operations from being relayed through the trusted forwarder.
+     *      Admin operations must be signed directly by the admin key.
      * @param newAdmin Address to receive admin role
      */
     function proposeAdminTransfer(
@@ -516,33 +533,45 @@ contract OmniCore is
         uint256 eta = block.timestamp + ADMIN_TRANSFER_DELAY;
         pendingAdmin = newAdmin;
         adminTransferEta = eta;
+        // M-03: Use msg.sender explicitly -- admin operations must not be relayed
+        adminTransferProposer = msg.sender;
         emit AdminTransferProposed(msg.sender, newAdmin, eta);
     }
 
     /**
      * @notice Accept pending admin role transfer
      * @dev Must be called by the pending admin after the 48h delay.
-     *      Grants both DEFAULT_ADMIN_ROLE and ADMIN_ROLE to caller.
+     *      Grants both DEFAULT_ADMIN_ROLE and ADMIN_ROLE to the new
+     *      admin (caller), then revokes both roles from the previous
+     *      admin who proposed the transfer (H-01 fix).
+     *      M-03: Uses msg.sender explicitly (not _msgSender()) to prevent
+     *      admin transfer acceptance from being relayed through the forwarder.
      */
     function acceptAdminTransfer() external {
+        // M-03: Use msg.sender explicitly -- admin operations must not be relayed
         if (msg.sender != pendingAdmin) revert NotPendingAdmin();
         // solhint-disable-next-line not-rely-on-time
         if (block.timestamp < adminTransferEta) {
             revert AdminTransferNotReady();
         }
 
-        address oldAdmin = pendingAdmin;
+        address oldAdmin = adminTransferProposer;
         pendingAdmin = address(0);
         adminTransferEta = 0;
+        adminTransferProposer = address(0);
 
         _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
         _grantRole(ADMIN_ROLE, msg.sender);
+        _revokeRole(ADMIN_ROLE, oldAdmin);
+        _revokeRole(DEFAULT_ADMIN_ROLE, oldAdmin);
+
         emit AdminTransferAccepted(oldAdmin, msg.sender);
     }
 
     /**
      * @notice Cancel a pending admin transfer
      * @dev Can only be called by current admin before acceptance.
+     *      Clears all pending transfer state including the proposer.
      */
     function cancelAdminTransfer()
         external
@@ -550,6 +579,7 @@ contract OmniCore is
     {
         pendingAdmin = address(0);
         adminTransferEta = 0;
+        adminTransferProposer = address(0);
         emit AdminTransferCancelled();
     }
 
@@ -760,7 +790,7 @@ contract OmniCore is
         address token,
         uint256 amount,
         bytes32 orderId
-    ) external onlyRole(AVALANCHE_VALIDATOR_ROLE) {
+    ) external onlyRole(AVALANCHE_VALIDATOR_ROLE) whenNotPaused {
         if (buyer == address(0) || seller == address(0) || token == address(0)) {
             revert InvalidAddress();
         }
@@ -791,7 +821,7 @@ contract OmniCore is
         address[] calldata tokens,
         uint256[] calldata amounts,
         bytes32 batchId
-    ) external onlyRole(AVALANCHE_VALIDATOR_ROLE) {
+    ) external onlyRole(AVALANCHE_VALIDATOR_ROLE) whenNotPaused {
         uint256 length = buyers.length;
         if (length == 0 || length != sellers.length ||
             length != tokens.length || length != amounts.length) {
@@ -826,7 +856,7 @@ contract OmniCore is
         address token,
         uint256 totalFee,
         address validator
-    ) external onlyRole(AVALANCHE_VALIDATOR_ROLE) {
+    ) external onlyRole(AVALANCHE_VALIDATOR_ROLE) whenNotPaused {
         if (totalFee == 0) return;
 
         // Calculate fee splits using basis points for precision
@@ -868,7 +898,7 @@ contract OmniCore is
         bytes32 encryptedAmount,
         bytes32 cotiTxHash,
         uint256 cotiBlockNumber
-    ) external onlyRole(AVALANCHE_VALIDATOR_ROLE) {
+    ) external onlyRole(AVALANCHE_VALIDATOR_ROLE) whenNotPaused {
         if (buyer == address(0) || seller == address(0)) revert InvalidAddress();
         if (token == address(0)) revert InvalidAddress();
         if (cotiTxHash == bytes32(0)) revert InvalidSignature();
@@ -901,7 +931,7 @@ contract OmniCore is
         bytes32[] calldata encryptedAmounts,
         bytes32[] calldata cotiTxHashes,
         uint256 cotiBlockNumber
-    ) external onlyRole(AVALANCHE_VALIDATOR_ROLE) {
+    ) external onlyRole(AVALANCHE_VALIDATOR_ROLE) whenNotPaused {
         uint256 count = buyers.length;
         if (
             sellers.length != count ||
@@ -1146,6 +1176,10 @@ contract OmniCore is
     ) external nonReentrant whenNotPaused {
         if (claimAddress == address(0)) revert InvalidAddress();
         if (signatures.length < requiredSignatures) revert InsufficientSignatures();
+
+        // M-01: Track nonce on-chain to prevent signature replay
+        if (_usedClaimNonces[nonce]) revert InvalidSignature();
+        _usedClaimNonces[nonce] = true;
 
         bytes32 usernameHash = keccak256(abi.encodePacked(username));
 

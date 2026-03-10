@@ -95,20 +95,6 @@ async function main() {
     console.log('Deployer already has BONUS_DISTRIBUTOR_ROLE');
   }
 
-  // 1e. Grant VALIDATOR_REWARD_ROLE to deployer (Pioneer Phase)
-  const VALIDATOR_ROLE = await rm.VALIDATOR_REWARD_ROLE();
-  const hasValidatorRole = await rm.hasRole(VALIDATOR_ROLE, ADDRESSES.Deployer);
-  if (!hasValidatorRole) {
-    console.log('Granting VALIDATOR_REWARD_ROLE to deployer...');
-    const tx = await rm.grantRole(VALIDATOR_ROLE, ADDRESSES.Deployer);
-    console.log('  tx:', tx.hash);
-    await tx.wait();
-    console.log('  Confirmed.');
-    txCount++;
-  } else {
-    console.log('Deployer already has VALIDATOR_REWARD_ROLE');
-  }
-
   // ========== 2. OmniRegistration Configuration ==========
   console.log('\n=== Configuring OmniRegistration ===');
 
@@ -157,7 +143,6 @@ async function main() {
   console.log('  registrationContract:', await rm.registrationContract());
   console.log('  oddaoAddress:', await rm.oddaoAddress());
   console.log('  BONUS_DISTRIBUTOR_ROLE granted:', await rm.hasRole(BONUS_ROLE, ADDRESSES.Deployer));
-  console.log('  VALIDATOR_REWARD_ROLE granted:', await rm.hasRole(VALIDATOR_ROLE, ADDRESSES.Deployer));
 
   console.log('\nOmniRegistration:');
   console.log('  trustedVerificationKey:', await reg.trustedVerificationKey());
@@ -170,8 +155,8 @@ async function main() {
 
   console.log('\nPool balances (OmniRewardManager):');
   const balances = await rm.getPoolBalances();
-  const names = ['Welcome', 'Referral', 'FirstSale', 'Validator'];
-  for (let i = 0; i < 4; i++) {
+  const names = ['Welcome', 'Referral', 'FirstSale'];
+  for (let i = 0; i < 3; i++) {
     console.log(`  ${names[i]}: ${ethers.formatEther(balances[i])} XOM`);
   }
 }

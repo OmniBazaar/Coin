@@ -29,7 +29,14 @@ describe("OmniArbitration", function () {
   const VoteType = { None: 0, Release: 1, Refund: 2 };
 
   // DisputeStatus enum values (must match contract enum order)
-  const DisputeStatus = { Active: 0, Resolved: 1, Appealed: 2, DefaultResolved: 3, PendingSelection: 4 };
+  const DisputeStatus = {
+    Active: 0,
+    Resolved: 1,
+    Appealed: 2,
+    DefaultResolved: 3,
+    PendingSelection: 4,
+    AppealPendingSelection: 5
+  };
 
   /**
    * Helper: create a dispute AND finalize arbitrator selection.
@@ -45,6 +52,29 @@ describe("OmniArbitration", function () {
     const disputeId = (await arbitration.nextDisputeId()) - 1n;
     await arbitration.connect(caller).finalizeArbitratorSelection(disputeId);
     return disputeId;
+  }
+
+  /**
+   * Helper: file an appeal AND finalize appeal arbitrator selection.
+   * M-03 (Round 6): fileAppeal() now uses two-phase commit-reveal.
+   * It sets status to AppealPendingSelection and stores the block number.
+   * finalizeAppealSelection() must be called 2+ blocks later to assign
+   * the 5-member appeal panel and set status to Appealed.
+   *
+   * Returns the array of 5 appeal arbitrator addresses from the
+   * AppealSelectionFinalized event.
+   */
+  async function fileAndFinalizeAppeal(caller, disputeId) {
+    await arbitration.connect(caller).fileAppeal(disputeId);
+    // Mine 2 blocks so finalizeAppealSelection passes the block check
+    await ethers.provider.send("evm_mine", []);
+    await ethers.provider.send("evm_mine", []);
+    const tx = await arbitration.connect(caller).finalizeAppealSelection(disputeId);
+    const receipt = await tx.wait();
+    const event = receipt.logs.find(
+      (log) => log.fragment && log.fragment.name === "AppealSelectionFinalized"
+    );
+    return event.args.arbitrators;
   }
 
   // ─────────────────────────────────────────────────────────────────────
@@ -551,38 +581,33 @@ describe("OmniArbitration", function () {
     });
 
     it("should select 5 new arbitrators for appeal panel", async function () {
-      const tx = await arbitration.connect(buyer).fileAppeal(1);
-      const receipt = await tx.wait();
-
-      const event = receipt.logs.find(
-        (log) => log.fragment && log.fragment.name === "AppealFiled"
-      );
-      expect(event).to.not.be.undefined;
-      const appealArbs = event.args.arbitrators;
+      const appealArbs = await fileAndFinalizeAppeal(buyer, 1);
       expect(appealArbs.length).to.equal(5);
 
       // Appeal arbitrators should not include original 3
       const dispute = await arbitration.getDispute(1);
       for (const appealAddr of appealArbs) {
+        expect(appealAddr).to.not.equal(ethers.ZeroAddress);
         for (const origAddr of dispute.arbitrators) {
           expect(appealAddr).to.not.equal(origAddr);
         }
       }
     });
 
-    it("should set dispute status to Appealed", async function () {
+    it("should set dispute status to AppealPendingSelection after fileAppeal", async function () {
       await arbitration.connect(buyer).fileAppeal(1);
+      const dispute = await arbitration.getDispute(1);
+      expect(dispute.status).to.equal(DisputeStatus.AppealPendingSelection);
+    });
+
+    it("should set dispute status to Appealed after finalizeAppealSelection", async function () {
+      await fileAndFinalizeAppeal(buyer, 1);
       const dispute = await arbitration.getDispute(1);
       expect(dispute.status).to.equal(DisputeStatus.Appealed);
     });
 
     it("should resolve appeal with 3-of-5 majority", async function () {
-      const tx = await arbitration.connect(buyer).fileAppeal(1);
-      const receipt = await tx.wait();
-      const event = receipt.logs.find(
-        (log) => log.fragment && log.fragment.name === "AppealFiled"
-      );
-      const appealArbAddrs = event.args.arbitrators;
+      const appealArbAddrs = await fileAndFinalizeAppeal(buyer, 1);
 
       // Map appeal arbitrator addresses to signers
       const appealSigners = appealArbAddrs.map((addr) =>
@@ -603,16 +628,12 @@ describe("OmniArbitration", function () {
       const fee = (ESCROW_AMOUNT * 500n) / 10000n;
       const appealStake = (fee * 5000n) / 10000n;
 
-      const tx = await arbitration.connect(buyer).fileAppeal(1);
-      const receipt = await tx.wait();
-      const event = receipt.logs.find(
-        (log) => log.fragment && log.fragment.name === "AppealFiled"
-      );
-      const appealSigners = event.args.arbitrators.map((addr) =>
+      const appealArbAddrs = await fileAndFinalizeAppeal(buyer, 1);
+      const appealSigners = appealArbAddrs.map((addr) =>
         arbitrators.find((a) => a.address === addr)
       );
 
-      // Get buyer balance after filing appeal (stake deducted)
+      // Get buyer balance after filing and finalizing appeal (stake deducted)
       const balanceAfterFiling = await xom.balanceOf(buyer.address);
 
       // Overturn: vote Refund (original was Release)
@@ -625,12 +646,8 @@ describe("OmniArbitration", function () {
     });
 
     it("should not return appeal stake when appeal upholds original decision", async function () {
-      const tx = await arbitration.connect(buyer).fileAppeal(1);
-      const receipt = await tx.wait();
-      const event = receipt.logs.find(
-        (log) => log.fragment && log.fragment.name === "AppealFiled"
-      );
-      const appealSigners = event.args.arbitrators.map((addr) =>
+      const appealArbAddrs = await fileAndFinalizeAppeal(buyer, 1);
+      const appealSigners = appealArbAddrs.map((addr) =>
         arbitrators.find((a) => a.address === addr)
       );
 
@@ -646,13 +663,9 @@ describe("OmniArbitration", function () {
     });
 
     it("should reject appeal vote with VoteType.None", async function () {
-      const tx = await arbitration.connect(buyer).fileAppeal(1);
-      const receipt = await tx.wait();
-      const event = receipt.logs.find(
-        (log) => log.fragment && log.fragment.name === "AppealFiled"
-      );
+      const appealArbAddrs = await fileAndFinalizeAppeal(buyer, 1);
       const appealSigner = arbitrators.find(
-        (a) => a.address === event.args.arbitrators[0]
+        (a) => a.address === appealArbAddrs[0]
       );
 
       await expect(
@@ -661,13 +674,9 @@ describe("OmniArbitration", function () {
     });
 
     it("should reject duplicate appeal vote", async function () {
-      const tx = await arbitration.connect(buyer).fileAppeal(1);
-      const receipt = await tx.wait();
-      const event = receipt.logs.find(
-        (log) => log.fragment && log.fragment.name === "AppealFiled"
-      );
+      const appealArbAddrs = await fileAndFinalizeAppeal(buyer, 1);
       const appealSigner = arbitrators.find(
-        (a) => a.address === event.args.arbitrators[0]
+        (a) => a.address === appealArbAddrs[0]
       );
 
       await arbitration.connect(appealSigner).castAppealVote(1, VoteType.Release);
@@ -677,7 +686,7 @@ describe("OmniArbitration", function () {
     });
 
     it("should reject appeal vote from non-assigned arbitrator", async function () {
-      await arbitration.connect(buyer).fileAppeal(1);
+      await fileAndFinalizeAppeal(buyer, 1);
 
       await expect(
         arbitration.connect(other).castAppealVote(1, VoteType.Release)
@@ -966,10 +975,10 @@ describe("OmniArbitration", function () {
         arbitrators.find((a) => a.address === addr)
       );
 
-      // Resolve, then appeal
+      // Resolve, then appeal and finalize appeal selection
       await arbitration.connect(arbSigners[0]).castVote(1, VoteType.Release);
       await arbitration.connect(arbSigners[1]).castVote(1, VoteType.Release);
-      await arbitration.connect(buyer).fileAppeal(1);
+      await fileAndFinalizeAppeal(buyer, 1);
 
       // Evidence during appeal should be allowed (status = Appealed)
       const cid = ethers.id("appeal-evidence");

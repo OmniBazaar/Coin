@@ -192,6 +192,14 @@ contract StakingRewardPool is
     ///      via snapshotRewards() (M-04 fix)
     uint256 public constant APR_TIMELOCK_DELAY = 24 hours;
 
+    /// @notice Maximum XOM claimable in a single transaction (M-04 R6)
+    /// @dev Limits blast radius if a single large staker claims all
+    ///      accrued rewards at once. 1M XOM per claim prevents a single
+    ///      transaction from draining the pool. Users with more than
+    ///      1M XOM in rewards can claim in multiple transactions.
+    ///      Remainder is stored in frozenRewards for subsequent claims.
+    uint256 public constant MAX_CLAIM_PER_TX = 1_000_000e18;
+
     // ════════════════════════════════════════════════════════════════════
     //                              STORAGE
     // ════════════════════════════════════════════════════════════════════
@@ -453,18 +461,26 @@ contract StakingRewardPool is
         whenNotPaused
     {
         address caller = _msgSender();
-        uint256 reward = earned(caller);
-        if (reward == 0) revert NoRewardsToClaim();
+        uint256 totalReward = earned(caller);
+        if (totalReward == 0) revert NoRewardsToClaim();
+
+        // M-04 R6: Cap per-claim amount to limit blast radius.
+        // If reward exceeds MAX_CLAIM_PER_TX, only pay out the cap
+        // and store the remainder in frozenRewards for future claims.
+        uint256 reward = totalReward > MAX_CLAIM_PER_TX
+            ? MAX_CLAIM_PER_TX
+            : totalReward;
+        uint256 excessReward = totalReward - reward;
 
         uint256 poolBalance =
             xomToken.balanceOf(address(this));
 
         // M-01: Allow partial claims when pool underfunded
         uint256 payout = reward;
-        uint256 remainder = 0;
+        uint256 remainder = excessReward;
         if (poolBalance < reward) {
             payout = poolBalance;
-            remainder = reward - poolBalance;
+            remainder = excessReward + (reward - poolBalance);
         }
 
         // Update state before transfer (CEI pattern)
@@ -514,23 +530,39 @@ contract StakingRewardPool is
             // solhint-disable-next-line not-rely-on-time
             lastClaimTime[user] = block.timestamp;
 
+            // M-03 R6: Cache stake data only when new rewards are accrued.
+            // Previously this was unconditional, allowing anyone to overwrite
+            // the cached stake data with a zero-accrual call. Moving it inside
+            // the accrued > 0 guard preserves historical snapshot data.
+            // solhint-disable not-rely-on-time
+            lastActiveStake[user] = CachedStake({
+                amount: stakeData.amount,
+                tier: stakeData.tier,
+                duration: stakeData.duration,
+                lockTime: stakeData.lockTime,
+                snapshotTime: block.timestamp
+            });
+            // solhint-enable not-rely-on-time
+
             // solhint-disable not-rely-on-time
             emit RewardsSnapshot(
                 user, accrued, block.timestamp
             );
             // solhint-enable not-rely-on-time
+        } else if (lastActiveStake[user].snapshotTime == 0) {
+            // M-03 R6: Initial cache write when no snapshot exists yet,
+            // even if accrued is 0 (e.g., stake just created).
+            // This ensures the cache is populated for post-unlock recovery.
+            // solhint-disable not-rely-on-time
+            lastActiveStake[user] = CachedStake({
+                amount: stakeData.amount,
+                tier: stakeData.tier,
+                duration: stakeData.duration,
+                lockTime: stakeData.lockTime,
+                snapshotTime: block.timestamp
+            });
+            // solhint-enable not-rely-on-time
         }
-
-        // Cache stake data for post-unlock calculation (H-04)
-        // solhint-disable not-rely-on-time
-        lastActiveStake[user] = CachedStake({
-            amount: stakeData.amount,
-            tier: stakeData.tier,
-            duration: stakeData.duration,
-            lockTime: stakeData.lockTime,
-            snapshotTime: block.timestamp
-        });
-        // solhint-enable not-rely-on-time
     }
 
     /**
@@ -544,12 +576,13 @@ contract StakingRewardPool is
     ) external whenNotPaused {
         if (amount == 0) revert InvalidAmount();
 
+        address caller = _msgSender();
         xomToken.safeTransferFrom(
-            msg.sender, address(this), amount
+            caller, address(this), amount
         );
         totalDeposited += amount;
 
-        emit PoolDeposit(msg.sender, amount, totalDeposited);
+        emit PoolDeposit(caller, amount, totalDeposited);
     }
 
     /**
@@ -899,6 +932,13 @@ contract StakingRewardPool is
         address user,
         IOmniCoreStaking.Stake memory stakeData
     ) internal view returns (uint256) {
+        // M-02 R6: Deny rewards to uncommitted stakers (duration=0).
+        // Without a lock commitment, stakers can cycle stake/claim/unlock
+        // every 24h (MIN_STAKE_AGE) to extract risk-free APR rewards.
+        if (stakeData.duration == 0) {
+            return 0;
+        }
+
         // Guard against underflow on malformed stake data (M-07)
         if (stakeData.lockTime < stakeData.duration) {
             return 0;
@@ -967,7 +1007,11 @@ contract StakingRewardPool is
         uint256 durationTier = _getDurationTier(duration);
         uint256 bonusAPR = durationBonusAPR[durationTier];
 
-        return baseAPR + bonusAPR;
+        // M-01 R6: Cap combined APR at MAX_TOTAL_APR to prevent
+        // individually-valid tier and duration APR values from
+        // exceeding the documented 12% maximum when combined
+        uint256 total = baseAPR + bonusAPR;
+        return total > MAX_TOTAL_APR ? MAX_TOTAL_APR : total;
     }
 
     /**

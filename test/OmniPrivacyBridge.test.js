@@ -121,7 +121,7 @@ describe("OmniPrivacyBridge", function () {
       // Convert XOM to pXOM
       await expect(bridge.connect(user1).convertXOMtoPXOM(amount))
         .to.emit(bridge, "ConvertedToPrivate")
-        .withArgs(user1.address, amount, amountAfterFee, fee);
+        .withArgs(user1.address);
 
       // Check balances
       expect(await privateOmniCoin.balanceOf(user1.address)).to.equal(amountAfterFee);
@@ -215,7 +215,7 @@ describe("OmniPrivacyBridge", function () {
       // Convert pXOM to XOM
       await expect(bridge.connect(user1).convertPXOMtoXOM(amount))
         .to.emit(bridge, "ConvertedToPublic")
-        .withArgs(user1.address, amount);
+        .withArgs(user1.address);
 
       // Check XOM balance increased by full amount (no fee)
       expect(await omniCoin.balanceOf(user1.address)).to.equal(initialXomBalance + amount);

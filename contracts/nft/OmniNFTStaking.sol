@@ -597,6 +597,9 @@ contract OmniNFTStaking is
      * @dev Claims pending rewards before changing the multiplier.
      *      Uses nonReentrant to prevent reentrancy through reward
      *      token callbacks.
+     *      Audit fix M-02: lastClaimAt is only advanced when rewards
+     *      are actually paid, preventing silent reward loss on
+     *      exhausted pools.
      * @param poolId Pool ID.
      * @param tokenId NFT token ID.
      * @param multiplier Multiplier in MULTIPLIER_PRECISION units
@@ -621,15 +624,17 @@ contract OmniNFTStaking is
 
         // Effects first (CEI pattern)
         uint256 oldMultiplier = s.rarityMultiplier;
-        // solhint-disable-next-line not-rely-on-time
-        s.lastClaimAt = uint64(block.timestamp);
         totalWeightedStakes[poolId] = totalWeightedStakes[poolId]
             - oldMultiplier + multiplier;
         s.rarityMultiplier = multiplier;
 
-        // Interaction: transfer pending rewards
+        // Audit fix M-02: Only advance lastClaimAt when rewards are
+        // actually paid. If the pool is exhausted, the staker retains
+        // their pending reward period for future claims or unstake.
         // solhint-disable-next-line gas-strict-inequalities
         if (pending > 0 && pending <= pool.remainingReward) {
+            // solhint-disable-next-line not-rely-on-time
+            s.lastClaimAt = uint64(block.timestamp);
             s.accumulatedReward += pending;
             pool.remainingReward -= pending;
             IERC20(pool.rewardToken).safeTransfer(s.staker, pending);
@@ -958,6 +963,14 @@ contract OmniNFTStaking is
 
     /**
      * @notice Calculate reward for a single time segment.
+     * @dev Precision note (audit M-01): The numerator accumulates four
+     *      multiplied terms before a single division. For typical 18-
+     *      decimal reward tokens with `rewardPerDay >= 1e12`, truncation
+     *      is negligible. However, with very small `rewardPerDay` values
+     *      (< 1e12) and many stakers (totalWeight > 1e7), per-staker
+     *      rewards for sub-minute periods may truncate to zero. Pool
+     *      creators should set `rewardPerDay` to at least 1e12 when
+     *      expecting more than 1000 simultaneous stakers.
      * @param rewardPerDay Daily reward rate.
      * @param elapsed Duration of this segment in seconds.
      * @param rarityMul Rarity multiplier.

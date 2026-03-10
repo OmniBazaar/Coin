@@ -529,6 +529,17 @@ contract PrivateDEXSettlement is
      *      Collateral non-zero checks use MpcCore.gt(x, 0) instead
      *      of the tautological MpcCore.ge(x, 0) (C-02 audit fix).
      *
+     *      M-02 Round 6 -- Design note: The solver address is supplied
+     *      by the settler (validator) at settlement time rather than
+     *      being committed by the solver on-chain. Solver consent is
+     *      handled entirely off-chain via the intent matching protocol
+     *      (validators only submit settlements for solvers who have
+     *      already accepted the intent via the P2P gossip layer).
+     *      Adding an on-chain solver signature would increase gas cost
+     *      and add MPC interaction complexity without improving security,
+     *      because settlers are already trusted validators with staked
+     *      collateral.
+     *
      * @param intentId Intent identifier
      * @param solver Solver address (quote provider)
      * @param validator Validator processing this settlement
@@ -693,6 +704,12 @@ contract PrivateDEXSettlement is
      *      C-02 fix: Uses MpcCore.gt(balance, 0) instead of the
      *      tautological MpcCore.ge(balance, 0) which always returns
      *      true for unsigned integers.
+     *
+     *      M-03 Round 6 -- Design note: This function intentionally
+     *      does NOT use whenNotPaused. Fee recipients must be able to
+     *      withdraw accumulated fees even when settlements are paused
+     *      (e.g., during an emergency). Pausing should halt new
+     *      settlements but must not lock already-earned fees.
      */
     function claimFees() external nonReentrant {
         address caller = _msgSender();

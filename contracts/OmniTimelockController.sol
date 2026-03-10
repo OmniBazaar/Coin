@@ -86,6 +86,12 @@ contract OmniTimelockController is TimelockController {
     /// @dev M-02: Classified as critical to prevent 48h selector changes
     bytes4 public constant SEL_REMOVE_CRITICAL = 0x199e6fef;
 
+    /// @notice Ossification selector: ossify()
+    /// @dev GOV-ATK-H02: Classified as critical because ossification is
+    ///      permanent and irreversible -- the most impactful action in the
+    ///      protocol. Must require 7-day CRITICAL_DELAY, not 48h ROUTINE.
+    bytes4 public constant SEL_OSSIFY = 0x32e3a7b4;
+
     // State
     /// @notice Registry of additional critical selectors (admin-extensible)
     mapping(bytes4 => bool) private _criticalSelectors;
@@ -138,7 +144,9 @@ contract OmniTimelockController is TimelockController {
         // M-02: Selector management must require 7-day delay
         _criticalSelectors[SEL_ADD_CRITICAL] = true;
         _criticalSelectors[SEL_REMOVE_CRITICAL] = true;
-        criticalSelectorCount = 10;
+        // GOV-ATK-H02: ossify() is permanent and irreversible, requires 7-day delay
+        _criticalSelectors[SEL_OSSIFY] = true;
+        criticalSelectorCount = 11;
     }
 
     // =========================================================================

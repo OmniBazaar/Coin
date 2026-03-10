@@ -41,9 +41,9 @@ import {IRWAComplianceOracle} from "./interfaces/IRWAComplianceOracle.sol";
  *   cache management, and registrar transfer. For production deployment,
  *   the registrar address MUST be a multisig (e.g., Gnosis Safe) or the
  *   OmniGovernance timelock contract. A single EOA registrar is acceptable
- *   only for testnet deployments. The registrar can be transferred via
- *   setRegistrar(), which should use a 2-step transfer pattern in future
- *   versions to prevent accidental transfers to incorrect addresses.
+ *   only for testnet deployments. The registrar is transferred via a
+ *   two-step pattern (proposeRegistrar + acceptRegistrar) to prevent
+ *   accidental transfers to incorrect addresses (audit fix H-01).
  *
  * Security Features:
  * - Reentrancy protection on state-modifying functions
@@ -86,8 +86,20 @@ contract RWAComplianceOracle is IRWAComplianceOracle, ReentrancyGuard {
     /// @notice List of registered tokens
     address[] private _registeredTokens;
 
+    /// @notice Per-token cache version (audit fix M-03). Incremented on
+    ///         config update to invalidate stale cached compliance results.
+    mapping(address => uint256) private _tokenCacheVersion;
+
+    /// @notice Compliance cache version: user => token => version at
+    ///         the time the result was cached. Stale if != _tokenCacheVersion.
+    mapping(address => mapping(address => uint256))
+        private _cachedVersion;
+
     /// @notice Registrar address (can register tokens)
     address public registrar;
+
+    /// @notice Pending registrar for two-step transfer (audit fix H-01)
+    address public pendingRegistrar;
 
     // ========================================================================
     // EVENTS (Additional)
@@ -97,6 +109,14 @@ contract RWAComplianceOracle is IRWAComplianceOracle, ReentrancyGuard {
     /// @param oldRegistrar Previous registrar
     /// @param newRegistrar New registrar
     event RegistrarUpdated(address indexed oldRegistrar, address indexed newRegistrar);
+
+    /// @notice Emitted when a registrar transfer is proposed (two-step)
+    /// @param currentRegistrar Current registrar who initiated the transfer
+    /// @param proposedRegistrar Proposed new registrar who must accept
+    event RegistrarTransferProposed(
+        address indexed currentRegistrar,
+        address indexed proposedRegistrar
+    );
 
     /// @notice Emitted when a token configuration is updated
     /// @param token Token address
@@ -119,6 +139,9 @@ contract RWAComplianceOracle is IRWAComplianceOracle, ReentrancyGuard {
     /// @notice Thrown when caller is not registrar
     error NotRegistrar();
 
+    /// @notice Thrown when caller is not the pending registrar
+    error NotPendingRegistrar();
+
     /// @notice Thrown when token already registered
     error TokenAlreadyRegistered(address token);
 
@@ -134,6 +157,15 @@ contract RWAComplianceOracle is IRWAComplianceOracle, ReentrancyGuard {
     /// @param provided Provided batch size
     /// @param maxAllowed Maximum allowed batch size
     error BatchSizeTooLarge(uint256 provided, uint256 maxAllowed);
+
+    /// @notice Thrown when attempting to disable compliance on a
+    ///         compliance-required token standard (audit fix H-02)
+    /// @param token Token address
+    /// @param standard Token standard requiring compliance
+    error CannotDisableRequiredCompliance(
+        address token,
+        TokenStandard standard
+    );
 
     // ========================================================================
     // MODIFIERS
@@ -166,23 +198,76 @@ contract RWAComplianceOracle is IRWAComplianceOracle, ReentrancyGuard {
 
     /**
      * @inheritdoc IRWAComplianceOracle
+     * @dev Audit fix M-01: Accepts an optional `standardOverride`
+     *      parameter to allow the registrar to manually specify the
+     *      token standard instead of relying on auto-detection. Auto-
+     *      detection can be spoofed by malicious tokens that implement
+     *      ERC-165 supportsInterface() deceptively. Pass
+     *      `TokenStandard.UNKNOWN` (0) to use auto-detection.
      */
     function registerToken(
         address token,
         address complianceContract
     ) external override onlyRegistrar {
-        if (token == address(0)) revert ZeroAddress();
-        if (_tokenConfigs[token].registered) revert TokenAlreadyRegistered(token);
+        _registerTokenInternal(
+            token, complianceContract, TokenStandard.UNKNOWN
+        );
+    }
 
-        // Detect token standard
-        TokenStandard standard = _detectTokenStandard(token);
+    /**
+     * @notice Register a token with an explicit standard override
+     * @dev Audit fix M-01: Allows the registrar to manually specify the
+     *      token standard, bypassing auto-detection. This prevents a
+     *      malicious token from spoofing ERC-165 to be classified as
+     *      ERC-20 (no compliance) when it should be ERC-3643 or
+     *      ERC-1400 (compliance required). Pass `TokenStandard.UNKNOWN`
+     *      to fall back to auto-detection.
+     * @param token Token address to register
+     * @param complianceContract Compliance contract address
+     * @param standardOverride Token standard to use. Pass UNKNOWN (0)
+     *        for auto-detection.
+     */
+    function registerTokenWithStandard(
+        address token,
+        address complianceContract,
+        TokenStandard standardOverride
+    ) external onlyRegistrar {
+        _registerTokenInternal(
+            token, complianceContract, standardOverride
+        );
+    }
+
+    /**
+     * @notice Internal token registration logic
+     * @dev Shared by registerToken() and registerTokenWithStandard().
+     * @param token Token address to register
+     * @param complianceContract Compliance contract address
+     * @param standardOverride Standard override (UNKNOWN = auto-detect)
+     */
+    function _registerTokenInternal(
+        address token,
+        address complianceContract,
+        TokenStandard standardOverride
+    ) internal {
+        if (token == address(0)) revert ZeroAddress();
+        if (_tokenConfigs[token].registered) {
+            revert TokenAlreadyRegistered(token);
+        }
+
+        // Audit fix M-01: Use override if provided, otherwise detect
+        TokenStandard standard = standardOverride
+            != TokenStandard.UNKNOWN
+            ? standardOverride
+            : _detectTokenStandard(token);
 
         // Store configuration
         _tokenConfigs[token] = TokenConfig({
             standard: standard,
             registered: true,
             complianceEnabled: standard != TokenStandard.ERC20,
-            complianceContract: complianceContract != address(0) ? complianceContract : token,
+            complianceContract: complianceContract != address(0)
+                ? complianceContract
+                : token,
             // solhint-disable-next-line not-rely-on-time
             lastUpdated: block.timestamp
         });
@@ -194,9 +279,17 @@ contract RWAComplianceOracle is IRWAComplianceOracle, ReentrancyGuard {
 
     /**
      * @notice Update configuration for a registered token
-     * @dev Allows the registrar to change the compliance contract,
-     *      enable/disable compliance, or correct misconfigurations
-     *      without requiring a new oracle deployment.
+     * @dev Allows the registrar to change the compliance contract or
+     *      enable/disable compliance. Audit fix H-02: compliance cannot
+     *      be disabled for token standards that require it (ERC-3643,
+     *      ERC-1400) because those represent regulated securities where
+     *      a fail-open condition would violate securities law.
+     *
+     *      Audit fix M-03: This function increments a per-token cache
+     *      version counter, effectively invalidating all cached
+     *      compliance results for the affected token. This prevents
+     *      stale cache entries from persisting after a compliance
+     *      contract reconfiguration.
      * @param token Token address to update
      * @param complianceContract New compliance contract address
      * @param complianceEnabled Whether compliance is enabled
@@ -211,12 +304,35 @@ contract RWAComplianceOracle is IRWAComplianceOracle, ReentrancyGuard {
         }
 
         TokenConfig storage config = _tokenConfigs[token];
+
+        // Audit fix H-02: Prevent disabling compliance on token
+        // standards that inherently require it. ERC-3643 and ERC-1400
+        // are regulated securities; disabling their compliance checks
+        // would create a fail-open condition allowing non-KYC/non-
+        // accredited users to trade regulated assets.
+        if (
+            !complianceEnabled
+            && (
+                config.standard == TokenStandard.ERC3643
+                || config.standard == TokenStandard.ERC1400
+            )
+        ) {
+            revert CannotDisableRequiredCompliance(
+                token, config.standard
+            );
+        }
+
         config.complianceContract = complianceContract != address(0)
             ? complianceContract
             : token;
         config.complianceEnabled = complianceEnabled;
         // solhint-disable-next-line not-rely-on-time
         config.lastUpdated = block.timestamp;
+
+        // Audit fix M-03: Invalidate all cached compliance results
+        // for this token by incrementing the version counter. Any
+        // cached result with a different version will be ignored.
+        ++_tokenCacheVersion[token];
 
         emit TokenConfigUpdated(
             token, complianceContract, complianceEnabled
@@ -245,14 +361,45 @@ contract RWAComplianceOracle is IRWAComplianceOracle, ReentrancyGuard {
     }
 
     /**
-     * @notice Update registrar address
-     * @param newRegistrar New registrar address
+     * @notice Propose a new registrar (step 1 of 2-step transfer)
+     * @dev Audit fix H-01: Prevents accidental registrar transfer to
+     *      an incorrect address by requiring the new registrar to
+     *      explicitly accept the role. The pending registrar can be
+     *      overwritten by calling this function again with a different
+     *      address, or cancelled by calling with address(0) is blocked
+     *      (use cancelRegistrarTransfer instead for clarity).
+     * @param newRegistrar Proposed new registrar address
      */
-    function setRegistrar(address newRegistrar) external onlyRegistrar {
+    function proposeRegistrar(
+        address newRegistrar
+    ) external onlyRegistrar {
         if (newRegistrar == address(0)) revert ZeroAddress();
+        pendingRegistrar = newRegistrar;
+        emit RegistrarTransferProposed(registrar, newRegistrar);
+    }
+
+    /**
+     * @notice Accept the registrar role (step 2 of 2-step transfer)
+     * @dev Audit fix H-01: Only the pending registrar can call this.
+     *      This confirms that the new registrar address is correct and
+     *      controlled by the intended party.
+     */
+    function acceptRegistrar() external {
+        if (msg.sender != pendingRegistrar) {
+            revert NotPendingRegistrar();
+        }
         address oldRegistrar = registrar;
-        registrar = newRegistrar;
-        emit RegistrarUpdated(oldRegistrar, newRegistrar);
+        registrar = pendingRegistrar;
+        pendingRegistrar = address(0);
+        emit RegistrarUpdated(oldRegistrar, registrar);
+    }
+
+    /**
+     * @notice Cancel a pending registrar transfer
+     * @dev Only the current registrar can cancel a pending transfer.
+     */
+    function cancelRegistrarTransfer() external onlyRegistrar {
+        pendingRegistrar = address(0);
     }
 
     // ========================================================================
@@ -280,8 +427,15 @@ contract RWAComplianceOracle is IRWAComplianceOracle, ReentrancyGuard {
     ) external view override returns (ComplianceResult memory result) {
         // Check cache first (populated by registrar via refreshCompliance)
         ComplianceResult memory cached = _complianceCache[user][token];
+        // Audit fix M-03: Also verify cache version matches current
+        // token config version. A config update increments the version,
+        // invalidating all stale cached results for that token.
         // solhint-disable-next-line not-rely-on-time
-        if (cached.validUntil > block.timestamp) {
+        if (
+            cached.validUntil > block.timestamp
+            && _cachedVersion[user][token]
+                == _tokenCacheVersion[token]
+        ) {
             return cached;
         }
 
@@ -340,9 +494,13 @@ contract RWAComplianceOracle is IRWAComplianceOracle, ReentrancyGuard {
         address token
     ) external override onlyRegistrar nonReentrant {
         // Re-check compliance and update cache (internal call)
-        ComplianceResult memory result = _checkComplianceInternal(user, token);
+        ComplianceResult memory result =
+            _checkComplianceInternal(user, token);
 
         _complianceCache[user][token] = result;
+        // Audit fix M-03: Store current token config version so the
+        // cache entry is invalidated when config changes.
+        _cachedVersion[user][token] = _tokenCacheVersion[token];
 
         emit ComplianceCached(user, token, result.validUntil);
     }
@@ -503,11 +661,47 @@ contract RWAComplianceOracle is IRWAComplianceOracle, ReentrancyGuard {
 
         TokenConfig memory config = _tokenConfigs[token];
 
-        // For ERC-20 tokens or disabled compliance, always compliant
-        if (
-            config.standard == TokenStandard.ERC20
-            || !config.complianceEnabled
-        ) {
+        // For ERC-20 tokens with no compliance requirements
+        if (config.standard == TokenStandard.ERC20) {
+            return ComplianceResult({
+                status: ComplianceStatus.COMPLIANT,
+                tokenStandard: config.standard,
+                kycRequired: false,
+                accreditedInvestorRequired: false,
+                holdingPeriodSeconds: 0,
+                maxHolding: 0,
+                reason: "No compliance requirements",
+                timestamp: block.timestamp,
+                validUntil: block.timestamp + CACHE_TTL
+            });
+        }
+
+        // Audit fix H-02: Fail-closed for compliance-required token
+        // standards when compliance is disabled. If compliance was
+        // somehow disabled for ERC-3643/ERC-1400 (should be blocked
+        // by updateTokenConfig, but defense in depth), reject the
+        // transfer rather than silently allowing it.
+        if (!config.complianceEnabled) {
+            bool requiresCompliance = (
+                config.standard == TokenStandard.ERC3643
+                || config.standard == TokenStandard.ERC1400
+            );
+            if (requiresCompliance) {
+                return ComplianceResult({
+                    status: ComplianceStatus.NON_COMPLIANT,
+                    tokenStandard: config.standard,
+                    kycRequired: true,
+                    accreditedInvestorRequired:
+                        config.standard == TokenStandard.ERC1400,
+                    holdingPeriodSeconds: 0,
+                    maxHolding: 0,
+                    reason: "Compliance disabled for regulated token"
+                        " - fail-closed",
+                    timestamp: block.timestamp,
+                    validUntil: block.timestamp + CACHE_TTL
+                });
+            }
+            // Non-regulated standards with compliance disabled
             return ComplianceResult({
                 status: ComplianceStatus.COMPLIANT,
                 tokenStandard: config.standard,
@@ -588,6 +782,17 @@ contract RWAComplianceOracle is IRWAComplianceOracle, ReentrancyGuard {
      *      self-transfer (user, user, 1) because some T-REX
      *      implementations treat self-transfers as no-ops that
      *      bypass compliance checks.
+     *
+     *      Audit M-02: The destination address passed to canTransfer()
+     *      is `address(this)` (the oracle), not the actual transfer
+     *      recipient (pool or user). This is a known approximation:
+     *      ERC-3643 implementations may have per-recipient restrictions
+     *      (e.g., recipient must be in the identity registry). For
+     *      production, ensure the oracle address AND all pool addresses
+     *      are registered in each RWA token's identity registry. The
+     *      alternative (passing actual pool/recipient addresses) would
+     *      require interface changes across RWAAMM, RWARouter, and
+     *      this oracle -- deferred to a future version.
      * @param user User address to check compliance for
      * @param config Token configuration with compliance contract address
      * @return Compliance result with status, reason, and cache timestamps

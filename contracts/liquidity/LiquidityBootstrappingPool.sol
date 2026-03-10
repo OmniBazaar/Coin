@@ -391,7 +391,20 @@ contract LiquidityBootstrappingPool is ReentrancyGuard, Ownable, Pausable, ERC27
         // --- Checks (consolidated validation) ---
         _validateSwap(counterAssetIn, caller);
 
-        xomOut = _computeSwapOutput(counterAssetIn);
+        // --- Transfer counter-asset in to measure actual received ---
+        uint256 actualReceived = _transferCounterAssetIn(
+            counterAssetIn, caller
+        );
+
+        // M-02 Round 6: track cumulative purchases using actual
+        // received amount for consistency with reserve accounting
+        _trackCumulativePurchase(actualReceived, caller);
+
+        // M-01 Round 6: recompute xomOut using actualReceived rather
+        // than the nominal counterAssetIn. For fee-on-transfer tokens
+        // where actualReceived < counterAssetIn, the original code
+        // would give the user more XOM than the AMM formula warrants.
+        xomOut = _computeSwapOutput(actualReceived);
 
         // Slippage check
         if (xomOut < minXomOut) revert SlippageExceeded();
@@ -401,18 +414,13 @@ contract LiquidityBootstrappingPool is ReentrancyGuard, Ownable, Pausable, ERC27
             revert ExceedsMaxOutRatio();
         }
 
-        // --- Transfer counter-asset in to measure actual received ---
-        uint256 actualReceived = _transferCounterAssetIn(
-            counterAssetIn, caller
-        );
-
         // --- Effects (state updates with ACTUAL received amount) ---
         counterAssetReserve += actualReceived;
         xomReserve -= xomOut;
         totalRaised += actualReceived;
         totalDistributed += xomOut;
 
-        // Price floor check uses actual post-swap reserves (M-01 fix)
+        // Price floor check uses actual post-swap reserves
         uint256 postSwapPrice = getSpotPrice();
         if (postSwapPrice < priceFloor) revert PriceBelowFloor();
 
@@ -630,30 +638,23 @@ contract LiquidityBootstrappingPool is ReentrancyGuard, Ownable, Pausable, ERC27
     // ============ Internal Functions ============
 
     /**
-     * @notice Consolidated swap validation
-     * @dev Validates that the LBP is active, input is non-zero, and
-     *      cumulative per-address purchase limit is respected. Merges
-     *      the per-transaction check and cumulative tracking into one
-     *      function to avoid redundant validation and save gas on
-     *      reverts. The cumulative check is strictly stronger than
-     *      the per-transaction check, so the per-transaction check
-     *      is only retained as an early cheap revert.
-     * @param counterAssetIn Amount of counter-asset to swap
+     * @notice Track cumulative per-address purchases using actual
+     *         received amount
+     * @dev M-02 Round 6: uses actualReceived (post-transfer) instead of
+     *      nominal counterAssetIn to ensure cumulative tracking is
+     *      consistent with reserve accounting (which also uses
+     *      actualReceived). For standard tokens, actualReceived ==
+     *      counterAssetIn. For fee-on-transfer tokens, this provides
+     *      accurate tracking.
+     * @param actualReceived Actual amount received after transfer
      * @param caller Resolved sender address (via ERC-2771)
      */
-    function _validateSwap(
-        uint256 counterAssetIn,
+    function _trackCumulativePurchase(
+        uint256 actualReceived,
         address caller
     ) internal {
-        if (!isActive()) revert LBPNotActive();
-        if (counterAssetIn == 0) revert InvalidParameters();
         if (maxPurchaseAmount > 0) {
-            // Early revert for single-tx exceeding limit
-            if (counterAssetIn > maxPurchaseAmount) {
-                revert ExceedsMaxPurchase();
-            }
-            // Cumulative per-address tracking
-            cumulativePurchases[caller] += counterAssetIn;
+            cumulativePurchases[caller] += actualReceived;
             if (
                 cumulativePurchases[caller]
                     > maxPurchaseAmount
@@ -684,6 +685,30 @@ contract LiquidityBootstrappingPool is ReentrancyGuard, Ownable, Pausable, ERC27
         actualReceived =
             COUNTER_ASSET_TOKEN.balanceOf(address(this))
                 - balBefore;
+    }
+
+    /**
+     * @notice Validate swap preconditions (active state, non-zero input,
+     *         per-tx limit)
+     * @dev Checks that the LBP is active, input is non-zero, and the
+     *      per-transaction amount does not exceed maxPurchaseAmount.
+     *      Cumulative tracking is deferred to _trackCumulativePurchase()
+     *      to use actualReceived instead of nominal input (M-02 Round 6).
+     * @param counterAssetIn Amount of counter-asset to swap
+     */
+    // solhint-disable-next-line use-natspec
+    function _validateSwap(
+        uint256 counterAssetIn,
+        address /* caller */
+    ) internal view {
+        if (!isActive()) revert LBPNotActive();
+        if (counterAssetIn == 0) revert InvalidParameters();
+        if (maxPurchaseAmount > 0) {
+            // Early revert for single-tx exceeding limit
+            if (counterAssetIn > maxPurchaseAmount) {
+                revert ExceedsMaxPurchase();
+            }
+        }
     }
 
     /**

@@ -603,11 +603,20 @@ contract OmniAccount is IAccount, Initializable, ReentrancyGuard {
      * @dev M-01: Accepts validAfter for future-activation session keys.
      *      L-02: Rejects validUntil values that are in the past
      *      (validUntil == 0 means no expiry and is allowed).
+     *
+     *      R6 M-01 WARNING: Setting allowedTarget = address(0) with maxValue > 0
+     *      grants the session key the ability to transfer native tokens to ANY
+     *      address up to maxValue per call (subject to spending limits if set).
+     *      For general dApp interaction session keys, the RECOMMENDED configuration
+     *      is allowedTarget = address(0) with maxValue = 0, which permits calling
+     *      any contract but prevents native token transfers. Only set maxValue > 0
+     *      when the owner explicitly intends to allow native value transfers.
+     *
      * @param signer Session key signer address
      * @param validUntil Expiration timestamp (0 = no expiry)
      * @param validAfter Activation timestamp (0 = immediately valid)
-     * @param allowedTarget Scoped contract (address(0) = any)
-     * @param maxValue Maximum native value per call
+     * @param allowedTarget Scoped contract (address(0) = any target, see warning above)
+     * @param maxValue Maximum native value per call (0 = no native transfers allowed)
      */
     function addSessionKey(
         address signer,

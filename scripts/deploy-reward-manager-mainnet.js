@@ -1,7 +1,7 @@
 /**
  * @file deploy-reward-manager-mainnet.js
  * @description Deploy OmniRewardManager (UUPS proxy) on mainnet (chain 88008)
- *              and fund it with 12,467,457,500 XOM.
+ *              and fund it with 6,378,457,500 XOM.
  *
  * The contract's initialize() checks balanceOf(address(this)) >= totalPool
  * (M-02 audit fix), so tokens must be present BEFORE initialization.
@@ -13,8 +13,10 @@
  *   Welcome Bonus:     1,383,457,500 XOM
  *   Referral Bonus:    2,995,000,000 XOM
  *   First Sale Bonus:  2,000,000,000 XOM
- *   Validator Rewards: 6,089,000,000 XOM
- *   TOTAL:            12,467,457,500 XOM
+ *   TOTAL:             6,378,457,500 XOM
+ *
+ * Validator rewards (6,089,000,000 XOM) are funded directly to
+ * OmniValidatorRewards — NOT through OmniRewardManager.
  *
  * Usage:
  *   npx hardhat run scripts/deploy-reward-manager-mainnet.js --network mainnet
@@ -23,12 +25,14 @@ const { ethers, upgrades } = require("hardhat");
 const fs = require("fs");
 const path = require("path");
 
-/** Production pool sizes */
+/** OmniValidatorRewards proxy address — receives the 6.089B XOM directly */
+const OMNI_VALIDATOR_REWARDS_ADDRESS = "0x4b9DbBD359A7c0A5B0893Be532b634e9cB99543D";
+
+/** Production pool sizes (validator rewards excluded — funded separately) */
 const POOLS = {
-    welcomeBonus:     ethers.parseEther("1383457500"),
-    referralBonus:    ethers.parseEther("2995000000"),
-    firstSaleBonus:   ethers.parseEther("2000000000"),
-    validatorRewards: ethers.parseEther("6089000000"),
+    welcomeBonus:   ethers.parseEther("1383457500"),
+    referralBonus:  ethers.parseEther("2995000000"),
+    firstSaleBonus: ethers.parseEther("2000000000"),
 };
 
 async function main() {
@@ -58,23 +62,27 @@ async function main() {
     console.log(`Token: ${symbol}`);
 
     // Calculate totals
-    const totalPoolSize = POOLS.welcomeBonus + POOLS.referralBonus +
-                          POOLS.firstSaleBonus + POOLS.validatorRewards;
+    const validatorRewardsAmount = ethers.parseEther("6089000000");
+    const totalPoolSize = POOLS.welcomeBonus + POOLS.referralBonus + POOLS.firstSaleBonus;
+    const grandTotal = totalPoolSize + validatorRewardsAmount;
 
     console.log("\nPool Allocation (PRODUCTION):");
     console.log("  Welcome Bonus:     ", ethers.formatEther(POOLS.welcomeBonus), "XOM");
     console.log("  Referral Bonus:    ", ethers.formatEther(POOLS.referralBonus), "XOM");
     console.log("  First Sale Bonus:  ", ethers.formatEther(POOLS.firstSaleBonus), "XOM");
-    console.log("  Validator Rewards: ", ethers.formatEther(POOLS.validatorRewards), "XOM");
-    console.log("  TOTAL:             ", ethers.formatEther(totalPoolSize), "XOM");
+    console.log("  TOTAL (RewardMgr): ", ethers.formatEther(totalPoolSize), "XOM");
+    console.log("  Validator Rewards: ", ethers.formatEther(validatorRewardsAmount), "XOM (direct to OmniValidatorRewards)");
+    console.log("  GRAND TOTAL:       ", ethers.formatEther(grandTotal), "XOM");
 
     // Check deployer balance
     const deployerBalance = await omniCoin.balanceOf(deployer.address);
     console.log("\nDeployer XOM balance:", ethers.formatEther(deployerBalance), "XOM");
 
-    if (deployerBalance < totalPoolSize) {
+    if (deployerBalance < grandTotal) {
         throw new Error(
-            `Insufficient XOM! Need ${ethers.formatEther(totalPoolSize)}, ` +
+            `Insufficient XOM! Need ${ethers.formatEther(grandTotal)} ` +
+            `(${ethers.formatEther(totalPoolSize)} for RewardManager + ` +
+            `${ethers.formatEther(validatorRewardsAmount)} for OmniValidatorRewards), ` +
             `have ${ethers.formatEther(deployerBalance)}`
         );
     }
@@ -99,7 +107,7 @@ async function main() {
     console.log("OmniRewardManager proxy (uninitialized):", proxyAddress);
     console.log("OmniRewardManager implementation:", implAddress);
 
-    // --- Step 2: Fund the proxy with 12,467,457,500 XOM ---
+    // --- Step 2: Fund the proxy with 6,378,457,500 XOM (bonus pools only) ---
     console.log("\n--- Step 2: Funding proxy with", ethers.formatEther(totalPoolSize), "XOM ---");
     const transferTx = await omniCoin.transfer(proxyAddress, totalPoolSize);
     const receipt = await transferTx.wait();
@@ -116,21 +124,29 @@ async function main() {
         POOLS.welcomeBonus,
         POOLS.referralBonus,
         POOLS.firstSaleBonus,
-        POOLS.validatorRewards,
         deployer.address    // admin
     );
     await initTx.wait();
     console.log("initialize() called successfully");
 
     // Verify pool balances
-    const [welcomeRemaining, referralRemaining, firstSaleRemaining, validatorRemaining] =
+    const [welcomeRemaining, referralRemaining, firstSaleRemaining] =
         await rewardManager.getPoolBalances();
 
-    console.log("\nVerified Pool Balances:");
+    console.log("\nVerified Pool Balances (OmniRewardManager):");
     console.log("  Welcome Bonus:     ", ethers.formatEther(welcomeRemaining), "XOM");
     console.log("  Referral Bonus:    ", ethers.formatEther(referralRemaining), "XOM");
     console.log("  First Sale Bonus:  ", ethers.formatEther(firstSaleRemaining), "XOM");
-    console.log("  Validator Rewards: ", ethers.formatEther(validatorRemaining), "XOM");
+
+    // --- Step 4: Transfer validator rewards directly to OmniValidatorRewards ---
+    console.log("\n--- Step 4: Transferring", ethers.formatEther(validatorRewardsAmount), "XOM directly to OmniValidatorRewards ---");
+    console.log("OmniValidatorRewards:", OMNI_VALIDATOR_REWARDS_ADDRESS);
+    const validatorTransferTx = await omniCoin.transfer(OMNI_VALIDATOR_REWARDS_ADDRESS, validatorRewardsAmount);
+    const validatorTransferReceipt = await validatorTransferTx.wait();
+    console.log("Transfer tx:", validatorTransferReceipt.hash);
+
+    const validatorRewardsBalance = await omniCoin.balanceOf(OMNI_VALIDATOR_REWARDS_ADDRESS);
+    console.log("OmniValidatorRewards XOM balance:", ethers.formatEther(validatorRewardsBalance), "XOM");
 
     // Check deployer balance after
     const deployerAfter = await omniCoin.balanceOf(deployer.address);
@@ -145,8 +161,9 @@ async function main() {
         `Funded with ${ethers.formatEther(totalPoolSize)} XOM ` +
         `(Welcome: ${ethers.formatEther(POOLS.welcomeBonus)}, ` +
         `Referral: ${ethers.formatEther(POOLS.referralBonus)}, ` +
-        `FirstSale: ${ethers.formatEther(POOLS.firstSaleBonus)}, ` +
-        `Validator: ${ethers.formatEther(POOLS.validatorRewards)}).`
+        `FirstSale: ${ethers.formatEther(POOLS.firstSaleBonus)}). ` +
+        `Validator rewards (${ethers.formatEther(validatorRewardsAmount)} XOM) ` +
+        `transferred directly to OmniValidatorRewards (${OMNI_VALIDATOR_REWARDS_ADDRESS}).`
     );
     fs.writeFileSync(deploymentFile, JSON.stringify(deployments, null, 2));
     console.log("Updated mainnet.json");

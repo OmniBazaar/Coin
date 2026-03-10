@@ -156,6 +156,9 @@ error StakeOutOfBounds(
     uint256 maxBound
 );
 
+/// @notice Disputed amount too small to produce a meaningful fee
+error DisputedAmountTooSmall();
+
 /// @notice Arbitrator selection not yet finalized for this dispute
 error SelectionNotFinalized(uint256 disputeId);
 
@@ -254,7 +257,8 @@ contract OmniArbitration is
         Resolved,
         Appealed,
         DefaultResolved,
-        PendingSelection
+        PendingSelection,
+        AppealPendingSelection
     }
 
     /// @notice Dispute record
@@ -285,6 +289,7 @@ contract OmniArbitration is
         uint256 appealStake;
         address appellant;
         bool resolved;
+        uint256 selectionBlock;
     }
 
     // ══════════════════════════════════════════════════════════════════
@@ -581,6 +586,16 @@ contract OmniArbitration is
         address indexed newTreasury
     );
 
+    /// @notice Emitted when appeal arbitrator selection is finalized
+    /// @param disputeId Dispute ID
+    /// @param arbitrators Selected 5-member appeal panel
+    /// @param deadline Appeal resolution deadline
+    event AppealSelectionFinalized(
+        uint256 indexed disputeId,
+        address[5] arbitrators,
+        uint256 deadline
+    );
+
     /// @notice Emitted when minimum arbitrator stake is updated
     /// @param oldStake Previous minimum stake
     /// @param newStake New minimum stake
@@ -761,6 +776,8 @@ contract OmniArbitration is
         // C-01: Calculate and collect dispute fee (5% of amount)
         uint256 fee =
             (amount * ARBITRATION_FEE_BPS) / BPS;
+        // M-01 (Round 6): Prevent zero-fee disputes for dust amounts
+        if (fee == 0) revert DisputedAmountTooSmall();
         xomToken.safeTransferFrom(
             caller,
             address(this),
@@ -1041,41 +1058,91 @@ contract OmniArbitration is
             appealStake
         );
 
-        // Select 5 new arbitrators (excluding original 3)
-        address[5] memory appealArbitrators =
-            _selectAppealArbitrators(
-                disputeId,
-                d.arbitrators
-            );
-
-        // solhint-disable-next-line not-rely-on-time
-        uint256 deadline = block.timestamp + APPEAL_DEADLINE;
-
+        // M-03 (Round 6): Two-phase appeal arbitrator selection.
+        // Store block number now; caller must invoke
+        // finalizeAppealSelection() at least 2 blocks later.
+        // This prevents the appellant from predicting or timing
+        // the appeal panel selection.
         appeals[disputeId] = Appeal({
             disputeId: disputeId,
-            arbitrators: appealArbitrators,
+            arbitrators: [
+                address(0), address(0), address(0),
+                address(0), address(0)
+            ],
             releaseVotes: 0,
             refundVotes: 0,
-            deadline: deadline,
+            deadline: 0,
             appealStake: appealStake,
             appellant: caller,
-            resolved: false
+            resolved: false,
+            selectionBlock: block.number
         });
 
-        d.status = DisputeStatus.Appealed;
+        d.status = DisputeStatus.AppealPendingSelection;
         d.appealed = true;
-
-        // H-01: Increment active dispute count for appeal arbs
-        for (uint256 i = 0; i < 5; ++i) {
-            ++activeDisputeCount[appealArbitrators[i]];
-        }
 
         emit AppealFiled(
             disputeId,
             caller,
-            appealArbitrators,
+            [
+                address(0), address(0), address(0),
+                address(0), address(0)
+            ],
             appealStake,
-            deadline
+            0
+        );
+    }
+
+    /**
+     * @notice Finalize appeal arbitrator selection (phase 2)
+     * @dev M-03 (Round 6): Two-phase appeal arbitrator selection.
+     *      Must be called at least 2 blocks after fileAppeal() so
+     *      the appellant cannot predict the blockhash used for
+     *      panel selection. Uses blockhash(a.selectionBlock) which
+     *      was unknown at appeal filing time.
+     * @param disputeId Dispute ID with a pending appeal selection
+     */
+    function finalizeAppealSelection(
+        uint256 disputeId
+    ) external nonReentrant whenNotPaused {
+        Dispute storage d = disputes[disputeId];
+        if (d.createdAt == 0) revert DisputeNotFound(disputeId);
+        if (d.status != DisputeStatus.AppealPendingSelection) {
+            revert SelectionAlreadyFinalized(disputeId);
+        }
+
+        Appeal storage a = appeals[disputeId];
+
+        // Must wait at least 2 blocks
+        if (block.number < a.selectionBlock + 2) {
+            revert SelectionTooEarly(
+                block.number,
+                a.selectionBlock + 2
+            );
+        }
+
+        // Select 5 appeal arbitrators using stored block's hash
+        address[5] memory selected =
+            _selectAppealArbitratorsFromBlock(
+                disputeId,
+                d.arbitrators,
+                a.selectionBlock
+            );
+
+        a.arbitrators = selected;
+        // solhint-disable-next-line not-rely-on-time
+        a.deadline = block.timestamp + APPEAL_DEADLINE;
+        d.status = DisputeStatus.Appealed;
+
+        // H-01: Increment active dispute count for appeal arbs
+        for (uint256 i = 0; i < 5; ++i) {
+            ++activeDisputeCount[selected[i]];
+        }
+
+        emit AppealSelectionFinalized(
+            disputeId,
+            selected,
+            a.deadline
         );
     }
 
@@ -1213,6 +1280,16 @@ contract OmniArbitration is
             d.status == DisputeStatus.DefaultResolved
         ) {
             revert DisputeAlreadyResolved(disputeId);
+        }
+        // M-02 (Round 6): Reject PendingSelection disputes -- arbitrators
+        // have not been selected yet, so default resolution is premature.
+        // The dispute creator must call finalizeArbitratorSelection() first.
+        // Also reject AppealPendingSelection (M-03: two-phase appeal).
+        if (
+            d.status == DisputeStatus.PendingSelection ||
+            d.status == DisputeStatus.AppealPendingSelection
+        ) {
+            revert SelectionNotFinalized(disputeId);
         }
         // solhint-disable-next-line not-rely-on-time
         if (block.timestamp < d.deadline) {
@@ -1799,6 +1876,83 @@ contract OmniArbitration is
                 abi.encodePacked(
                     disputeId,
                     blockhash(block.number - 1),
+                    block.number,
+                    msg.sender,
+                    "appeal",
+                    nonce
+                )
+            );
+            uint256 idx = uint256(h) % poolSize;
+            address candidate = arbitratorPool[idx];
+
+            // Skip parties, original arbs, unqualified, dupes
+            bool valid = (
+                candidate != d.buyer &&
+                candidate != d.seller &&
+                arbitratorStakes[candidate] >=
+                    minArbitratorStake &&
+                participation.canBeValidator(candidate)
+            );
+
+            if (valid) {
+                // Check not original arbitrator
+                for (uint256 k = 0; k < 3; ++k) {
+                    if (original[k] == candidate) {
+                        valid = false;
+                        break;
+                    }
+                }
+            }
+
+            if (valid) {
+                bool duplicate = false;
+                for (uint256 j = 0; j < found; ++j) {
+                    if (selected[j] == candidate) {
+                        duplicate = true;
+                        break;
+                    }
+                }
+                if (!duplicate) {
+                    selected[found] = candidate;
+                    ++found;
+                }
+            }
+
+            ++nonce;
+        }
+
+        if (found < 5) revert NotEnoughArbitrators();
+    }
+
+    /**
+     * @notice Select 5 appeal arbitrators using a stored block hash
+     * @dev M-03 (Round 6): Two-phase appeal selection. Uses
+     *      blockhash(selBlock) instead of blockhash(block.number - 1)
+     *      to prevent the appellant from predicting the appeal panel.
+     * @param disputeId Dispute ID
+     * @param original Original 3 arbitrators to exclude
+     * @param selBlock Block number whose hash seeds selection
+     * @return selected Array of 5 appeal arbitrators
+     */
+    // solhint-disable-next-line code-complexity
+    function _selectAppealArbitratorsFromBlock(
+        uint256 disputeId,
+        address[3] memory original,
+        uint256 selBlock
+    ) internal view returns (address[5] memory selected) {
+        uint256 poolSize = arbitratorPool.length;
+        // Need 5 + 3 excluded
+        if (poolSize < 8) revert NotEnoughArbitrators();
+
+        Dispute storage d = disputes[disputeId];
+        uint256 found = 0;
+        uint256 nonce = 0;
+
+        while (found < 5 && nonce < MAX_ARBITRATOR_SEARCH) {
+            bytes32 h = keccak256(
+                abi.encodePacked(
+                    disputeId,
+                    blockhash(selBlock),
                     block.number,
                     msg.sender,
                     "appeal",

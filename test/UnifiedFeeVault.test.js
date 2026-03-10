@@ -12,7 +12,7 @@ const { time } = require("@nomicfoundation/hardhat-network-helpers");
  *   3. Distribute (70/20/10 split, permissionless, math, events)
  *   4. Bridge-to-treasury (BRIDGE_ROLE, balance tracking, events)
  *   5. View functions (undistributed, pendingForBridge, isOssified)
- *   6. Admin functions (setRecipients, pause, unpause, ossify)
+ *   6. Admin functions (proposeRecipients/applyRecipients, pause, unpause, ossify)
  *   7. Pausable behaviour (blocked during pause)
  *   8. Reentrancy safety (via nonReentrant modifier)
  *   9. Multi-token support (XOM + USDC independently)
@@ -28,6 +28,40 @@ describe("UnifiedFeeVault", function () {
   const ODDAO_BPS = 7000n;
   const STAKING_BPS = 2000n;
   const PROTOCOL_BPS = 1000n;
+  const TIMELOCK_DELAY = 48 * 60 * 60; // 48 hours in seconds
+
+  /**
+   * Helper: propose recipients, advance time past the 48-hour
+   * timelock, then apply the change. Used wherever the old
+   * setRecipients() was called.
+   */
+  async function timelockSetRecipients(vaultRef, signer, sp, pt) {
+    await vaultRef.connect(signer).proposeRecipients(sp, pt);
+    await time.increase(TIMELOCK_DELAY + 1);
+    await vaultRef.connect(signer).applyRecipients();
+  }
+
+  /**
+   * Helper: propose token bridge mode, advance time past the
+   * 48-hour timelock, then apply the change. Used wherever
+   * the old setTokenBridgeMode() was called.
+   */
+  async function timelockSetTokenBridgeMode(vaultRef, signer, token, mode) {
+    await vaultRef.connect(signer).proposeTokenBridgeMode(token, mode);
+    await time.increase(TIMELOCK_DELAY + 1);
+    await vaultRef.connect(signer).applyTokenBridgeMode();
+  }
+
+  /**
+   * Helper: propose XOM token, advance time past the 48-hour
+   * timelock, then apply the change. Used wherever the old
+   * setXomToken() was called.
+   */
+  async function timelockSetXomToken(vaultRef, signer, xomAddr) {
+    await vaultRef.connect(signer).proposeXomToken(xomAddr);
+    await time.increase(TIMELOCK_DELAY + 1);
+    await vaultRef.connect(signer).applyXomToken();
+  }
 
   /**
    * Deploy fresh instances of MockERC20 (XOM, USDC) and
@@ -590,33 +624,42 @@ describe("UnifiedFeeVault", function () {
   // ─────────────────────────────────────────────────────────────────────
 
   describe("Admin Functions", function () {
-    it("should update recipients via setRecipients", async function () {
-      const newStaking = user.address;
-      const newTreasury = attacker.address;
+    it("should update recipients via proposeRecipients + applyRecipients",
+      async function () {
+        const newStaking = user.address;
+        const newTreasury = attacker.address;
 
-      await vault
-        .connect(admin)
-        .setRecipients(newStaking, newTreasury);
+        await timelockSetRecipients(vault, admin, newStaking, newTreasury);
 
-      expect(await vault.stakingPool()).to.equal(newStaking);
-      expect(await vault.protocolTreasury()).to.equal(newTreasury);
-    });
+        expect(await vault.stakingPool()).to.equal(newStaking);
+        expect(await vault.protocolTreasury()).to.equal(newTreasury);
+      }
+    );
 
-    it("should emit RecipientsUpdated event on setRecipients", async function () {
-      await expect(
-        vault.connect(admin).setRecipients(user.address, attacker.address)
-      )
-        .to.emit(vault, "RecipientsUpdated")
-        .withArgs(user.address, attacker.address);
-    });
+    it("should emit RecipientsProposed on propose and RecipientsUpdated on apply",
+      async function () {
+        await expect(
+          vault.connect(admin).proposeRecipients(user.address, attacker.address)
+        )
+          .to.emit(vault, "RecipientsProposed");
 
-    it("should revert setRecipients for non-ADMIN_ROLE",
+        await time.increase(TIMELOCK_DELAY + 1);
+
+        await expect(
+          vault.connect(admin).applyRecipients()
+        )
+          .to.emit(vault, "RecipientsUpdated")
+          .withArgs(user.address, attacker.address);
+      }
+    );
+
+    it("should revert proposeRecipients for non-ADMIN_ROLE",
       async function () {
         const ADMIN_ROLE = await vault.ADMIN_ROLE();
         await expect(
           vault
             .connect(attacker)
-            .setRecipients(user.address, attacker.address)
+            .proposeRecipients(user.address, attacker.address)
         )
           .to.be.revertedWithCustomError(
             vault,
@@ -626,33 +669,33 @@ describe("UnifiedFeeVault", function () {
       }
     );
 
-    it("should revert setRecipients with zero staking pool",
+    it("should revert proposeRecipients with zero staking pool",
       async function () {
         await expect(
           vault
             .connect(admin)
-            .setRecipients(ethers.ZeroAddress, protocolTreasury.address)
+            .proposeRecipients(ethers.ZeroAddress, protocolTreasury.address)
         ).to.be.revertedWithCustomError(vault, "ZeroAddress");
       }
     );
 
-    it("should revert setRecipients with zero protocol treasury",
+    it("should revert proposeRecipients with zero protocol treasury",
       async function () {
         await expect(
           vault
             .connect(admin)
-            .setRecipients(stakingPool.address, ethers.ZeroAddress)
+            .proposeRecipients(stakingPool.address, ethers.ZeroAddress)
         ).to.be.revertedWithCustomError(vault, "ZeroAddress");
       }
     );
 
-    it("should distribute to new recipients after setRecipients",
+    it("should distribute to new recipients after proposeRecipients + applyRecipients",
       async function () {
         const newStaking = user;
         const newTreasury = attacker;
-        await vault
-          .connect(admin)
-          .setRecipients(newStaking.address, newTreasury.address);
+        await timelockSetRecipients(
+          vault, admin, newStaking.address, newTreasury.address
+        );
 
         // Deposit and distribute
         await vault
@@ -1048,42 +1091,53 @@ describe("UnifiedFeeVault", function () {
       expect(await vault.tokenBridgeMode(usdc.target)).to.equal(0);
     });
 
-    it("should allow ADMIN_ROLE to set SWAP_TO_XOM mode",
+    it("should allow ADMIN_ROLE to set SWAP_TO_XOM mode via timelock",
       async function () {
-        await vault
-          .connect(admin)
-          .setTokenBridgeMode(usdc.target, 1); // SWAP_TO_XOM
+        await timelockSetTokenBridgeMode(
+          vault, admin, usdc.target, 1
+        ); // SWAP_TO_XOM
         expect(await vault.tokenBridgeMode(usdc.target)).to.equal(1);
       }
     );
 
-    it("should allow ADMIN_ROLE to set back to IN_KIND",
+    it("should allow ADMIN_ROLE to set back to IN_KIND via timelock",
       async function () {
-        await vault.connect(admin).setTokenBridgeMode(usdc.target, 1);
-        await vault.connect(admin).setTokenBridgeMode(usdc.target, 0);
+        await timelockSetTokenBridgeMode(vault, admin, usdc.target, 1);
+        await timelockSetTokenBridgeMode(vault, admin, usdc.target, 0);
         expect(await vault.tokenBridgeMode(usdc.target)).to.equal(0);
       }
     );
 
-    it("should emit TokenBridgeModeSet event", async function () {
-      await expect(
-        vault.connect(admin).setTokenBridgeMode(usdc.target, 1)
-      )
-        .to.emit(vault, "TokenBridgeModeSet")
-        .withArgs(usdc.target, 1);
-    });
-
-    it("should revert for non-ADMIN_ROLE", async function () {
-      const ADMIN_ROLE = await vault.ADMIN_ROLE();
-      await expect(
-        vault.connect(attacker).setTokenBridgeMode(usdc.target, 1)
-      )
-        .to.be.revertedWithCustomError(
-          vault,
-          "AccessControlUnauthorizedAccount"
+    it("should emit BridgeModeProposed on propose and TokenBridgeModeSet on apply",
+      async function () {
+        await expect(
+          vault.connect(admin).proposeTokenBridgeMode(usdc.target, 1)
         )
-        .withArgs(attacker.address, ADMIN_ROLE);
-    });
+          .to.emit(vault, "BridgeModeProposed");
+
+        await time.increase(TIMELOCK_DELAY + 1);
+
+        await expect(
+          vault.connect(admin).applyTokenBridgeMode()
+        )
+          .to.emit(vault, "TokenBridgeModeSet")
+          .withArgs(usdc.target, 1);
+      }
+    );
+
+    it("should revert proposeTokenBridgeMode for non-ADMIN_ROLE",
+      async function () {
+        const ADMIN_ROLE = await vault.ADMIN_ROLE();
+        await expect(
+          vault.connect(attacker).proposeTokenBridgeMode(usdc.target, 1)
+        )
+          .to.be.revertedWithCustomError(
+            vault,
+            "AccessControlUnauthorizedAccount"
+          )
+          .withArgs(attacker.address, ADMIN_ROLE);
+      }
+    );
   });
 
   // ─────────────────────────────────────────────────────────────────────
@@ -1149,21 +1203,33 @@ describe("UnifiedFeeVault", function () {
   //  15. XOM Token Configuration
   // ─────────────────────────────────────────────────────────────────────
 
-  describe("XOM Token Config", function () {
-    it("should allow ADMIN_ROLE to set XOM token", async function () {
-      await vault.connect(admin).setXomToken(xom.target);
-      expect(await vault.xomToken()).to.equal(xom.target);
-    });
+  describe("XOM Token Config (timelocked)", function () {
+    it("should allow ADMIN_ROLE to set XOM token via timelock",
+      async function () {
+        await timelockSetXomToken(vault, admin, xom.target);
+        expect(await vault.xomToken()).to.equal(xom.target);
+      }
+    );
 
-    it("should emit XOMTokenUpdated event", async function () {
-      await expect(vault.connect(admin).setXomToken(xom.target))
-        .to.emit(vault, "XOMTokenUpdated")
-        .withArgs(xom.target);
-    });
+    it("should emit XOMTokenProposed on propose and XOMTokenUpdated on apply",
+      async function () {
+        await expect(
+          vault.connect(admin).proposeXomToken(xom.target)
+        ).to.emit(vault, "XOMTokenProposed");
 
-    it("should revert on zero address", async function () {
+        await time.increase(TIMELOCK_DELAY + 1);
+
+        await expect(
+          vault.connect(admin).applyXomToken()
+        )
+          .to.emit(vault, "XOMTokenUpdated")
+          .withArgs(xom.target);
+      }
+    );
+
+    it("should revert proposeXomToken on zero address", async function () {
       await expect(
-        vault.connect(admin).setXomToken(ethers.ZeroAddress)
+        vault.connect(admin).proposeXomToken(ethers.ZeroAddress)
       ).to.be.revertedWithCustomError(vault, "ZeroAddress");
     });
   });
@@ -1272,9 +1338,9 @@ describe("UnifiedFeeVault", function () {
       await vault
         .connect(admin)
         .proposeSwapRouter(mockSwapRouter.target);
-      await time.increase(48 * 3600);
+      await time.increase(TIMELOCK_DELAY + 1);
       await vault.connect(admin).applySwapRouter();
-      await vault.connect(admin).setXomToken(xom.target);
+      await timelockSetXomToken(vault, admin, xom.target);
 
       // Deposit USDC fees and distribute to build pendingBridge
       await vault
@@ -1368,11 +1434,12 @@ describe("UnifiedFeeVault", function () {
 
       const BR = await freshVault.BRIDGE_ROLE();
       await freshVault.connect(admin).grantRole(BR, bridger.address);
-      await freshVault.connect(admin).setXomToken(xom.target);
+      await timelockSetXomToken(freshVault, admin, xom.target);
 
+      const dl = (await time.latest()) + 3600;
       await expect(
         freshVault.connect(bridger).swapAndBridge(
-          usdc.target, 1, 0, user.address, deadline
+          usdc.target, 1, 0, user.address, dl
         )
       ).to.be.revertedWithCustomError(freshVault, "SwapRouterNotSet");
     });
@@ -1466,7 +1533,7 @@ describe("UnifiedFeeVault", function () {
       await mockBridge.waitForDeployment();
 
       // Configure vault: propose+apply privacy bridge via timelock
-      await vault.connect(admin).setXomToken(xom.target);
+      await timelockSetXomToken(vault, admin, xom.target);
       await vault
         .connect(admin)
         .proposePrivacyBridge(mockBridge.target, pxom.target);
@@ -1597,7 +1664,7 @@ describe("UnifiedFeeVault", function () {
         await freshVault
           .connect(admin)
           .grantRole(BR, bridger.address);
-        await freshVault.connect(admin).setXomToken(xom.target);
+        await timelockSetXomToken(freshVault, admin, xom.target);
 
         await expect(
           freshVault
@@ -1699,9 +1766,9 @@ describe("UnifiedFeeVault", function () {
         await vault
           .connect(admin)
           .proposeSwapRouter(mockRouter.target);
-        await time.increase(48 * 3600);
+        await time.increase(TIMELOCK_DELAY + 1);
         await vault.connect(admin).applySwapRouter();
-        await vault.connect(admin).setXomToken(xom.target);
+        await timelockSetXomToken(vault, admin, xom.target);
 
         // Deposit and distribute both tokens
         await vault

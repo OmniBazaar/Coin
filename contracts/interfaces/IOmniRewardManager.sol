@@ -14,8 +14,7 @@ interface IOmniRewardManager {
     enum PoolType {
         WelcomeBonus,
         ReferralBonus,
-        FirstSaleBonus,
-        ValidatorRewards
+        FirstSaleBonus
     }
 
     // ============ Structs ============
@@ -26,16 +25,6 @@ interface IOmniRewardManager {
         address secondLevelReferrer;
         uint256 primaryAmount;
         uint256 secondaryAmount;
-    }
-
-    /// @notice Parameters for validator reward distribution
-    struct ValidatorRewardParams {
-        address validator;
-        uint256 validatorAmount;
-        address stakingPool;
-        uint256 stakingAmount;
-        address oddao;
-        uint256 oddaoAmount;
     }
 
     // ============ Events ============
@@ -68,16 +57,6 @@ interface IOmniRewardManager {
         address indexed seller,
         uint256 indexed amount,
         uint256 indexed remainingPool
-    );
-
-    /// @notice Emitted when validator rewards are distributed
-    /// @param virtualBlockHeight Virtual block height for this distribution
-    /// @param validator Address of the selected validator
-    /// @param totalAmount Combined amount distributed
-    event ValidatorRewardDistributed(
-        uint256 indexed virtualBlockHeight,
-        address indexed validator,
-        uint256 indexed totalAmount
     );
 
     /// @notice Emitted when a pool balance drops below warning threshold
@@ -234,16 +213,6 @@ interface IOmniRewardManager {
      */
     function claimFirstSaleBonusPermissionless() external;
 
-    // ============ Validator Reward Functions ============
-
-    /**
-     * @notice Distribute validator reward for a virtual block
-     * @param params Struct containing validator reward distribution parameters
-     */
-    function distributeValidatorReward(
-        ValidatorRewardParams calldata params
-    ) external;
-
     // ============ Admin Functions ============
 
     /**
@@ -270,7 +239,6 @@ interface IOmniRewardManager {
      * @return welcomeBonus Remaining welcome bonus pool balance
      * @return referralBonus Remaining referral bonus pool balance
      * @return firstSaleBonus Remaining first sale bonus pool balance
-     * @return validatorRewards Remaining validator rewards pool balance
      */
     function getPoolBalances()
         external
@@ -278,8 +246,7 @@ interface IOmniRewardManager {
         returns (
             uint256 welcomeBonus,
             uint256 referralBonus,
-            uint256 firstSaleBonus,
-            uint256 validatorRewards
+            uint256 firstSaleBonus
         );
 
     /**
@@ -325,8 +292,8 @@ interface IOmniRewardManager {
         external
         view
         returns (
-            uint256[4] memory initialAmounts,
-            uint256[4] memory remainingAmounts,
-            uint256[4] memory distributedAmounts
+            uint256[3] memory initialAmounts,
+            uint256[3] memory remainingAmounts,
+            uint256[3] memory distributedAmounts
         );
 }

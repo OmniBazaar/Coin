@@ -1018,8 +1018,22 @@ contract PrivateDEX is
     /**
      * @notice Get order book for a trading pair (encrypted amounts)
      * @dev Returns arrays of order IDs for buy and sell sides.
-     *      Warning: iterates orderIds array -- gas cost grows with
-     *      total order count. Intended for off-chain calls only.
+     *
+     *      M-01 Round 6 -- Known limitation: This view function
+     *      iterates the full orderIds array. Gas cost grows linearly
+     *      with the total lifetime order count because filled and
+     *      cancelled orders are never removed from orderIds (see
+     *      M-02 below). Intended for off-chain / eth_call use only;
+     *      on-chain callers should use userOrders[] instead.
+     *
+     *      M-02 Round 6 -- Known limitation: The orderIds array is
+     *      append-only; there is no cleanup mechanism for expired,
+     *      filled, or cancelled orders. Adding swap-and-pop removal
+     *      would break index-based references held by external
+     *      indexers. This is an accepted design trade-off; off-chain
+     *      event indexing is the recommended approach for production
+     *      order book queries.
+     *
      * @param pair Trading pair to query
      * @param maxOrders Maximum number of orders to return per side
      * @return buyOrders Array of buy order IDs

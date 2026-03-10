@@ -40,6 +40,19 @@ contract OmniTreasury is
 {
     using SafeERC20 for IERC20;
 
+    // ─────────────────────── Structs ───────────────────────────
+
+    /**
+     * @notice Tracks an active ERC-20 approval granted by this
+     *         treasury (M-01 Round 6)
+     * @param token The ERC-20 token address
+     * @param spender The approved spender address
+     */
+    struct Approval {
+        address token;
+        address spender;
+    }
+
     // ─────────────────────────── Constants ───────────────────────────
 
     /// @notice Role that can transfer assets, approve spenders, and
@@ -61,6 +74,13 @@ contract OmniTreasury is
     /// @notice Tracks the number of addresses holding
     ///         DEFAULT_ADMIN_ROLE to prevent accidental lockout.
     uint256 private _adminCount;
+
+    /// @notice List of active ERC-20 approvals for revocation
+    ///         tracking (M-01 Round 6)
+    /// @dev Entries are appended in approveToken() and batch-
+    ///      revoked in revokeAllApprovals(). Duplicates are
+    ///      harmless (forceApprove(0) is idempotent).
+    Approval[] private _activeApprovals;
 
     // ──────────────────────────── Events ─────────────────────────────
 
@@ -140,6 +160,11 @@ contract OmniTreasury is
         address indexed newGuardian,
         address indexed newAdmin
     );
+
+    /// @notice Emitted when all active approvals are revoked
+    ///         (M-01 Round 6).
+    /// @param count Number of approvals revoked.
+    event AllApprovalsRevoked(uint256 indexed count);
 
     // ──────────────────────────── Errors ─────────────────────────────
 
@@ -273,6 +298,16 @@ contract OmniTreasury is
         if (spender == address(0)) revert ZeroAddress();
 
         token.forceApprove(spender, amount);
+
+        // M-01 Round 6: Track non-zero approvals for revocation
+        if (amount > 0) {
+            _activeApprovals.push(
+                Approval({
+                    token: address(token),
+                    spender: spender
+                })
+            );
+        }
 
         emit TokenApproved(address(token), spender, amount);
     }
@@ -430,6 +465,53 @@ contract OmniTreasury is
         _unpause();
     }
 
+    // ──────────────────── Approval Management ──────────────────────
+
+    /**
+     * @notice Revoke all tracked ERC-20 approvals (M-01 Round 6)
+     * @dev Iterates over all approvals created via approveToken()
+     *      and sets each to zero via forceApprove. Then clears the
+     *      tracking array. Duplicates are harmless (forceApprove(0)
+     *      is idempotent). Only GOVERNANCE_ROLE can call.
+     */
+    function revokeAllApprovals()
+        external
+        onlyRole(GOVERNANCE_ROLE)
+        nonReentrant
+    {
+        _revokeAllApprovalsInternal();
+    }
+
+    /**
+     * @notice Get the number of tracked active approvals
+     * @return count Number of tracked approvals
+     */
+    function activeApprovalCount()
+        external
+        view
+        returns (uint256 count)
+    {
+        count = _activeApprovals.length;
+    }
+
+    /**
+     * @notice Get a tracked approval by index
+     * @param index Index in the approvals array
+     * @return token The ERC-20 token address
+     * @return spender The approved spender address
+     */
+    function getActiveApproval(
+        uint256 index
+    )
+        external
+        view
+        returns (address token, address spender)
+    {
+        Approval storage a = _activeApprovals[index];
+        token = a.token;
+        spender = a.spender;
+    }
+
     // ──────────────────── Admin Functions ──────────────────────────
 
     /**
@@ -462,6 +544,11 @@ contract OmniTreasury is
         if (newGovernance == address(0)) revert ZeroAddress();
         if (newGuardian == address(0)) revert ZeroAddress();
         if (newAdmin == address(0)) revert ZeroAddress();
+
+        // M-01 Round 6: Revoke all outstanding ERC-20 approvals
+        // before transferring control to prevent stale approvals
+        // from being exploited after governance transition.
+        _revokeAllApprovalsInternal();
 
         // Grant new roles first (admin first so _adminCount > 1
         // before revoking the caller's admin role)
@@ -525,6 +612,26 @@ contract OmniTreasury is
         return
             interfaceId == type(IERC721Receiver).interfaceId ||
             super.supportsInterface(interfaceId);
+    }
+
+    // ─────────────────── Internal Functions ────────────────────────
+
+    /**
+     * @notice Revoke all tracked ERC-20 approvals internally
+     * @dev M-01 Round 6: Shared logic for revokeAllApprovals()
+     *      and transitionGovernance(). Uses forceApprove(0) which
+     *      handles non-standard tokens. Duplicates in the array
+     *      are harmless (setting zero approval twice is a no-op).
+     */
+    function _revokeAllApprovalsInternal() internal {
+        uint256 len = _activeApprovals.length;
+        for (uint256 i; i < len; ++i) {
+            IERC20(_activeApprovals[i].token).forceApprove(
+                _activeApprovals[i].spender, 0
+            );
+        }
+        delete _activeApprovals;
+        emit AllApprovalsRevoked(len);
     }
 
     // ─────────────────── Internal Overrides ───────────────────────

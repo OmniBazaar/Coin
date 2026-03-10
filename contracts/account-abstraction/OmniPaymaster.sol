@@ -66,6 +66,14 @@ contract OmniPaymaster is IPaymaster, Ownable {
     ///      When set, only registered users receive free gas (M-01).
     address public registration;
 
+    /// @notice Whether to grant free ops when the registration check fails
+    /// @dev R6 M-01: When true (default), registration check failures
+    ///      (staticcall revert, short return data, etc.) treat the account
+    ///      as registered (fail-open). When false, registration check
+    ///      failures treat the account as unregistered (fail-closed).
+    ///      Set to false once the registration contract is stable.
+    bool public registrationFailOpen;
+
     /// @notice Configurable XOM fee per operation (L-02)
     /// @dev Allows adjusting the fee as XOM price changes
     uint256 public xomGasFee;
@@ -140,6 +148,16 @@ contract OmniPaymaster is IPaymaster, Ownable {
     /// @param newRegistration The new registration contract address
     event RegistrationUpdated(address indexed newRegistration);
 
+    /// @notice Emitted when the registration staticcall fails
+    /// @dev R6 M-01: Allows off-chain monitoring to detect registration
+    ///      contract unavailability and alert the admin.
+    /// @param account The account whose registration check failed
+    event RegistrationCheckFailed(address indexed account);
+
+    /// @notice Emitted when the registrationFailOpen setting is updated
+    /// @param failOpen The new fail-open setting
+    event RegistrationFailOpenUpdated(bool indexed failOpen);
+
     /// @notice Emitted when tokens are rescued from the contract
     /// @param token The token rescued
     /// @param to Recipient address
@@ -210,6 +228,7 @@ contract OmniPaymaster is IPaymaster, Ownable {
         xomGasFee = DEFAULT_XOM_GAS_FEE;
         freeOpsLimit = DEFAULT_FREE_OPS;
         sponsorshipEnabled = true;
+        registrationFailOpen = true;
         dailySponsorshipBudget = 1000;
         // solhint-disable-next-line not-rely-on-time
         lastBudgetReset = block.timestamp;
@@ -402,6 +421,18 @@ contract OmniPaymaster is IPaymaster, Ownable {
     }
 
     /**
+     * @notice Configure fail-open or fail-closed behavior for registration checks
+     * @dev R6 M-01: When true, registration check failures grant free ops
+     *      (backward-compatible default). When false, registration check
+     *      failures deny free ops (more secure once registration is stable).
+     * @param failOpen True for fail-open, false for fail-closed
+     */
+    function setRegistrationFailOpen(bool failOpen) external onlyOwner {
+        registrationFailOpen = failOpen;
+        emit RegistrationFailOpenUpdated(failOpen);
+    }
+
+    /**
      * @notice Add multiple accounts to the whitelist in one transaction (L-03)
      * @param accounts Array of accounts to whitelist
      */
@@ -483,18 +514,22 @@ contract OmniPaymaster is IPaymaster, Ownable {
     /**
      * @notice Determine sponsorship mode for an account
      * @dev M-01: When registration is set, free ops require registration.
+     *      R6 M-01: Uses configurable fail-open/fail-closed policy when
+     *      the registration staticcall fails. Emits RegistrationCheckFailed
+     *      for off-chain monitoring when the check fails.
      * @param account The account requesting sponsorship
      * @return mode The determined sponsorship mode
      */
     function _determineSponsorMode(
         address account
-    ) internal view returns (SponsorMode mode) {
+    ) internal returns (SponsorMode mode) {
         if (whitelisted[account]) {
             return SponsorMode.subsidized;
         }
 
         // M-01: Check registration for free ops (sybil resistance)
-        bool isRegistered = true;
+        // R6 M-01: Default to registrationFailOpen setting when check fails
+        bool isRegistered = registrationFailOpen;
         if (registration != address(0)) {
             // solhint-disable-next-line avoid-low-level-calls
             (bool ok, bytes memory result) = registration.staticcall(
@@ -504,6 +539,9 @@ contract OmniPaymaster is IPaymaster, Ownable {
             );
             if (ok && result.length > 31) {
                 isRegistered = abi.decode(result, (bool));
+            } else {
+                // R6 M-01: Emit event for off-chain monitoring
+                emit RegistrationCheckFailed(account);
             }
         }
 

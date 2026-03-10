@@ -38,9 +38,12 @@ describe("OmniFeeRouter", function () {
     // Deploy a dummy contract to use as a valid router address (has code, not token or feeRouter)
     dummyRouter = await MockERC20.deploy("Dummy Router", "DUMMY");
 
-    // Deploy OmniFeeRouter with valid parameters
+    // Deploy OmniFeeRouter with valid parameters (3-arg constructor: feeCollector, maxFeeBps, trustedForwarder)
     const OmniFeeRouter = await ethers.getContractFactory("OmniFeeRouter");
-    feeRouter = await OmniFeeRouter.deploy(feeCollector.address, MAX_FEE_BPS);
+    feeRouter = await OmniFeeRouter.deploy(feeCollector.address, MAX_FEE_BPS, ethers.ZeroAddress);
+
+    // R6 M-01: Allowlist the dummy router for swap tests
+    await feeRouter.connect(owner).setRouterAllowed(dummyRouter.target, true);
 
     // Give user some input tokens and approve the fee router
     await inputToken.mint(user.address, TOTAL_AMOUNT);
@@ -54,14 +57,14 @@ describe("OmniFeeRouter", function () {
   describe("Deployment", function () {
     it("Should deploy with valid feeCollector and maxFeeBps", async function () {
       const OmniFeeRouter = await ethers.getContractFactory("OmniFeeRouter");
-      const router = await OmniFeeRouter.deploy(feeCollector.address, 200);
+      const router = await OmniFeeRouter.deploy(feeCollector.address, 200, ethers.ZeroAddress);
       expect(router.target).to.be.properAddress;
     });
 
     it("Should revert with InvalidFeeCollector when feeCollector is zero address", async function () {
       const OmniFeeRouter = await ethers.getContractFactory("OmniFeeRouter");
       await expect(
-        OmniFeeRouter.deploy(ethers.ZeroAddress, MAX_FEE_BPS)
+        OmniFeeRouter.deploy(ethers.ZeroAddress, MAX_FEE_BPS, ethers.ZeroAddress)
       ).to.be.revertedWithCustomError(
         { interface: OmniFeeRouter.interface },
         "InvalidFeeCollector"
@@ -71,7 +74,7 @@ describe("OmniFeeRouter", function () {
     it("Should revert with FeeExceedsCap when maxFeeBps is 0", async function () {
       const OmniFeeRouter = await ethers.getContractFactory("OmniFeeRouter");
       await expect(
-        OmniFeeRouter.deploy(feeCollector.address, 0)
+        OmniFeeRouter.deploy(feeCollector.address, 0, ethers.ZeroAddress)
       ).to.be.revertedWithCustomError(
         { interface: OmniFeeRouter.interface },
         "FeeExceedsCap"
@@ -81,7 +84,7 @@ describe("OmniFeeRouter", function () {
     it("Should revert with FeeExceedsCap when maxFeeBps exceeds 500", async function () {
       const OmniFeeRouter = await ethers.getContractFactory("OmniFeeRouter");
       await expect(
-        OmniFeeRouter.deploy(feeCollector.address, 501)
+        OmniFeeRouter.deploy(feeCollector.address, 501, ethers.ZeroAddress)
       ).to.be.revertedWithCustomError(
         { interface: OmniFeeRouter.interface },
         "FeeExceedsCap"
@@ -242,14 +245,15 @@ describe("OmniFeeRouter", function () {
   // ---------------------------------------------------------------------------
 
   describe("rescueTokens", function () {
-    it("Should allow feeCollector to rescue tokens stuck in the contract", async function () {
+    it("Should allow owner to rescue tokens stuck in the contract", async function () {
       // Send some tokens directly to the feeRouter contract (simulating stuck tokens)
       const rescueAmount = ethers.parseEther("50");
       await inputToken.mint(feeRouter.target, rescueAmount);
 
       const collectorBalanceBefore = await inputToken.balanceOf(feeCollector.address);
 
-      await feeRouter.connect(feeCollector).rescueTokens(inputToken.target);
+      // R6: rescueTokens is now onlyOwner (Ownable2Step), not feeCollector-gated
+      await feeRouter.connect(owner).rescueTokens(inputToken.target);
 
       const collectorBalanceAfter = await inputToken.balanceOf(feeCollector.address);
       expect(collectorBalanceAfter - collectorBalanceBefore).to.equal(rescueAmount);
@@ -258,19 +262,21 @@ describe("OmniFeeRouter", function () {
       expect(await inputToken.balanceOf(feeRouter.target)).to.equal(0);
     });
 
-    it("Should revert with InvalidFeeCollector when called by non-feeCollector", async function () {
+    it("Should revert with OwnableUnauthorizedAccount when called by non-owner", async function () {
       // Send some tokens to the contract so there is something to rescue
       await inputToken.mint(feeRouter.target, ethers.parseEther("50"));
 
+      // R6: rescueTokens is now onlyOwner, so non-owner gets OwnableUnauthorizedAccount
       await expect(
         feeRouter.connect(user).rescueTokens(inputToken.target)
-      ).to.be.revertedWithCustomError(feeRouter, "InvalidFeeCollector");
+      ).to.be.revertedWithCustomError(feeRouter, "OwnableUnauthorizedAccount");
     });
 
     it("Should succeed silently when no tokens are stuck", async function () {
       // Contract has zero balance — rescue should not revert
       const collectorBalanceBefore = await inputToken.balanceOf(feeCollector.address);
-      await feeRouter.connect(feeCollector).rescueTokens(inputToken.target);
+      // R6: rescueTokens is now onlyOwner
+      await feeRouter.connect(owner).rescueTokens(inputToken.target);
       const collectorBalanceAfter = await inputToken.balanceOf(feeCollector.address);
       expect(collectorBalanceAfter).to.equal(collectorBalanceBefore);
     });

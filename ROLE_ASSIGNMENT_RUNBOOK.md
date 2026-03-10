@@ -25,7 +25,7 @@ This runbook lists every role defined across all deployed contracts, explains wh
 | `MINTER_ROLE` | `keccak256("MINTER_ROLE")` | Mint new XOM tokens. **PERMANENTLY REVOKED** after genesis funding. |
 | `BURNER_ROLE` | `keccak256("BURNER_ROLE")` | Burn XOM tokens on behalf of holders. |
 
-**Security note:** MINTER_ROLE has been revoked from all addresses. No entity can mint new XOM. The 16.6B supply is final.
+**Security note:** MINTER_ROLE has been revoked from all addresses. No entity can mint new XOM. The 16.8B supply is final.
 
 ### OmniCore (Core Settlement & Registry)
 
@@ -45,15 +45,16 @@ This runbook lists every role defined across all deployed contracts, explains wh
 | `BONUS_MARKER_ROLE` | `keccak256("BONUS_MARKER_ROLE")` | Mark welcome bonus and first sale bonus as claimed (called by OmniRewardManager). |
 | `TRANSACTION_RECORDER_ROLE` | `keccak256("TRANSACTION_RECORDER_ROLE")` | Record marketplace/DEX transactions for KYC volume tracking. Mark first sale completed. Held by marketplace/escrow contracts. |
 
-### OmniRewardManager (Bonus & Reward Pools)
+### OmniRewardManager (Bonus Distribution)
 
 | Role | Constant | Purpose |
 |------|----------|---------|
 | `DEFAULT_ADMIN_ROLE` | `0x00` | Grant/revoke roles, set registration contract, set ODDAO address, authorize UUPS upgrades, pause/unpause. |
 | `BONUS_DISTRIBUTOR_ROLE` | `keccak256("BONUS_DISTRIBUTOR_ROLE")` | Distribute welcome, referral, and first sale bonuses to users. |
-| `VALIDATOR_REWARD_ROLE` | `keccak256("VALIDATOR_REWARD_ROLE")` | Distribute block rewards to validators, staking pool, and ODDAO. |
 | `UPGRADER_ROLE` | `keccak256("UPGRADER_ROLE")` | Authorize UUPS implementation upgrades. |
-| `PAUSER_ROLE` | `keccak256("PAUSER_ROLE")` | Emergency pause of all reward distribution. |
+| `PAUSER_ROLE` | `keccak256("PAUSER_ROLE")` | Emergency pause of all bonus distribution. |
+
+**Note:** `VALIDATOR_REWARD_ROLE` was removed. Validator rewards are handled exclusively by OmniValidatorRewards.sol, which is funded directly from the deployer (6.089B XOM).
 
 ### OmniValidatorRewards (Block Reward Distribution)
 
@@ -238,7 +239,6 @@ During the Pioneer Phase, the deployer (`0xaDAD...9ba`) holds all admin and oper
 | | TRANSACTION_RECORDER_ROLE | MinimalEscrow, DEXSettlement (needs granting) |
 | **OmniRewardManager** | DEFAULT_ADMIN_ROLE | Deployer |
 | | BONUS_DISTRIBUTOR_ROLE | Deployer / validator service |
-| | VALIDATOR_REWARD_ROLE | Deployer / OmniValidatorRewards |
 | | UPGRADER_ROLE | Deployer |
 | | PAUSER_ROLE | Deployer |
 | **OmniValidatorRewards** | DEFAULT_ADMIN_ROLE | Deployer |
@@ -304,7 +304,6 @@ In production, all admin roles transfer to a TimelockController (48h+ delay) con
 | | TRANSACTION_RECORDER_ROLE | MinimalEscrow, DEXSettlement, OmniMarketplace contract addresses |
 | **OmniRewardManager** | DEFAULT_ADMIN_ROLE | TimelockController |
 | | BONUS_DISTRIBUTOR_ROLE | Validator service account (dedicated EOA) |
-| | VALIDATOR_REWARD_ROLE | OmniValidatorRewards contract address |
 | | UPGRADER_ROLE | TimelockController |
 | | PAUSER_ROLE | Emergency multisig (separate from admin multisig) |
 | **OmniValidatorRewards** | DEFAULT_ADMIN_ROLE | TimelockController |
@@ -445,7 +444,6 @@ console.log("Admin of ADMIN_ROLE:", roleAdmin);
 - [ ] `VERIFIER_ROLE` granted to all 5 validator addresses on OmniParticipation
 - [ ] `BLOCKCHAIN_ROLE` and `PENALTY_ROLE` granted to validator service on OmniValidatorRewards
 - [ ] `BONUS_DISTRIBUTOR_ROLE` granted to validator service on OmniRewardManager
-- [ ] `VALIDATOR_REWARD_ROLE` granted to OmniValidatorRewards contract on OmniRewardManager
 - [ ] `DEPOSITOR_ROLE` granted to all fee-generating contracts on UnifiedFeeVault
 - [ ] `TRANSACTION_RECORDER_ROLE` granted to MinimalEscrow and DEXSettlement on OmniRegistration
 - [ ] `BONUS_MARKER_ROLE` granted to OmniRewardManager on OmniRegistration
@@ -460,7 +458,6 @@ console.log("Admin of ADMIN_ROLE:", roleAdmin);
 | `MINTER_ROLE` (OmniCoin) | **CRITICAL.** Infinite mint attack. Already permanently revoked. |
 | `ADMIN_ROLE` (OmniCore) | **HIGH.** Can redirect fee distribution, manipulate validator registry, change service addresses to malicious contracts. |
 | `BONUS_DISTRIBUTOR_ROLE` | **HIGH.** Can drain welcome/referral/first-sale bonus pools by distributing to arbitrary addresses. |
-| `VALIDATOR_REWARD_ROLE` | **HIGH.** Can drain the 6.089B XOM validator reward pool. |
 | `BRIDGE_ROLE` (UnifiedFeeVault) | **HIGH.** Can bridge accumulated ODDAO fees to an attacker address. |
 | `DEPOSITOR_ROLE` | **LOW.** Can only deposit into the vault, not withdraw. |
 | `VERIFIER_ROLE` | **MEDIUM.** Can inflate participation scores, potentially qualifying undeserving validators. |
@@ -489,7 +486,6 @@ VALIDATOR_ROLE:            0x21702c8af46127c7fa207f89d0b0a8441bb32959a0ac7df790e
 KYC_ATTESTOR_ROLE:         0x8c5bbafa198660ea2bab95087e4a5e4b65e6c27fa5db8d12ea097df550e5c6c0
 BONUS_MARKER_ROLE:         0x7d4c4a5c4d4f6e7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a
 BONUS_DISTRIBUTOR_ROLE:    0xea8cd49e57101b1c768f4b3a6bf2a94d6a7fcf0f7e3c3c8fb7b7cff8a2c3d4e5
-VALIDATOR_REWARD_ROLE:     (compute via keccak256("VALIDATOR_REWARD_ROLE"))
 UPGRADER_ROLE:             0x189ab7a9244df0848122154315af71fe140f3db0fe014031783b0946b8c9d2e3
 PAUSER_ROLE:               0x65d7a28e3265b37a6474929f336521b332c1681b933f6cb9f3376673440d862a
 VERIFIER_ROLE:             (compute via keccak256("VERIFIER_ROLE"))

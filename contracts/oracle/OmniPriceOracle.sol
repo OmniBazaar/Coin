@@ -473,6 +473,16 @@ contract OmniPriceOracle is
     /// @param cancelledImplementation The implementation that was cancelled
     event UpgradeCancelled(address indexed cancelledImplementation);
 
+    /// @notice Emitted when a validator's violation count is reset
+    /// @dev M-02 Round 6: provides observability for validator
+    ///      rehabilitation events
+    /// @param validator Address of the rehabilitated validator
+    /// @param previousCount Violation count before reset
+    event ViolationCountReset(
+        address indexed validator,
+        uint256 previousCount
+    );
+
     // ══════════════════════════════════════════════════════════════════
     //                           INITIALIZER
     // ══════════════════════════════════════════════════════════════════
@@ -670,8 +680,9 @@ contract OmniPriceOracle is
                 }
             }
 
-            // Cumulative deviation check
-            if (!_isCumulativeDeviationSafe(token, price)) {
+            // Cumulative deviation check (M-01 Round 6: uses
+            // state-modifying variant that resets expired anchors)
+            if (!_checkCumulativeDeviationSafe(token, price)) {
                 emit SubmissionSkipped(
                     token, "cumulative deviation"
                 );
@@ -1067,6 +1078,27 @@ contract OmniPriceOracle is
         emit UpgradeCancelled(cancelled);
     }
 
+    /**
+     * @notice Reset a validator's violation count to allow
+     *         rehabilitation after suspension
+     * @dev M-02 Round 6: without this function, a validator
+     *      that accumulates MAX_VIOLATIONS is permanently
+     *      suspended with no recovery path. Legitimate validators
+     *      may experience temporary data feed issues (e.g., a
+     *      malfunctioning Chainlink feed causing incorrect deviation
+     *      calculations) that should not result in permanent
+     *      exclusion. Only DEFAULT_ADMIN_ROLE can reset violations.
+     * @param validator Address of the validator to rehabilitate
+     */
+    function resetViolationCount(
+        address validator
+    ) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        if (validator == address(0)) revert ZeroTokenAddress();
+        uint256 previousCount = violationCount[validator];
+        violationCount[validator] = 0;
+        emit ViolationCountReset(validator, previousCount);
+    }
+
     /// @notice Pause the oracle (emergency)
     function pause() external onlyRole(DEFAULT_ADMIN_ROLE) {
         _pause();
@@ -1184,22 +1216,38 @@ contract OmniPriceOracle is
     }
 
     /**
-     * @notice Check cumulative deviation without reverting
-     * @dev Used by batch submissions to skip rather than revert
+     * @notice Check cumulative deviation without reverting, resetting
+     *         anchor if the hourly window has expired
+     * @dev M-01 Round 6: this function replaces the original view-only
+     *      _isCumulativeDeviationSafe to ensure the batch path resets
+     *      the anchor price when the hourly window expires, matching
+     *      the behavior of _checkCumulativeDeviation in the single
+     *      submission path. Without this fix, batch-only validators
+     *      would never reset the anchor, causing stale anchor windows
+     *      to persist indefinitely.
      * @param token Token address
      * @param price Submitted price to check
      * @return safe True if deviation is within bounds
      */
-    function _isCumulativeDeviationSafe(
+    function _checkCumulativeDeviationSafe(
         address token,
         uint256 price
-    ) internal view returns (bool safe) {
+    ) internal returns (bool safe) {
         uint256 anchor = anchorPrice[token];
-        if (anchor == 0) return true;
+        if (anchor == 0) {
+            // First submission -- set anchor
+            anchorPrice[token] = price;
+            // solhint-disable-next-line not-rely-on-time
+            anchorTimestamp[token] = block.timestamp;
+            return true;
+        }
 
-        // If anchor has expired, any price is safe
+        // Reset anchor if hourly window has expired
         // solhint-disable-next-line not-rely-on-time
         if (block.timestamp - anchorTimestamp[token] >= 1 hours) {
+            anchorPrice[token] = price;
+            // solhint-disable-next-line not-rely-on-time
+            anchorTimestamp[token] = block.timestamp;
             return true;
         }
 

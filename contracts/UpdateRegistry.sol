@@ -123,6 +123,11 @@ contract UpdateRegistry is AccessControl {
     /// @notice Index of the current latestVersion in versionHistory (M-02 prevents regression)
     mapping(bytes32 => uint256) public latestReleaseIndex;
 
+    /// @notice Index of the current minimum version in versionHistory (R6 M-01 monotonic enforcement)
+    /// @dev Tracks the release index associated with the current minimumVersion.
+    ///      Prevents minimum version from being downgraded to an older release.
+    mapping(bytes32 => uint256) public minimumVersionIndex;
+
     // ============================================================
     //                    EVENTS
     // ============================================================
@@ -161,6 +166,21 @@ contract UpdateRegistry is AccessControl {
     event MinimumVersionUpdated(
         string indexed component,
         string version
+    );
+
+    /**
+     * @notice Emitted when a minimum version update is skipped (monotonic enforcement)
+     * @dev R6 M-01: Indicates the new release's minVersion is associated with
+     *      an older release index than the current minimum. The minimum version
+     *      is NOT downgraded.
+     * @param component Component identifier
+     * @param currentMinVersion Current minimum version (retained)
+     * @param skippedMinVersion The minimum version from the new release (ignored)
+     */
+    event MinimumVersionDowngradeBlocked(
+        string indexed component,
+        string currentMinVersion,
+        string skippedMinVersion
     );
 
     /**
@@ -217,6 +237,11 @@ contract UpdateRegistry is AccessControl {
     /// @param expected The current nonce that signatures must include
     /// @param provided The nonce included in the signatures
     error StaleNonce(uint256 expected, uint256 provided);
+
+    /// @notice Minimum version cannot be downgraded (R6 M-01 monotonic enforcement)
+    /// @param component Component identifier
+    /// @param version Version that would have been a downgrade
+    error MinimumVersionDowngrade(string component, string version);
 
     // ============================================================
     //                    CONSTRUCTOR
@@ -323,9 +348,22 @@ contract UpdateRegistry is AccessControl {
             latestReleaseIndex[componentHash] = idx;
         }
 
-        // Update minimum version if provided
+        // R6 M-01: Update minimum version only if provided AND the release
+        // index is >= the current minimum version index. This prevents
+        // an older release from downgrading the minimum version.
         if (bytes(minVersion).length > 0) {
-            minimumVersion[componentHash] = minVersion;
+            uint256 currentMinIdx = minimumVersionIndex[componentHash];
+            // solhint-disable-next-line gas-strict-inequalities
+            if (idx >= currentMinIdx) {
+                minimumVersion[componentHash] = minVersion;
+                minimumVersionIndex[componentHash] = idx;
+            } else {
+                emit MinimumVersionDowngradeBlocked(
+                    component,
+                    minimumVersion[componentHash],
+                    minVersion
+                );
+            }
         }
 
         emit ReleasePublished(component, version, binaryHash, minVersion);
@@ -389,8 +427,13 @@ contract UpdateRegistry is AccessControl {
      * @dev Only callable by DEFAULT_ADMIN_ROLE. Use for emergency version enforcement
      *      without publishing a new release. Requires ODDAO multi-sig.
      *      Includes operationNonce in the signed message to prevent replay (M-01).
+     *
+     *      R6 M-01: The specified version must be a published release with an index
+     *      greater than or equal to the current minimumVersionIndex. This prevents
+     *      minimum version downgrades, which could re-enable vulnerable software.
+     *
      * @param component Component identifier
-     * @param version New minimum version requirement
+     * @param version New minimum version requirement (must be a published version)
      * @param nonce Must match current operationNonce (replay protection)
      * @param signatures Array of ECDSA signatures from ODDAO members
      */
@@ -409,6 +452,23 @@ contract UpdateRegistry is AccessControl {
             revert StaleNonce(operationNonce, nonce);
         }
 
+        bytes32 componentHash = keccak256(bytes(component));
+        bytes32 versionHash = keccak256(bytes(version));
+
+        // R6 M-01: Verify the version exists as a published release
+        if (releases[componentHash][versionHash].publishedAt == 0) {
+            revert VersionNotFound(component, version);
+        }
+
+        // R6 M-01: Find the release index for monotonic enforcement
+        uint256 versionIdx = _findVersionIndex(componentHash, versionHash);
+        uint256 currentMinIdx = minimumVersionIndex[componentHash];
+
+        // R6 M-01: Enforce monotonic -- only allow raising, not lowering
+        if (versionIdx < currentMinIdx) {
+            revert MinimumVersionDowngrade(component, version);
+        }
+
         // Signers sign: keccak256(abi.encode(
         //     "MIN_VERSION", component, version, nonce, block.chainid, address(this)
         // ))
@@ -422,8 +482,8 @@ contract UpdateRegistry is AccessControl {
         // Consume the nonce
         ++operationNonce;
 
-        bytes32 componentHash = keccak256(bytes(component));
         minimumVersion[componentHash] = version;
+        minimumVersionIndex[componentHash] = versionIdx;
 
         emit MinimumVersionUpdated(component, version);
     }
@@ -803,6 +863,30 @@ contract UpdateRegistry is AccessControl {
         if (validCount < threshold) {
             revert InsufficientSignatures(threshold, validCount);
         }
+    }
+
+    /**
+     * @notice Find the index of a version hash in the version history
+     * @dev R6 M-01: Used for monotonic minimum version enforcement.
+     *      Searches the versionHistory mapping for the given versionHash.
+     *      Reverts if the version is not found (should not happen after
+     *      publishedAt check).
+     * @param componentHash Keccak256 hash of the component name
+     * @param versionHash Keccak256 hash of the version string
+     * @return idx Index in the version history
+     */
+    function _findVersionIndex(
+        bytes32 componentHash,
+        bytes32 versionHash
+    ) internal view returns (uint256 idx) {
+        uint256 count = releaseCount[componentHash];
+        for (uint256 i = 0; i < count; ++i) {
+            if (versionHistory[componentHash][i] == versionHash) {
+                return i;
+            }
+        }
+        // Should not reach here after publishedAt check
+        revert VersionNotFound("", "");
     }
 
     /**
