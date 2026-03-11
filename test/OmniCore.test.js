@@ -5,12 +5,12 @@ const { time } = require("@nomicfoundation/hardhat-network-helpers");
 describe("OmniCore", function () {
   let core;
   let token;
-  let owner, validator1, validator2, staker1, staker2;
+  let owner, validator1, validator2, staker1, staker2, protocolTreasury;
 
   const STAKE_AMOUNT = ethers.parseEther("1000");
 
   beforeEach(async function () {
-    [owner, validator1, validator2, staker1, staker2] = await ethers.getSigners();
+    [owner, validator1, validator2, staker1, staker2, protocolTreasury] = await ethers.getSigners();
 
     // Deploy OmniCoin token
     const Token = await ethers.getContractFactory("OmniCoin");
@@ -21,7 +21,7 @@ describe("OmniCore", function () {
     const OmniCore = await ethers.getContractFactory("OmniCore");
     core = await upgrades.deployProxy(
       OmniCore,
-      [owner.address, token.target, owner.address, owner.address],
+      [owner.address, token.target, owner.address, owner.address, protocolTreasury.address],
       { initializer: "initialize", constructorArgs: [ethers.ZeroAddress] }
     );
 
@@ -49,11 +49,12 @@ describe("OmniCore", function () {
       expect(await core.OMNI_COIN()).to.equal(token.target);
       expect(await core.oddaoAddress()).to.equal(owner.address);
       expect(await core.stakingPoolAddress()).to.equal(owner.address);
+      expect(await core.protocolTreasuryAddress()).to.equal(protocolTreasury.address);
     });
 
     it("Should not allow re-initialization", async function () {
       await expect(
-        core.initialize(owner.address, token.target, owner.address, owner.address)
+        core.initialize(owner.address, token.target, owner.address, owner.address, protocolTreasury.address)
       ).to.be.reverted;
     });
 

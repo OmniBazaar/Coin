@@ -89,7 +89,7 @@ contract MinimalEscrow is ReentrancyGuard, Pausable, ERC2771Context {
 
     /// @notice Arbitration fee in basis points (5% = 500 bps)
     /// @dev Per spec: 5% of disputed amount, split 50/50 between buyer and seller,
-    ///      distributed 70% Arbitrator / 20% Validator / 10% ODDAO via FEE_COLLECTOR
+    ///      distributed 70% Arbitrator / 20% Validator / 10% ODDAO via UnifiedFeeVault
     uint256 public constant ARBITRATION_FEE_BPS = 500;
 
     // State variables (immutables first)
@@ -102,16 +102,17 @@ contract MinimalEscrow is ReentrancyGuard, Pausable, ERC2771Context {
     /// @notice Registry contract for service lookups
     address public immutable REGISTRY;
 
-    /// @notice Address that receives marketplace fees on escrow release
+    /// @notice UnifiedFeeVault address that receives 100% of marketplace and
+    ///         arbitration fees collected by this contract
     /// @dev Fee distribution design: This contract sends 100% of collected fees to
-    ///      FEE_COLLECTOR, which is expected to be a fee-splitting contract (e.g.,
-    ///      OmniFeeRouter) that implements the OmniBazaar 70/20/10 distribution:
+    ///      FEE_VAULT, which is the deployed UnifiedFeeVault contract that handles
+    ///      the OmniBazaar 70/20/10 on-chain distribution:
     ///      Transaction Fee (0.50%): 70% ODDAO, 20% Validator, 10% Staking Pool
     ///      Referral Fee (0.25%): 70% Referrer, 20% Second-Level Referrer, 10% ODDAO
     ///      Listing Fee (0.25%): 70% Listing Node, 20% Selling Node, 10% ODDAO
     ///      This separation of concerns keeps the escrow contract simple and allows
     ///      fee distribution logic to be upgraded independently.
-    address public immutable FEE_COLLECTOR;
+    address public immutable FEE_VAULT;
 
     /// @notice Marketplace fee in basis points (e.g., 100 = 1%)
     uint256 public immutable MARKETPLACE_FEE_BPS;
@@ -399,7 +400,8 @@ contract MinimalEscrow is ReentrancyGuard, Pausable, ERC2771Context {
      * @param _omniCoin OmniCoin token address (XOM)
      * @param _privateOmniCoin Private OmniCoin token address (pXOM)
      * @param _registry Registry contract address
-     * @param _feeCollector Address receiving marketplace fees
+     * @param _feeVault UnifiedFeeVault address that receives all marketplace
+     *        and arbitration fees for on-chain 70/20/10 distribution
      * @param _marketplaceFeeBps Fee in basis points (e.g. 100 = 1%)
      * @param trustedForwarder_ OmniForwarder address for gasless relay (address(0) to disable)
      */
@@ -412,7 +414,7 @@ contract MinimalEscrow is ReentrancyGuard, Pausable, ERC2771Context {
         address _omniCoin,
         address _privateOmniCoin,
         address _registry,
-        address _feeCollector,
+        address _feeVault,
         uint256 _marketplaceFeeBps,
         address trustedForwarder_
     ) ERC2771Context(trustedForwarder_) {
@@ -420,7 +422,7 @@ contract MinimalEscrow is ReentrancyGuard, Pausable, ERC2771Context {
             _omniCoin == address(0) ||
             _privateOmniCoin == address(0) ||
             _registry == address(0) ||
-            _feeCollector == address(0)
+            _feeVault == address(0)
         ) {
             revert InvalidAddress();
         }
@@ -430,7 +432,7 @@ contract MinimalEscrow is ReentrancyGuard, Pausable, ERC2771Context {
         OMNI_COIN = IERC20(_omniCoin);
         PRIVATE_OMNI_COIN = IERC20(_privateOmniCoin);
         REGISTRY = _registry;
-        FEE_COLLECTOR = _feeCollector;
+        FEE_VAULT = _feeVault;
         MARKETPLACE_FEE_BPS = _marketplaceFeeBps;
         ADMIN = msg.sender;
 
@@ -510,9 +512,9 @@ contract MinimalEscrow is ReentrancyGuard, Pausable, ERC2771Context {
             uint256 sellerAmount = amount - feeAmount;
 
             if (feeAmount > 0) {
-                OMNI_COIN.safeTransfer(FEE_COLLECTOR, feeAmount);
+                OMNI_COIN.safeTransfer(FEE_VAULT, feeAmount);
                 totalMarketplaceFees[address(OMNI_COIN)] += feeAmount;
-                emit MarketplaceFeeCollected(escrowId, FEE_COLLECTOR, feeAmount);
+                emit MarketplaceFeeCollected(escrowId, FEE_VAULT, feeAmount);
             }
             OMNI_COIN.safeTransfer(escrow.seller, sellerAmount);
             emit EscrowResolved(escrowId, escrow.seller, sellerAmount);
@@ -896,12 +898,12 @@ contract MinimalEscrow is ReentrancyGuard, Pausable, ERC2771Context {
 
             if (feeAmount > 0) {
                 OMNI_COIN.safeTransfer(
-                    FEE_COLLECTOR, feeAmount
+                    FEE_VAULT, feeAmount
                 );
                 totalMarketplaceFees[address(OMNI_COIN)] +=
                     feeAmount;
                 emit MarketplaceFeeCollected(
-                    escrowId, FEE_COLLECTOR, feeAmount
+                    escrowId, FEE_VAULT, feeAmount
                 );
             }
         } else {
@@ -938,7 +940,7 @@ contract MinimalEscrow is ReentrancyGuard, Pausable, ERC2771Context {
                 totalEscrowed[address(OMNI_COIN)] -=
                     totalCollected;
                 OMNI_COIN.safeTransfer(
-                    FEE_COLLECTOR, totalCollected
+                    FEE_VAULT, totalCollected
                 );
                 emit ArbitrationFeeCollected(
                     escrowId,
@@ -1009,7 +1011,7 @@ contract MinimalEscrow is ReentrancyGuard, Pausable, ERC2771Context {
     /**
      * @notice Resolve escrow and transfer funds
      * @dev Internal helper to avoid code duplication. When disputed, deducts a 5%
-     *      arbitration fee (split 50/50 from buyer and seller stakes via FEE_COLLECTOR).
+     *      arbitration fee (split 50/50 from buyer and seller stakes via FEE_VAULT/UnifiedFeeVault).
      *      Marketplace fee only applies when releasing to the seller (not on refunds).
      *      Returns remaining dispute stakes to both parties after arbitration fee.
      * @param escrow Escrow data
@@ -1035,14 +1037,14 @@ contract MinimalEscrow is ReentrancyGuard, Pausable, ERC2771Context {
             uint256 feeAmount = (amount * MARKETPLACE_FEE_BPS) / BASIS_POINTS;
             recipientAmount = amount - feeAmount;
             if (feeAmount > 0) {
-                OMNI_COIN.safeTransfer(FEE_COLLECTOR, feeAmount);
+                OMNI_COIN.safeTransfer(FEE_VAULT, feeAmount);
                 totalMarketplaceFees[address(OMNI_COIN)] += feeAmount;
-                emit MarketplaceFeeCollected(escrowId, FEE_COLLECTOR, feeAmount);
+                emit MarketplaceFeeCollected(escrowId, FEE_VAULT, feeAmount);
             }
         }
 
         // Deduct arbitration fee when escrow was disputed (5% of escrow amount)
-        // Per spec: split 50/50 from buyer and seller, sent to FEE_COLLECTOR
+        // Per spec: split 50/50 from buyer and seller, sent to FEE_VAULT (UnifiedFeeVault)
         // which distributes 70% Arbitrator / 20% Validator / 10% ODDAO
         if (escrow.disputed) {
             uint256 arbitrationFee = (amount * ARBITRATION_FEE_BPS) / BASIS_POINTS;
@@ -1064,7 +1066,7 @@ contract MinimalEscrow is ReentrancyGuard, Pausable, ERC2771Context {
             if (totalCollected > 0) {
                 // Decrement totalEscrowed for arbitration fee portion of stakes
                 totalEscrowed[address(OMNI_COIN)] -= totalCollected;
-                OMNI_COIN.safeTransfer(FEE_COLLECTOR, totalCollected);
+                OMNI_COIN.safeTransfer(FEE_VAULT, totalCollected);
                 emit ArbitrationFeeCollected(
                     escrowId, totalCollected, (totalCollected * 7000) / BASIS_POINTS
                 );
@@ -1276,9 +1278,9 @@ contract MinimalEscrow is ReentrancyGuard, Pausable, ERC2771Context {
             uint256 sellerAmount = amount - feeAmount;
 
             if (feeAmount > 0) {
-                PRIVATE_OMNI_COIN.safeTransfer(FEE_COLLECTOR, feeAmount);
+                PRIVATE_OMNI_COIN.safeTransfer(FEE_VAULT, feeAmount);
                 totalMarketplaceFees[address(PRIVATE_OMNI_COIN)] += feeAmount;
-                emit MarketplaceFeeCollected(escrowId, FEE_COLLECTOR, feeAmount);
+                emit MarketplaceFeeCollected(escrowId, FEE_VAULT, feeAmount);
             }
             // M-02 (Round 6): Use pull pattern for private escrow release
             claimable[address(PRIVATE_OMNI_COIN)][escrow.seller] += sellerAmount;
@@ -1390,9 +1392,9 @@ contract MinimalEscrow is ReentrancyGuard, Pausable, ERC2771Context {
             uint256 feeAmount = (amount * MARKETPLACE_FEE_BPS) / BASIS_POINTS;
             recipientAmount = amount - feeAmount;
             if (feeAmount > 0) {
-                PRIVATE_OMNI_COIN.safeTransfer(FEE_COLLECTOR, feeAmount);
+                PRIVATE_OMNI_COIN.safeTransfer(FEE_VAULT, feeAmount);
                 totalMarketplaceFees[address(PRIVATE_OMNI_COIN)] += feeAmount;
-                emit MarketplaceFeeCollected(escrowId, FEE_COLLECTOR, feeAmount);
+                emit MarketplaceFeeCollected(escrowId, FEE_VAULT, feeAmount);
             }
         }
 
@@ -1422,7 +1424,7 @@ contract MinimalEscrow is ReentrancyGuard, Pausable, ERC2771Context {
             uint256 totalCollected = buyerDeduction + sellerDeduction;
             if (totalCollected > 0) {
                 totalEscrowed[address(OMNI_COIN)] -= totalCollected;
-                OMNI_COIN.safeTransfer(FEE_COLLECTOR, totalCollected);
+                OMNI_COIN.safeTransfer(FEE_VAULT, totalCollected);
                 emit ArbitrationFeeCollected(
                     escrowId, totalCollected, (totalCollected * 7000) / BASIS_POINTS
                 );

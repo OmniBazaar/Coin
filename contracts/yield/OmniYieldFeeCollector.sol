@@ -18,12 +18,12 @@ import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol
  *   1. User withdraws yield from external protocol (off-chain step).
  *   2. User calls `collectFeeAndForward()` with their yield tokens.
  *   3. Contract deducts `performanceFeeBps` from the actual received amount.
- *   4. Fee is split 70/20/10 to primary/ODDAO/protocol recipients.
+ *   4. Fee is split 70/20/10 to ODDAO/stakingPool/protocol recipients.
  *   5. Net yield forwarded to user.
  *
  * Fee distribution (OmniBazaar standard 70/20/10 pattern):
- *   - 70% to primaryRecipient (yield protocol or ODDAO)
- *   - 20% to oddaoTreasury
+ *   - 70% to oddaoTreasury
+ *   - 20% to stakingPool
  *   - 10% to protocolTreasury
  *
  * Trustless guarantees:
@@ -47,21 +47,21 @@ contract OmniYieldFeeCollector is ReentrancyGuard {
     /// @notice Maximum allowed performance fee (10% = 1000 bps).
     uint256 private constant MAX_FEE_BPS = 1000;
 
-    /// @notice Primary recipient share (70% = 7000 bps of fee).
-    uint256 private constant PRIMARY_SHARE_BPS = 7000;
+    /// @notice ODDAO share (70% = 7000 bps of fee).
+    uint256 private constant ODDAO_SHARE_BPS = 7000;
 
-    /// @notice ODDAO share (20% = 2000 bps of fee).
-    uint256 private constant ODDAO_SHARE_BPS = 2000;
+    /// @notice Staking Pool share (20% = 2000 bps of fee).
+    uint256 private constant STAKING_SHARE_BPS = 2000;
 
     // -----------------------------------------------------------------------
     // State Variables (immutable + mutable)
     // -----------------------------------------------------------------------
 
-    /// @notice Primary recipient (70% of fee) -- typically ODDAO.
-    address public immutable primaryRecipient; // solhint-disable-line immutable-vars-naming
-
-    /// @notice ODDAO treasury recipient (20% of fee).
+    /// @notice ODDAO treasury recipient (70% of fee).
     address public immutable oddaoTreasury; // solhint-disable-line immutable-vars-naming
+
+    /// @notice Staking pool recipient (20% of fee).
+    address public immutable stakingPool; // solhint-disable-line immutable-vars-naming
 
     /// @notice Protocol treasury recipient (10% of fee).
     address public immutable protocolTreasury; // solhint-disable-line immutable-vars-naming
@@ -116,8 +116,8 @@ contract OmniYieldFeeCollector is ReentrancyGuard {
     /// @param maxBps The maximum allowed fee in basis points
     error FeeExceedsCap(uint256 feeBps, uint256 maxBps);
 
-    /// @notice Thrown when caller is not the primary recipient.
-    error NotPrimaryRecipient();
+    /// @notice Thrown when caller is not the ODDAO treasury.
+    error NotOddaoTreasury();
 
     // -----------------------------------------------------------------------
     // Constructor
@@ -125,19 +125,19 @@ contract OmniYieldFeeCollector is ReentrancyGuard {
 
     /**
      * @notice Deploy the yield fee collector with 70/20/10 split recipients.
-     * @param _primaryRecipient  Primary fee recipient (70%).
-     * @param _oddaoTreasury     ODDAO treasury recipient (20%).
+     * @param _oddaoTreasury     ODDAO treasury recipient (70%).
+     * @param _stakingPool       Staking pool recipient (20%).
      * @param _protocolTreasury  Protocol treasury recipient (10%).
      * @param _performanceFeeBps Performance fee in basis points (max 1000).
      */
     constructor(
-        address _primaryRecipient,
         address _oddaoTreasury,
+        address _stakingPool,
         address _protocolTreasury,
         uint256 _performanceFeeBps
     ) {
-        if (_primaryRecipient == address(0)) revert InvalidRecipient();
         if (_oddaoTreasury == address(0)) revert InvalidRecipient();
+        if (_stakingPool == address(0)) revert InvalidRecipient();
         if (_protocolTreasury == address(0)) revert InvalidRecipient();
         if (
             _performanceFeeBps == 0
@@ -146,8 +146,8 @@ contract OmniYieldFeeCollector is ReentrancyGuard {
             revert FeeExceedsCap(_performanceFeeBps, MAX_FEE_BPS);
         }
 
-        primaryRecipient = _primaryRecipient;
         oddaoTreasury = _oddaoTreasury;
+        stakingPool = _stakingPool;
         protocolTreasury = _protocolTreasury;
         performanceFeeBps = _performanceFeeBps;
     }
@@ -209,17 +209,17 @@ contract OmniYieldFeeCollector is ReentrancyGuard {
 
     /**
      * @notice Rescue tokens accidentally sent to this contract.
-     * @dev Only callable by primaryRecipient. Sends all rescued
-     *      tokens to the primaryRecipient address.
+     * @dev Only callable by oddaoTreasury. Sends all rescued
+     *      tokens to the oddaoTreasury address.
      * @param token ERC20 token to rescue.
      */
     function rescueTokens(address token) external nonReentrant {
-        if (msg.sender != primaryRecipient) {
-            revert NotPrimaryRecipient();
+        if (msg.sender != oddaoTreasury) {
+            revert NotOddaoTreasury();
         }
         uint256 balance = IERC20(token).balanceOf(address(this));
         if (balance > 0) {
-            IERC20(token).safeTransfer(primaryRecipient, balance);
+            IERC20(token).safeTransfer(oddaoTreasury, balance);
             emit TokensRescued(token, balance);
         }
     }
@@ -251,7 +251,7 @@ contract OmniYieldFeeCollector is ReentrancyGuard {
 
     /**
      * @notice Distribute the total fee using OmniBazaar 70/20/10 split.
-     * @dev Primary recipient receives 70%, ODDAO receives 20%,
+     * @dev ODDAO treasury receives 70%, staking pool receives 20%,
      *      and protocol treasury receives the remainder (10%) to
      *      avoid rounding dust loss.
      * @param token The ERC20 token to distribute.
@@ -261,22 +261,22 @@ contract OmniYieldFeeCollector is ReentrancyGuard {
         address token,
         uint256 totalFee
     ) internal {
-        uint256 primaryShare =
-            (totalFee * PRIMARY_SHARE_BPS) / BPS_DENOMINATOR;
         uint256 oddaoShare =
             (totalFee * ODDAO_SHARE_BPS) / BPS_DENOMINATOR;
+        uint256 stakingShare =
+            (totalFee * STAKING_SHARE_BPS) / BPS_DENOMINATOR;
         // Protocol gets the remainder to avoid rounding dust
         uint256 protocolShare =
-            totalFee - primaryShare - oddaoShare;
+            totalFee - oddaoShare - stakingShare;
 
-        if (primaryShare > 0) {
-            IERC20(token).safeTransfer(
-                primaryRecipient, primaryShare
-            );
-        }
         if (oddaoShare > 0) {
             IERC20(token).safeTransfer(
                 oddaoTreasury, oddaoShare
+            );
+        }
+        if (stakingShare > 0) {
+            IERC20(token).safeTransfer(
+                stakingPool, stakingShare
             );
         }
         if (protocolShare > 0) {

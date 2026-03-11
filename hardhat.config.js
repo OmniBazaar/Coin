@@ -11,7 +11,13 @@ const { TASK_TEST_GET_TEST_FILES } = require("hardhat/builtin-tasks/task-names")
 
 subtask(TASK_TEST_GET_TEST_FILES).setAction(async (args, hre, runSuper) => {
   const files = await runSuper(args);
-  return files.filter((f) => !f.includes("/deprecated/"));
+  return files.filter((f) => {
+    // Exclude deprecated tests
+    if (f.includes("/deprecated/")) return false;
+    // Only include files matching *.test.{js,ts} pattern
+    if (!/\.test\.(js|ts)$/.test(f)) return false;
+    return true;
+  });
 });
 
 /** @type import('hardhat/config').HardhatUserConfig */

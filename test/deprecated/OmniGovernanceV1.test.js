@@ -25,8 +25,8 @@ describe("OmniGovernanceV1", function () {
     const OmniCore = await ethers.getContractFactory("OmniCore");
     core = await upgrades.deployProxy(
       OmniCore,
-      [owner.address, token.target, owner.address, owner.address],
-      { initializer: "initialize" }
+      [owner.address, token.target, owner.address, owner.address, owner.address],
+      { initializer: "initialize", constructorArgs: [ethers.ZeroAddress] }
     );
 
     // Register OmniCoin service in core (needed by governance getService)

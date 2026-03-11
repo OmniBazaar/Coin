@@ -803,8 +803,8 @@ contract UnifiedFeeVault is
     /**
      * @notice Deposit and distribute a marketplace transaction fee
      * @dev Calculates the 1% marketplace fee split on-chain:
-     *      - 0.50% transaction fee: 70% ODDAO, 20% validator, 10%
-     *        staking
+     *      - 0.50% transaction fee: 70% ODDAO, 20% staking pool,
+     *        10% protocol treasury
      *      - 0.25% referral fee: 70% referrer, 20% L2 referrer, 10%
      *        ODDAO
      *      - 0.25% listing fee: 70% listing node, 20% selling node,
@@ -815,7 +815,6 @@ contract UnifiedFeeVault is
      *
      * @param token XOM token address (fee currency)
      * @param saleAmount Total sale amount (fee calculated as 1%)
-     * @param validator Validator processing the sale
      * @param referrer Referrer who referred the seller (zero if none)
      * @param referrerL2 Second-level referrer (zero if none)
      * @param listingNode Node where listing was created
@@ -824,7 +823,6 @@ contract UnifiedFeeVault is
     function depositMarketplaceFee(
         address token,
         uint256 saleAmount,
-        address validator,
         address referrer,
         address referrerL2,
         address listingNode,
@@ -858,13 +856,14 @@ contract UnifiedFeeVault is
         // Split 1: Transaction fee (0.50% = half of total fee)
         uint256 txFee = actualFee / 2;
         uint256 txOddao = (txFee * 7000) / 10000; // 70% ODDAO
-        uint256 txValidator = (txFee * 2000) / 10000; // 20% validator
-        uint256 txStaking = txFee - txOddao - txValidator; // 10%
+        uint256 txStaking = (txFee * 2000) / 10000; // 20% staking
+        uint256 txProtocol = txFee - txOddao - txStaking; // 10%
 
         pendingBridge[token] += txOddao;
-        pendingClaims[validator][token] += txValidator;
-        totalPendingClaims[token] += txValidator;
         _safePushOrQuarantine(token, stakingPool, txStaking);
+        _safePushOrQuarantine(
+            token, protocolTreasury, txProtocol
+        );
 
         // Split 2: Referral fee (0.25% = quarter of actual fee)
         uint256 refFee = actualFee / 4;
@@ -916,18 +915,16 @@ contract UnifiedFeeVault is
     /**
      * @notice Deposit and distribute an arbitration fee
      * @dev Arbitration fee = 5% of disputed amount. Split:
-     *      70% arbitrator panel, 20% validator, 10% ODDAO.
+     *      70% arbitrator panel, 20% ODDAO, 10% protocol treasury.
      *      Caller must have DEPOSITOR_ROLE and approved the fee.
      * @param token XOM token address
      * @param disputeAmount Amount in dispute
      * @param arbitrator Arbitrator receiving primary share
-     * @param validator Validator processing the dispute
      */
     function depositArbitrationFee(
         address token,
         uint256 disputeAmount,
-        address arbitrator,
-        address validator
+        address arbitrator
     ) external nonReentrant onlyRole(DEPOSITOR_ROLE) whenNotPaused {
         if (token == address(0)) revert ZeroAddress();
         if (disputeAmount == 0) revert ZeroAmount();
@@ -948,14 +945,17 @@ contract UnifiedFeeVault is
             IERC20(token).balanceOf(address(this)) - balBefore;
 
         uint256 arbShare = (actualFee * 7000) / 10000; // 70%
-        uint256 valShare = (actualFee * 2000) / 10000; // 20%
-        uint256 oddaoShare = actualFee - arbShare - valShare; // 10%
+        uint256 oddaoShare = (actualFee * 2000) / 10000; // 20%
+        uint256 protocolShare =
+            actualFee - arbShare - oddaoShare; // 10%
 
         pendingClaims[arbitrator][token] += arbShare;
-        pendingClaims[validator][token] += valShare;
         // C-01 audit fix: track total pending claims
-        totalPendingClaims[token] += arbShare + valShare;
+        totalPendingClaims[token] += arbShare;
         pendingBridge[token] += oddaoShare;
+        _safePushOrQuarantine(
+            token, protocolTreasury, protocolShare
+        );
 
         totalDistributed[token] += actualFee;
         // AUDIT FIX (Round 6 FEE-AP-10): Cross-contract fee accounting
@@ -999,8 +999,8 @@ contract UnifiedFeeVault is
      * @param disputeAmount Disputed amount
      * @return totalFee Total 5% fee
      * @return arbitratorShare 70% to arbitrator
-     * @return validatorShare 20% to validator
-     * @return oddaoShare 10% to ODDAO
+     * @return oddaoShare 20% to ODDAO
+     * @return protocolShare 10% to protocol treasury
      */
     function getArbitrationFeeBreakdown(
         uint256 disputeAmount
@@ -1010,14 +1010,14 @@ contract UnifiedFeeVault is
         returns (
             uint256 totalFee,
             uint256 arbitratorShare,
-            uint256 validatorShare,
-            uint256 oddaoShare
+            uint256 oddaoShare,
+            uint256 protocolShare
         )
     {
         totalFee = (disputeAmount * 500) / 10000;
         arbitratorShare = (totalFee * 7000) / 10000;
-        validatorShare = (totalFee * 2000) / 10000;
-        oddaoShare = totalFee - arbitratorShare - validatorShare;
+        oddaoShare = (totalFee * 2000) / 10000;
+        protocolShare = totalFee - arbitratorShare - oddaoShare;
     }
 
     /**

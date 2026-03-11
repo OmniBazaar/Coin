@@ -65,13 +65,13 @@ interface ISwapAdapter {
  * - Fee-on-transfer token support via balance-before/after pattern
  * - MEV protection via deadline
  * - Emergency pause capability
- * - Restricted token rescue (feeRecipient only, full balance)
+ * - Restricted token rescue (feeVault only, full balance)
  *
  * Architecture:
  * - Aggregates liquidity from multiple sources via {ISwapAdapter}
  * - Computes optimal routes for best price
  * - Executes swaps atomically
- * - Distributes fees to protocol treasury
+ * - Distributes fees to UnifiedFeeVault for on-chain 70/20/10 split
  */
 contract OmniSwapRouter is Ownable2Step, Pausable, ReentrancyGuard, ERC2771Context {
     using SafeERC20 for IERC20;
@@ -136,11 +136,11 @@ contract OmniSwapRouter is Ownable2Step, Pausable, ReentrancyGuard, ERC2771Conte
     /// @notice Swap fee in basis points (30 = 0.30%)
     uint256 public swapFeeBps;
 
-    /// @notice Fee recipient address (receives 100% on-chain)
+    /// @notice UnifiedFeeVault address that receives 100% of collected fees
     /// @dev The 70/20/10 fee distribution (ODDAO / staking pool / protocol)
-    ///      is handled by the UnifiedFeeVault contract. On-chain, fees are
-    ///      sent to a single address (UnifiedFeeVault) for simplicity.
-    address public feeRecipient;
+    ///      is handled on-chain by the UnifiedFeeVault contract. This address
+    ///      MUST point to a deployed UnifiedFeeVault instance.
+    address public feeVault;
 
     /// @notice Mapping of source ID to adapter contract
     mapping(bytes32 => address) public liquiditySources;
@@ -196,11 +196,11 @@ contract OmniSwapRouter is Ownable2Step, Pausable, ReentrancyGuard, ERC2771Conte
     event SwapFeeUpdated(uint256 indexed oldFee, uint256 indexed newFee);
 
     /**
-     * @notice Emitted when fee recipient is updated
-     * @param oldRecipient Old recipient address
-     * @param newRecipient New recipient address
+     * @notice Emitted when the UnifiedFeeVault address is updated
+     * @param oldVault Previous UnifiedFeeVault address
+     * @param newVault New UnifiedFeeVault address
      */
-    event FeeRecipientUpdated(address indexed oldRecipient, address indexed newRecipient);
+    event FeeVaultUpdated(address indexed oldVault, address indexed newVault);
 
     /**
      * @notice Emitted when accidentally-sent tokens are rescued
@@ -255,23 +255,23 @@ contract OmniSwapRouter is Ownable2Step, Pausable, ReentrancyGuard, ERC2771Conte
 
     /**
      * @notice Constructor to initialize the OmniSwapRouter
-     * @param _feeRecipient Address to receive swap fees
+     * @param _feeVault UnifiedFeeVault address to receive swap fees
      * @param _swapFeeBps Initial swap fee in basis points
      * @param trustedForwarder_ ERC-2771 trusted forwarder for
      *        gasless meta-transactions (e.g. OmniForwarder)
      */
     constructor(
-        address _feeRecipient,
+        address _feeVault,
         uint256 _swapFeeBps,
         address trustedForwarder_
     )
         Ownable(msg.sender)
         ERC2771Context(trustedForwarder_)
     {
-        if (_feeRecipient == address(0)) revert InvalidRecipientAddress();
+        if (_feeVault == address(0)) revert InvalidRecipientAddress();
         if (_swapFeeBps > 100) revert FeeTooHigh(); // Max 1%
 
-        feeRecipient = _feeRecipient;
+        feeVault = _feeVault;
         swapFeeBps = _swapFeeBps;
     }
 
@@ -312,7 +312,7 @@ contract OmniSwapRouter is Ownable2Step, Pausable, ReentrancyGuard, ERC2771Conte
         uint256 swapAmount = actualReceived - feeAmount;
 
         if (feeAmount > 0) {
-            IERC20(params.tokenIn).safeTransfer(feeRecipient, feeAmount);
+            IERC20(params.tokenIn).safeTransfer(feeVault, feeAmount);
         }
 
         // H-02: Record output token balance before swap execution
@@ -406,21 +406,21 @@ contract OmniSwapRouter is Ownable2Step, Pausable, ReentrancyGuard, ERC2771Conte
     }
 
     /**
-     * @notice Update fee recipient address
-     * @param _feeRecipient New fee recipient address
+     * @notice Update the UnifiedFeeVault address
+     * @param _feeVault New UnifiedFeeVault address
      * @dev Pioneer Phase: no timelock. Will be replaced with
      *      timelocked version before multi-sig handoff.
      */
-    function setFeeRecipient(
-        address _feeRecipient
+    function setFeeVault(
+        address _feeVault
     ) external onlyOwner {
-        if (_feeRecipient == address(0)) {
+        if (_feeVault == address(0)) {
             revert InvalidRecipientAddress();
         }
 
-        address oldRecipient = feeRecipient;
-        feeRecipient = _feeRecipient;
-        emit FeeRecipientUpdated(oldRecipient, _feeRecipient);
+        address oldVault = feeVault;
+        feeVault = _feeVault;
+        emit FeeVaultUpdated(oldVault, _feeVault);
     }
 
     /**
@@ -440,10 +440,10 @@ contract OmniSwapRouter is Ownable2Step, Pausable, ReentrancyGuard, ERC2771Conte
     }
 
     /**
-     * @notice Rescue accidentally-sent tokens to the fee recipient
+     * @notice Rescue accidentally-sent tokens to the UnifiedFeeVault
      * @param token Token address to rescue
      * @dev Restricted: only callable by owner, transfers full balance
-     *      to current feeRecipient. Only accidentally-sent tokens
+     *      to current feeVault. Only accidentally-sent tokens
      *      should ever be present.
      */
     function rescueTokens(
@@ -451,7 +451,7 @@ contract OmniSwapRouter is Ownable2Step, Pausable, ReentrancyGuard, ERC2771Conte
     ) external nonReentrant onlyOwner {
         uint256 balance = IERC20(token).balanceOf(address(this));
         if (balance > 0) {
-            IERC20(token).safeTransfer(feeRecipient, balance);
+            IERC20(token).safeTransfer(feeVault, balance);
             emit TokensRescued(token, balance);
         }
     }

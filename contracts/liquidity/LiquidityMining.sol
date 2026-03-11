@@ -25,7 +25,15 @@ import {Context} from
  * - Anti-dump protection through vesting
  * - Owner cannot drain user-committed rewards (totalCommittedRewards)
  * - Ownable2Step prevents accidental ownership transfers
- * - Emergency withdrawal with 70/20/10 fee split
+ * - Emergency withdrawal with 80/20 fee split (protocolTreasury/stakingPool)
+ *
+ * Emergency Withdrawal Fee Distribution:
+ * The emergency withdrawal penalty is split 70/20/10 where:
+ *   - 70% to protocolTreasury
+ *   - 20% to stakingPool
+ *   - 10% to protocolTreasury (also protocol treasury)
+ * This results in an effective 80/20 split: 80% protocol treasury, 20% staking pool.
+ * "Validator" is NEVER a fee recipient in any contract.
  *
  * Reward Calculation Formula:
  * Each pool accumulates rewards at `rewardPerSecond`. For each second
@@ -147,14 +155,11 @@ contract LiquidityMining is ReentrancyGuard, Ownable2Step, Pausable, ERC2771Cont
     /// @notice Total XOM distributed across all pools
     uint256 public totalXomDistributed;
 
-    /// @notice Treasury / ODDAO address for fees (receives 70%)
-    address public treasury;
+    /// @notice Protocol treasury address (receives 70% + 10% = 80% of emergency fees)
+    address public protocolTreasury;
 
-    /// @notice Validator fee recipient (receives 20% of fees)
-    address public validatorFeeRecipient;
-
-    /// @notice Staking pool fee recipient (receives 10% of fees)
-    address public stakingPoolFeeRecipient;
+    /// @notice Staking pool fee recipient (receives 20% of fees)
+    address public stakingPool;
 
     /// @notice Emergency withdrawal fee in basis points (0.5% = 50 bps)
     uint256 public emergencyWithdrawFeeBps;
@@ -272,26 +277,18 @@ contract LiquidityMining is ReentrancyGuard, Ownable2Step, Pausable, ERC2771Cont
         uint256 indexed newFeeBps
     );
 
-    /// @notice Emitted when treasury address is updated
-    /// @param oldTreasury Previous treasury address
-    /// @param newTreasury New treasury address
-    event TreasuryUpdated(
+    /// @notice Emitted when protocol treasury address is updated
+    /// @param oldTreasury Previous protocol treasury address
+    /// @param newTreasury New protocol treasury address
+    event ProtocolTreasuryUpdated(
         address indexed oldTreasury,
         address indexed newTreasury
-    );
-
-    /// @notice Emitted when validator fee recipient is updated
-    /// @param oldRecipient Previous recipient address
-    /// @param newRecipient New recipient address
-    event ValidatorFeeRecipientUpdated(
-        address indexed oldRecipient,
-        address indexed newRecipient
     );
 
     /// @notice Emitted when staking pool fee recipient is updated
     /// @param oldRecipient Previous recipient address
     /// @param newRecipient New recipient address
-    event StakingPoolFeeRecipientUpdated(
+    event StakingPoolUpdated(
         address indexed oldRecipient,
         address indexed newRecipient
     );
@@ -349,9 +346,9 @@ contract LiquidityMining is ReentrancyGuard, Ownable2Step, Pausable, ERC2771Cont
     /**
      * @notice Initialize liquidity mining contract
      * @param _xom XOM reward token address
-     * @param _treasury Treasury / ODDAO address for fees (70%)
-     * @param _validatorFeeRecipient Validator fee recipient (20%)
-     * @param _stakingPoolFeeRecipient Staking pool fee recipient (10%)
+     * @param _protocolTreasury Protocol treasury address (receives 80% of
+     *        emergency withdrawal fees: 70% + 10%)
+     * @param _stakingPool Staking pool fee recipient (receives 20% of fees)
      * @param trustedForwarder_ Trusted ERC-2771 forwarder address
      */
     /// @dev AUDIT ACCEPTED (Round 6): The trusted forwarder address is immutable by design.
@@ -361,23 +358,20 @@ contract LiquidityMining is ReentrancyGuard, Ownable2Step, Pausable, ERC2771Cont
     ///      provides emergency protection. A new proxy can be deployed if needed.
     constructor(
         address _xom,
-        address _treasury,
-        address _validatorFeeRecipient,
-        address _stakingPoolFeeRecipient,
+        address _protocolTreasury,
+        address _stakingPool,
         address trustedForwarder_
     ) Ownable(msg.sender) ERC2771Context(trustedForwarder_) {
         if (
             _xom == address(0) ||
-            _treasury == address(0) ||
-            _validatorFeeRecipient == address(0) ||
-            _stakingPoolFeeRecipient == address(0)
+            _protocolTreasury == address(0) ||
+            _stakingPool == address(0)
         ) {
             revert InvalidParameters();
         }
         xom = IERC20(_xom);
-        treasury = _treasury;
-        validatorFeeRecipient = _validatorFeeRecipient;
-        stakingPoolFeeRecipient = _stakingPoolFeeRecipient;
+        protocolTreasury = _protocolTreasury;
+        stakingPool = _stakingPool;
         emergencyWithdrawFeeBps = 50; // 0.5% fee
     }
 
@@ -719,11 +713,13 @@ contract LiquidityMining is ReentrancyGuard, Ownable2Step, Pausable, ERC2771Cont
     /**
      * @notice Emergency withdraw LP tokens without rewards (with fee)
      * @dev Forfeits ALL pending and vesting rewards. The emergency
-     *      withdrawal fee is split 70/20/10 (treasury/validator/
-     *      staking pool). Does not call _updatePool() -- the stale
-     *      accumulator has no effect since all reward state is zeroed.
-     *      This function is available even when paused to ensure
-     *      users can always recover their LP tokens.
+     *      withdrawal fee is split 70/20/10 (protocolTreasury/
+     *      stakingPool/protocolTreasury). This means 80% goes to
+     *      protocolTreasury and 20% to stakingPool. "Validator" is
+     *      never a fee recipient. Does not call _updatePool() -- the
+     *      stale accumulator has no effect since all reward state is
+     *      zeroed. This function is available even when paused to
+     *      ensure users can always recover their LP tokens.
      * @param poolId Pool identifier
      */
     function emergencyWithdraw(uint256 poolId) external nonReentrant {
@@ -771,17 +767,15 @@ contract LiquidityMining is ReentrancyGuard, Ownable2Step, Pausable, ERC2771Cont
         // Update pool total
         pool.totalStaked -= amount;
 
-        // Transfer LP tokens with 70/20/10 fee split (M-02)
+        // Transfer LP tokens with 70/20/10 fee split
+        // 70% protocolTreasury + 10% protocolTreasury = 80% protocolTreasury
+        // 20% stakingPool
         if (fee > 0) {
-            uint256 validatorShare = (fee * 2_000) / BASIS_POINTS; // 20%
-            uint256 stakingShare = (fee * 1_000) / BASIS_POINTS;   // 10%
-            uint256 oddaoShare = fee - validatorShare - stakingShare; // 70%
-            pool.lpToken.safeTransfer(treasury, oddaoShare);
+            uint256 stakingShare = (fee * 2_000) / BASIS_POINTS;   // 20%
+            uint256 protocolShare = fee - stakingShare;              // 80% (70% + 10%)
+            pool.lpToken.safeTransfer(protocolTreasury, protocolShare);
             pool.lpToken.safeTransfer(
-                validatorFeeRecipient, validatorShare
-            );
-            pool.lpToken.safeTransfer(
-                stakingPoolFeeRecipient, stakingShare
+                stakingPool, stakingShare
             );
         }
         pool.lpToken.safeTransfer(caller, amountAfterFee);
@@ -799,7 +793,8 @@ contract LiquidityMining is ReentrancyGuard, Ownable2Step, Pausable, ERC2771Cont
 
     /**
      * @notice Withdraw excess XOM not committed to users
-     * @dev Only allows withdrawal of XOM above totalCommittedRewards
+     * @dev Only allows withdrawal of XOM above totalCommittedRewards.
+     *      Sends withdrawn XOM to the protocolTreasury.
      * @param amount Amount to withdraw
      */
     function withdrawRewards(uint256 amount) external onlyOwner {
@@ -808,7 +803,7 @@ contract LiquidityMining is ReentrancyGuard, Ownable2Step, Pausable, ERC2771Cont
             ? balance - totalCommittedRewards
             : 0;
         if (amount > available) revert InsufficientRewards();
-        xom.safeTransfer(treasury, amount);
+        xom.safeTransfer(protocolTreasury, amount);
     }
 
     /**
@@ -826,41 +821,30 @@ contract LiquidityMining is ReentrancyGuard, Ownable2Step, Pausable, ERC2771Cont
     }
 
     /**
-     * @notice Set treasury address
-     * @param _treasury New treasury address
+     * @notice Set protocol treasury address
+     * @param _protocolTreasury New protocol treasury address
      */
-    function setTreasury(address _treasury) external onlyOwner {
-        if (_treasury == address(0)) revert InvalidParameters();
-        address oldTreasury = treasury;
-        treasury = _treasury;
-
-        emit TreasuryUpdated(oldTreasury, _treasury);
-    }
-
-    /**
-     * @notice Set validator fee recipient address
-     * @param _recipient New validator fee recipient
-     */
-    function setValidatorFeeRecipient(
-        address _recipient
+    function setProtocolTreasury(
+        address _protocolTreasury
     ) external onlyOwner {
-        if (_recipient == address(0)) revert InvalidParameters();
-        address old = validatorFeeRecipient;
-        validatorFeeRecipient = _recipient;
-        emit ValidatorFeeRecipientUpdated(old, _recipient);
+        if (_protocolTreasury == address(0)) revert InvalidParameters();
+        address oldTreasury = protocolTreasury;
+        protocolTreasury = _protocolTreasury;
+
+        emit ProtocolTreasuryUpdated(oldTreasury, _protocolTreasury);
     }
 
     /**
      * @notice Set staking pool fee recipient address
-     * @param _recipient New staking pool fee recipient
+     * @param _stakingPool New staking pool fee recipient
      */
-    function setStakingPoolFeeRecipient(
-        address _recipient
+    function setStakingPool(
+        address _stakingPool
     ) external onlyOwner {
-        if (_recipient == address(0)) revert InvalidParameters();
-        address old = stakingPoolFeeRecipient;
-        stakingPoolFeeRecipient = _recipient;
-        emit StakingPoolFeeRecipientUpdated(old, _recipient);
+        if (_stakingPool == address(0)) revert InvalidParameters();
+        address old = stakingPool;
+        stakingPool = _stakingPool;
+        emit StakingPoolUpdated(old, _stakingPool);
     }
 
     /**

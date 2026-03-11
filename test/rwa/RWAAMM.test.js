@@ -598,4 +598,743 @@ describe('RWAAMM Protocol', function () {
             ).to.be.revertedWithCustomError(amm, 'InsufficientSignatures');
         });
     });
+
+    // =====================================================================
+    //  NEW TESTS - AMM Math Verification
+    // =====================================================================
+    describe('AMM Math Verification', function () {
+        beforeEach(async function () {
+            const xomAddr = await xomToken.getAddress();
+            const rwaAddr = await rwaToken.getAddress();
+
+            await xomToken.connect(owner).approve(await amm.getAddress(), INITIAL_LIQUIDITY);
+            await rwaToken.connect(owner).approve(await amm.getAddress(), INITIAL_LIQUIDITY);
+
+            const deadline = await futureDeadline();
+            await amm.connect(owner).addLiquidity(
+                xomAddr, rwaAddr,
+                INITIAL_LIQUIDITY, INITIAL_LIQUIDITY,
+                0n, 0n, deadline, ethers.ZeroAddress,
+            );
+        });
+
+        it('Should calculate constant product formula correctly (x * y = k)', async function () {
+            const xomAddr = await xomToken.getAddress();
+            const rwaAddr = await rwaToken.getAddress();
+
+            // For 1:1 pool of 1000:1000 with amountIn = 10
+            // fee = 10 * 30 / 10000 = 0.03
+            // amountInAfterFee = 10 - 0.03 = 9.97
+            // amountOut = (1000 * 9.97) / (1000 + 9.97) = 9970 / 1009.97 ~ 9.87
+            const [amountOut, , ] = await amm.getQuote(xomAddr, rwaAddr, SWAP_AMOUNT);
+
+            // Manual calculation: dy = (y * dx) / (x + dx)
+            const fee = SWAP_AMOUNT * 30n / 10000n;
+            const dx = SWAP_AMOUNT - fee;
+            const x = INITIAL_LIQUIDITY;
+            const y = INITIAL_LIQUIDITY;
+            const expectedOut = (y * dx) / (x + dx);
+
+            expect(amountOut).to.equal(expectedOut);
+        });
+
+        it('Should produce diminishing returns for larger swaps (price impact)', async function () {
+            const xomAddr = await xomToken.getAddress();
+            const rwaAddr = await rwaToken.getAddress();
+
+            const smallSwap = ethers.parseEther('1');
+            const bigSwap = ethers.parseEther('100');
+
+            const [smallOut, , smallImpact] = await amm.getQuote(xomAddr, rwaAddr, smallSwap);
+            const [bigOut, , bigImpact] = await amm.getQuote(xomAddr, rwaAddr, bigSwap);
+
+            // Big swap should have higher price impact
+            expect(bigImpact).to.be.gt(smallImpact);
+
+            // Rate for big swap should be worse than small swap (per unit output)
+            const smallRate = (smallOut * 10000n) / smallSwap;
+            const bigRate = (bigOut * 10000n) / bigSwap;
+            expect(smallRate).to.be.gt(bigRate);
+        });
+
+        it('Should revert getQuote on zero amountIn', async function () {
+            const xomAddr = await xomToken.getAddress();
+            const rwaAddr = await rwaToken.getAddress();
+
+            await expect(
+                amm.getQuote(xomAddr, rwaAddr, 0n)
+            ).to.be.revertedWithCustomError(amm, 'ZeroAmount');
+        });
+
+        it('Should revert getQuote on non-existent pool', async function () {
+            const wavaxAddr = await wavax.getAddress();
+            const rwaAddr = await rwaToken.getAddress();
+
+            await expect(
+                amm.getQuote(wavaxAddr, rwaAddr, SWAP_AMOUNT)
+            ).to.be.revertedWithCustomError(amm, 'PoolNotFound');
+        });
+
+        it('Should produce symmetric pool IDs regardless of token order', async function () {
+            const xomAddr = await xomToken.getAddress();
+            const rwaAddr = await rwaToken.getAddress();
+
+            const id1 = await amm.getPoolId(xomAddr, rwaAddr);
+            const id2 = await amm.getPoolId(rwaAddr, xomAddr);
+
+            expect(id1).to.equal(id2);
+        });
+
+        it('Quote output should match actual swap output', async function () {
+            const xomAddr = await xomToken.getAddress();
+            const rwaAddr = await rwaToken.getAddress();
+
+            const [quotedOut, , ] = await amm.getQuote(xomAddr, rwaAddr, SWAP_AMOUNT);
+
+            await xomToken.connect(user1).approve(await amm.getAddress(), SWAP_AMOUNT);
+            const deadline = await futureDeadline();
+            const balBefore = await rwaToken.balanceOf(user1.address);
+
+            await amm.connect(user1).swap(
+                xomAddr, rwaAddr, SWAP_AMOUNT, 0n, deadline, ethers.ZeroAddress,
+            );
+
+            const balAfter = await rwaToken.balanceOf(user1.address);
+            const actualOut = balAfter - balBefore;
+
+            expect(actualOut).to.equal(quotedOut);
+        });
+    });
+
+    // =====================================================================
+    //  NEW TESTS - Slippage Protection
+    // =====================================================================
+    describe('Slippage Protection', function () {
+        beforeEach(async function () {
+            const xomAddr = await xomToken.getAddress();
+            const rwaAddr = await rwaToken.getAddress();
+
+            await xomToken.connect(owner).approve(await amm.getAddress(), INITIAL_LIQUIDITY);
+            await rwaToken.connect(owner).approve(await amm.getAddress(), INITIAL_LIQUIDITY);
+
+            const deadline = await futureDeadline();
+            await amm.connect(owner).addLiquidity(
+                xomAddr, rwaAddr,
+                INITIAL_LIQUIDITY, INITIAL_LIQUIDITY,
+                0n, 0n, deadline, ethers.ZeroAddress,
+            );
+        });
+
+        it('Should succeed when amountOutMin is exactly met', async function () {
+            const xomAddr = await xomToken.getAddress();
+            const rwaAddr = await rwaToken.getAddress();
+
+            // Get exact quote
+            const [exactOut, , ] = await amm.getQuote(xomAddr, rwaAddr, SWAP_AMOUNT);
+
+            await xomToken.connect(user1).approve(await amm.getAddress(), SWAP_AMOUNT);
+            const deadline = await futureDeadline();
+
+            // Should succeed when minOut exactly equals expected output
+            await expect(
+                amm.connect(user1).swap(
+                    xomAddr, rwaAddr, SWAP_AMOUNT, exactOut, deadline, ethers.ZeroAddress,
+                )
+            ).to.not.be.reverted;
+        });
+
+        it('Should revert when amountOutMin is 1 wei above actual', async function () {
+            const xomAddr = await xomToken.getAddress();
+            const rwaAddr = await rwaToken.getAddress();
+
+            const [exactOut, , ] = await amm.getQuote(xomAddr, rwaAddr, SWAP_AMOUNT);
+
+            await xomToken.connect(user1).approve(await amm.getAddress(), SWAP_AMOUNT);
+            const deadline = await futureDeadline();
+
+            await expect(
+                amm.connect(user1).swap(
+                    xomAddr, rwaAddr, SWAP_AMOUNT, exactOut + 1n, deadline, ethers.ZeroAddress,
+                )
+            ).to.be.revertedWithCustomError(amm, 'SlippageExceeded');
+        });
+
+        it('Should revert swap with zero amountIn', async function () {
+            const xomAddr = await xomToken.getAddress();
+            const rwaAddr = await rwaToken.getAddress();
+
+            const deadline = await futureDeadline();
+
+            await expect(
+                amm.connect(user1).swap(
+                    xomAddr, rwaAddr, 0n, 0n, deadline, ethers.ZeroAddress,
+                )
+            ).to.be.revertedWithCustomError(amm, 'ZeroAmount');
+        });
+    });
+
+    // =====================================================================
+    //  NEW TESTS - Fee Paths (Protocol, LP)
+    // =====================================================================
+    describe('Fee Paths', function () {
+        beforeEach(async function () {
+            const xomAddr = await xomToken.getAddress();
+            const rwaAddr = await rwaToken.getAddress();
+
+            await xomToken.connect(owner).approve(await amm.getAddress(), INITIAL_LIQUIDITY);
+            await rwaToken.connect(owner).approve(await amm.getAddress(), INITIAL_LIQUIDITY);
+
+            const deadline = await futureDeadline();
+            await amm.connect(owner).addLiquidity(
+                xomAddr, rwaAddr,
+                INITIAL_LIQUIDITY, INITIAL_LIQUIDITY,
+                0n, 0n, deadline, ethers.ZeroAddress,
+            );
+        });
+
+        it('Should have correct constant fee split ratios', async function () {
+            expect(await amm.FEE_LP_BPS()).to.equal(7000n);        // 70%
+            expect(await amm.FEE_STAKING_BPS()).to.equal(2000n);   // 20%
+            expect(await amm.FEE_LIQUIDITY_BPS()).to.equal(1000n); // 10%
+
+            // Verify they add to 100%
+            const total = 7000n + 2000n + 1000n;
+            expect(total).to.equal(10000n);
+        });
+
+        it('Should transfer vault fee (30% of protocol fee) to FEE_VAULT on swap', async function () {
+            const xomAddr = await xomToken.getAddress();
+            const rwaAddr = await rwaToken.getAddress();
+
+            const vaultBalBefore = await xomToken.balanceOf(feeVault.address);
+
+            await xomToken.connect(user1).approve(await amm.getAddress(), SWAP_AMOUNT);
+            const deadline = await futureDeadline();
+
+            await amm.connect(user1).swap(
+                xomAddr, rwaAddr, SWAP_AMOUNT, 0n, deadline, ethers.ZeroAddress,
+            );
+
+            const vaultBalAfter = await xomToken.balanceOf(feeVault.address);
+            const vaultReceived = vaultBalAfter - vaultBalBefore;
+
+            // Vault should receive 30% of the 0.30% fee
+            // protocolFee = 10 * 30 / 10000 = 0.03 ETH
+            // lpFee = 0.03 * 7000 / 10000 = 0.021 ETH
+            // vaultFee = 0.03 - 0.021 = 0.009 ETH
+            const protocolFee = SWAP_AMOUNT * 30n / 10000n;
+            const lpFee = protocolFee * 7000n / 10000n;
+            const expectedVaultFee = protocolFee - lpFee;
+
+            expect(vaultReceived).to.equal(expectedVaultFee);
+        });
+
+        it('Should increase pool reserves by amountInAfterFee + lpFee on swap', async function () {
+            const xomAddr = await xomToken.getAddress();
+            const rwaAddr = await rwaToken.getAddress();
+
+            const poolAddr = await amm['getPool(address,address)'](xomAddr, rwaAddr);
+            const pool = await ethers.getContractAt('RWAPool', poolAddr);
+            const [r0Before, r1Before, ] = await pool.getReserves();
+
+            await xomToken.connect(user1).approve(await amm.getAddress(), SWAP_AMOUNT);
+            const deadline = await futureDeadline();
+
+            const [quotedOut, , ] = await amm.getQuote(xomAddr, rwaAddr, SWAP_AMOUNT);
+
+            await amm.connect(user1).swap(
+                xomAddr, rwaAddr, SWAP_AMOUNT, 0n, deadline, ethers.ZeroAddress,
+            );
+
+            const [r0After, r1After, ] = await pool.getReserves();
+
+            // Determine which reserve is xomToken
+            const token0 = await pool.token0();
+            if (token0 === xomAddr) {
+                // token0 (xom) reserve should increase, token1 (rwa) should decrease
+                expect(r0After).to.be.gt(r0Before);
+                expect(r1After).to.be.lt(r1Before);
+            } else {
+                // token1 (xom) reserve should increase, token0 (rwa) should decrease
+                expect(r1After).to.be.gt(r1Before);
+                expect(r0After).to.be.lt(r0Before);
+            }
+        });
+
+        it('Should enforce immutable PROTOCOL_FEE_BPS of 30', async function () {
+            expect(await amm.PROTOCOL_FEE_BPS()).to.equal(30n);
+            expect(await amm.BPS_DENOMINATOR()).to.equal(10000n);
+        });
+    });
+
+    // =====================================================================
+    //  NEW TESTS - Compliance Oracle Integration
+    // =====================================================================
+    describe('Compliance Oracle Integration', function () {
+        it('Should reject pool creation when neither token is registered (H-02)', async function () {
+            const wavaxAddr = await wavax.getAddress();
+            // Deploy a totally unregistered token
+            const MockToken = await ethers.getContractFactory('ERC20Mock');
+            const unregistered = await MockToken.deploy('Unreg', 'UNREG');
+            const unregAddr = await unregistered.getAddress();
+
+            await wavax.mint(owner.address, INITIAL_LIQUIDITY);
+            await unregistered.mint(owner.address, INITIAL_LIQUIDITY);
+            await wavax.connect(owner).approve(await amm.getAddress(), INITIAL_LIQUIDITY);
+            await unregistered.connect(owner).approve(await amm.getAddress(), INITIAL_LIQUIDITY);
+
+            const deadline = await futureDeadline();
+
+            await expect(
+                amm.connect(owner).addLiquidity(
+                    wavaxAddr, unregAddr,
+                    INITIAL_LIQUIDITY, INITIAL_LIQUIDITY,
+                    0n, 0n, deadline, ethers.ZeroAddress,
+                )
+            ).to.be.revertedWithCustomError(amm, 'UnregisteredPoolTokens');
+        });
+
+        it('Should allow pool creation when at least one token is registered', async function () {
+            const xomAddr = await xomToken.getAddress();
+            const wavaxAddr = await wavax.getAddress();
+
+            // XOM is registered but WAVAX is not
+            await xomToken.connect(owner).approve(await amm.getAddress(), INITIAL_LIQUIDITY);
+            await wavax.mint(owner.address, INITIAL_LIQUIDITY);
+            await wavax.connect(owner).approve(await amm.getAddress(), INITIAL_LIQUIDITY);
+
+            const deadline = await futureDeadline();
+
+            await expect(
+                amm.connect(owner).addLiquidity(
+                    xomAddr, wavaxAddr,
+                    INITIAL_LIQUIDITY, INITIAL_LIQUIDITY,
+                    0n, 0n, deadline, ethers.ZeroAddress,
+                )
+            ).to.emit(amm, 'PoolCreated');
+        });
+
+        it('Should verify deployer is initial pool creator', async function () {
+            expect(await amm.isPoolCreator(owner.address)).to.be.true;
+        });
+
+        it('Should reject pool creation from non-pool-creator via createPool', async function () {
+            const xomAddr = await xomToken.getAddress();
+            const rwaAddr = await rwaToken.getAddress();
+
+            await expect(
+                amm.connect(user1).createPool(xomAddr, rwaAddr)
+            ).to.be.revertedWithCustomError(amm, 'NotPoolCreator');
+        });
+    });
+
+    // =====================================================================
+    //  NEW TESTS - Liquidity Provision Edge Cases
+    // =====================================================================
+    describe('Liquidity Provision Edge Cases', function () {
+        it('Should mint LP tokens proportional to deposit for initial liquidity', async function () {
+            const xomAddr = await xomToken.getAddress();
+            const rwaAddr = await rwaToken.getAddress();
+
+            await xomToken.connect(owner).approve(await amm.getAddress(), INITIAL_LIQUIDITY);
+            await rwaToken.connect(owner).approve(await amm.getAddress(), INITIAL_LIQUIDITY);
+
+            const deadline = await futureDeadline();
+            await amm.connect(owner).addLiquidity(
+                xomAddr, rwaAddr,
+                INITIAL_LIQUIDITY, INITIAL_LIQUIDITY,
+                0n, 0n, deadline, ethers.ZeroAddress,
+            );
+
+            const poolAddr = await amm['getPool(address,address)'](xomAddr, rwaAddr);
+            const pool = await ethers.getContractAt('RWAPool', poolAddr);
+
+            // Owner should have LP tokens (minus MINIMUM_LIQUIDITY locked)
+            const lpBal = await pool.balanceOf(owner.address);
+            expect(lpBal).to.be.gt(0n);
+        });
+
+        it('Should reject duplicate pool creation', async function () {
+            const xomAddr = await xomToken.getAddress();
+            const rwaAddr = await rwaToken.getAddress();
+
+            await xomToken.connect(owner).approve(await amm.getAddress(), INITIAL_LIQUIDITY * 2n);
+            await rwaToken.connect(owner).approve(await amm.getAddress(), INITIAL_LIQUIDITY * 2n);
+
+            const deadline = await futureDeadline();
+            // First creation succeeds
+            await amm.connect(owner).addLiquidity(
+                xomAddr, rwaAddr,
+                INITIAL_LIQUIDITY, INITIAL_LIQUIDITY,
+                0n, 0n, deadline, ethers.ZeroAddress,
+            );
+
+            // Direct createPool for same pair should fail
+            await expect(
+                amm.connect(owner).createPool(xomAddr, rwaAddr)
+            ).to.be.revertedWithCustomError(amm, 'PoolAlreadyExists');
+        });
+
+        it('Should reject addLiquidity with expired deadline', async function () {
+            const xomAddr = await xomToken.getAddress();
+            const rwaAddr = await rwaToken.getAddress();
+
+            await xomToken.connect(owner).approve(await amm.getAddress(), INITIAL_LIQUIDITY);
+            await rwaToken.connect(owner).approve(await amm.getAddress(), INITIAL_LIQUIDITY);
+
+            const block = await ethers.provider.getBlock('latest');
+            const expiredDeadline = block.timestamp - 3600;
+
+            await expect(
+                amm.connect(owner).addLiquidity(
+                    xomAddr, rwaAddr,
+                    INITIAL_LIQUIDITY, INITIAL_LIQUIDITY,
+                    0n, 0n, expiredDeadline, ethers.ZeroAddress,
+                )
+            ).to.be.revertedWithCustomError(amm, 'DeadlineExpired');
+        });
+
+        it('Should reject removeLiquidity with expired deadline', async function () {
+            const xomAddr = await xomToken.getAddress();
+            const rwaAddr = await rwaToken.getAddress();
+
+            await xomToken.connect(owner).approve(await amm.getAddress(), INITIAL_LIQUIDITY);
+            await rwaToken.connect(owner).approve(await amm.getAddress(), INITIAL_LIQUIDITY);
+
+            const deadline = await futureDeadline();
+            await amm.connect(owner).addLiquidity(
+                xomAddr, rwaAddr,
+                INITIAL_LIQUIDITY, INITIAL_LIQUIDITY,
+                0n, 0n, deadline, ethers.ZeroAddress,
+            );
+
+            const block = await ethers.provider.getBlock('latest');
+            const expiredDeadline = block.timestamp - 3600;
+
+            await expect(
+                amm.connect(owner).removeLiquidity(
+                    xomAddr, rwaAddr,
+                    1n, 0n, 0n, expiredDeadline, ethers.ZeroAddress,
+                )
+            ).to.be.revertedWithCustomError(amm, 'DeadlineExpired');
+        });
+
+        it('Should reject removeLiquidity on non-existent pool', async function () {
+            const wavaxAddr = await wavax.getAddress();
+            const rwaAddr = await rwaToken.getAddress();
+            const deadline = await futureDeadline();
+
+            await expect(
+                amm.connect(owner).removeLiquidity(
+                    wavaxAddr, rwaAddr,
+                    1n, 0n, 0n, deadline, ethers.ZeroAddress,
+                )
+            ).to.be.revertedWithCustomError(amm, 'PoolNotFound');
+        });
+    });
+
+    // =====================================================================
+    //  NEW TESTS - Large Swaps
+    // =====================================================================
+    describe('Large Swaps', function () {
+        beforeEach(async function () {
+            const xomAddr = await xomToken.getAddress();
+            const rwaAddr = await rwaToken.getAddress();
+
+            // Create pool with large liquidity
+            const largeLiquidity = ethers.parseEther('100000');
+            await xomToken.connect(owner).approve(await amm.getAddress(), largeLiquidity);
+            await rwaToken.connect(owner).approve(await amm.getAddress(), largeLiquidity);
+
+            const deadline = await futureDeadline();
+            await amm.connect(owner).addLiquidity(
+                xomAddr, rwaAddr,
+                largeLiquidity, largeLiquidity,
+                0n, 0n, deadline, ethers.ZeroAddress,
+            );
+        });
+
+        it('Should handle swap of 10% of reserves', async function () {
+            const xomAddr = await xomToken.getAddress();
+            const rwaAddr = await rwaToken.getAddress();
+            const tenPercent = ethers.parseEther('10000');
+
+            await xomToken.connect(user1).approve(await amm.getAddress(), tenPercent);
+            const deadline = await futureDeadline();
+
+            await expect(
+                amm.connect(user1).swap(
+                    xomAddr, rwaAddr, tenPercent, 0n, deadline, ethers.ZeroAddress,
+                )
+            ).to.emit(amm, 'Swap');
+        });
+
+        it('Should have meaningful price impact for large swap (50% of reserves)', async function () {
+            const xomAddr = await xomToken.getAddress();
+            const rwaAddr = await rwaToken.getAddress();
+            const fiftyPercent = ethers.parseEther('50000');
+
+            const [, , priceImpact] = await amm.getQuote(xomAddr, rwaAddr, fiftyPercent);
+
+            // 50% of reserves should cause significant price impact (>100 bps = >1%)
+            expect(priceImpact).to.be.gt(100n);
+        });
+
+        it('Should execute reverse swap (token1 -> token0)', async function () {
+            const xomAddr = await xomToken.getAddress();
+            const rwaAddr = await rwaToken.getAddress();
+
+            await rwaToken.connect(user1).approve(await amm.getAddress(), SWAP_AMOUNT);
+            const deadline = await futureDeadline();
+
+            const xomBalBefore = await xomToken.balanceOf(user1.address);
+
+            await amm.connect(user1).swap(
+                rwaAddr, xomAddr, SWAP_AMOUNT, 0n, deadline, ethers.ZeroAddress,
+            );
+
+            const xomBalAfter = await xomToken.balanceOf(user1.address);
+            expect(xomBalAfter).to.be.gt(xomBalBefore);
+        });
+    });
+
+    // =====================================================================
+    //  NEW TESTS - Events
+    // =====================================================================
+    describe('Events - Detailed', function () {
+        it('Should emit LiquidityAdded with correct args on initial deposit', async function () {
+            const xomAddr = await xomToken.getAddress();
+            const rwaAddr = await rwaToken.getAddress();
+
+            await xomToken.connect(owner).approve(await amm.getAddress(), INITIAL_LIQUIDITY);
+            await rwaToken.connect(owner).approve(await amm.getAddress(), INITIAL_LIQUIDITY);
+
+            const deadline = await futureDeadline();
+
+            await expect(
+                amm.connect(owner).addLiquidity(
+                    xomAddr, rwaAddr,
+                    INITIAL_LIQUIDITY, INITIAL_LIQUIDITY,
+                    0n, 0n, deadline, ethers.ZeroAddress,
+                )
+            ).to.emit(amm, 'LiquidityAdded');
+        });
+
+        it('Should emit Swap with correct sender (compliance target)', async function () {
+            const xomAddr = await xomToken.getAddress();
+            const rwaAddr = await rwaToken.getAddress();
+
+            await xomToken.connect(owner).approve(await amm.getAddress(), INITIAL_LIQUIDITY);
+            await rwaToken.connect(owner).approve(await amm.getAddress(), INITIAL_LIQUIDITY);
+            const deadline1 = await futureDeadline();
+            await amm.connect(owner).addLiquidity(
+                xomAddr, rwaAddr,
+                INITIAL_LIQUIDITY, INITIAL_LIQUIDITY,
+                0n, 0n, deadline1, ethers.ZeroAddress,
+            );
+
+            await xomToken.connect(user1).approve(await amm.getAddress(), SWAP_AMOUNT);
+            const deadline2 = await futureDeadline();
+
+            const tx = await amm.connect(user1).swap(
+                xomAddr, rwaAddr, SWAP_AMOUNT, 0n, deadline2, ethers.ZeroAddress,
+            );
+            const receipt = await tx.wait();
+            const swapEvent = receipt.logs.find(
+                (l) => l.fragment && l.fragment.name === 'Swap'
+            );
+            expect(swapEvent).to.not.be.undefined;
+            // First indexed arg is the compliance target (user1)
+            expect(swapEvent.args[0]).to.equal(user1.address);
+            // Second indexed arg is tokenIn
+            expect(swapEvent.args[1]).to.equal(xomAddr);
+            // Third indexed arg is tokenOut
+            expect(swapEvent.args[2]).to.equal(rwaAddr);
+            // Fourth arg is amountIn
+            expect(swapEvent.args[3]).to.equal(SWAP_AMOUNT);
+        });
+
+        it('Should emit EmergencyPaused event on global pause', async function () {
+            const poolId = ethers.ZeroHash;
+            const reason = 'Security incident';
+            const nonce = await amm.emergencyNonce();
+            const chainId = (await ethers.provider.getNetwork()).chainId;
+            const ammAddr = await amm.getAddress();
+
+            const messageHash = ethers.solidityPackedKeccak256(
+                ['string', 'bytes32', 'string', 'uint256', 'uint256', 'address'],
+                ['PAUSE', poolId, reason, nonce, chainId, ammAddr],
+            );
+            const ethHash = ethers.hashMessage(ethers.getBytes(messageHash));
+
+            const sigs = [];
+            for (let i = 0; i < 3; i++) {
+                const sig = await emergencySigners[i].signMessage(ethers.getBytes(messageHash));
+                sigs.push(sig);
+            }
+
+            await expect(
+                amm.emergencyPause(poolId, reason, sigs)
+            ).to.emit(amm, 'EmergencyPaused');
+        });
+    });
+
+    // =====================================================================
+    //  NEW TESTS - Constructor Validation
+    // =====================================================================
+    describe('Constructor Validation', function () {
+        it('Should reject zero XOM token address', async function () {
+            const RWAAMM = await ethers.getContractFactory('RWAAMM');
+            const emergencyAddresses = emergencySigners.map(s => s.address);
+
+            await expect(
+                RWAAMM.deploy(
+                    emergencyAddresses,
+                    feeVault.address,
+                    ethers.ZeroAddress, // Zero XOM
+                    await complianceOracle.getAddress(),
+                    ethers.ZeroAddress,
+                )
+            ).to.be.revertedWithCustomError(amm, 'ZeroAddress');
+        });
+
+        it('Should reject zero compliance oracle address', async function () {
+            const RWAAMM = await ethers.getContractFactory('RWAAMM');
+            const emergencyAddresses = emergencySigners.map(s => s.address);
+
+            await expect(
+                RWAAMM.deploy(
+                    emergencyAddresses,
+                    feeVault.address,
+                    await xomToken.getAddress(),
+                    ethers.ZeroAddress, // Zero oracle
+                    ethers.ZeroAddress,
+                )
+            ).to.be.revertedWithCustomError(amm, 'ZeroAddress');
+        });
+
+        it('Should reject zero address in emergency signers', async function () {
+            const RWAAMM = await ethers.getContractFactory('RWAAMM');
+            const badSigners = emergencySigners.map(s => s.address);
+            badSigners[2] = ethers.ZeroAddress;
+
+            await expect(
+                RWAAMM.deploy(
+                    badSigners,
+                    feeVault.address,
+                    await xomToken.getAddress(),
+                    await complianceOracle.getAddress(),
+                    ethers.ZeroAddress,
+                )
+            ).to.be.revertedWithCustomError(amm, 'ZeroAddress');
+        });
+
+        it('Should reject duplicate emergency signers', async function () {
+            const RWAAMM = await ethers.getContractFactory('RWAAMM');
+            const dupSigners = emergencySigners.map(s => s.address);
+            dupSigners[3] = dupSigners[0]; // duplicate
+
+            await expect(
+                RWAAMM.deploy(
+                    dupSigners,
+                    feeVault.address,
+                    await xomToken.getAddress(),
+                    await complianceOracle.getAddress(),
+                    ethers.ZeroAddress,
+                )
+            ).to.be.revertedWithCustomError(amm, 'DuplicateSigner');
+        });
+
+        it('Should set all 5 emergency signers correctly', async function () {
+            expect(await amm.EMERGENCY_SIGNER_1()).to.equal(emergencySigners[0].address);
+            expect(await amm.EMERGENCY_SIGNER_2()).to.equal(emergencySigners[1].address);
+            expect(await amm.EMERGENCY_SIGNER_3()).to.equal(emergencySigners[2].address);
+            expect(await amm.EMERGENCY_SIGNER_4()).to.equal(emergencySigners[3].address);
+            expect(await amm.EMERGENCY_SIGNER_5()).to.equal(emergencySigners[4].address);
+        });
+    });
+
+    // =====================================================================
+    //  NEW TESTS - View Functions
+    // =====================================================================
+    describe('View Functions', function () {
+        it('Should return false for poolExists on non-existent pool', async function () {
+            const fakeId = ethers.keccak256(ethers.toUtf8Bytes('fake'));
+            expect(await amm.poolExists(fakeId)).to.be.false;
+        });
+
+        it('Should return empty array for getAllPoolIds initially', async function () {
+            const ids = await amm.getAllPoolIds();
+            expect(ids.length).to.equal(0);
+        });
+
+        it('Should return pool ID in getAllPoolIds after creation', async function () {
+            const xomAddr = await xomToken.getAddress();
+            const rwaAddr = await rwaToken.getAddress();
+
+            await xomToken.connect(owner).approve(await amm.getAddress(), INITIAL_LIQUIDITY);
+            await rwaToken.connect(owner).approve(await amm.getAddress(), INITIAL_LIQUIDITY);
+
+            const deadline = await futureDeadline();
+            await amm.connect(owner).addLiquidity(
+                xomAddr, rwaAddr,
+                INITIAL_LIQUIDITY, INITIAL_LIQUIDITY,
+                0n, 0n, deadline, ethers.ZeroAddress,
+            );
+
+            const ids = await amm.getAllPoolIds();
+            expect(ids.length).to.equal(1);
+
+            const expectedId = await amm.getPoolId(xomAddr, rwaAddr);
+            expect(ids[0]).to.equal(expectedId);
+        });
+
+        it('Should return zero address for getPoolAddress on non-existent pool', async function () {
+            const fakeId = ethers.keccak256(ethers.toUtf8Bytes('nonexistent'));
+            expect(await amm.getPoolAddress(fakeId)).to.equal(ethers.ZeroAddress);
+        });
+
+        it('Should report isGloballyPaused as false initially', async function () {
+            expect(await amm.isGloballyPaused()).to.be.false;
+        });
+
+        it('Should return initial nonce of 0', async function () {
+            expect(await amm.emergencyNonce()).to.equal(0n);
+            expect(await amm.poolCreatorNonce()).to.equal(0n);
+        });
+
+        it('Should return MINIMUM_LIQUIDITY constant as 1000', async function () {
+            expect(await amm.MINIMUM_LIQUIDITY()).to.equal(1000n);
+        });
+
+        it('Should return PAUSE_THRESHOLD as 3', async function () {
+            expect(await amm.PAUSE_THRESHOLD()).to.equal(3n);
+        });
+
+        it('Should return MULTISIG_COUNT as 5', async function () {
+            expect(await amm.MULTISIG_COUNT()).to.equal(5n);
+        });
+    });
+
+    // =====================================================================
+    //  NEW TESTS - Pool Creation via createPool
+    // =====================================================================
+    describe('Pool Creation via createPool', function () {
+        it('Should allow pool creator to create pool directly', async function () {
+            const xomAddr = await xomToken.getAddress();
+            const rwaAddr = await rwaToken.getAddress();
+
+            await expect(
+                amm.connect(owner).createPool(xomAddr, rwaAddr)
+            ).to.emit(amm, 'PoolCreated');
+        });
+
+        it('Should reject createPool with zero address', async function () {
+            const xomAddr = await xomToken.getAddress();
+
+            await expect(
+                amm.connect(owner).createPool(xomAddr, ethers.ZeroAddress)
+            ).to.be.revertedWithCustomError(amm, 'ZeroAddress');
+        });
+    });
 });

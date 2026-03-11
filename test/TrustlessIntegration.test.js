@@ -86,7 +86,7 @@ describe("Trustless Architecture — Cross-Contract Integration", function () {
     const SEVEN_DAYS = 7 * 24 * 60 * 60;
 
     const VoteType = { None: 0, Release: 1, Refund: 2 };
-    const DisputeStatus = { Active: 0, Resolved: 1, Appealed: 2, DefaultResolved: 3 };
+    const DisputeStatus = { Active: 0, Resolved: 1, Appealed: 2, DefaultResolved: 3, PendingSelection: 4, AppealPendingSelection: 5 };
 
     // EIP-712 types for marketplace listing
     const LISTING_TYPES = {
@@ -296,7 +296,8 @@ describe("Trustless Architecture — Cross-Contract Integration", function () {
       expect(resolvedDispute.status).to.equal(DisputeStatus.Resolved);
       expect(resolvedDispute.releaseVotes).to.equal(2);
 
-      // ── Buyer appeals the Release decision ──
+      // ── Buyer appeals the Release decision (two-phase) ──
+      // Phase 1: File appeal (stores selectionBlock, emits AppealFiled with zero addresses)
       const appealTx = await arbitration.connect(buyer).fileAppeal(1);
       const appealReceipt = await appealTx.wait();
       const appealEvent = appealReceipt.logs.find(
@@ -304,7 +305,16 @@ describe("Trustless Architecture — Cross-Contract Integration", function () {
       );
       expect(appealEvent).to.not.be.undefined;
 
-      const appealArbAddrs = appealEvent.args.arbitrators;
+      // Phase 2: Mine 2 blocks, then finalize appeal arbitrator selection
+      await mine(2);
+      const finalizeTx = await arbitration.finalizeAppealSelection(1);
+      const finalizeReceipt = await finalizeTx.wait();
+      const selectionEvent = finalizeReceipt.logs.find(
+        (log) => log.fragment && log.fragment.name === "AppealSelectionFinalized"
+      );
+      expect(selectionEvent).to.not.be.undefined;
+
+      const appealArbAddrs = selectionEvent.args.arbitrators;
       expect(appealArbAddrs.length).to.equal(5);
 
       // Appeal arbitrators must not overlap with original 3
@@ -318,6 +328,11 @@ describe("Trustless Architecture — Cross-Contract Integration", function () {
       const appealSigners = appealArbAddrs.map((addr) =>
         arbitrators.find((a) => a.address === addr)
       );
+
+      // Verify all appeal signers were found in the arbitrators pool
+      for (let i = 0; i < 3; i++) {
+        expect(appealSigners[i]).to.not.be.undefined;
+      }
 
       await arbitration.connect(appealSigners[0]).castAppealVote(1, VoteType.Refund);
       await arbitration.connect(appealSigners[1]).castAppealVote(1, VoteType.Refund);

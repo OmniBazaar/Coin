@@ -6,7 +6,7 @@ describe("OmniNFTLending", function () {
   let lending;
   let token;
   let nft;
-  let owner, feeRecipient, lender, borrower, other;
+  let owner, feeVault, lender, borrower, other;
 
   /** Platform fee: 10 % of interest = 1000 bps */
   const PLATFORM_FEE_BPS = 1000;
@@ -20,7 +20,7 @@ describe("OmniNFTLending", function () {
   const TOKEN_ID = 1;
 
   beforeEach(async function () {
-    [owner, feeRecipient, lender, borrower, other] = await ethers.getSigners();
+    [owner, feeVault, lender, borrower, other] = await ethers.getSigners();
 
     // Deploy mock ERC-20
     const MockERC20 = await ethers.getContractFactory(
@@ -36,7 +36,7 @@ describe("OmniNFTLending", function () {
 
     // Deploy OmniNFTLending
     const Lending = await ethers.getContractFactory("OmniNFTLending");
-    lending = await Lending.deploy(feeRecipient.address, PLATFORM_FEE_BPS, ethers.ZeroAddress);
+    lending = await Lending.deploy(feeVault.address, PLATFORM_FEE_BPS, ethers.ZeroAddress);
 
     // Mint tokens to lender for principal deposits
     await token.mint(lender.address, ethers.parseEther("10000"));
@@ -113,7 +113,7 @@ describe("OmniNFTLending", function () {
     });
 
     it("Should set the correct fee recipient", async function () {
-      expect(await lending.feeRecipient()).to.equal(feeRecipient.address);
+      expect(await lending.feeVault()).to.equal(feeVault.address);
     });
 
     it("Should set the correct platform fee", async function () {
@@ -128,7 +128,7 @@ describe("OmniNFTLending", function () {
     it("Should reject fee above maximum", async function () {
       const Lending = await ethers.getContractFactory("OmniNFTLending");
       await expect(
-        Lending.deploy(feeRecipient.address, 2001, ethers.ZeroAddress)
+        Lending.deploy(feeVault.address, 2001, ethers.ZeroAddress)
       ).to.be.revertedWithCustomError(lending, "FeeTooHigh");
     });
   });
@@ -422,15 +422,15 @@ describe("OmniNFTLending", function () {
       expect(lenderAfter - lenderBefore).to.equal(lenderExpected);
     });
 
-    it("Should send platform fee to feeRecipient", async function () {
+    it("Should send platform fee to feeVault", async function () {
       const { loanId } = await createAndAcceptOffer();
       const loan = await lending.getLoan(loanId);
       const platformFee =
         (loan.interest * BigInt(PLATFORM_FEE_BPS)) / 10000n;
 
-      const feeBefore = await token.balanceOf(feeRecipient.address);
+      const feeBefore = await token.balanceOf(feeVault.address);
       await lending.connect(borrower).repay(loanId);
-      const feeAfter = await token.balanceOf(feeRecipient.address);
+      const feeAfter = await token.balanceOf(feeVault.address);
 
       expect(feeAfter - feeBefore).to.equal(platformFee);
     });
@@ -457,7 +457,7 @@ describe("OmniNFTLending", function () {
     it("Should handle zero platform fee correctly", async function () {
       // Deploy a lending contract with 0 fee
       const Lending = await ethers.getContractFactory("OmniNFTLending");
-      const zeroFeeLending = await Lending.deploy(feeRecipient.address, 0, ethers.ZeroAddress);
+      const zeroFeeLending = await Lending.deploy(feeVault.address, 0, ethers.ZeroAddress);
 
       // Re-approve for the new contract
       await token
@@ -495,10 +495,10 @@ describe("OmniNFTLending", function () {
 
       // Repay - lender should get full principal + interest
       const lenderBefore = await token.balanceOf(lender.address);
-      const feeBefore = await token.balanceOf(feeRecipient.address);
+      const feeBefore = await token.balanceOf(feeVault.address);
       await zeroFeeLending.connect(borrower).repay(0);
       const lenderAfter = await token.balanceOf(lender.address);
-      const feeAfter = await token.balanceOf(feeRecipient.address);
+      const feeAfter = await token.balanceOf(feeVault.address);
 
       // H-01: Interest is now annualized. For 30-day loan at 10% annual:
       // interest = 100e18 * 1000 * 30 / (10000 * 365)
@@ -735,15 +735,15 @@ describe("OmniNFTLending", function () {
       });
     });
 
-    describe("setFeeRecipient", function () {
+    describe("setFeeVault", function () {
       it("Should update fee recipient", async function () {
-        await lending.connect(owner).setFeeRecipient(other.address);
-        expect(await lending.feeRecipient()).to.equal(other.address);
+        await lending.connect(owner).setFeeVault(other.address);
+        expect(await lending.feeVault()).to.equal(other.address);
       });
 
       it("Should reject call from non-owner", async function () {
         await expect(
-          lending.connect(other).setFeeRecipient(other.address)
+          lending.connect(other).setFeeVault(other.address)
         ).to.be.revertedWithCustomError(lending, "OwnableUnauthorizedAccount");
       });
     });
@@ -920,9 +920,9 @@ describe("OmniNFTLending", function () {
       // Fee is based on the ORIGINAL 1000 bps, not the new 2000 bps
       const platformFee = (loan.interest * BigInt(PLATFORM_FEE_BPS)) / 10000n;
 
-      const feeBefore = await token.balanceOf(feeRecipient.address);
+      const feeBefore = await token.balanceOf(feeVault.address);
       await lending.connect(borrower).repay(loanId);
-      const feeAfter = await token.balanceOf(feeRecipient.address);
+      const feeAfter = await token.balanceOf(feeVault.address);
 
       expect(feeAfter - feeBefore).to.equal(platformFee);
 

@@ -46,7 +46,7 @@ describe("UUPS Governance System", function () {
     const OmniCore = await ethers.getContractFactory("OmniCore");
     core = await upgrades.deployProxy(
       OmniCore,
-      [admin.address, token.target, admin.address, admin.address],
+      [admin.address, token.target, admin.address, admin.address, admin.address],
       {
         initializer: "initialize",
         constructorArgs: [ethers.ZeroAddress],

@@ -1,189 +1,245 @@
-const { exec } = require('child_process');
+const { execSync } = require('child_process');
 const chalk = require('chalk');
 
-// Test categories for simplified architecture
+/**
+ * OmniCoin Test Runner — runs all test files via a single `npx hardhat test`
+ * invocation per category to avoid ELOCKED cache conflicts.
+ *
+ * Usage:
+ *   node test/runAllTests.js                          # run all categories
+ *   node test/runAllTests.js --category "Core Contracts"
+ *   node test/runAllTests.js --category "Privacy" --category "DEX & Settlement"
+ *   node test/runAllTests.js --list                   # show categories without running
+ */
+
 const testCategories = {
   'Core Contracts': [
     'test/OmniCoin.test.js',
     'test/PrivateOmniCoin.test.js',
-    'test/OmniCore.test.js'
+    'test/OmniCore.test.js',
+    'test/OmniRegistration.test.ts',
+    'test/OmniParticipation.test.ts',
+    'test/Bootstrap.test.js',
   ],
-  'Business Logic': [
+  'Escrow & Marketplace': [
     'test/MinimalEscrow.test.js',
-    'test/UUPSGovernance.test.js',
+    'test/MinimalEscrowPrivacy.test.js',
     'test/OmniArbitration.test.js',
-    'test/OmniMarketplace.test.js'
+    'test/OmniMarketplace.test.js',
   ],
-  'Cross-Chain': [
-    'test/OmniBridge.test.js',
-    'test/OmniPrivacyBridge.test.js'
+  'Governance': [
+    'test/UUPSGovernance.test.js',
   ],
-  'Fee & DEX': [
+  'Rewards': [
+    'test/OmniRewardManager.test.ts',
+    'test/OmniValidatorRewards.test.ts',
+    'test/StakingRewardPool.test.js',
+  ],
+  'DEX & Settlement': [
+    'test/DEXSettlement.test.ts',
+    'test/dex/OmniSwapRouter.test.js',
+    'test/dex/OmniFeeRouter.test.js',
+    'test/FeeSwapAdapter.test.js',
+  ],
+  'Fee Infrastructure': [
     'test/UnifiedFeeVault.test.js',
     'test/OmniTreasury.test.js',
     'test/OmniChatFee.test.js',
-    'test/dex/OmniFeeRouter.test.js'
   ],
-  'Infrastructure': [
-    'test/Bootstrap.test.js',
-    'test/OmniPriceOracle.test.js',
-    'test/UpdateRegistry.test.js',
-    'test/OmniENS.test.js',
-    'test/predictions/OmniPredictionRouter.test.js',
-    'test/reputation/ReputationCredential.test.js',
-    'test/yield/OmniYieldFeeCollector.test.js'
+  'Cross-Chain': [
+    'test/OmniBridge.test.js',
+    'test/OmniPrivacyBridge.test.js',
+  ],
+  'Privacy': [
+    'test/PrivateDEXSettlement.test.ts',
+    'test/privacy/PrivateDEX.test.js',
+    'test/privacy/PrivateUSDC.test.js',
+    'test/privacy/PrivateWETH.test.js',
+    'test/privacy/PrivateWBTC.test.js',
+  ],
+  'Liquidity': [
+    'test/liquidity/LiquidityBootstrappingPool.test.js',
+    'test/liquidity/LiquidityMining.test.js',
+    'test/liquidity/OmniBonding.test.js',
   ],
   'NFT': [
     'test/nft/OmniNFTFactory.test.js',
     'test/nft/OmniNFTCollection.test.js',
     'test/nft/OmniFractionalNFT.test.js',
     'test/nft/OmniNFTStaking.test.js',
-    'test/nft/OmniNFTLending.test.js'
+    'test/nft/OmniNFTLending.test.js',
   ],
   'RWA': [
     'test/rwa/RWAAMM.test.js',
-    'test/rwa/RWAPool.test.js'
+    'test/rwa/RWAPool.test.js',
   ],
   'Account Abstraction': [
-    'test/account-abstraction/AccountAbstraction.test.js'
-  ]
+    'test/account-abstraction/AccountAbstraction.test.js',
+  ],
+  'Infrastructure': [
+    'test/OmniPriceOracle.test.js',
+    'test/UpdateRegistry.test.js',
+    'test/OmniENS.test.js',
+    'test/predictions/OmniPredictionRouter.test.js',
+    'test/reputation/ReputationCredential.test.js',
+    'test/yield/OmniYieldFeeCollector.test.js',
+    'test/LegacyBalanceClaim.test.js',
+  ],
+  'Integration': [
+    'test/TrustlessIntegration.test.js',
+  ],
 };
 
-// Test results
-let totalTests = 0;
-let passedTests = 0;
-let failedTests = 0;
-let skippedTests = 0;
-const failedTestFiles = [];
+// ---------------------------------------------------------------------------
+// CLI argument parsing
+// ---------------------------------------------------------------------------
+const args = process.argv.slice(2);
+const showList = args.includes('--list');
+const selectedCategories = [];
 
-// Function to run a single test file
-function runTest(testFile) {
-  return new Promise((resolve) => {
-    console.log(chalk.blue(`\nRunning ${testFile}...`));
-    
-    exec(`npx hardhat test ${testFile}`, (error, stdout, stderr) => {
-      totalTests++;
-      
-      if (error) {
-        failedTests++;
-        failedTestFiles.push(testFile);
-        console.log(chalk.red(`✗ ${testFile} FAILED`));
-        console.log(chalk.red(stderr));
-        resolve({ status: 'failed', file: testFile, error: stderr });
-      } else {
-        // Check if tests were skipped (common for privacy tests in hardhat)
-        if (stdout.includes('0 passing') && stdout.includes('pending')) {
-          skippedTests++;
-          console.log(chalk.yellow(`⚠ ${testFile} SKIPPED (MPC not available in Hardhat)`));
-          resolve({ status: 'skipped', file: testFile });
-        } else {
-          passedTests++;
-          console.log(chalk.green(`✓ ${testFile} PASSED`));
-          resolve({ status: 'passed', file: testFile });
-        }
-      }
+for (let i = 0; i < args.length; i++) {
+  if (args[i] === '--category' && args[i + 1]) {
+    selectedCategories.push(args[i + 1]);
+    i++;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// --list mode: print categories and exit
+// ---------------------------------------------------------------------------
+if (showList) {
+  console.log(chalk.bold.cyan('Available test categories:\n'));
+  for (const [name, files] of Object.entries(testCategories)) {
+    console.log(chalk.bold(`  ${name}`), chalk.gray(`(${files.length} files)`));
+    files.forEach(f => console.log(chalk.gray(`    ${f}`)));
+  }
+  const total = Object.values(testCategories).reduce((s, f) => s + f.length, 0);
+  console.log(chalk.bold(`\nTotal: ${total} test files in ${Object.keys(testCategories).length} categories`));
+  process.exit(0);
+}
+
+// ---------------------------------------------------------------------------
+// Determine which categories to run
+// ---------------------------------------------------------------------------
+const categoriesToRun = selectedCategories.length > 0
+  ? Object.fromEntries(
+      Object.entries(testCategories).filter(([name]) =>
+        selectedCategories.some(sel => name.toLowerCase() === sel.toLowerCase())
+      )
+    )
+  : testCategories;
+
+if (Object.keys(categoriesToRun).length === 0) {
+  console.error(chalk.red(`No matching categories found for: ${selectedCategories.join(', ')}`));
+  console.error(chalk.yellow('Use --list to see available categories'));
+  process.exit(1);
+}
+
+// ---------------------------------------------------------------------------
+// Runner
+// ---------------------------------------------------------------------------
+let totalCategories = 0;
+let passedCategories = 0;
+let failedCategories = 0;
+const failedCategoryNames = [];
+const startTime = Date.now();
+
+console.log(chalk.bold.magenta('OmniCoin Test Suite'));
+console.log(chalk.bold.magenta(`${'='.repeat(60)}\n`));
+
+const totalFiles = Object.values(categoriesToRun).reduce((s, f) => s + f.length, 0);
+console.log(chalk.bold(`Running ${Object.keys(categoriesToRun).length} categories (${totalFiles} files)\n`));
+
+for (const [category, files] of Object.entries(categoriesToRun)) {
+  totalCategories++;
+  console.log(chalk.bold.cyan(`\n${'='.repeat(60)}`));
+  console.log(chalk.bold.cyan(`[${totalCategories}] ${category} (${files.length} files)`));
+  console.log(chalk.bold.cyan(`${'='.repeat(60)}`));
+
+  // Pass ALL files for this category in a single hardhat invocation
+  const fileList = files.join(' ');
+  const cmd = `npx hardhat test ${fileList}`;
+
+  try {
+    const output = execSync(cmd, {
+      cwd: process.cwd(),
+      stdio: 'pipe',
+      encoding: 'utf-8',
+      timeout: 600000, // 10 minutes per category
+      env: { ...process.env, FORCE_COLOR: '1' },
     });
+
+    // Extract passing/failing counts from mocha output
+    const passingMatch = output.match(/(\d+) passing/);
+    const failingMatch = output.match(/(\d+) failing/);
+    const pendingMatch = output.match(/(\d+) pending/);
+    const passing = passingMatch ? passingMatch[1] : '?';
+    const failing = failingMatch ? failingMatch[1] : '0';
+    const pending = pendingMatch ? pendingMatch[1] : '0';
+
+    if (failingMatch && parseInt(failingMatch[1]) > 0) {
+      failedCategories++;
+      failedCategoryNames.push(category);
+      console.log(chalk.red(`\n  ✗ ${category}: ${passing} passing, ${failing} failing, ${pending} pending`));
+      // Print last 40 lines for context on failures
+      const lines = output.split('\n');
+      console.log(chalk.gray(lines.slice(-40).join('\n')));
+    } else {
+      passedCategories++;
+      console.log(chalk.green(`\n  ✓ ${category}: ${passing} passing, ${pending} pending`));
+    }
+  } catch (err) {
+    failedCategories++;
+    failedCategoryNames.push(category);
+    const stderr = err.stderr ? err.stderr.toString() : '';
+    const stdout = err.stdout ? err.stdout.toString() : '';
+
+    // Extract counts even from failed runs
+    const passingMatch = stdout.match(/(\d+) passing/);
+    const failingMatch = stdout.match(/(\d+) failing/);
+    const passing = passingMatch ? passingMatch[1] : '0';
+    const failing = failingMatch ? failingMatch[1] : '?';
+
+    console.log(chalk.red(`\n  ✗ ${category}: ${passing} passing, ${failing} failing`));
+
+    // Print last 50 lines of output for debugging
+    const combinedOutput = stdout + '\n' + stderr;
+    const lines = combinedOutput.split('\n');
+    console.log(chalk.gray(lines.slice(-50).join('\n')));
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Summary
+// ---------------------------------------------------------------------------
+const duration = ((Date.now() - startTime) / 1000).toFixed(1);
+
+console.log(chalk.bold.cyan(`\n${'='.repeat(60)}`));
+console.log(chalk.bold.cyan('Test Summary'));
+console.log(chalk.bold.cyan(`${'='.repeat(60)}\n`));
+
+console.log(chalk.bold('Categories Run:'), totalCategories);
+console.log(chalk.green.bold('Passed:'), passedCategories);
+console.log(chalk.red.bold('Failed:'), failedCategories);
+console.log(chalk.bold('Duration:'), `${duration}s`);
+
+if (failedCategoryNames.length > 0) {
+  console.log(chalk.red.bold('\nFailed Categories:'));
+  failedCategoryNames.forEach(name => {
+    console.log(chalk.red(`  - ${name}`));
   });
 }
 
-// Function to run all tests in a category
-async function runCategory(categoryName, testFiles) {
-  console.log(chalk.bold.cyan(`\n${'='.repeat(60)}`));
-  console.log(chalk.bold.cyan(`Running ${categoryName} Tests`));
-  console.log(chalk.bold.cyan(`${'='.repeat(60)}`));
-  
-  const results = [];
-  for (const testFile of testFiles) {
-    const result = await runTest(testFile);
-    results.push(result);
-  }
-  
-  return results;
-}
+// Write results JSON
+const fs = require('fs');
+fs.writeFileSync('test-results.json', JSON.stringify({
+  timestamp: new Date().toISOString(),
+  duration: `${duration}s`,
+  summary: { total: totalCategories, passed: passedCategories, failed: failedCategories },
+  failedCategories: failedCategoryNames,
+}, null, 2));
+console.log(chalk.gray(`\nResults saved to test-results.json`));
 
-// Main test runner
-async function runAllTests() {
-  console.log(chalk.bold.magenta('OmniCoin Simplified Architecture Test Suite'));
-  console.log(chalk.bold.magenta(`${'='.repeat(60)}\n`));
-  
-  const startTime = Date.now();
-  const allResults = {};
-  
-  // Run tests by category
-  for (const [category, files] of Object.entries(testCategories)) {
-    const results = await runCategory(category, files);
-    allResults[category] = results;
-  }
-  
-  const endTime = Date.now();
-  const duration = ((endTime - startTime) / 1000).toFixed(2);
-  
-  // Print summary
-  console.log(chalk.bold.cyan(`\n${'='.repeat(60)}`));
-  console.log(chalk.bold.cyan('Test Summary'));
-  console.log(chalk.bold.cyan(`${'='.repeat(60)}\n`));
-  
-  console.log(chalk.bold('Total Tests Run:'), totalTests);
-  console.log(chalk.green.bold('Passed:'), passedTests);
-  console.log(chalk.red.bold('Failed:'), failedTests);
-  console.log(chalk.yellow.bold('Skipped:'), skippedTests);
-  console.log(chalk.bold('Duration:'), `${duration}s`);
-  
-  // List failed tests
-  if (failedTestFiles.length > 0) {
-    console.log(chalk.red.bold('\nFailed Tests:'));
-    failedTestFiles.forEach(file => {
-      console.log(chalk.red(`  - ${file}`));
-    });
-  }
-  
-  // Category breakdown
-  console.log(chalk.bold('\nCategory Breakdown:'));
-  for (const [category, results] of Object.entries(allResults)) {
-    const categoryPassed = results.filter(r => r.status === 'passed').length;
-    const categoryFailed = results.filter(r => r.status === 'failed').length;
-    const categorySkipped = results.filter(r => r.status === 'skipped').length;
-    
-    console.log(chalk.bold(`\n${category}:`));
-    console.log(`  Passed: ${categoryPassed}`);
-    console.log(`  Failed: ${categoryFailed}`);
-    console.log(`  Skipped: ${categorySkipped}`);
-  }
-  
-  // Exit code
-  const exitCode = failedTests > 0 ? 1 : 0;
-  console.log(chalk.bold(`\nTest suite ${exitCode === 0 ? chalk.green('PASSED') : chalk.red('FAILED')}`));
-  
-  // Write results to file
-  const fs = require('fs');
-  const resultsFile = 'test-results.json';
-  const resultsData = {
-    timestamp: new Date().toISOString(),
-    duration: `${duration}s`,
-    summary: {
-      total: totalTests,
-      passed: passedTests,
-      failed: failedTests,
-      skipped: skippedTests
-    },
-    categories: allResults,
-    failedFiles: failedTestFiles
-  };
-  
-  fs.writeFileSync(resultsFile, JSON.stringify(resultsData, null, 2));
-  console.log(chalk.gray(`\nDetailed results saved to ${resultsFile}`));
-  
-  process.exit(exitCode);
-}
-
-// Error handling
-process.on('unhandledRejection', (err) => {
-  console.error(chalk.red('Unhandled rejection:'), err);
-  process.exit(1);
-});
-
-// Run tests
-runAllTests().catch(err => {
-  console.error(chalk.red('Test runner error:'), err);
-  process.exit(1);
-});
+const exitCode = failedCategories > 0 ? 1 : 0;
+console.log(chalk.bold(`\nTest suite ${exitCode === 0 ? chalk.green('PASSED') : chalk.red('FAILED')}`));
+process.exit(exitCode);

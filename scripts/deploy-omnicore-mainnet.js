@@ -39,7 +39,8 @@ async function main() {
 
     // Verify ODDAO treasury is a valid address (not a contract requirement, just sanity)
     console.log("ODDAO treasury:", ODDAO_TREASURY);
-    console.log("StakingPool: deployer (temporary — update after StakingRewardPool deploys)\n");
+    console.log("StakingPool: deployer (temporary -- update after StakingRewardPool deploys)");
+    console.log("ProtocolTreasury: deployer (temporary -- update after treasury deploys)\n");
 
     // Deploy new OmniCore proxy
     console.log("--- Deploying OmniCore (UUPS Proxy) ---");
@@ -49,8 +50,9 @@ async function main() {
         [
             deployer.address,    // admin
             OMNI_COIN,           // OmniCoin token
-            ODDAO_TREASURY,      // ODDAO address (70% fees) — REAL
-            deployer.address     // Staking pool — temporary, update later
+            ODDAO_TREASURY,      // ODDAO address (70% fees) -- REAL
+            deployer.address,    // Staking pool -- temporary, update later
+            deployer.address     // Protocol treasury -- temporary, update later
         ],
         {
             initializer: "initialize",

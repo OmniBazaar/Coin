@@ -203,12 +203,12 @@ interface IOmniCore {
         uint256[] calldata takerFees
     ) external;
 
-    /// @notice Distribute DEX fees
-    /// @param validators Array of validators
-    /// @param amounts Array of fee amounts
+    /// @notice Distribute DEX fees (70% ODDAO, 20% Staking, 10% Protocol Treasury)
+    /// @param token Fee token address
+    /// @param totalFee Total fee amount to distribute
     function distributeDEXFees(
-        address[] calldata validators,
-        uint256[] calldata amounts
+        address token,
+        uint256 totalFee
     ) external;
 
     // ═══════════════════════════════════════════════════════════════════════

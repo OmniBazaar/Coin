@@ -146,24 +146,24 @@ contract PrivateDEXSettlement is
      * @dev Fee amounts are encrypted; recipients claim via claimFees().
      * @param oddaoFee Encrypted ODDAO share (70%)
      * @param stakingPoolFee Encrypted staking pool share (20%)
-     * @param validatorFee Encrypted validator share (10%)
-     * @param validator Validator that processed this settlement
+     * @param protocolFee Encrypted protocol treasury share (10%)
      */
     struct EncryptedFeeRecord {
         ctUint64 oddaoFee;
         ctUint64 stakingPoolFee;
-        ctUint64 validatorFee;
-        address validator;
+        ctUint64 protocolFee;
     }
 
     /**
      * @notice Fee distribution addresses
      * @param oddao ODDAO treasury (receives 70%)
      * @param stakingPool Staking pool (receives 20%)
+     * @param protocolTreasury Protocol treasury (receives 10%)
      */
     struct FeeRecipients {
         address oddao;
         address stakingPool;
+        address protocolTreasury;
     }
 
     // ========================================================================
@@ -187,8 +187,8 @@ contract PrivateDEXSettlement is
     /// @notice Staking pool fee share in basis points (20%)
     uint64 public constant STAKING_POOL_SHARE_BPS = 2000;
 
-    /// @notice Validator fee share in basis points (10%)
-    uint64 public constant VALIDATOR_SHARE_BPS = 1000;
+    /// @notice Protocol treasury fee share in basis points (10%)
+    uint64 public constant PROTOCOL_SHARE_BPS = 1000;
 
     /// @notice Trading fee in basis points (0.2%)
     uint64 public constant TRADING_FEE_BPS = 20;
@@ -244,17 +244,17 @@ contract PrivateDEXSettlement is
      *         layout.
      *
      * Current named state variables occupying sequential slots:
-     *   - feeRecipients      (1 slot: 2 packed addresses)
+     *   - feeRecipients      (3 slots: 3 addresses, one per slot)
      *   - totalSettlements    (1 slot)
      *   - _ossified           (1 slot)
      *   - ossificationRequestTime (1 slot)
      * Mappings (privateCollateral, feeRecords, accumulatedFees, nonces)
      * do not occupy sequential slots.
      *
-     * Gap = 50 - 4 named sequential variables = 46 slots reserved
+     * Gap = 50 - 6 named sequential variables = 44 slots reserved
      * (conservative; mappings excluded from count per OZ convention).
      */
-    uint256[46] private __gap;
+    uint256[44] private __gap;
 
     // ========================================================================
     // EVENTS
@@ -306,9 +306,11 @@ contract PrivateDEXSettlement is
     /// @notice Emitted when fee recipients are updated
     /// @param oddao New ODDAO address
     /// @param stakingPool New staking pool address
+    /// @param protocolTreasury New protocol treasury address
     event FeeRecipientsUpdated(
         address indexed oddao,
-        address indexed stakingPool
+        address indexed stakingPool,
+        address protocolTreasury
     );
 
     /// @notice Emitted when ossification is requested (starts delay)
@@ -407,15 +409,19 @@ contract PrivateDEXSettlement is
      * @param admin Admin address for role management
      * @param oddao ODDAO treasury address (receives 70% of fees)
      * @param stakingPool Staking pool address (receives 20% of fees)
+     * @param protocolTreasury Protocol treasury address (receives 10%
+     *        of fees)
      */
     function initialize(
         address admin,
         address oddao,
-        address stakingPool
+        address stakingPool,
+        address protocolTreasury
     ) external initializer {
         if (admin == address(0)) revert InvalidAddress();
         if (oddao == address(0)) revert InvalidAddress();
         if (stakingPool == address(0)) revert InvalidAddress();
+        if (protocolTreasury == address(0)) revert InvalidAddress();
 
         __AccessControl_init();
         __Pausable_init();
@@ -428,7 +434,8 @@ contract PrivateDEXSettlement is
 
         feeRecipients = FeeRecipients({
             oddao: oddao,
-            stakingPool: stakingPool
+            stakingPool: stakingPool,
+            protocolTreasury: protocolTreasury
         });
     }
 
@@ -549,12 +556,10 @@ contract PrivateDEXSettlement is
      *
      * @param intentId Intent identifier
      * @param solver Solver address (quote provider)
-     * @param validator Validator processing this settlement
      */
     function settlePrivateIntent( // solhint-disable-line code-complexity, function-max-lines
         bytes32 intentId,
-        address solver,
-        address validator
+        address solver
     )
         external
         onlyRole(SETTLER_ROLE)
@@ -562,7 +567,6 @@ contract PrivateDEXSettlement is
         nonReentrant
     {
         if (solver == address(0)) revert InvalidAddress();
-        if (validator == address(0)) revert InvalidAddress();
 
         PrivateCollateral storage col =
             privateCollateral[intentId];
@@ -625,36 +629,36 @@ contract PrivateDEXSettlement is
         gtUint64 gtStakingFee =
             MpcCore.div(gtStakingProduct, gtBasis);
 
-        // validatorFee = totalFee - oddaoFee - stakingFee
+        // protocolFee = totalFee - oddaoFee - stakingFee
         gtUint64 gtPartialSum =
             MpcCore.checkedAdd(gtOddaoFee, gtStakingFee);
-        gtUint64 gtValidatorFee =
+        gtUint64 gtProtocolFee =
             MpcCore.checkedSub(gtTotalFee, gtPartialSum);
 
         // Store encrypted fee record
         feeRecords[intentId] = EncryptedFeeRecord({
             oddaoFee: MpcCore.offBoard(gtOddaoFee),
             stakingPoolFee: MpcCore.offBoard(gtStakingFee),
-            validatorFee: MpcCore.offBoard(gtValidatorFee),
-            validator: validator
+            protocolFee: MpcCore.offBoard(gtProtocolFee)
         });
 
         // Accumulate fees for each recipient
         _accumulateFee(feeRecipients.oddao, gtOddaoFee);
         _accumulateFee(feeRecipients.stakingPool, gtStakingFee);
-        _accumulateFee(validator, gtValidatorFee);
+        _accumulateFee(
+            feeRecipients.protocolTreasury, gtProtocolFee
+        );
 
         // Mark as settled
         col.status = SettlementStatus.SETTLED;
         ++totalSettlements;
 
-        // M-05: Include validator, nonce, and deadline in hash
+        // M-05: Include nonce and deadline in hash
         bytes32 settlementHash = keccak256(
             abi.encode(
                 intentId,
                 col.trader,
                 solver,
-                validator,
                 col.tokenIn,
                 col.tokenOut,
                 col.nonce,
@@ -755,24 +759,33 @@ contract PrivateDEXSettlement is
      *      new addresses so no fees are stranded.
      * @param oddao New ODDAO treasury address
      * @param stakingPool New staking pool address
+     * @param protocolTreasury New protocol treasury address
      */
     function updateFeeRecipients(
         address oddao,
-        address stakingPool
+        address stakingPool,
+        address protocolTreasury
     ) external onlyRole(ADMIN_ROLE) {
         if (oddao == address(0)) revert InvalidAddress();
         if (stakingPool == address(0)) revert InvalidAddress();
+        if (protocolTreasury == address(0)) revert InvalidAddress();
 
         // H-01: Migrate accumulated fees from old to new addresses
         _migrateFees(feeRecipients.oddao, oddao);
         _migrateFees(feeRecipients.stakingPool, stakingPool);
+        _migrateFees(
+            feeRecipients.protocolTreasury, protocolTreasury
+        );
 
         feeRecipients = FeeRecipients({
             oddao: oddao,
-            stakingPool: stakingPool
+            stakingPool: stakingPool,
+            protocolTreasury: protocolTreasury
         });
 
-        emit FeeRecipientsUpdated(oddao, stakingPool);
+        emit FeeRecipientsUpdated(
+            oddao, stakingPool, protocolTreasury
+        );
     }
 
     /**

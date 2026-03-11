@@ -6,11 +6,14 @@ describe("MintController", function () {
   async function deployFixture() {
     const [deployer, minter, recipient, other] = await ethers.getSigners();
 
-    // Deploy OmniCoin
+    // Deploy OmniCoin WITHOUT calling initialize(), so totalSupply starts at 0.
+    // initialize() pre-mints the full 16.6B XOM (INITIAL_SUPPLY == MAX_SUPPLY),
+    // which would leave zero room for MintController to mint anything.
+    // The deployer has DEFAULT_ADMIN_ROLE from the constructor, so it can
+    // grant MINTER_ROLE directly via grantRole().
     const OmniCoin = await ethers.getContractFactory("OmniCoin");
     const token = await OmniCoin.deploy(ethers.ZeroAddress);
     await token.waitForDeployment();
-    await token.initialize();
 
     // Deploy MintController
     const MintController = await ethers.getContractFactory("MintController");

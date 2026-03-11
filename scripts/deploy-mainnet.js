@@ -111,8 +111,9 @@ async function main() {
         [
             deployer.address,   // admin
             deployed.OmniCoin,  // OmniCoin token
-            oddaoAddress,       // ODDAO address (70% fees) — temporary
-            stakingPoolAddress  // Staking pool (20% fees) — temporary
+            oddaoAddress,       // ODDAO address (70% fees) -- temporary
+            stakingPoolAddress, // Staking pool (20% fees) -- temporary
+            deployer.address    // Protocol treasury (10% fees) -- temporary
         ],
         {
             initializer: "initialize",

@@ -753,7 +753,7 @@ describe("TS-Contract Integration (G10 Audit Remediation)", function () {
       await xom.connect(depositor).approve(vault.target, totalFee);
     });
 
-    it("should split marketplace fee into tx/ref/listing and distribute each 70/20/10", async function () {
+    it("should split marketplace fee into tx/ref/listing and distribute each sub-split", async function () {
       const referrer = user1;
       const referrerL2 = user2;
       const signers = await ethers.getSigners();
@@ -762,12 +762,13 @@ describe("TS-Contract Integration (G10 Audit Remediation)", function () {
 
       // Snapshot all recipient balances
       const stakingBefore = await xom.balanceOf(stakingPool.address);
+      const protocolBefore = await xom.balanceOf(protocolTreasury.address);
 
       // depositMarketplaceFee: depositor calls with sale details
+      // No validator parameter -- validators are never fee recipients
       await vault.connect(depositor).depositMarketplaceFee(
         xom.target,
         SALE_AMOUNT,
-        validator1.address,   // validator
         referrer.address,     // referrer
         referrerL2.address,   // referrerL2
         listingNode.address,  // listingNode
@@ -779,10 +780,10 @@ describe("TS-Contract Integration (G10 Audit Remediation)", function () {
       const refFee = totalFee / 4n;         // 0.25%
       const listFee = totalFee - txFee - refFee; // 0.25% (remainder)
 
-      // Transaction fee split: 70% ODDAO, 20% validator, 10% staking
+      // Transaction fee split: 70% ODDAO, 20% staking pool, 10% protocol treasury
       const txOddao = (txFee * 7000n) / 10000n;
-      const txValidator = (txFee * 2000n) / 10000n;
-      const txStaking = txFee - txOddao - txValidator;
+      const txStaking = (txFee * 2000n) / 10000n;
+      const txProtocol = txFee - txOddao - txStaking;
 
       // Referral fee split: 70% referrer, 20% L2 referrer, 10% ODDAO
       const refPrimary = (refFee * 7000n) / 10000n;
@@ -802,10 +803,6 @@ describe("TS-Contract Integration (G10 Audit Remediation)", function () {
 
       // Verify claimable amounts for participants
       expect(
-        await vault.getClaimable(validator1.address, xom.target)
-      ).to.equal(txValidator);
-
-      expect(
         await vault.getClaimable(referrer.address, xom.target)
       ).to.equal(refPrimary);
 
@@ -821,10 +818,15 @@ describe("TS-Contract Integration (G10 Audit Remediation)", function () {
         await vault.getClaimable(sellingNode.address, xom.target)
       ).to.equal(sellNode);
 
-      // Verify staking pool received its push share
+      // Verify staking pool received its push share (transaction fee 20%)
       expect(
         (await xom.balanceOf(stakingPool.address)) - stakingBefore
       ).to.equal(txStaking);
+
+      // Verify protocol treasury received its push share (transaction fee 10%)
+      expect(
+        (await xom.balanceOf(protocolTreasury.address)) - protocolBefore
+      ).to.equal(txProtocol);
 
       // Verify total distributed equals total fee
       expect(await vault.totalDistributed(xom.target)).to.equal(totalFee);
@@ -839,7 +841,6 @@ describe("TS-Contract Integration (G10 Audit Remediation)", function () {
       await vault.connect(depositor).depositMarketplaceFee(
         xom.target,
         SALE_AMOUNT,
-        validator1.address,
         ethers.ZeroAddress,  // no referrer
         ethers.ZeroAddress,  // no L2 referrer
         validator1.address,  // listing node
@@ -865,7 +866,6 @@ describe("TS-Contract Integration (G10 Audit Remediation)", function () {
       await vault.connect(depositor).depositMarketplaceFee(
         xom.target,
         SALE_AMOUNT,
-        validator1.address,
         user1.address,       // referrer
         ethers.ZeroAddress,  // no L2 referrer
         validator1.address,  // listing node
@@ -929,31 +929,34 @@ describe("TS-Contract Integration (G10 Audit Remediation)", function () {
       await xom.connect(depositor).approve(vault.target, totalFee);
     });
 
-    it("should deposit arbitration fee and split 70% arbitrator, 20% validator, 10% ODDAO", async function () {
+    it("should deposit arbitration fee and split 70% arbitrator, 20% ODDAO, 10% protocol treasury", async function () {
       const arbitrator = user1;
+
+      const protocolBefore = await xom.balanceOf(protocolTreasury.address);
 
       await vault.connect(depositor).depositArbitrationFee(
         xom.target,
         DISPUTE_AMOUNT,
-        arbitrator.address,
-        validator1.address
+        arbitrator.address
       );
 
       const totalFee = (DISPUTE_AMOUNT * 500n) / 10000n;
       const arbShare = (totalFee * 7000n) / 10000n;
-      const valShare = (totalFee * 2000n) / 10000n;
-      const oddaoShare = totalFee - arbShare - valShare;
+      const oddaoShare = (totalFee * 2000n) / 10000n;
+      const protocolShare = totalFee - arbShare - oddaoShare;
 
-      // Arbitrator and validator shares are claimable
+      // Arbitrator share is claimable
       expect(
         await vault.getClaimable(arbitrator.address, xom.target)
       ).to.equal(arbShare);
-      expect(
-        await vault.getClaimable(validator1.address, xom.target)
-      ).to.equal(valShare);
 
       // ODDAO share is in pendingBridge
       expect(await vault.pendingBridge(xom.target)).to.equal(oddaoShare);
+
+      // Protocol treasury received its push share
+      expect(
+        (await xom.balanceOf(protocolTreasury.address)) - protocolBefore
+      ).to.equal(protocolShare);
 
       // Total distributed
       expect(await vault.totalDistributed(xom.target)).to.equal(totalFee);

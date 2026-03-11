@@ -571,4 +571,794 @@ describe("Bootstrap", function () {
       expect(info.lastUpdate).to.be.gt(0);
     });
   });
+
+  // =====================================================================
+  //  NEW TESTS - Phase Transitions (Node Type Changes)
+  // =====================================================================
+  describe("Phase Transitions (Node Type Changes)", function () {
+    const multiaddr = "/ip4/127.0.0.1/tcp/14001/p2p/QmNode1";
+    const httpEndpoint = "http://127.0.0.1:3001";
+    const wsEndpoint = "ws://127.0.0.1:8101";
+    const region = "us-east-1";
+
+    it("Should update active counts when node changes type via re-registration", async function () {
+      // Register as computation node (type 1)
+      await bootstrap.connect(node1).registerNode(
+        multiaddr, httpEndpoint, wsEndpoint, region, 1
+      );
+      expect(await bootstrap.getActiveNodeCount(1)).to.equal(1);
+      expect(await bootstrap.getActiveNodeCount(2)).to.equal(0);
+
+      // Re-register as listing node (type 2)
+      await bootstrap.connect(node1).registerNode(
+        multiaddr, httpEndpoint, wsEndpoint, region, 2
+      );
+      expect(await bootstrap.getActiveNodeCount(1)).to.equal(0);
+      expect(await bootstrap.getActiveNodeCount(2)).to.equal(1);
+    });
+
+    it("Should handle deactivation then re-registration with different type", async function () {
+      // Register as computation (1)
+      await bootstrap.connect(node1).registerNode(
+        multiaddr, httpEndpoint, wsEndpoint, region, 1
+      );
+      expect(await bootstrap.getActiveNodeCount(1)).to.equal(1);
+
+      // Deactivate
+      await bootstrap.connect(node1).deactivateNode("switching");
+      expect(await bootstrap.getActiveNodeCount(1)).to.equal(0);
+
+      // Re-register as listing (2)
+      await bootstrap.connect(node1).registerNode(
+        multiaddr, httpEndpoint, wsEndpoint, region, 2
+      );
+      expect(await bootstrap.getActiveNodeCount(1)).to.equal(0);
+      expect(await bootstrap.getActiveNodeCount(2)).to.equal(1);
+    });
+
+    it("Should not double-increment count on re-registration with same type", async function () {
+      await bootstrap.connect(node1).registerNode(
+        multiaddr, httpEndpoint, wsEndpoint, region, 1
+      );
+      expect(await bootstrap.getActiveNodeCount(1)).to.equal(1);
+
+      // Re-register same type
+      await bootstrap.connect(node1).registerNode(
+        multiaddr, "http://updated:3001", wsEndpoint, region, 1
+      );
+      // Count should still be 1 (not incremented again)
+      expect(await bootstrap.getActiveNodeCount(1)).to.equal(1);
+    });
+  });
+
+  // =====================================================================
+  //  NEW TESTS - Threshold Validation (String Length Limits)
+  // =====================================================================
+  describe("Threshold Validation (String Length Limits)", function () {
+    it("Should reject multiaddr longer than 256 bytes", async function () {
+      const longMultiaddr = "x".repeat(257);
+
+      await expect(
+        bootstrap.connect(node1).registerNode(
+          longMultiaddr,
+          "http://127.0.0.1:3001",
+          "ws://127.0.0.1:8101",
+          "us-east-1",
+          1
+        )
+      ).to.be.revertedWithCustomError(bootstrap, "StringTooLong");
+    });
+
+    it("Should reject httpEndpoint longer than 256 bytes", async function () {
+      const longEndpoint = "http://" + "x".repeat(250);
+
+      await expect(
+        bootstrap.connect(node1).registerNode(
+          "/ip4/127.0.0.1/tcp/14001",
+          longEndpoint,
+          "",
+          "us-east-1",
+          1
+        )
+      ).to.be.revertedWithCustomError(bootstrap, "StringTooLong");
+    });
+
+    it("Should reject region longer than 64 bytes", async function () {
+      const longRegion = "x".repeat(65);
+
+      await expect(
+        bootstrap.connect(node1).registerNode(
+          "/ip4/127.0.0.1/tcp/14001",
+          "http://127.0.0.1:3001",
+          "",
+          longRegion,
+          1
+        )
+      ).to.be.revertedWithCustomError(bootstrap, "StringTooLong");
+    });
+
+    it("Should accept strings at exact limits (256, 256, 256, 64)", async function () {
+      const maxMultiaddr = "x".repeat(256);
+      const maxHttp = "x".repeat(256);
+      const maxWs = "x".repeat(256);
+      const maxRegion = "x".repeat(64);
+
+      await expect(
+        bootstrap.connect(node1).registerNode(
+          maxMultiaddr, maxHttp, maxWs, maxRegion, 1
+        )
+      ).to.not.be.reverted;
+    });
+
+    it("Should reject updateNode with strings exceeding limits", async function () {
+      // Register first
+      await bootstrap.connect(node1).registerNode(
+        "/ip4/127.0.0.1/tcp/14001",
+        "http://127.0.0.1:3001",
+        "ws://127.0.0.1:8101",
+        "us-east-1",
+        1
+      );
+
+      const longMultiaddr = "x".repeat(257);
+      await expect(
+        bootstrap.connect(node1).updateNode(
+          longMultiaddr, "http://127.0.0.1:3001", "", "us-east-1"
+        )
+      ).to.be.revertedWithCustomError(bootstrap, "StringTooLong");
+    });
+
+    it("Should reject wsEndpoint longer than 256 bytes on updateNode", async function () {
+      await bootstrap.connect(node1).registerNode(
+        "/ip4/127.0.0.1/tcp/14001",
+        "http://127.0.0.1:3001",
+        "ws://127.0.0.1:8101",
+        "us-east-1",
+        1
+      );
+
+      const longWs = "x".repeat(257);
+      await expect(
+        bootstrap.connect(node1).updateNode(
+          "/ip4/127.0.0.1/tcp/14001", "http://127.0.0.1:3001", longWs, "us-east-1"
+        )
+      ).to.be.revertedWithCustomError(bootstrap, "StringTooLong");
+    });
+
+    it("Should reject region longer than 64 bytes on updateNode", async function () {
+      await bootstrap.connect(node1).registerNode(
+        "/ip4/127.0.0.1/tcp/14001",
+        "http://127.0.0.1:3001",
+        "ws://127.0.0.1:8101",
+        "us-east-1",
+        1
+      );
+
+      const longRegion = "x".repeat(65);
+      await expect(
+        bootstrap.connect(node1).updateNode(
+          "/ip4/127.0.0.1/tcp/14001", "http://127.0.0.1:3001", "", longRegion
+        )
+      ).to.be.revertedWithCustomError(bootstrap, "StringTooLong");
+    });
+  });
+
+  // =====================================================================
+  //  NEW TESTS - Validator Registration Edge Cases
+  // =====================================================================
+  describe("Validator Registration Edge Cases", function () {
+    it("Should reject invalid node type (3 or higher)", async function () {
+      await expect(
+        bootstrap.connect(node1).registerNode(
+          "/ip4/127.0.0.1/tcp/14001",
+          "http://127.0.0.1:3001",
+          "",
+          "us-east-1",
+          3
+        )
+      ).to.be.revertedWithCustomError(bootstrap, "InvalidNodeType");
+    });
+
+    it("Should register listing node (type 2)", async function () {
+      await bootstrap.connect(node1).registerNode(
+        "/ip4/127.0.0.1/tcp/14001",
+        "http://127.0.0.1:3001",
+        "",
+        "us-east-1",
+        2
+      );
+
+      expect(await bootstrap.getActiveNodeCount(2)).to.equal(1);
+      const info = await bootstrap.getNodeInfo(node1.address);
+      expect(info.nodeType).to.equal(2);
+    });
+
+    it("Should reject gateway registration without publicIp", async function () {
+      await expect(
+        bootstrap.connect(node1).registerGatewayNode(
+          "/ip4/127.0.0.1/tcp/14001",
+          "http://127.0.0.1:3001",
+          "ws://127.0.0.1:8101",
+          "us-east-1",
+          "http://127.0.0.1:40681/ext/bc/L1/rpc",
+          35579,
+          "",  // empty publicIp
+          "NodeID-test"
+        )
+      ).to.be.revertedWithCustomError(bootstrap, "InvalidParameter");
+    });
+
+    it("Should reject gateway registration without nodeId", async function () {
+      await expect(
+        bootstrap.connect(node1).registerGatewayNode(
+          "/ip4/127.0.0.1/tcp/14001",
+          "http://127.0.0.1:3001",
+          "ws://127.0.0.1:8101",
+          "us-east-1",
+          "http://127.0.0.1:40681/ext/bc/L1/rpc",
+          35579,
+          "203.0.113.1",
+          ""  // empty nodeId
+        )
+      ).to.be.revertedWithCustomError(bootstrap, "InvalidParameter");
+    });
+
+    it("Should reject gateway registration with zero stakingPort", async function () {
+      await expect(
+        bootstrap.connect(node1).registerGatewayNode(
+          "/ip4/127.0.0.1/tcp/14001",
+          "http://127.0.0.1:3001",
+          "ws://127.0.0.1:8101",
+          "us-east-1",
+          "http://127.0.0.1:40681/ext/bc/L1/rpc",
+          0,  // zero port
+          "203.0.113.1",
+          "NodeID-test"
+        )
+      ).to.be.revertedWithCustomError(bootstrap, "InvalidParameter");
+    });
+
+    it("Should reject gateway registration without multiaddr", async function () {
+      await expect(
+        bootstrap.connect(node1).registerGatewayNode(
+          "",  // empty multiaddr
+          "http://127.0.0.1:3001",
+          "ws://127.0.0.1:8101",
+          "us-east-1",
+          "http://127.0.0.1:40681/ext/bc/L1/rpc",
+          35579,
+          "203.0.113.1",
+          "NodeID-test"
+        )
+      ).to.be.revertedWithCustomError(bootstrap, "InvalidParameter");
+    });
+
+    it("Should reject publicIp containing forbidden characters (comma)", async function () {
+      await expect(
+        bootstrap.connect(node1).registerGatewayNode(
+          "/ip4/127.0.0.1/tcp/14001",
+          "http://127.0.0.1:3001",
+          "",
+          "us-east-1",
+          "http://127.0.0.1:40681/ext/bc/L1/rpc",
+          35579,
+          "203.0.113.1,evil",  // comma injection
+          "NodeID-test"
+        )
+      ).to.be.revertedWithCustomError(bootstrap, "ForbiddenCharacter");
+    });
+
+    it("Should reject publicIp containing forbidden characters (colon)", async function () {
+      await expect(
+        bootstrap.connect(node1).registerGatewayNode(
+          "/ip4/127.0.0.1/tcp/14001",
+          "http://127.0.0.1:3001",
+          "",
+          "us-east-1",
+          "http://127.0.0.1:40681/ext/bc/L1/rpc",
+          35579,
+          "203.0.113.1:9999",  // colon injection
+          "NodeID-test"
+        )
+      ).to.be.revertedWithCustomError(bootstrap, "ForbiddenCharacter");
+    });
+
+    it("Should reject nodeId containing forbidden characters", async function () {
+      await expect(
+        bootstrap.connect(node1).registerGatewayNode(
+          "/ip4/127.0.0.1/tcp/14001",
+          "http://127.0.0.1:3001",
+          "",
+          "us-east-1",
+          "http://127.0.0.1:40681/ext/bc/L1/rpc",
+          35579,
+          "203.0.113.1",
+          "NodeID-test,injected"  // comma injection
+        )
+      ).to.be.revertedWithCustomError(bootstrap, "ForbiddenCharacter");
+    });
+
+    it("Should reject heartbeat from inactive node", async function () {
+      await expect(
+        bootstrap.connect(node1).heartbeat()
+      ).to.be.revertedWithCustomError(bootstrap, "NodeNotActive");
+    });
+  });
+
+  // =====================================================================
+  //  NEW TESTS - Discovery Functions
+  // =====================================================================
+  describe("Discovery Functions", function () {
+    it("Should return active gateway validators", async function () {
+      // Register 2 gateway nodes
+      await bootstrap.connect(node1).registerGatewayNode(
+        "/ip4/127.0.0.1/tcp/14001/p2p/Qm1",
+        "http://127.0.0.1:3001",
+        "ws://127.0.0.1:8101",
+        "us-east-1",
+        "http://127.0.0.1:40681/ext/bc/L1/rpc",
+        35579,
+        "203.0.113.1",
+        "NodeID-gw1"
+      );
+      await bootstrap.connect(node2).registerGatewayNode(
+        "/ip4/127.0.0.1/tcp/14002/p2p/Qm2",
+        "http://127.0.0.1:3002",
+        "ws://127.0.0.1:8102",
+        "eu-west-1",
+        "http://127.0.0.2:40681/ext/bc/L1/rpc",
+        35579,
+        "203.0.113.2",
+        "NodeID-gw2"
+      );
+
+      const infos = await bootstrap.getActiveGatewayValidators(10);
+      expect(infos.length).to.equal(2);
+      expect(infos[0].nodeType).to.equal(0);
+      expect(infos[1].nodeType).to.equal(0);
+    });
+
+    it("Should return empty for getActiveGatewayValidators when none exist", async function () {
+      // Register only computation nodes, no gateways
+      await bootstrap.connect(node1).registerNode(
+        "/ip4/127.0.0.1/tcp/14001",
+        "http://127.0.0.1:3001",
+        "",
+        "us-east-1",
+        1
+      );
+
+      const infos = await bootstrap.getActiveGatewayValidators(10);
+      expect(infos.length).to.equal(0);
+    });
+
+    it("Should return avalanche bootstrap peers in correct format", async function () {
+      await bootstrap.connect(node1).registerGatewayNode(
+        "/ip4/127.0.0.1/tcp/14001/p2p/Qm1",
+        "http://127.0.0.1:3001",
+        "ws://127.0.0.1:8101",
+        "us-east-1",
+        "http://127.0.0.1:40681/ext/bc/L1/rpc",
+        35579,
+        "203.0.113.1",
+        "NodeID-gw1"
+      );
+
+      const [ips, ids, count] = await bootstrap.getAvalancheBootstrapPeers(10);
+      expect(count).to.equal(1);
+      expect(ips).to.equal("203.0.113.1:35579");
+      expect(ids).to.equal("NodeID-gw1");
+    });
+
+    it("Should return comma-separated peers for multiple gateways", async function () {
+      await bootstrap.connect(node1).registerGatewayNode(
+        "/ip4/127.0.0.1/tcp/14001/p2p/Qm1",
+        "http://127.0.0.1:3001",
+        "",
+        "us-east-1",
+        "http://127.0.0.1:40681/ext/bc/L1/rpc",
+        35579,
+        "203.0.113.1",
+        "NodeID-gw1"
+      );
+      await bootstrap.connect(node2).registerGatewayNode(
+        "/ip4/127.0.0.1/tcp/14002/p2p/Qm2",
+        "http://127.0.0.1:3002",
+        "",
+        "eu-west-1",
+        "http://127.0.0.2:40681/ext/bc/L1/rpc",
+        35580,
+        "203.0.113.2",
+        "NodeID-gw2"
+      );
+
+      const [ips, ids, count] = await bootstrap.getAvalancheBootstrapPeers(10);
+      expect(count).to.equal(2);
+      expect(ips).to.equal("203.0.113.1:35579,203.0.113.2:35580");
+      expect(ids).to.equal("NodeID-gw1,NodeID-gw2");
+    });
+
+    it("Should return empty strings for bootstrap peers when none exist", async function () {
+      const [ips, ids, count] = await bootstrap.getAvalancheBootstrapPeers(10);
+      expect(count).to.equal(0);
+      expect(ips).to.equal("");
+      expect(ids).to.equal("");
+    });
+
+    it("Should return extended node info", async function () {
+      await bootstrap.connect(node1).registerGatewayNode(
+        "/ip4/127.0.0.1/tcp/14001/p2p/Qm1",
+        "http://127.0.0.1:3001",
+        "ws://127.0.0.1:8101",
+        "us-east-1",
+        "http://127.0.0.1:40681/ext/bc/L1/rpc",
+        35579,
+        "203.0.113.1",
+        "NodeID-gw1"
+      );
+
+      const info = await bootstrap.getNodeInfoExtended(node1.address);
+      expect(info.active).to.be.true;
+      expect(info.nodeType).to.equal(0);
+      expect(info.stakingPort).to.equal(35579);
+      expect(info.publicIp).to.equal("203.0.113.1");
+      expect(info.nodeId).to.equal("NodeID-gw1");
+      expect(info.avalancheRpcEndpoint).to.equal("http://127.0.0.1:40681/ext/bc/L1/rpc");
+    });
+
+    it("Should respect limit parameter on getActiveNodes", async function () {
+      await bootstrap.connect(node1).registerNode(
+        "/ip4/127.0.0.1/tcp/14001", "http://127.0.0.1:3001", "", "us-east-1", 1
+      );
+      await bootstrap.connect(node2).registerNode(
+        "/ip4/127.0.0.1/tcp/14002", "http://127.0.0.1:3002", "", "eu-west-1", 1
+      );
+      await bootstrap.connect(node3).registerNode(
+        "/ip4/127.0.0.1/tcp/14003", "http://127.0.0.1:3003", "", "ap-south-1", 1
+      );
+
+      const nodes = await bootstrap.getActiveNodes(1, 2); // limit to 2
+      expect(nodes.length).to.equal(2);
+    });
+
+    it("Should reject getActiveNodes with invalid nodeType", async function () {
+      await expect(
+        bootstrap.getActiveNodes(3, 50)
+      ).to.be.revertedWithCustomError(bootstrap, "InvalidNodeType");
+    });
+
+    it("Should reject getActiveNodeCount with invalid nodeType", async function () {
+      await expect(
+        bootstrap.getActiveNodeCount(3)
+      ).to.be.revertedWithCustomError(bootstrap, "InvalidNodeType");
+    });
+
+    it("Should handle pagination in getAllActiveNodes", async function () {
+      await bootstrap.connect(node1).registerNode(
+        "/ip4/127.0.0.1/tcp/14001", "http://127.0.0.1:3001", "", "us-east-1", 1
+      );
+      await bootstrap.connect(node2).registerNode(
+        "/ip4/127.0.0.1/tcp/14002", "http://127.0.0.1:3002", "", "eu-west-1", 1
+      );
+      await bootstrap.connect(node3).registerNode(
+        "/ip4/127.0.0.1/tcp/14003", "http://127.0.0.1:3003", "", "ap-south-1", 1
+      );
+
+      // First page
+      const [addrs1, infos1] = await bootstrap.getAllActiveNodes(0, 2);
+      expect(addrs1.length).to.equal(2);
+      expect(addrs1[0]).to.equal(node1.address);
+      expect(addrs1[1]).to.equal(node2.address);
+
+      // Second page
+      const [addrs2, infos2] = await bootstrap.getAllActiveNodes(2, 2);
+      expect(addrs2.length).to.equal(1);
+      expect(addrs2[0]).to.equal(node3.address);
+    });
+
+    it("Should return empty arrays when offset is beyond registeredNodes length", async function () {
+      await bootstrap.connect(node1).registerNode(
+        "/ip4/127.0.0.1/tcp/14001", "http://127.0.0.1:3001", "", "us-east-1", 1
+      );
+
+      const [addrs, infos] = await bootstrap.getAllActiveNodes(100, 50);
+      expect(addrs.length).to.equal(0);
+      expect(infos.length).to.equal(0);
+    });
+
+    it("Should handle getActiveNodesWithinTime query", async function () {
+      await bootstrap.connect(node1).registerNode(
+        "/ip4/127.0.0.1/tcp/14001", "http://127.0.0.1:3001", "", "us-east-1", 1
+      );
+
+      // Query with a large time window should find the node
+      const nodes = await bootstrap.getActiveNodesWithinTime(1, 3600, 50);
+      expect(nodes.length).to.equal(1);
+      expect(nodes[0]).to.equal(node1.address);
+    });
+
+    it("Should reject getActiveNodesWithinTime with invalid nodeType", async function () {
+      await expect(
+        bootstrap.getActiveNodesWithinTime(5, 3600, 50)
+      ).to.be.revertedWithCustomError(bootstrap, "InvalidNodeType");
+    });
+  });
+
+  // =====================================================================
+  //  NEW TESTS - Access Control Extended
+  // =====================================================================
+  describe("Access Control - Extended", function () {
+    it("Should allow DEFAULT_ADMIN to grant BOOTSTRAP_ADMIN_ROLE", async function () {
+      const BOOTSTRAP_ADMIN_ROLE = await bootstrap.BOOTSTRAP_ADMIN_ROLE();
+      await bootstrap.grantRole(BOOTSTRAP_ADMIN_ROLE, node1.address);
+      expect(await bootstrap.hasRole(BOOTSTRAP_ADMIN_ROLE, node1.address)).to.be.true;
+    });
+
+    it("Should allow DEFAULT_ADMIN to revoke BOOTSTRAP_ADMIN_ROLE", async function () {
+      const BOOTSTRAP_ADMIN_ROLE = await bootstrap.BOOTSTRAP_ADMIN_ROLE();
+      await bootstrap.revokeRole(BOOTSTRAP_ADMIN_ROLE, admin.address);
+      expect(await bootstrap.hasRole(BOOTSTRAP_ADMIN_ROLE, admin.address)).to.be.false;
+    });
+
+    it("Should prevent non-admin from granting roles", async function () {
+      const BOOTSTRAP_ADMIN_ROLE = await bootstrap.BOOTSTRAP_ADMIN_ROLE();
+      await expect(
+        bootstrap.connect(node1).grantRole(BOOTSTRAP_ADMIN_ROLE, node2.address)
+      ).to.be.revertedWithCustomError(bootstrap, "AccessControlUnauthorizedAccount");
+    });
+
+    it("Should allow role renunciation", async function () {
+      const BOOTSTRAP_ADMIN_ROLE = await bootstrap.BOOTSTRAP_ADMIN_ROLE();
+      await bootstrap.connect(admin).renounceRole(BOOTSTRAP_ADMIN_ROLE, admin.address);
+      expect(await bootstrap.hasRole(BOOTSTRAP_ADMIN_ROLE, admin.address)).to.be.false;
+    });
+
+    it("Should prevent non-admin from calling adminUnbanNode", async function () {
+      await expect(
+        bootstrap.connect(node1).adminUnbanNode(node2.address)
+      ).to.be.revertedWithCustomError(bootstrap, "AccessControlUnauthorizedAccount");
+    });
+  });
+
+  // =====================================================================
+  //  NEW TESTS - Events Extended
+  // =====================================================================
+  describe("Events - Extended", function () {
+    it("Should emit OmniCoreUpdated on construction", async function () {
+      const Bootstrap = await ethers.getContractFactory("Bootstrap");
+      const newBootstrap = await Bootstrap.deploy(FUJI_OMNICORE_ADDRESS, FUJI_CHAIN_ID, FUJI_RPC_URL);
+      await newBootstrap.waitForDeployment();
+
+      // Verify the constructor emitted OmniCoreUpdated by checking deployment tx receipt
+      const deployTx = newBootstrap.deploymentTransaction();
+      const receipt = await deployTx.wait();
+      const iface = newBootstrap.interface;
+      const eventTopic = iface.getEvent("OmniCoreUpdated").topicHash;
+      const matchingLog = receipt.logs.find((log) => log.topics[0] === eventTopic);
+      expect(matchingLog).to.not.be.undefined;
+    });
+
+    it("Should emit NodeRegistered with isNew=true for first registration", async function () {
+      await expect(
+        bootstrap.connect(node1).registerNode(
+          "/ip4/127.0.0.1/tcp/14001",
+          "http://127.0.0.1:3001",
+          "",
+          "us-east-1",
+          1
+        )
+      ).to.emit(bootstrap, "NodeRegistered")
+        .withArgs(node1.address, 1, "http://127.0.0.1:3001", true);
+    });
+
+    it("Should emit NodeRegistered with isNew=false for re-registration", async function () {
+      await bootstrap.connect(node1).registerNode(
+        "/ip4/127.0.0.1/tcp/14001",
+        "http://127.0.0.1:3001",
+        "",
+        "us-east-1",
+        1
+      );
+
+      await expect(
+        bootstrap.connect(node1).registerNode(
+          "/ip4/127.0.0.1/tcp/14001",
+          "http://updated:3001",
+          "",
+          "us-east-1",
+          1
+        )
+      ).to.emit(bootstrap, "NodeRegistered")
+        .withArgs(node1.address, 1, "http://updated:3001", false);
+    });
+
+    it("Should emit NodeRegistered on updateNode", async function () {
+      await bootstrap.connect(node1).registerNode(
+        "/ip4/127.0.0.1/tcp/14001",
+        "http://127.0.0.1:3001",
+        "",
+        "us-east-1",
+        1
+      );
+
+      await expect(
+        bootstrap.connect(node1).updateNode(
+          "/ip4/10.0.0.1/tcp/14001",
+          "http://10.0.0.1:3001",
+          "",
+          "ap-south-1"
+        )
+      ).to.emit(bootstrap, "NodeRegistered")
+        .withArgs(node1.address, 1, "http://10.0.0.1:3001", false);
+    });
+
+    it("Should emit NodeDeactivated on self-deactivation", async function () {
+      await bootstrap.connect(node1).registerNode(
+        "/ip4/127.0.0.1/tcp/14001",
+        "http://127.0.0.1:3001",
+        "",
+        "us-east-1",
+        1
+      );
+
+      await expect(
+        bootstrap.connect(node1).deactivateNode("Going offline")
+      ).to.emit(bootstrap, "NodeDeactivated")
+        .withArgs(node1.address, "Going offline");
+    });
+
+    it("Should emit NodeAdminDeactivated on admin deactivation", async function () {
+      await bootstrap.connect(node1).registerNode(
+        "/ip4/127.0.0.1/tcp/14001",
+        "http://127.0.0.1:3001",
+        "",
+        "us-east-1",
+        1
+      );
+
+      await expect(
+        bootstrap.connect(admin).adminDeactivateNode(node1.address, "Violation")
+      ).to.emit(bootstrap, "NodeAdminDeactivated")
+        .withArgs(node1.address, admin.address, "Violation");
+    });
+
+    it("Should emit NodeUnbanned on unban", async function () {
+      // First ban (via admin deactivate)
+      await bootstrap.connect(node1).registerNode(
+        "/ip4/127.0.0.1/tcp/14001",
+        "http://127.0.0.1:3001",
+        "",
+        "us-east-1",
+        1
+      );
+      await bootstrap.connect(admin).adminDeactivateNode(node1.address, "Ban");
+      expect(await bootstrap.banned(node1.address)).to.be.true;
+
+      // Unban
+      await expect(
+        bootstrap.connect(admin).adminUnbanNode(node1.address)
+      ).to.emit(bootstrap, "NodeUnbanned")
+        .withArgs(node1.address, admin.address);
+    });
+  });
+
+  // =====================================================================
+  //  NEW TESTS - Ban/Unban Functionality
+  // =====================================================================
+  describe("Ban and Unban Functionality", function () {
+    it("Should ban node on admin deactivation", async function () {
+      await bootstrap.connect(node1).registerNode(
+        "/ip4/127.0.0.1/tcp/14001",
+        "http://127.0.0.1:3001",
+        "",
+        "us-east-1",
+        1
+      );
+
+      await bootstrap.connect(admin).adminDeactivateNode(node1.address, "Misbehaving");
+
+      expect(await bootstrap.banned(node1.address)).to.be.true;
+    });
+
+    it("Should prevent banned node from re-registering", async function () {
+      await bootstrap.connect(node1).registerNode(
+        "/ip4/127.0.0.1/tcp/14001",
+        "http://127.0.0.1:3001",
+        "",
+        "us-east-1",
+        1
+      );
+      await bootstrap.connect(admin).adminDeactivateNode(node1.address, "Ban");
+
+      await expect(
+        bootstrap.connect(node1).registerNode(
+          "/ip4/127.0.0.1/tcp/14001",
+          "http://127.0.0.1:3001",
+          "",
+          "us-east-1",
+          1
+        )
+      ).to.be.revertedWithCustomError(bootstrap, "NodeBanned");
+    });
+
+    it("Should allow unbanned node to re-register", async function () {
+      await bootstrap.connect(node1).registerNode(
+        "/ip4/127.0.0.1/tcp/14001",
+        "http://127.0.0.1:3001",
+        "",
+        "us-east-1",
+        1
+      );
+      await bootstrap.connect(admin).adminDeactivateNode(node1.address, "Ban");
+      expect(await bootstrap.banned(node1.address)).to.be.true;
+
+      // Unban
+      await bootstrap.connect(admin).adminUnbanNode(node1.address);
+      expect(await bootstrap.banned(node1.address)).to.be.false;
+
+      // Should be able to re-register
+      await bootstrap.connect(node1).registerNode(
+        "/ip4/127.0.0.1/tcp/14001",
+        "http://127.0.0.1:3001",
+        "",
+        "us-east-1",
+        1
+      );
+      const info = await bootstrap.getNodeInfo(node1.address);
+      expect(info.active).to.be.true;
+    });
+
+    it("Should reject adminUnbanNode with zero address", async function () {
+      await expect(
+        bootstrap.connect(admin).adminUnbanNode(ethers.ZeroAddress)
+      ).to.be.revertedWithCustomError(bootstrap, "InvalidAddress");
+    });
+
+    it("Self-deactivation should NOT ban the node", async function () {
+      await bootstrap.connect(node1).registerNode(
+        "/ip4/127.0.0.1/tcp/14001",
+        "http://127.0.0.1:3001",
+        "",
+        "us-east-1",
+        1
+      );
+      await bootstrap.connect(node1).deactivateNode("Maintenance");
+
+      // Should not be banned
+      expect(await bootstrap.banned(node1.address)).to.be.false;
+
+      // Should be able to re-register
+      await bootstrap.connect(node1).registerNode(
+        "/ip4/127.0.0.1/tcp/14001",
+        "http://127.0.0.1:3001",
+        "",
+        "us-east-1",
+        1
+      );
+      const info = await bootstrap.getNodeInfo(node1.address);
+      expect(info.active).to.be.true;
+    });
+  });
+
+  // =====================================================================
+  //  NEW TESTS - Constants
+  // =====================================================================
+  describe("Constants", function () {
+    it("Should have MAX_NODES of 1000", async function () {
+      expect(await bootstrap.MAX_NODES()).to.equal(1000);
+    });
+
+    it("Should have MIN_TIME_WINDOW of 60 seconds", async function () {
+      expect(await bootstrap.MIN_TIME_WINDOW()).to.equal(60);
+    });
+
+    it("Should have MAX_TIME_WINDOW of 30 days", async function () {
+      expect(await bootstrap.MAX_TIME_WINDOW()).to.equal(30 * 24 * 60 * 60);
+    });
+
+    it("Should have correct BOOTSTRAP_ADMIN_ROLE hash", async function () {
+      const expected = ethers.keccak256(ethers.toUtf8Bytes("BOOTSTRAP_ADMIN_ROLE"));
+      expect(await bootstrap.BOOTSTRAP_ADMIN_ROLE()).to.equal(expected);
+    });
+  });
 });

@@ -54,7 +54,7 @@ error NoRecipientUpdateScheduled();
  * Features:
  * - Pay-per-message: user calls payMessageFee(channelId)
  * - Free tier: first 20 messages/month tracked on-chain
- * - Fee distribution: 70% Validator, 20% Staking Pool, 10% ODDAO
+ * - Fee distribution: 70% ODDAO, 20% Staking Pool, 10% Protocol
  * - Proof of payment: hasValidPayment() for validator verification
  * - Bulk messaging: 10x fee for broadcast (anti-spam, always paid)
  * - Monthly reset: based on block.timestamp month boundaries
@@ -80,16 +80,14 @@ contract OmniChatFee is ReentrancyGuard, Ownable2Step, ERC2771Context {
     /// @notice Bulk message fee multiplier (10x)
     uint256 public constant BULK_FEE_MULTIPLIER = 10;
 
-    /// @notice Fee split: validator hosting the channel (7000 = 70%)
-    /// @dev M-01 Round 6: corrected from ODDAO to validator per
-    ///      documented tokenomics (CLAUDE.md Chat Fees section)
-    uint256 public constant VALIDATOR_SHARE = 7000;
+    /// @notice Fee split: ODDAO treasury (7000 = 70%)
+    uint256 public constant ODDAO_SHARE = 7000;
 
     /// @notice Fee split: staking pool (2000 = 20%)
     uint256 public constant STAKING_SHARE = 2000;
 
-    /// @notice Fee split: ODDAO treasury (1000 = 10%)
-    uint256 public constant ODDAO_SHARE = 1000;
+    /// @notice Fee split: protocol treasury (1000 = 10%)
+    uint256 public constant PROTOCOL_SHARE = 1000;
 
     /// @notice Basis points denominator
     uint256 private constant BPS = 10_000;
@@ -118,10 +116,10 @@ contract OmniChatFee is ReentrancyGuard, Ownable2Step, ERC2771Context {
     /// @notice Staking pool address (receives 20%)
     address public stakingPool;
 
-    /// @notice ODDAO treasury (receives 10%)
+    /// @notice ODDAO treasury (receives 70%)
     address public oddaoTreasury;
 
-    /// @notice Protocol treasury (legacy, kept for interface compat)
+    /// @notice Protocol treasury (receives 10%)
     address public protocolTreasury;
 
     /// @notice Base fee per message in XOM (18 decimals)
@@ -286,7 +284,7 @@ contract OmniChatFee is ReentrancyGuard, Ownable2Step, ERC2771Context {
             // Paid message — CEI: update state before external calls
             monthlyMessageCount[caller][month] = used + 1;
             paymentProofs[caller][channelId][msgIndex] = true;
-            _collectFee(caller, baseFee, validator);
+            _collectFee(caller, baseFee);
 
             emit MessageFeePaid(
                 caller,
@@ -322,7 +320,7 @@ contract OmniChatFee is ReentrancyGuard, Ownable2Step, ERC2771Context {
         // CEI: update state before external calls
         monthlyMessageCount[caller][month]++;
         paymentProofs[caller][channelId][msgIndex] = true;
-        _collectFee(caller, fee, validator);
+        _collectFee(caller, fee);
 
         emit MessageFeePaid(
             caller,
@@ -493,18 +491,15 @@ contract OmniChatFee is ReentrancyGuard, Ownable2Step, ERC2771Context {
 
     /**
      * @notice Collect fee from user and distribute
-     * @dev M-01 Round 6: corrected fee split to match documented
-     *      tokenomics. 70% goes to the validator hosting the channel,
-     *      20% to staking pool, 10% to ODDAO treasury. Enforces
-     *      MIN_FEE floor to prevent precision-loss rounding to zero.
+     * @dev Fee split: 70% ODDAO treasury, 20% staking pool,
+     *      10% protocol treasury. Enforces MIN_FEE floor to
+     *      prevent precision-loss rounding to zero.
      * @param user User paying the fee
      * @param fee Total fee amount
-     * @param validator Validator hosting the channel (receives 70%)
      */
     function _collectFee(
         address user,
-        uint256 fee,
-        address validator
+        uint256 fee
     ) internal {
         // Enforce minimum fee to prevent precision loss
         if (fee < MIN_FEE) fee = MIN_FEE;
@@ -512,17 +507,17 @@ contract OmniChatFee is ReentrancyGuard, Ownable2Step, ERC2771Context {
         // Transfer full fee from user to this contract
         xomToken.safeTransferFrom(user, address(this), fee);
 
-        // Calculate splits per documented tokenomics
+        // Calculate splits
         uint256 stakingAmount = (fee * STAKING_SHARE) / BPS;
-        uint256 oddaoAmount = (fee * ODDAO_SHARE) / BPS;
-        // Validator gets remainder (avoids rounding dust)
-        uint256 validatorAmount =
-            fee - stakingAmount - oddaoAmount;
+        uint256 protocolAmount = (fee * PROTOCOL_SHARE) / BPS;
+        // ODDAO gets remainder (avoids rounding dust)
+        uint256 oddaoAmount =
+            fee - stakingAmount - protocolAmount;
 
-        // Distribute: 70% validator, 20% staking, 10% ODDAO
-        xomToken.safeTransfer(validator, validatorAmount);
-        xomToken.safeTransfer(stakingPool, stakingAmount);
+        // Distribute: 70% ODDAO, 20% staking, 10% protocol
         xomToken.safeTransfer(oddaoTreasury, oddaoAmount);
+        xomToken.safeTransfer(stakingPool, stakingAmount);
+        xomToken.safeTransfer(protocolTreasury, protocolAmount);
 
         totalFeesCollected += fee;
     }

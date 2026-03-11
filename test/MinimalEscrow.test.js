@@ -32,13 +32,13 @@ describe("MinimalEscrow", function () {
     pToken = await Token.connect(owner).deploy(ethers.ZeroAddress);
     await pToken.connect(owner).initialize();
 
-    // Deploy MinimalEscrow: omniCoin, privateOmniCoin, registry, feeCollector, feeBps
+    // Deploy MinimalEscrow: omniCoin, privateOmniCoin, registry, feeVault, feeBps
     const MinimalEscrow = await ethers.getContractFactory("MinimalEscrow");
     escrow = await MinimalEscrow.connect(owner).deploy(
       token.target,
       pToken.target,
       registry.address,
-      owner.address, // feeCollector — deployer receives marketplace fees
+      owner.address, // feeVault — deployer receives marketplace fees (acts as UnifiedFeeVault)
       100, // 1% marketplace fee (100 basis points)
       ethers.ZeroAddress // trustedForwarder_ (disabled)
     );
@@ -155,7 +155,7 @@ describe("MinimalEscrow", function () {
 
     it("Should allow buyer to release funds with 1% marketplace fee", async function () {
       const sellerBalanceBefore = await token.balanceOf(seller.address);
-      const feeCollectorBefore = await token.balanceOf(owner.address);
+      const feeVaultBefore = await token.balanceOf(owner.address);
 
       await escrow.connect(buyer).releaseFunds(escrowId);
 
@@ -164,10 +164,10 @@ describe("MinimalEscrow", function () {
       const expectedSellerAmount = ESCROW_AMOUNT - (ESCROW_AMOUNT * 100n / 10000n);
       expect(sellerBalanceAfter - sellerBalanceBefore).to.equal(expectedSellerAmount);
 
-      // Fee collector (owner) gets 1% (100 XOM * 1% = 1 XOM)
-      const feeCollectorAfter = await token.balanceOf(owner.address);
+      // Fee vault (owner) gets 1% (100 XOM * 1% = 1 XOM)
+      const feeVaultAfter = await token.balanceOf(owner.address);
       const expectedFee = ESCROW_AMOUNT * 100n / 10000n;
-      expect(feeCollectorAfter - feeCollectorBefore).to.equal(expectedFee);
+      expect(feeVaultAfter - feeVaultBefore).to.equal(expectedFee);
 
       const escrowData = await escrow.escrows(escrowId);
       expect(escrowData.resolved).to.be.true;

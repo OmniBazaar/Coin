@@ -102,8 +102,8 @@ contract OmniCore is
     /// @notice Fee percentage for staking pool (20% = 2000 basis points)
     uint256 public constant STAKING_FEE_BPS = 2000;
 
-    /// @notice Fee percentage for validator (10% = 1000 basis points)
-    uint256 public constant VALIDATOR_FEE_BPS = 1000;
+    /// @notice Fee percentage for protocol treasury (10% = 1000 basis points)
+    uint256 public constant PROTOCOL_FEE_BPS = 1000;
 
     /// @notice Total basis points for percentage calculations
     uint256 public constant BASIS_POINTS = 10000;
@@ -205,10 +205,14 @@ contract OmniCore is
     ///      revoke ADMIN_ROLE and DEFAULT_ADMIN_ROLE from the old admin.
     address public adminTransferProposer;
 
-    /// @notice Storage gap for future upgrades (reserve 42 slots)
-    /// @dev Reduced from 47 to 42: bootstrapContract + pendingAdmin
-    ///      + adminTransferEta + adminTransferProposer + _usedClaimNonces
-    uint256[42] private __gap;
+    /// @notice Protocol treasury address for receiving 10% of DEX fees
+    /// @dev V4: Replaces the per-call validator parameter in distributeDEXFees().
+    ///      The 10% fee share goes to the protocol treasury, not individual validators.
+    address public protocolTreasuryAddress;
+
+    /// @notice Storage gap for future upgrades (reserve 41 slots)
+    /// @dev Reduced from 42 to 41: added protocolTreasuryAddress
+    uint256[41] private __gap;
 
     // Events
     /// @notice Emitted when a service is registered or updated
@@ -357,6 +361,14 @@ contract OmniCore is
         address indexed newAddress
     );
 
+    /// @notice Emitted when the protocol treasury fee recipient address is updated
+    /// @param oldAddress Previous protocol treasury address
+    /// @param newAddress New protocol treasury address
+    event ProtocolTreasuryAddressUpdated(
+        address indexed oldAddress,
+        address indexed newAddress
+    );
+
     /// @notice Emitted when an admin transfer is proposed
     /// @param currentAdmin Address proposing the transfer
     /// @param newAdmin Proposed new admin address
@@ -424,15 +436,19 @@ contract OmniCore is
      * @param _omniCoin Address of OmniCoin token
      * @param _oddaoAddress ODDAO fee recipient (70% of fees)
      * @param _stakingPoolAddress Staking pool fee recipient (20% of fees)
+     * @param _protocolTreasuryAddress Protocol treasury fee recipient
+     *        (10% of fees)
      */
     function initialize(
         address admin,
         address _omniCoin,
         address _oddaoAddress,
-        address _stakingPoolAddress
+        address _stakingPoolAddress,
+        address _protocolTreasuryAddress
     ) public initializer {
         if (admin == address(0) || _omniCoin == address(0) ||
-            _oddaoAddress == address(0) || _stakingPoolAddress == address(0)) {
+            _oddaoAddress == address(0) || _stakingPoolAddress == address(0) ||
+            _protocolTreasuryAddress == address(0)) {
             revert InvalidAddress();
         }
 
@@ -450,6 +466,7 @@ contract OmniCore is
         OMNI_COIN = IERC20(_omniCoin);
         oddaoAddress = _oddaoAddress;
         stakingPoolAddress = _stakingPoolAddress;
+        protocolTreasuryAddress = _protocolTreasuryAddress;
         requiredSignatures = 1;
     }
 
@@ -661,6 +678,26 @@ contract OmniCore is
     }
 
     /**
+     * @notice Update the protocol treasury fee recipient address
+     * @dev Only admin can change. The protocol treasury receives
+     *      10% of DEX fees.
+     * @param newProtocolTreasuryAddress New protocol treasury address
+     *        (must be non-zero)
+     */
+    function setProtocolTreasuryAddress(
+        address newProtocolTreasuryAddress
+    ) external onlyRole(ADMIN_ROLE) {
+        if (newProtocolTreasuryAddress == address(0)) {
+            revert InvalidAddress();
+        }
+        address oldAddress = protocolTreasuryAddress;
+        protocolTreasuryAddress = newProtocolTreasuryAddress;
+        emit ProtocolTreasuryAddressUpdated(
+            oldAddress, newProtocolTreasuryAddress
+        );
+    }
+
+    /**
      * @notice Pause all staking, DEX, and legacy claim operations
      * @dev Only admin can pause. M-04 remediation: enables emergency stops
      *      without requiring a full UUPS upgrade.
@@ -851,23 +888,22 @@ contract OmniCore is
 
     /**
      * @notice Distribute DEX fees
-     * @dev Called by validators to distribute fees according to tokenomics
+     * @dev Called by validators to distribute fees according to tokenomics.
+     *      70% ODDAO, 20% Staking Pool, 10% Protocol Treasury.
      * @param token Fee token
      * @param totalFee Total fee amount
-     * @param validator Validator processing the transaction
      * @dev DEPRECATED: Use DEXSettlement.sol for trustless fee distribution
      */
     function distributeDEXFees(
         address token,
-        uint256 totalFee,
-        address validator
+        uint256 totalFee
     ) external onlyRole(AVALANCHE_VALIDATOR_ROLE) whenNotPaused {
         if (totalFee == 0) return;
 
         // Calculate fee splits using basis points for precision
         uint256 oddaoFee = (totalFee * ODDAO_FEE_BPS) / BASIS_POINTS;
         uint256 stakingFee = (totalFee * STAKING_FEE_BPS) / BASIS_POINTS;
-        uint256 validatorFee = totalFee - oddaoFee - stakingFee;
+        uint256 protocolFee = totalFee - oddaoFee - stakingFee;
 
         if (oddaoFee > 0) {
             dexBalances[oddaoAddress][token] += oddaoFee;
@@ -875,8 +911,8 @@ contract OmniCore is
         if (stakingFee > 0) {
             dexBalances[stakingPoolAddress][token] += stakingFee;
         }
-        if (validatorFee > 0) {
-            dexBalances[validator][token] += validatorFee;
+        if (protocolFee > 0) {
+            dexBalances[protocolTreasuryAddress][token] += protocolFee;
         }
     }
 

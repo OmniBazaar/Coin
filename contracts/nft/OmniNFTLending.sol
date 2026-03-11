@@ -24,8 +24,8 @@ import {Context} from
  * @dev Uses escrow pattern -- NFT held by contract during active loan,
  *      principal deposited by lender on offer creation and released to
  *      borrower on acceptance. Platform fee (percentage of interest)
- *      collected on repayment, split off-chain per OmniBazaar 70/20/10
- *      model.
+ *      collected on repayment and sent 100% to the UnifiedFeeVault,
+ *      which handles the OmniBazaar 70/20/10 distribution on-chain.
  *
  *      Security notes:
  *        - Interest is annualized and pro-rated by loan duration (H-01).
@@ -108,8 +108,11 @@ contract OmniNFTLending is
     /// @notice Platform fee in bps of interest (default 10 % = 1000).
     uint16 public platformFeeBps;
 
-    /// @notice Address receiving platform fees.
-    address public feeRecipient;
+    /// @notice UnifiedFeeVault address that receives 100% of platform fees
+    /// @dev The UnifiedFeeVault handles the OmniBazaar 70/20/10 on-chain
+    ///      fee distribution. This address MUST point to a deployed
+    ///      UnifiedFeeVault instance.
+    address public feeVault;
 
     /// @notice Next offer ID.
     uint256 public nextOfferId;
@@ -215,12 +218,12 @@ contract OmniNFTLending is
         uint16 indexed newFeeBps
     );
 
-    /// @notice Emitted when the fee recipient is updated.
-    /// @param oldRecipient Previous recipient address.
-    /// @param newRecipient New recipient address.
-    event FeeRecipientUpdated(
-        address indexed oldRecipient,
-        address indexed newRecipient
+    /// @notice Emitted when the UnifiedFeeVault address is updated.
+    /// @param oldVault Previous UnifiedFeeVault address.
+    /// @param newVault New UnifiedFeeVault address.
+    event FeeVaultUpdated(
+        address indexed oldVault,
+        address indexed newVault
     );
 
     // ── Custom errors ────────────────────────────────────────────────────
@@ -288,20 +291,21 @@ contract OmniNFTLending is
 
     /**
      * @notice Deploy the lending contract.
-     * @param initialFeeRecipient Address that receives platform fees.
+     * @param initialFeeVault UnifiedFeeVault address that receives platform
+     *        fees for on-chain 70/20/10 distribution.
      * @param initialFeeBps Platform fee in bps of interest
      *        (e.g. 1000 = 10 %).
      * @param trustedForwarder_ Trusted ERC-2771 forwarder address.
      */
     constructor(
-        address initialFeeRecipient,
+        address initialFeeVault,
         uint16 initialFeeBps,
         address trustedForwarder_
     ) Ownable(msg.sender) ERC2771Context(trustedForwarder_) {
-        // M-01: Validate fee recipient is non-zero
-        if (initialFeeRecipient == address(0)) revert ZeroAddress();
+        // M-01: Validate fee vault is non-zero
+        if (initialFeeVault == address(0)) revert ZeroAddress();
         if (initialFeeBps > MAX_PLATFORM_FEE_BPS) revert FeeTooHigh();
-        feeRecipient = initialFeeRecipient;
+        feeVault = initialFeeVault;
         platformFeeBps = initialFeeBps;
     }
 
@@ -490,10 +494,10 @@ contract OmniNFTLending is
         IERC20(loan.currency).safeTransfer(
             loan.lender, lenderAmount
         );
-        // Platform fee to fee recipient
+        // Platform fee to UnifiedFeeVault
         if (platformFee > 0) {
             IERC20(loan.currency).safeTransfer(
-                feeRecipient, platformFee
+                feeVault, platformFee
             );
         }
 
@@ -615,15 +619,15 @@ contract OmniNFTLending is
     }
 
     /**
-     * @notice Update the fee recipient address.
-     * @param newRecipient New fee recipient.
+     * @notice Update the UnifiedFeeVault address.
+     * @param newVault New UnifiedFeeVault address.
      */
-    function setFeeRecipient(address newRecipient) external onlyOwner {
-        // M-01: Validate new recipient is non-zero
-        if (newRecipient == address(0)) revert ZeroAddress();
-        address oldRecipient = feeRecipient;
-        feeRecipient = newRecipient;
-        emit FeeRecipientUpdated(oldRecipient, newRecipient);
+    function setFeeVault(address newVault) external onlyOwner {
+        // M-01: Validate new vault is non-zero
+        if (newVault == address(0)) revert ZeroAddress();
+        address oldVault = feeVault;
+        feeVault = newVault;
+        emit FeeVaultUpdated(oldVault, newVault);
     }
 
     // ── View functions ───────────────────────────────────────────────────
