@@ -10,7 +10,7 @@ const { ethers } = require("hardhat");
  */
 describe("OmniPredictionRouter", function () {
   let owner;
-  let feeCollector;
+  let feeVault;
   let user;
   let platformTarget;
   let attacker;
@@ -35,7 +35,7 @@ describe("OmniPredictionRouter", function () {
   before(async function () {
     const signers = await ethers.getSigners();
     owner = signers[0];
-    feeCollector = signers[1];
+    feeVault = signers[1];
     user = signers[2];
     platformTarget = signers[3];
     attacker = signers[4];
@@ -52,7 +52,7 @@ describe("OmniPredictionRouter", function () {
 
     // Deploy the router with valid parameters
     const Router = await ethers.getContractFactory("OmniPredictionRouter");
-    router = await Router.deploy(feeCollector.address, MAX_FEE_BPS, ethers.ZeroAddress);
+    router = await Router.deploy(feeVault.address, MAX_FEE_BPS, ethers.ZeroAddress);
     await router.waitForDeployment();
   });
 
@@ -61,29 +61,29 @@ describe("OmniPredictionRouter", function () {
   // ---------------------------------------------------------------------------
 
   describe("Constructor", function () {
-    it("should deploy with valid feeCollector and maxFeeBps", async function () {
-      expect(await router.feeCollector()).to.equal(feeCollector.address);
+    it("should deploy with valid feeVault and maxFeeBps", async function () {
+      expect(await router.feeVault()).to.equal(feeVault.address);
       expect(await router.MAX_FEE_BPS()).to.equal(MAX_FEE_BPS);
     });
 
-    it("should revert when feeCollector is the zero address", async function () {
+    it("should revert when feeVault is the zero address", async function () {
       const Router = await ethers.getContractFactory("OmniPredictionRouter");
       await expect(
         Router.deploy(ethers.ZeroAddress, MAX_FEE_BPS, ethers.ZeroAddress)
-      ).to.be.revertedWithCustomError(Router, "InvalidFeeCollector");
+      ).to.be.revertedWithCustomError(Router, "InvalidFeeVault");
     });
 
     it("should revert when maxFeeBps is zero", async function () {
       const Router = await ethers.getContractFactory("OmniPredictionRouter");
       await expect(
-        Router.deploy(feeCollector.address, 0, ethers.ZeroAddress)
+        Router.deploy(feeVault.address, 0, ethers.ZeroAddress)
       ).to.be.revertedWithCustomError(Router, "FeeExceedsCap");
     });
 
     it("should revert when maxFeeBps exceeds 1000", async function () {
       const Router = await ethers.getContractFactory("OmniPredictionRouter");
       await expect(
-        Router.deploy(feeCollector.address, 1001, ethers.ZeroAddress)
+        Router.deploy(feeVault.address, 1001, ethers.ZeroAddress)
       ).to.be.revertedWithCustomError(Router, "FeeExceedsCap");
     });
   });
@@ -93,8 +93,8 @@ describe("OmniPredictionRouter", function () {
   // ---------------------------------------------------------------------------
 
   describe("Immutable getters", function () {
-    it("should return the correct feeCollector", async function () {
-      expect(await router.feeCollector()).to.equal(feeCollector.address);
+    it("should return the correct feeVault", async function () {
+      expect(await router.feeVault()).to.equal(feeVault.address);
     });
 
     it("should return the correct MAX_FEE_BPS", async function () {
@@ -376,13 +376,13 @@ describe("OmniPredictionRouter", function () {
       // Verify tokens are on the router
       expect(await collateral.balanceOf(routerAddress)).to.equal(rescueAmount);
 
-      const balanceBefore = await collateral.balanceOf(feeCollector.address);
+      const balanceBefore = await collateral.balanceOf(feeVault.address);
 
       // R6: rescueTokens is now onlyOwner -- owner rescues the tokens
       await router.connect(owner).rescueTokens(collateralAddress);
 
       expect(await collateral.balanceOf(routerAddress)).to.equal(0);
-      expect(await collateral.balanceOf(feeCollector.address)).to.equal(
+      expect(await collateral.balanceOf(feeVault.address)).to.equal(
         balanceBefore + rescueAmount
       );
     });
@@ -399,14 +399,14 @@ describe("OmniPredictionRouter", function () {
   describe("Constructor boundary values", function () {
     it("should deploy with maxFeeBps = 1 (minimum)", async function () {
       const Router = await ethers.getContractFactory("OmniPredictionRouter");
-      const r = await Router.deploy(feeCollector.address, 1, ethers.ZeroAddress);
+      const r = await Router.deploy(feeVault.address, 1, ethers.ZeroAddress);
       await r.waitForDeployment();
       expect(await r.MAX_FEE_BPS()).to.equal(1n);
     });
 
     it("should deploy with maxFeeBps = 1000 (maximum)", async function () {
       const Router = await ethers.getContractFactory("OmniPredictionRouter");
-      const r = await Router.deploy(feeCollector.address, 1000, ethers.ZeroAddress);
+      const r = await Router.deploy(feeVault.address, 1000, ethers.ZeroAddress);
       await r.waitForDeployment();
       expect(await r.MAX_FEE_BPS()).to.equal(1000n);
     });
@@ -419,34 +419,34 @@ describe("OmniPredictionRouter", function () {
       const signers = await ethers.getSigners();
       const forwarder = signers[5];
       const Router = await ethers.getContractFactory("OmniPredictionRouter");
-      const r = await Router.deploy(feeCollector.address, MAX_FEE_BPS, forwarder.address);
+      const r = await Router.deploy(feeVault.address, MAX_FEE_BPS, forwarder.address);
       await r.waitForDeployment();
-      expect(await r.feeCollector()).to.equal(feeCollector.address);
+      expect(await r.feeVault()).to.equal(feeVault.address);
     });
   });
 
   // ---------------------------------------------------------------------------
-  // setFeeCollector
+  // setFeeVault
   // ---------------------------------------------------------------------------
 
-  describe("setFeeCollector", function () {
-    it("should allow owner to update the fee collector", async function () {
+  describe("setFeeVault", function () {
+    it("should allow owner to update the fee vault", async function () {
       const signers = await ethers.getSigners();
       const newCollector = signers[5];
 
-      await router.connect(owner).setFeeCollector(newCollector.address);
-      expect(await router.feeCollector()).to.equal(newCollector.address);
+      await router.connect(owner).setFeeVault(newCollector.address);
+      expect(await router.feeVault()).to.equal(newCollector.address);
     });
 
-    it("should emit FeeCollectorUpdated event", async function () {
+    it("should emit FeeVaultUpdated event", async function () {
       const signers = await ethers.getSigners();
       const newCollector = signers[5];
 
       await expect(
-        router.connect(owner).setFeeCollector(newCollector.address)
+        router.connect(owner).setFeeVault(newCollector.address)
       )
-        .to.emit(router, "FeeCollectorUpdated")
-        .withArgs(feeCollector.address, newCollector.address);
+        .to.emit(router, "FeeVaultUpdated")
+        .withArgs(feeVault.address, newCollector.address);
     });
 
     it("should revert when called by non-owner", async function () {
@@ -454,7 +454,7 @@ describe("OmniPredictionRouter", function () {
       const newCollector = signers[5];
 
       await expect(
-        router.connect(user).setFeeCollector(newCollector.address)
+        router.connect(user).setFeeVault(newCollector.address)
       ).to.be.revertedWithCustomError(router, "OwnableUnauthorizedAccount");
     });
 
@@ -463,26 +463,26 @@ describe("OmniPredictionRouter", function () {
       const newCollector = signers[5];
 
       await expect(
-        router.connect(attacker).setFeeCollector(newCollector.address)
+        router.connect(attacker).setFeeVault(newCollector.address)
       ).to.be.revertedWithCustomError(router, "OwnableUnauthorizedAccount");
     });
 
-    it("should revert when setting fee collector to zero address", async function () {
+    it("should revert when setting fee vault to zero address", async function () {
       await expect(
-        router.connect(owner).setFeeCollector(ethers.ZeroAddress)
-      ).to.be.revertedWithCustomError(router, "InvalidFeeCollector");
+        router.connect(owner).setFeeVault(ethers.ZeroAddress)
+      ).to.be.revertedWithCustomError(router, "InvalidFeeVault");
     });
 
-    it("should allow multiple fee collector updates", async function () {
+    it("should allow multiple fee vault updates", async function () {
       const signers = await ethers.getSigners();
       const collector1 = signers[5];
       const collector2 = signers[6];
 
-      await router.connect(owner).setFeeCollector(collector1.address);
-      expect(await router.feeCollector()).to.equal(collector1.address);
+      await router.connect(owner).setFeeVault(collector1.address);
+      expect(await router.feeVault()).to.equal(collector1.address);
 
-      await router.connect(owner).setFeeCollector(collector2.address);
-      expect(await router.feeCollector()).to.equal(collector2.address);
+      await router.connect(owner).setFeeVault(collector2.address);
+      expect(await router.feeVault()).to.equal(collector2.address);
     });
   });
 
@@ -530,7 +530,7 @@ describe("OmniPredictionRouter", function () {
     it("should revert on renounceOwnership (disabled)", async function () {
       await expect(
         router.connect(owner).renounceOwnership()
-      ).to.be.revertedWithCustomError(router, "InvalidFeeCollector");
+      ).to.be.revertedWithCustomError(router, "InvalidFeeVault");
     });
   });
 
@@ -622,7 +622,7 @@ describe("OmniPredictionRouter", function () {
         .withArgs(user.address, collateralAddr, totalAmount, feeAmount, netAmount, platformAddr);
     });
 
-    it("should send fee to feeCollector", async function () {
+    it("should send fee to feeVault", async function () {
       const deadline = await futureDeadline();
       const totalAmount = ethers.parseEther("100");
       const feeAmount = ethers.parseEther("1");
@@ -632,7 +632,7 @@ describe("OmniPredictionRouter", function () {
       await collateral.transfer(user.address, totalAmount);
       await collateral.connect(user).approve(await router.getAddress(), totalAmount);
 
-      const feeBalBefore = await collateral.balanceOf(feeCollector.address);
+      const feeBalBefore = await collateral.balanceOf(feeVault.address);
 
       const platformData = mockPlatform.interface.encodeFunctionData("execute");
       await router.connect(user).buyWithFee(
@@ -640,7 +640,7 @@ describe("OmniPredictionRouter", function () {
         platformAddr, platformData, deadline
       );
 
-      expect(await collateral.balanceOf(feeCollector.address)).to.equal(
+      expect(await collateral.balanceOf(feeVault.address)).to.equal(
         feeBalBefore + feeAmount
       );
     });
@@ -707,7 +707,7 @@ describe("OmniPredictionRouter", function () {
       );
 
       // Should succeed without revert
-      expect(await collateral.balanceOf(feeCollector.address)).to.be.gte(feeAmount);
+      expect(await collateral.balanceOf(feeVault.address)).to.be.gte(feeAmount);
     });
   });
 
@@ -1061,9 +1061,9 @@ describe("OmniPredictionRouter", function () {
   // ---------------------------------------------------------------------------
 
   describe("rescueTokens - additional scenarios", function () {
-    it("should revert when called by feeCollector (non-owner)", async function () {
+    it("should revert when called by feeVault (non-owner)", async function () {
       await expect(
-        router.connect(feeCollector).rescueTokens(await collateral.getAddress())
+        router.connect(feeVault).rescueTokens(await collateral.getAddress())
       ).to.be.revertedWithCustomError(router, "OwnableUnauthorizedAccount");
     });
 
@@ -1095,12 +1095,12 @@ describe("OmniPredictionRouter", function () {
       ).to.not.emit(router, "TokensRescued");
     });
 
-    it("should rescue tokens to current feeCollector (not original)", async function () {
+    it("should rescue tokens to current feeVault (not original)", async function () {
       const signers = await ethers.getSigners();
       const newCollector = signers[5];
 
-      // Change fee collector
-      await router.connect(owner).setFeeCollector(newCollector.address);
+      // Change fee vault
+      await router.connect(owner).setFeeVault(newCollector.address);
 
       const rescueAmount = ethers.parseEther("10");
       const routerAddress = await router.getAddress();
@@ -1129,11 +1129,11 @@ describe("OmniPredictionRouter", function () {
 
       await otherToken.transfer(routerAddress, rescueAmount);
 
-      const balBefore = await otherToken.balanceOf(feeCollector.address);
+      const balBefore = await otherToken.balanceOf(feeVault.address);
 
       await router.connect(owner).rescueTokens(otherAddress);
 
-      expect(await otherToken.balanceOf(feeCollector.address)).to.equal(
+      expect(await otherToken.balanceOf(feeVault.address)).to.equal(
         balBefore + rescueAmount
       );
     });
@@ -1231,7 +1231,7 @@ describe("OmniPredictionRouter", function () {
     it("should accept fee equal to totalAmount when within cap", async function () {
       // Deploy a router with 10% max cap to test fee == total scenario
       const Router = await ethers.getContractFactory("OmniPredictionRouter");
-      const r = await Router.deploy(feeCollector.address, 1000, ethers.ZeroAddress); // 10% cap
+      const r = await Router.deploy(feeVault.address, 1000, ethers.ZeroAddress); // 10% cap
       await r.waitForDeployment();
 
       const MockPlatform = await ethers.getContractFactory("MockPlatform");
@@ -1457,7 +1457,7 @@ describe("OmniPredictionRouter", function () {
 
       const platformData = mockPlatform.interface.encodeFunctionData("execute");
 
-      const feeBalBefore = await collateral.balanceOf(feeCollector.address);
+      const feeBalBefore = await collateral.balanceOf(feeVault.address);
 
       // User 1 trades
       await router.connect(user).buyWithFee(
@@ -1472,11 +1472,11 @@ describe("OmniPredictionRouter", function () {
       );
 
       // Fee collector should have received both fees
-      const feeBalAfter = await collateral.balanceOf(feeCollector.address);
+      const feeBalAfter = await collateral.balanceOf(feeVault.address);
       expect(feeBalAfter - feeBalBefore).to.equal(feeAmount * 2n);
     });
 
-    it("should correctly send fees to feeCollector across multiple trades", async function () {
+    it("should correctly send fees to feeVault across multiple trades", async function () {
       const deadline = await futureDeadline();
       const totalAmount = ethers.parseEther("50");
       const feeAmount = ethers.parseEther("0.5");
@@ -1486,7 +1486,7 @@ describe("OmniPredictionRouter", function () {
 
       const platformData = mockPlatform.interface.encodeFunctionData("execute");
 
-      const feeBalBefore = await collateral.balanceOf(feeCollector.address);
+      const feeBalBefore = await collateral.balanceOf(feeVault.address);
 
       for (let i = 0; i < 3; i++) {
         await collateral.transfer(user.address, totalAmount);
@@ -1497,8 +1497,8 @@ describe("OmniPredictionRouter", function () {
         );
       }
 
-      // feeCollector should have received fees from all 3 trades
-      const feeBalAfter = await collateral.balanceOf(feeCollector.address);
+      // feeVault should have received fees from all 3 trades
+      const feeBalAfter = await collateral.balanceOf(feeVault.address);
       expect(feeBalAfter - feeBalBefore).to.equal(feeAmount * 3n);
 
       // Router approval to platform should be reset to zero after each trade

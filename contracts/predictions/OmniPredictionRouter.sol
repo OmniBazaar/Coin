@@ -20,7 +20,7 @@ import {Context} from "@openzeppelin/contracts/utils/Context.sol";
  *
  * Trustless guarantees:
  *   - Fee percentage is capped by immutable `MAX_FEE_BPS` (set at deploy).
- *   - Fee collector address is mutable (owner-only, for Pioneer Phase flexibility).
+ *   - Fee vault address is mutable (owner-only, for Pioneer Phase flexibility).
  *   - Contract never holds user funds between transactions.
  *   - All token transfers use SafeERC20 (reverts on failure).
  *   - Reentrancy guard on every external entry point.
@@ -50,11 +50,8 @@ contract OmniPredictionRouter is Ownable2Step, ReentrancyGuard, ERC1155Holder, E
     uint256 private constant GAS_RESERVE = 50_000;
 
     // -----------------------------------------------------------------------
-    // State Variables
+    // Immutable State
     // -----------------------------------------------------------------------
-
-    /// @notice Address that receives all collected fees
-    address public feeCollector;
 
     /// @notice Maximum fee in basis points (e.g. 200 = 2.00%)
     uint256 public immutable MAX_FEE_BPS; // solhint-disable-line immutable-vars-naming
@@ -62,6 +59,9 @@ contract OmniPredictionRouter is Ownable2Step, ReentrancyGuard, ERC1155Holder, E
     // -----------------------------------------------------------------------
     // Mutable State
     // -----------------------------------------------------------------------
+
+    /// @notice UnifiedFeeVault address -- receives 100% of prediction fees for 70/20/10 distribution
+    address public feeVault;
 
     /// @notice Approved prediction market platforms that can be called
     /// @dev Only addresses in this mapping may be used as platformTarget
@@ -75,7 +75,7 @@ contract OmniPredictionRouter is Ownable2Step, ReentrancyGuard, ERC1155Holder, E
     /// @param user         The trader's address
     /// @param collateral   The collateral token (USDC / WXDAI)
     /// @param totalAmount  Total amount pulled from user (including fee)
-    /// @param feeAmount    Fee collected and sent to feeCollector
+    /// @param feeAmount    Fee collected and sent to feeVault
     /// @param netAmount    Amount forwarded to the platform
     /// @param platform     Target platform contract address
     event TradeExecuted(
@@ -95,12 +95,12 @@ contract OmniPredictionRouter is Ownable2Step, ReentrancyGuard, ERC1155Holder, E
         bool indexed approved
     );
 
-    /// @notice Emitted when the fee collector address is updated
-    /// @param oldCollector Previous fee collector address
-    /// @param newCollector New fee collector address
-    event FeeCollectorUpdated(
-        address indexed oldCollector,
-        address indexed newCollector
+    /// @notice Emitted when the UnifiedFeeVault address is updated
+    /// @param oldVault Previous UnifiedFeeVault address
+    /// @param newVault New UnifiedFeeVault address
+    event FeeVaultUpdated(
+        address indexed oldVault,
+        address indexed newVault
     );
 
     /// @notice Emitted when tokens are rescued from the contract
@@ -139,8 +139,8 @@ contract OmniPredictionRouter is Ownable2Step, ReentrancyGuard, ERC1155Holder, E
     /// @notice Thrown when the transaction deadline has passed
     error DeadlineExpired();
 
-    /// @notice Thrown when the caller is not the fee collector (admin)
-    error InvalidFeeCollector();
+    /// @notice Thrown when the provided fee vault address is invalid (zero address)
+    error InvalidFeeVault();
 
     /// @notice Thrown when the outcome token address is invalid (zero address)
     error InvalidOutcomeToken();
@@ -156,22 +156,23 @@ contract OmniPredictionRouter is Ownable2Step, ReentrancyGuard, ERC1155Holder, E
     // -----------------------------------------------------------------------
 
     /**
-     * @notice Deploy the prediction router with an initial fee collector and cap.
-     * @param feeCollector_ Address that receives collected fees (initial value, owner-changeable)
+     * @notice Deploy the prediction router with an initial fee vault and cap.
+     * @param feeVault_     UnifiedFeeVault address -- receives 100% of prediction fees
+     *                      for 70/20/10 distribution (initial value, owner-changeable)
      * @param maxFeeBps_    Maximum fee in basis points (immutable, e.g. 200 = 2%)
      * @param trustedForwarder_ OmniForwarder address for gasless relay (address(0) to disable)
      */
     constructor(
-        address feeCollector_,
+        address feeVault_,
         uint256 maxFeeBps_,
         address trustedForwarder_
     ) Ownable(msg.sender) ERC2771Context(trustedForwarder_) {
-        if (feeCollector_ == address(0)) revert InvalidFeeCollector();
+        if (feeVault_ == address(0)) revert InvalidFeeVault();
         if (maxFeeBps_ == 0 || maxFeeBps_ > 1000) {
             // Cap cannot exceed 10% as a hard safety bound
             revert FeeExceedsCap(maxFeeBps_, 1000);
         }
-        feeCollector = feeCollector_;
+        feeVault = feeVault_;
         MAX_FEE_BPS = maxFeeBps_;
     }
 
@@ -180,19 +181,20 @@ contract OmniPredictionRouter is Ownable2Step, ReentrancyGuard, ERC1155Holder, E
     // -----------------------------------------------------------------------
 
     /**
-     * @notice Update the fee collector address
-     * @param feeCollector_ New fee collector address
+     * @notice Update the UnifiedFeeVault address that receives 100% of
+     *         prediction fees for 70/20/10 distribution.
+     * @param feeVault_ New UnifiedFeeVault address
      * @dev Pioneer Phase: no timelock. Will be replaced with
      *      timelocked version before multi-sig handoff.
      */
-    function setFeeCollector(
-        address feeCollector_
+    function setFeeVault(
+        address feeVault_
     ) external onlyOwner {
-        if (feeCollector_ == address(0)) revert InvalidFeeCollector();
+        if (feeVault_ == address(0)) revert InvalidFeeVault();
 
-        address oldCollector = feeCollector;
-        feeCollector = feeCollector_;
-        emit FeeCollectorUpdated(oldCollector, feeCollector_);
+        address oldVault = feeVault;
+        feeVault = feeVault_;
+        emit FeeVaultUpdated(oldVault, feeVault_);
     }
 
     /**
@@ -221,7 +223,7 @@ contract OmniPredictionRouter is Ownable2Step, ReentrancyGuard, ERC1155Holder, E
      *      1. Validate deadline has not passed.
      *      2. Validate platformTarget is on the approved platforms list.
      *      3. Pull `totalAmount` of `collateralToken` from caller.
-     *      4. Send `feeAmount` to `feeCollector`.
+     *      4. Send `feeAmount` to `feeVault`.
      *      5. Validate fee does not exceed `MAX_FEE_BPS` cap.
      *      6. Approve net amount to `platformTarget`.
      *      7. Call `platformTarget` with `platformData`.
@@ -409,24 +411,15 @@ contract OmniPredictionRouter is Ownable2Step, ReentrancyGuard, ERC1155Holder, E
 
     /**
      * @notice Rescue tokens accidentally sent to this contract.
-     * @dev Only callable by owner. Sends rescued tokens to feeCollector.
+     * @dev Only callable by owner. Sends rescued tokens to the UnifiedFeeVault.
      * @param token ERC20 token to rescue
      */
     function rescueTokens(address token) external nonReentrant onlyOwner {
         uint256 balance = IERC20(token).balanceOf(address(this));
         if (balance > 0) {
-            IERC20(token).safeTransfer(feeCollector, balance);
+            IERC20(token).safeTransfer(feeVault, balance);
             emit TokensRescued(token, balance);
         }
-    }
-
-    /**
-     * @notice Disabled to prevent accidental loss of contract admin control
-     * @dev Always reverts. Ownership can only be transferred via two-step
-     *      {transferOwnership} + {acceptOwnership} flow.
-     */
-    function renounceOwnership() public pure override {
-        revert InvalidFeeCollector();
     }
 
     /**
@@ -439,6 +432,71 @@ contract OmniPredictionRouter is Ownable2Step, ReentrancyGuard, ERC1155Holder, E
         bytes4 interfaceId
     ) public view virtual override returns (bool) {
         return super.supportsInterface(interfaceId);
+    }
+
+    /**
+     * @notice Disabled to prevent accidental loss of contract admin control
+     * @dev Always reverts. Ownership can only be transferred via two-step
+     *      {transferOwnership} + {acceptOwnership} flow.
+     */
+    function renounceOwnership() public pure override {
+        revert InvalidFeeVault();
+    }
+
+    // -----------------------------------------------------------------------
+    // Internal Overrides (ERC2771Context — resolve diamond with Ownable)
+    // -----------------------------------------------------------------------
+
+    /**
+     * @notice Resolve _msgSender between Context (via Ownable)
+     *         and ERC2771Context
+     * @dev Returns the original user address when called through
+     *      the trusted forwarder. Used by buyWithFee(),
+     *      buyWithFeeAndSweep(), and buyWithFeeAndSweepERC1155()
+     *      to identify the actual user.
+     * @return The original transaction signer when relayed, or
+     *         msg.sender when direct
+     */
+    function _msgSender()
+        internal
+        view
+        override(Context, ERC2771Context)
+        returns (address)
+    {
+        return ERC2771Context._msgSender();
+    }
+
+    /**
+     * @notice Resolve _msgData between Context (via Ownable)
+     *         and ERC2771Context
+     * @dev Strips the appended sender address from calldata
+     *      when relayed
+     * @return The original calldata without the ERC2771 suffix
+     */
+    function _msgData()
+        internal
+        view
+        override(Context, ERC2771Context)
+        returns (bytes calldata)
+    {
+        return ERC2771Context._msgData();
+    }
+
+    /**
+     * @notice Resolve _contextSuffixLength between Context
+     *         and ERC2771Context
+     * @dev Returns 20 (address length) for ERC2771 context
+     *      suffix stripping
+     * @return The number of bytes appended to calldata by the
+     *         forwarder (20)
+     */
+    function _contextSuffixLength()
+        internal
+        view
+        override(Context, ERC2771Context)
+        returns (uint256)
+    {
+        return ERC2771Context._contextSuffixLength();
     }
 
     // -----------------------------------------------------------------------
@@ -455,7 +513,7 @@ contract OmniPredictionRouter is Ownable2Step, ReentrancyGuard, ERC1155Holder, E
      * @param caller          Address of the user (from _msgSender())
      * @param collateralToken ERC20 collateral token address
      * @param totalAmount     Total amount pulled from the user
-     * @param feeAmount       Fee sent to feeCollector
+     * @param feeAmount       Fee sent to the UnifiedFeeVault
      * @param netAmount       Amount approved and forwarded to the platform
      * @param platformTarget  Approved platform contract address
      * @param platformData    ABI-encoded call data for the platform
@@ -480,9 +538,9 @@ contract OmniPredictionRouter is Ownable2Step, ReentrancyGuard, ERC1155Holder, E
             revert FeeOnTransferNotSupported();
         }
 
-        // --- Send fee to collector ---
+        // --- Send fee to UnifiedFeeVault ---
         if (feeAmount > 0) {
-            IERC20(collateralToken).safeTransfer(feeCollector, feeAmount);
+            IERC20(collateralToken).safeTransfer(feeVault, feeAmount);
         }
 
         // --- Approve net amount to platform ---
@@ -565,61 +623,5 @@ contract OmniPredictionRouter is Ownable2Step, ReentrancyGuard, ERC1155Holder, E
         }
 
         netAmount = totalAmount - feeAmount;
-    }
-
-    // -----------------------------------------------------------------------
-    // ERC2771Context Overrides (resolve diamond with Ownable)
-    // -----------------------------------------------------------------------
-
-    /**
-     * @notice Resolve _msgSender between Context (via Ownable)
-     *         and ERC2771Context
-     * @dev Returns the original user address when called through
-     *      the trusted forwarder. Used by buyWithFee(),
-     *      buyWithFeeAndSweep(), and buyWithFeeAndSweepERC1155()
-     *      to identify the actual user.
-     * @return The original transaction signer when relayed, or
-     *         msg.sender when direct
-     */
-    function _msgSender()
-        internal
-        view
-        override(Context, ERC2771Context)
-        returns (address)
-    {
-        return ERC2771Context._msgSender();
-    }
-
-    /**
-     * @notice Resolve _msgData between Context (via Ownable)
-     *         and ERC2771Context
-     * @dev Strips the appended sender address from calldata
-     *      when relayed
-     * @return The original calldata without the ERC2771 suffix
-     */
-    function _msgData()
-        internal
-        view
-        override(Context, ERC2771Context)
-        returns (bytes calldata)
-    {
-        return ERC2771Context._msgData();
-    }
-
-    /**
-     * @notice Resolve _contextSuffixLength between Context
-     *         and ERC2771Context
-     * @dev Returns 20 (address length) for ERC2771 context
-     *      suffix stripping
-     * @return The number of bytes appended to calldata by the
-     *         forwarder (20)
-     */
-    function _contextSuffixLength()
-        internal
-        view
-        override(Context, ERC2771Context)
-        returns (uint256)
-    {
-        return ERC2771Context._contextSuffixLength();
     }
 }

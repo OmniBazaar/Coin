@@ -4,18 +4,16 @@ const { ethers } = require("hardhat");
 /**
  * @title OmniYieldFeeCollector Test Suite
  * @notice Tests for the performance-fee collector used by OmniBazaar yield aggregation.
- * @dev The constructor takes four arguments
- *      (oddaoTreasury, stakingPool, protocolTreasury, performanceFeeBps)
- *      and fees are split 70/20/10 (ODDAO/StakingPool/Protocol).
+ * @dev The constructor takes two arguments (feeVault, performanceFeeBps).
+ *      All collected fees are forwarded in full to the UnifiedFeeVault,
+ *      which handles the 70/20/10 split internally.
  *      Validates constructor guards, fee calculation,
- *      collectFeeAndForward 70/20/10 split, cumulative tracking,
+ *      collectFeeAndForward forwarding to vault, cumulative tracking,
  *      rescueTokens access control, and event emissions.
  */
 describe("OmniYieldFeeCollector", function () {
   let owner;
-  let oddaoTreasury;
-  let stakingPool;
-  let protocolTreasury;
+  let feeVault;
   let user;
   let collector;
   let token;
@@ -26,9 +24,7 @@ describe("OmniYieldFeeCollector", function () {
   before(async function () {
     const signers = await ethers.getSigners();
     owner = signers[0];
-    oddaoTreasury = signers[1];
-    stakingPool = signers[2];
-    protocolTreasury = signers[3];
+    feeVault = signers[1];
     user = signers[4];
   });
 
@@ -41,12 +37,10 @@ describe("OmniYieldFeeCollector", function () {
     // Mint supply to owner for distribution
     await token.mint(owner.address, ethers.parseEther("1000000"));
 
-    // Deploy the fee collector with 70/20/10 split recipients
+    // Deploy the fee collector with feeVault recipient
     const Collector = await ethers.getContractFactory("OmniYieldFeeCollector");
     collector = await Collector.deploy(
-      oddaoTreasury.address,
-      stakingPool.address,
-      protocolTreasury.address,
+      feeVault.address,
       PERFORMANCE_FEE_BPS
     );
     await collector.waitForDeployment();
@@ -57,43 +51,15 @@ describe("OmniYieldFeeCollector", function () {
   // ---------------------------------------------------------------------------
 
   describe("Constructor", function () {
-    it("should deploy with valid recipients and performanceFeeBps", async function () {
-      expect(await collector.oddaoTreasury()).to.equal(oddaoTreasury.address);
-      expect(await collector.stakingPool()).to.equal(stakingPool.address);
-      expect(await collector.protocolTreasury()).to.equal(protocolTreasury.address);
+    it("should deploy with valid feeVault and performanceFeeBps", async function () {
+      expect(await collector.feeVault()).to.equal(feeVault.address);
       expect(await collector.performanceFeeBps()).to.equal(PERFORMANCE_FEE_BPS);
     });
 
-    it("should revert when oddaoTreasury is the zero address", async function () {
+    it("should revert when feeVault is the zero address", async function () {
       const Collector = await ethers.getContractFactory("OmniYieldFeeCollector");
       await expect(
         Collector.deploy(
-          ethers.ZeroAddress,
-          stakingPool.address,
-          protocolTreasury.address,
-          PERFORMANCE_FEE_BPS
-        )
-      ).to.be.revertedWithCustomError(Collector, "InvalidRecipient");
-    });
-
-    it("should revert when stakingPool is the zero address", async function () {
-      const Collector = await ethers.getContractFactory("OmniYieldFeeCollector");
-      await expect(
-        Collector.deploy(
-          oddaoTreasury.address,
-          ethers.ZeroAddress,
-          protocolTreasury.address,
-          PERFORMANCE_FEE_BPS
-        )
-      ).to.be.revertedWithCustomError(Collector, "InvalidRecipient");
-    });
-
-    it("should revert when protocolTreasury is the zero address", async function () {
-      const Collector = await ethers.getContractFactory("OmniYieldFeeCollector");
-      await expect(
-        Collector.deploy(
-          oddaoTreasury.address,
-          stakingPool.address,
           ethers.ZeroAddress,
           PERFORMANCE_FEE_BPS
         )
@@ -104,9 +70,7 @@ describe("OmniYieldFeeCollector", function () {
       const Collector = await ethers.getContractFactory("OmniYieldFeeCollector");
       await expect(
         Collector.deploy(
-          oddaoTreasury.address,
-          stakingPool.address,
-          protocolTreasury.address,
+          feeVault.address,
           0
         )
       ).to.be.revertedWithCustomError(Collector, "FeeExceedsCap");
@@ -116,9 +80,7 @@ describe("OmniYieldFeeCollector", function () {
       const Collector = await ethers.getContractFactory("OmniYieldFeeCollector");
       await expect(
         Collector.deploy(
-          oddaoTreasury.address,
-          stakingPool.address,
-          protocolTreasury.address,
+          feeVault.address,
           1001
         )
       ).to.be.revertedWithCustomError(Collector, "FeeExceedsCap");
@@ -130,16 +92,8 @@ describe("OmniYieldFeeCollector", function () {
   // ---------------------------------------------------------------------------
 
   describe("Immutable getters", function () {
-    it("should return the correct oddaoTreasury", async function () {
-      expect(await collector.oddaoTreasury()).to.equal(oddaoTreasury.address);
-    });
-
-    it("should return the correct stakingPool", async function () {
-      expect(await collector.stakingPool()).to.equal(stakingPool.address);
-    });
-
-    it("should return the correct protocolTreasury", async function () {
-      expect(await collector.protocolTreasury()).to.equal(protocolTreasury.address);
+    it("should return the correct feeVault", async function () {
+      expect(await collector.feeVault()).to.equal(feeVault.address);
     });
 
     it("should return the correct performanceFeeBps", async function () {
@@ -189,19 +143,12 @@ describe("OmniYieldFeeCollector", function () {
       );
     });
 
-    it("should collect the fee and distribute 70/20/10 to recipients", async function () {
+    it("should collect the fee and forward 100% to the feeVault", async function () {
       const expectedFee = (yieldAmount * PERFORMANCE_FEE_BPS) / BPS_DENOMINATOR;
       const expectedNet = yieldAmount - expectedFee;
 
-      // 70/20/10 split of the fee
-      const oddaoShare = (expectedFee * 70n) / 100n;
-      const stakingShare = (expectedFee * 20n) / 100n;
-      const protocolShare = expectedFee - oddaoShare - stakingShare;
-
       const userBalBefore = await token.balanceOf(user.address);
-      const oddaoBalBefore = await token.balanceOf(oddaoTreasury.address);
-      const stakingBalBefore = await token.balanceOf(stakingPool.address);
-      const protocolBalBefore = await token.balanceOf(protocolTreasury.address);
+      const vaultBalBefore = await token.balanceOf(feeVault.address);
 
       await collector.connect(user).collectFeeAndForward(
         await token.getAddress(),
@@ -212,17 +159,9 @@ describe("OmniYieldFeeCollector", function () {
       expect(await token.balanceOf(user.address)).to.equal(
         userBalBefore - yieldAmount + expectedNet
       );
-      // ODDAO treasury gets 70% of the fee
-      expect(await token.balanceOf(oddaoTreasury.address)).to.equal(
-        oddaoBalBefore + oddaoShare
-      );
-      // Staking pool gets 20% of the fee
-      expect(await token.balanceOf(stakingPool.address)).to.equal(
-        stakingBalBefore + stakingShare
-      );
-      // Protocol treasury gets 10% of the fee (remainder for rounding dust)
-      expect(await token.balanceOf(protocolTreasury.address)).to.equal(
-        protocolBalBefore + protocolShare
+      // FeeVault gets 100% of the fee
+      expect(await token.balanceOf(feeVault.address)).to.equal(
+        vaultBalBefore + expectedFee
       );
     });
 
@@ -299,13 +238,19 @@ describe("OmniYieldFeeCollector", function () {
   // ---------------------------------------------------------------------------
 
   describe("rescueTokens", function () {
-    it("should revert when called by non-oddaoTreasury", async function () {
+    it("should revert when called by non-feeVault address", async function () {
       await expect(
         collector.connect(user).rescueTokens(await token.getAddress())
-      ).to.be.revertedWithCustomError(collector, "NotOddaoTreasury");
+      ).to.be.revertedWithCustomError(collector, "NotFeeVault");
     });
 
-    it("should allow oddaoTreasury to rescue tokens sent directly to the contract", async function () {
+    it("should revert when called by contract deployer (owner)", async function () {
+      await expect(
+        collector.connect(owner).rescueTokens(await token.getAddress())
+      ).to.be.revertedWithCustomError(collector, "NotFeeVault");
+    });
+
+    it("should allow feeVault to rescue tokens sent directly to the contract", async function () {
       const rescueAmount = ethers.parseEther("42");
       const collectorAddress = await collector.getAddress();
       const tokenAddress = await token.getAddress();
@@ -314,19 +259,61 @@ describe("OmniYieldFeeCollector", function () {
       await token.transfer(collectorAddress, rescueAmount);
       expect(await token.balanceOf(collectorAddress)).to.equal(rescueAmount);
 
-      const balanceBefore = await token.balanceOf(oddaoTreasury.address);
+      const balanceBefore = await token.balanceOf(feeVault.address);
 
-      await collector.connect(oddaoTreasury).rescueTokens(tokenAddress);
+      await collector.connect(feeVault).rescueTokens(tokenAddress);
 
       expect(await token.balanceOf(collectorAddress)).to.equal(0);
-      expect(await token.balanceOf(oddaoTreasury.address)).to.equal(
+      expect(await token.balanceOf(feeVault.address)).to.equal(
         balanceBefore + rescueAmount
       );
+    });
+
+    it("should emit TokensRescued event with correct parameters", async function () {
+      const rescueAmount = ethers.parseEther("100");
+      const collectorAddress = await collector.getAddress();
+      const tokenAddress = await token.getAddress();
+
+      await token.transfer(collectorAddress, rescueAmount);
+
+      await expect(
+        collector.connect(feeVault).rescueTokens(tokenAddress)
+      )
+        .to.emit(collector, "TokensRescued")
+        .withArgs(tokenAddress, rescueAmount);
+    });
+
+    it("should not emit TokensRescued when contract has zero balance of the token", async function () {
+      const tokenAddress = await token.getAddress();
+
+      // No tokens to rescue, so no event should be emitted
+      await expect(
+        collector.connect(feeVault).rescueTokens(tokenAddress)
+      ).to.not.emit(collector, "TokensRescued");
+    });
+
+    it("should rescue a different token (not the yield token)", async function () {
+      const MockERC20 = await ethers.getContractFactory("MockERC20");
+      const otherToken = await MockERC20.deploy("Other Token", "OTH");
+      await otherToken.waitForDeployment();
+      await otherToken.mint(owner.address, ethers.parseEther("1000"));
+
+      const rescueAmount = ethers.parseEther("77");
+      const collectorAddress = await collector.getAddress();
+      const otherAddress = await otherToken.getAddress();
+
+      await otherToken.transfer(collectorAddress, rescueAmount);
+
+      const balBefore = await otherToken.balanceOf(feeVault.address);
+      await collector.connect(feeVault).rescueTokens(otherAddress);
+      const balAfter = await otherToken.balanceOf(feeVault.address);
+
+      expect(balAfter - balBefore).to.equal(rescueAmount);
     });
   });
 
   // ===========================================================================
-  // NEW TESTS BELOW
+  // ADDITIONAL TESTS
   // ===========================================================================
 
   // ---------------------------------------------------------------------------
@@ -337,9 +324,7 @@ describe("OmniYieldFeeCollector", function () {
     it("should deploy with performanceFeeBps = 1 (minimum)", async function () {
       const Collector = await ethers.getContractFactory("OmniYieldFeeCollector");
       const c = await Collector.deploy(
-        oddaoTreasury.address,
-        stakingPool.address,
-        protocolTreasury.address,
+        feeVault.address,
         1
       );
       await c.waitForDeployment();
@@ -349,9 +334,7 @@ describe("OmniYieldFeeCollector", function () {
     it("should deploy with performanceFeeBps = 1000 (maximum)", async function () {
       const Collector = await ethers.getContractFactory("OmniYieldFeeCollector");
       const c = await Collector.deploy(
-        oddaoTreasury.address,
-        stakingPool.address,
-        protocolTreasury.address,
+        feeVault.address,
         1000
       );
       await c.waitForDeployment();
@@ -362,24 +345,10 @@ describe("OmniYieldFeeCollector", function () {
       const Collector = await ethers.getContractFactory("OmniYieldFeeCollector");
       await expect(
         Collector.deploy(
-          oddaoTreasury.address,
-          stakingPool.address,
-          protocolTreasury.address,
+          feeVault.address,
           1001
         )
       ).to.be.revertedWithCustomError(Collector, "FeeExceedsCap");
-    });
-
-    it("should revert when all three recipients are the zero address", async function () {
-      const Collector = await ethers.getContractFactory("OmniYieldFeeCollector");
-      await expect(
-        Collector.deploy(
-          ethers.ZeroAddress,
-          ethers.ZeroAddress,
-          ethers.ZeroAddress,
-          PERFORMANCE_FEE_BPS
-        )
-      ).to.be.revertedWithCustomError(Collector, "InvalidRecipient");
     });
   });
 
@@ -424,7 +393,7 @@ describe("OmniYieldFeeCollector", function () {
       expect(expectedFeeA).to.not.equal(expectedFeeB);
     });
 
-    it("should distribute fees correctly for a second token", async function () {
+    it("should forward fees correctly for a second token to the feeVault", async function () {
       const yieldB = ethers.parseEther("5000");
       const collectorAddress = await collector.getAddress();
       const tokenBAddress = await tokenB.getAddress();
@@ -432,25 +401,15 @@ describe("OmniYieldFeeCollector", function () {
       await tokenB.transfer(user.address, yieldB);
       await tokenB.connect(user).approve(collectorAddress, yieldB);
 
-      const oddaoBalBefore = await tokenB.balanceOf(oddaoTreasury.address);
-      const stakingBalBefore = await tokenB.balanceOf(stakingPool.address);
-      const protocolBalBefore = await tokenB.balanceOf(protocolTreasury.address);
+      const vaultBalBefore = await tokenB.balanceOf(feeVault.address);
 
       await collector.connect(user).collectFeeAndForward(tokenBAddress, yieldB);
 
       const expectedFee = (yieldB * PERFORMANCE_FEE_BPS) / BPS_DENOMINATOR;
-      const oddaoShare = (expectedFee * 7000n) / 10000n;
-      const stakingShare = (expectedFee * 2000n) / 10000n;
-      const protocolShare = expectedFee - oddaoShare - stakingShare;
 
-      expect(await tokenB.balanceOf(oddaoTreasury.address)).to.equal(
-        oddaoBalBefore + oddaoShare
-      );
-      expect(await tokenB.balanceOf(stakingPool.address)).to.equal(
-        stakingBalBefore + stakingShare
-      );
-      expect(await tokenB.balanceOf(protocolTreasury.address)).to.equal(
-        protocolBalBefore + protocolShare
+      // FeeVault gets 100% of the fee
+      expect(await tokenB.balanceOf(feeVault.address)).to.equal(
+        vaultBalBefore + expectedFee
       );
     });
   });
@@ -460,7 +419,7 @@ describe("OmniYieldFeeCollector", function () {
   // ---------------------------------------------------------------------------
 
   describe("Fee distribution precision", function () {
-    it("should ensure fee shares sum to exactly the total fee (no dust lost)", async function () {
+    it("should ensure fee + net == actualReceived (no dust lost)", async function () {
       // Use an amount that can cause rounding: 333 wei at 5% => fee = 16
       const yieldAmount = 333n;
       const collectorAddress = await collector.getAddress();
@@ -469,30 +428,23 @@ describe("OmniYieldFeeCollector", function () {
       await token.transfer(user.address, yieldAmount);
       await token.connect(user).approve(collectorAddress, yieldAmount);
 
-      const oddaoBefore = await token.balanceOf(oddaoTreasury.address);
-      const stakingBefore = await token.balanceOf(stakingPool.address);
-      const protocolBefore = await token.balanceOf(protocolTreasury.address);
+      const vaultBefore = await token.balanceOf(feeVault.address);
       const userBefore = await token.balanceOf(user.address);
 
       await collector.connect(user).collectFeeAndForward(tokenAddress, yieldAmount);
 
-      const oddaoAfter = await token.balanceOf(oddaoTreasury.address);
-      const stakingAfter = await token.balanceOf(stakingPool.address);
-      const protocolAfter = await token.balanceOf(protocolTreasury.address);
+      const vaultAfter = await token.balanceOf(feeVault.address);
       const userAfter = await token.balanceOf(user.address);
 
-      const oddaoDelta = oddaoAfter - oddaoBefore;
-      const stakingDelta = stakingAfter - stakingBefore;
-      const protocolDelta = protocolAfter - protocolBefore;
-      const userDelta = userBefore - userAfter; // User spent this amount in net
+      const vaultDelta = vaultAfter - vaultBefore;
+      const userDelta = userBefore - userAfter; // User spent this net
 
-      // Total fee = sum of all recipient deltas
-      const totalFee = oddaoDelta + stakingDelta + protocolDelta;
-      // User should have received yieldAmount - totalFee back
-      expect(userDelta).to.equal(totalFee);
-      // All tokens accounted for: user net loss + user net received = yieldAmount
-      const userNetReceived = yieldAmount - userDelta;
-      expect(totalFee + userNetReceived).to.equal(yieldAmount);
+      // Total fee (to vault) + net amount (back to user) == yieldAmount
+      // userDelta = yieldAmount - netAmount = totalFee
+      expect(vaultDelta).to.equal(userDelta);
+      // All tokens accounted for
+      const netReceived = yieldAmount - userDelta;
+      expect(vaultDelta + netReceived).to.equal(yieldAmount);
     });
 
     it("should handle 1 wei yield amount (fee rounds to zero, user gets all)", async function () {
@@ -527,11 +479,8 @@ describe("OmniYieldFeeCollector", function () {
       expect(await collector.totalFeesCollected(tokenAddress)).to.equal(1n);
     });
 
-    it("should correctly split a 1 wei fee (protocol gets remainder)", async function () {
-      // With a 1 wei total fee:
-      //   oddao   = 1 * 7000 / 10000 = 0
-      //   staking = 1 * 2000 / 10000 = 0
-      //   protocol = 1 - 0 - 0 = 1 (remainder)
+    it("should send 1 wei fee entirely to feeVault", async function () {
+      // With a 1 wei total fee, all of it goes to the vault
       const yieldAmount = 20n; // produces 1 wei fee
       const collectorAddress = await collector.getAddress();
       const tokenAddress = await token.getAddress();
@@ -539,13 +488,13 @@ describe("OmniYieldFeeCollector", function () {
       await token.transfer(user.address, yieldAmount);
       await token.connect(user).approve(collectorAddress, yieldAmount);
 
-      const protocolBefore = await token.balanceOf(protocolTreasury.address);
+      const vaultBefore = await token.balanceOf(feeVault.address);
 
       await collector.connect(user).collectFeeAndForward(tokenAddress, yieldAmount);
 
-      // Protocol treasury gets the 1 wei as remainder
-      const protocolAfter = await token.balanceOf(protocolTreasury.address);
-      expect(protocolAfter - protocolBefore).to.equal(1n);
+      // FeeVault gets the 1 wei fee
+      const vaultAfter = await token.balanceOf(feeVault.address);
+      expect(vaultAfter - vaultBefore).to.equal(1n);
     });
   });
 
@@ -656,72 +605,6 @@ describe("OmniYieldFeeCollector", function () {
   });
 
   // ---------------------------------------------------------------------------
-  // rescueTokens - additional scenarios
-  // ---------------------------------------------------------------------------
-
-  describe("rescueTokens - additional scenarios", function () {
-    it("should revert when called by stakingPool", async function () {
-      await expect(
-        collector.connect(stakingPool).rescueTokens(await token.getAddress())
-      ).to.be.revertedWithCustomError(collector, "NotOddaoTreasury");
-    });
-
-    it("should revert when called by protocolTreasury", async function () {
-      await expect(
-        collector.connect(protocolTreasury).rescueTokens(await token.getAddress())
-      ).to.be.revertedWithCustomError(collector, "NotOddaoTreasury");
-    });
-
-    it("should revert when called by contract deployer (owner)", async function () {
-      await expect(
-        collector.connect(owner).rescueTokens(await token.getAddress())
-      ).to.be.revertedWithCustomError(collector, "NotOddaoTreasury");
-    });
-
-    it("should emit TokensRescued event with correct parameters", async function () {
-      const rescueAmount = ethers.parseEther("100");
-      const collectorAddress = await collector.getAddress();
-      const tokenAddress = await token.getAddress();
-
-      await token.transfer(collectorAddress, rescueAmount);
-
-      await expect(
-        collector.connect(oddaoTreasury).rescueTokens(tokenAddress)
-      )
-        .to.emit(collector, "TokensRescued")
-        .withArgs(tokenAddress, rescueAmount);
-    });
-
-    it("should not emit TokensRescued when contract has zero balance of the token", async function () {
-      const tokenAddress = await token.getAddress();
-
-      // No tokens to rescue, so no event should be emitted
-      await expect(
-        collector.connect(oddaoTreasury).rescueTokens(tokenAddress)
-      ).to.not.emit(collector, "TokensRescued");
-    });
-
-    it("should rescue a different token (not the yield token)", async function () {
-      const MockERC20 = await ethers.getContractFactory("MockERC20");
-      const otherToken = await MockERC20.deploy("Other Token", "OTH");
-      await otherToken.waitForDeployment();
-      await otherToken.mint(owner.address, ethers.parseEther("1000"));
-
-      const rescueAmount = ethers.parseEther("77");
-      const collectorAddress = await collector.getAddress();
-      const otherAddress = await otherToken.getAddress();
-
-      await otherToken.transfer(collectorAddress, rescueAmount);
-
-      const balBefore = await otherToken.balanceOf(oddaoTreasury.address);
-      await collector.connect(oddaoTreasury).rescueTokens(otherAddress);
-      const balAfter = await otherToken.balanceOf(oddaoTreasury.address);
-
-      expect(balAfter - balBefore).to.equal(rescueAmount);
-    });
-  });
-
-  // ---------------------------------------------------------------------------
   // Different fee BPS configurations
   // ---------------------------------------------------------------------------
 
@@ -729,9 +612,7 @@ describe("OmniYieldFeeCollector", function () {
     it("should collect correct fee at 1 bps (0.01%)", async function () {
       const Collector = await ethers.getContractFactory("OmniYieldFeeCollector");
       const c = await Collector.deploy(
-        oddaoTreasury.address,
-        stakingPool.address,
-        protocolTreasury.address,
+        feeVault.address,
         1 // 0.01%
       );
       await c.waitForDeployment();
@@ -753,9 +634,7 @@ describe("OmniYieldFeeCollector", function () {
     it("should collect correct fee at 1000 bps (10%)", async function () {
       const Collector = await ethers.getContractFactory("OmniYieldFeeCollector");
       const c = await Collector.deploy(
-        oddaoTreasury.address,
-        stakingPool.address,
-        protocolTreasury.address,
+        feeVault.address,
         1000 // 10%
       );
       await c.waitForDeployment();

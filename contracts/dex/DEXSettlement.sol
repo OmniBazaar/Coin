@@ -55,10 +55,9 @@ import {
  * - Maker rebate: 0.05% earned by maker (paid from taker fee)
  * - Net fee revenue: 0.15% distributed via push pattern
  *
- * Fee Distribution (70/20/10 of net fee):
+ * Fee Distribution (70/30 of net fee):
  * - 70% -> Liquidity Providers (rewards LPs)
- * - 20% -> ODDAO (governance treasury)
- * - 10% -> Protocol Treasury (POL)
+ * - 30% -> UnifiedFeeVault (handles 70/20/10 ODDAO/Staking/Protocol split internally)
  *
  * Audit Remediations Applied:
  * - H-01: settleIntent() access control
@@ -66,6 +65,7 @@ import {
  * - H-03: Real token escrow in lockIntentCollateral()
  * - H-04: Fee deducted from input token
  * - H-05: Force-claim pending fees on recipient change
+ *         (simplified: only LP pool and fee vault recipients)
  * - H-06: incrementNonce() for order cancellation
  * - M-01: Nonce bitmap for concurrent orders
  * - M-04: Timelock on trading-limits admin functions
@@ -135,13 +135,13 @@ contract DEXSettlement is
     /**
      * @notice Fee distribution addresses
      * @param liquidityPool LP pool address (70% of net fees)
-     * @param oddao ODDAO treasury address (20% of net fees)
-     * @param protocolTreasury Protocol treasury address (10%)
+     * @param feeVault UnifiedFeeVault address (30% of net fees;
+     *        vault handles the 70/20/10 ODDAO/Staking/Protocol
+     *        split internally)
      */
     struct FeeRecipients {
         address liquidityPool;
-        address oddao;
-        address protocolTreasury;
+        address feeVault;
     }
 
     /**
@@ -197,11 +197,9 @@ contract DEXSettlement is
     /// @notice LP pool fee share (70% of net fees)
     uint256 public constant LP_SHARE = 7000;
 
-    /// @notice ODDAO treasury fee share (20% of net fees)
-    uint256 public constant ODDAO_SHARE = 2000;
-
-    /// @notice Protocol treasury fee share (10% of net fees)
-    uint256 public constant PROTOCOL_SHARE = 1000;
+    /// @notice UnifiedFeeVault fee share (30% of net fees)
+    /// @dev Vault handles 70/20/10 ODDAO/Staking/Protocol split
+    uint256 public constant VAULT_SHARE = 3000;
 
     /// @notice Spot market maker rebate (0.05% earned by maker)
     uint256 public constant SPOT_MAKER_REBATE = 5;
@@ -348,15 +346,13 @@ contract DEXSettlement is
      * @notice Emitted when fees are distributed
      * @param matchingValidator Validator who matched the trade
      * @param lpAmount Amount to LPs (70% of net fee)
-     * @param oddaoAmount Amount to ODDAO (20% of net fee)
-     * @param protocolAmount Amount to protocol (10% of net fee)
+     * @param vaultAmount Amount to UnifiedFeeVault (30% of net fee)
      * @param timestamp Distribution timestamp
      */
     event FeesDistributed(
         address indexed matchingValidator,
         uint256 indexed lpAmount,
-        uint256 indexed oddaoAmount,
-        uint256 protocolAmount,
+        uint256 indexed vaultAmount,
         uint256 timestamp
     );
 
@@ -403,13 +399,11 @@ contract DEXSettlement is
     /**
      * @notice Emitted when fee recipients are updated
      * @param newLiquidityPool New LP pool address
-     * @param newOddao New ODDAO address
-     * @param newProtocolTreasury New protocol treasury address
+     * @param newFeeVault New UnifiedFeeVault address
      */
     event FeeRecipientsUpdated(
         address indexed newLiquidityPool,
-        address indexed newOddao,
-        address newProtocolTreasury
+        address indexed newFeeVault
     );
 
     /**
@@ -448,14 +442,12 @@ contract DEXSettlement is
      * @notice Emitted when a fee recipients change is scheduled
      *         (M-01 Round 6: timelock)
      * @param newLiquidityPool Proposed LP pool address
-     * @param newOddao Proposed ODDAO address
-     * @param newProtocolTreasury Proposed protocol treasury address
+     * @param newFeeVault Proposed UnifiedFeeVault address
      * @param effectiveAt Timestamp when change can be applied
      */
     event FeeRecipientsChangeScheduled(
         address indexed newLiquidityPool,
-        address indexed newOddao,
-        address newProtocolTreasury,
+        address indexed newFeeVault,
         uint256 effectiveAt
     );
 
@@ -644,8 +636,8 @@ contract DEXSettlement is
     /**
      * @notice Initialize the DEXSettlement contract
      * @param _liquidityPool LP pool address (70% of net fees)
-     * @param _oddao ODDAO treasury address (20% of net fees)
-     * @param _protocolTreasury Protocol treasury address (10%)
+     * @param _feeVault UnifiedFeeVault address (30% of net fees;
+     *        vault handles ODDAO/Staking/Protocol split internally)
      * @param trustedForwarder_ ERC-2771 trusted forwarder for
      *        gasless meta-transactions (e.g. OmniForwarder)
      */
@@ -656,8 +648,7 @@ contract DEXSettlement is
     ///      provides emergency protection. A new proxy can be deployed if needed.
     constructor(
         address _liquidityPool,
-        address _oddao,
-        address _protocolTreasury,
+        address _feeVault,
         address trustedForwarder_
     )
         EIP712("OmniCoin DEX Settlement", "1")
@@ -666,16 +657,14 @@ contract DEXSettlement is
     {
         if (
             _liquidityPool == address(0)
-                || _oddao == address(0)
-                || _protocolTreasury == address(0)
+                || _feeVault == address(0)
         ) {
             revert InvalidAddress();
         }
 
         feeRecipients = FeeRecipients({
             liquidityPool: _liquidityPool,
-            oddao: _oddao,
-            protocolTreasury: _protocolTreasury
+            feeVault: _feeVault
         });
 
         // Initialize default limits
@@ -917,39 +906,35 @@ contract DEXSettlement is
     /**
      * @notice Schedule fee recipient address change (M-01 Round 6)
      * @param _liquidityPool New LP pool address (70% of net)
-     * @param _oddao New ODDAO address (20% of net)
-     * @param _protocolTreasury New protocol treasury address (10%)
+     * @param _feeVault New UnifiedFeeVault address (30% of net;
+     *        vault handles ODDAO/Staking/Protocol split internally)
      * @dev Queues the change with a 48-hour timelock. Call
      *      `applyFeeRecipients()` after the delay to apply.
      *      Reverts if a pending change already exists.
      */
     function scheduleFeeRecipients(
         address _liquidityPool,
-        address _oddao,
-        address _protocolTreasury
+        address _feeVault
     ) external onlyOwner {
         if (feeRecipientsTimelockExpiry != 0) {
             revert PendingChangeExists();
         }
         if (
             _liquidityPool == address(0)
-                || _oddao == address(0)
-                || _protocolTreasury == address(0)
+                || _feeVault == address(0)
         ) {
             revert InvalidAddress();
         }
 
         pendingFeeRecipients = FeeRecipients({
             liquidityPool: _liquidityPool,
-            oddao: _oddao,
-            protocolTreasury: _protocolTreasury
+            feeVault: _feeVault
         });
         feeRecipientsTimelockExpiry = block.timestamp + TIMELOCK_DELAY; // solhint-disable-line not-rely-on-time
 
         emit FeeRecipientsChangeScheduled(
             _liquidityPool,
-            _oddao,
-            _protocolTreasury,
+            _feeVault,
             feeRecipientsTimelockExpiry
         );
     }
@@ -974,16 +959,14 @@ contract DEXSettlement is
 
         // H-05: Force-claim pending fees to old recipients
         _claimAllPendingFees(feeRecipients.liquidityPool);
-        _claimAllPendingFees(feeRecipients.oddao);
-        _claimAllPendingFees(feeRecipients.protocolTreasury);
+        _claimAllPendingFees(feeRecipients.feeVault);
 
         feeRecipients = pendingFeeRecipients;
         feeRecipientsTimelockExpiry = 0;
 
         emit FeeRecipientsUpdated(
             feeRecipients.liquidityPool,
-            feeRecipients.oddao,
-            feeRecipients.protocolTreasury
+            feeRecipients.feeVault
         );
     }
 
@@ -1707,8 +1690,8 @@ contract DEXSettlement is
      * @param makerTrader Maker address receiving rebate
      * @param matchingValidator Validator who matched (event)
      * @dev Pays makerRebate from takerFee to maker, then
-     *      distributes remaining net fee via 70/20/10 split
-     *      (LP/ODDAO/Protocol). Push pattern — immediate.
+     *      distributes remaining net fee via 70/30 split
+     *      (LP/Vault). Push pattern — immediate.
      */
     function _distributeFeesWithRebate(
         uint256 takerFee,
@@ -1735,7 +1718,7 @@ contract DEXSettlement is
             );
         }
 
-        // Distribute net fee via 70/20/10
+        // Distribute net fee via 70/30 (LP/Vault)
         if (netFee > 0) {
             _accrueFeeSplit(netFee, feeToken);
             _trackFeeToken(feeToken);
@@ -1744,56 +1727,47 @@ contract DEXSettlement is
         // Event amounts based on net fee
         uint256 lpAmt = (netFee * LP_SHARE)
             / BASIS_POINTS_DIVISOR;
-        uint256 oddaoAmt = (netFee * ODDAO_SHARE)
-            / BASIS_POINTS_DIVISOR;
-        uint256 protocolAmt = (netFee * PROTOCOL_SHARE)
-            / BASIS_POINTS_DIVISOR;
+        uint256 vaultAmt = netFee - lpAmt;
 
         emit FeesDistributed(
             matchingValidator,
             lpAmt,
-            oddaoAmt,
-            protocolAmt,
+            vaultAmt,
             // solhint-disable-next-line not-rely-on-time
             block.timestamp
         );
     }
 
     /**
-     * @notice Transfer a single fee amount directly to
-     *         the three recipients with remainder to LPs
+     * @notice Transfer a single fee amount directly to the LP
+     *         pool and UnifiedFeeVault
      * @param fee Total fee amount
      * @param token Fee token address
      * @dev Push pattern: fees are transferred immediately
      *      during settlement, not accrued for later claim.
-     *      70% LP Pool, 20% ODDAO, 10% Protocol Treasury.
-     *      Remainder from integer division goes to LP Pool
-     *      to prevent dust accumulation (M-02).
+     *      70% LP Pool, 30% UnifiedFeeVault.
+     *      LP share is computed first; vault receives the
+     *      remainder to prevent dust accumulation (M-02).
+     *      The vault handles the internal 70/20/10
+     *      ODDAO/Staking/Protocol split.
      */
     function _accrueFeeSplit(
         uint256 fee,
         address token
     ) internal {
-        uint256 od = (fee * ODDAO_SHARE)
+        uint256 lpShare = (fee * LP_SHARE)
             / BASIS_POINTS_DIVISOR;
-        uint256 pt = (fee * PROTOCOL_SHARE)
-            / BASIS_POINTS_DIVISOR;
-        // LP gets remainder (avoids rounding dust)
-        uint256 lp = fee - od - pt;
+        // Vault gets remainder (avoids rounding dust)
+        uint256 vaultShare = fee - lpShare;
 
-        if (lp > 0) {
+        if (lpShare > 0) {
             IERC20(token).safeTransfer(
-                feeRecipients.liquidityPool, lp
+                feeRecipients.liquidityPool, lpShare
             );
         }
-        if (od > 0) {
+        if (vaultShare > 0) {
             IERC20(token).safeTransfer(
-                feeRecipients.oddao, od
-            );
-        }
-        if (pt > 0) {
-            IERC20(token).safeTransfer(
-                feeRecipients.protocolTreasury, pt
+                feeRecipients.feeVault, vaultShare
             );
         }
     }

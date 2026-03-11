@@ -80,7 +80,8 @@ error FeeOutOfBounds();
  * - Resolve: lookup owner by name
  * - Reverse resolve: lookup name by owner
  * - Auto-expiry: names released after expiry
- * - Registration fee: 10 XOM/year (anti-spam, sent to ODDAO)
+ * - Registration fee: 10 XOM/year (anti-spam)
+ * - Fee distribution: 100% to UnifiedFeeVault (vault handles 70/20/10)
  * - Name rules: 3-32 chars, alphanumeric + hyphens, lowercase
  *
  * Security:
@@ -152,35 +153,16 @@ contract OmniENS is ReentrancyGuard, Ownable2Step, ERC2771Context {
     /// @dev L-03 audit fix: prevents excessive fee extraction
     uint256 public constant MAX_REGISTRATION_FEE = 1000 ether;
 
-    /// @notice ODDAO fee share (7000 = 70%)
-    uint256 public constant ODDAO_SHARE = 7000;
-
-    /// @notice Staking pool fee share (2000 = 20%)
-    uint256 public constant STAKING_SHARE = 2000;
-
-    /// @notice Protocol treasury fee share (1000 = 10%)
-    uint256 public constant PROTOCOL_SHARE = 1000;
-
-    /// @notice Basis points denominator
-    uint256 private constant BPS = 10_000;
-
     // ══════════════════════════════════════════════════════════════════
     //                          STATE VARIABLES
     // ══════════════════════════════════════════════════════════════════
 
-    /* solhint-disable immutable-vars-naming */
     /// @notice XOM token for registration fees
-    IERC20 public immutable xomToken;
+    IERC20 public immutable xomToken; // solhint-disable-line immutable-vars-naming
 
-    /// @notice ODDAO treasury (receives 70% of registration fees)
-    address public immutable oddaoTreasury;
-
-    /// @notice Staking pool (receives 20% of registration fees)
-    address public immutable stakingPool;
-
-    /// @notice Protocol treasury (receives 10% of registration fees)
-    address public immutable protocolTreasury;
-    /* solhint-enable immutable-vars-naming */
+    /// @notice UnifiedFeeVault (receives 100% of fees for 70/20/10
+    ///         distribution)
+    address public immutable feeVault; // solhint-disable-line immutable-vars-naming
 
     /// @notice Annual registration fee in XOM (18 decimals)
     uint256 public registrationFeePerYear;
@@ -277,29 +259,22 @@ contract OmniENS is ReentrancyGuard, Ownable2Step, ERC2771Context {
      *      L-02 audit fix: uses Ownable2Step for safe ownership
      *      transfer (prevents accidental loss via typo).
      * @param _xomToken XOM token address
-     * @param _oddaoTreasury ODDAO treasury address (70%)
-     * @param _stakingPool Staking pool address (20%)
-     * @param _protocolTreasury Protocol treasury address (10%)
+     * @param _feeVault UnifiedFeeVault address (receives 100% of
+     *        fees for 70/20/10 distribution)
      * @param trustedForwarder_ ERC-2771 trusted forwarder address
      *        (address(0) disables meta-transactions)
      */
     constructor(
         address _xomToken,
-        address _oddaoTreasury,
-        address _stakingPool,
-        address _protocolTreasury,
+        address _feeVault,
         address trustedForwarder_
     ) Ownable(msg.sender) ERC2771Context(trustedForwarder_) {
         // M-02: Zero-address validation
         if (_xomToken == address(0)) revert ZeroAddress();
-        if (_oddaoTreasury == address(0)) revert ZeroAddress();
-        if (_stakingPool == address(0)) revert ZeroAddress();
-        if (_protocolTreasury == address(0)) revert ZeroAddress();
+        if (_feeVault == address(0)) revert ZeroAddress();
 
         xomToken = IERC20(_xomToken);
-        oddaoTreasury = _oddaoTreasury;
-        stakingPool = _stakingPool;
-        protocolTreasury = _protocolTreasury;
+        feeVault = _feeVault;
         registrationFeePerYear = 10 ether; // 10 XOM per year
     }
 
@@ -627,10 +602,10 @@ contract OmniENS is ReentrancyGuard, Ownable2Step, ERC2771Context {
     // ══════════════════════════════════════════════════════════════════
 
     /**
-     * @notice Collect fee from user and distribute 70/20/10
-     * @dev Transfers total fee from the payer to this contract,
-     *      then splits: 70% ODDAO, 20% Staking Pool, 10% Protocol.
-     *      ODDAO gets remainder to avoid rounding dust.
+     * @notice Collect fee from user and send to UnifiedFeeVault
+     * @dev Transfers total fee from the payer directly to the
+     *      UnifiedFeeVault. The vault handles 70/20/10 distribution
+     *      (ODDAO / Staking Pool / Protocol Treasury).
      * @param payer Address to pull the fee from (the actual user
      *        via _msgSender(), supporting meta-transactions)
      * @param totalFee Total fee amount in XOM
@@ -639,34 +614,7 @@ contract OmniENS is ReentrancyGuard, Ownable2Step, ERC2771Context {
         address payer,
         uint256 totalFee
     ) internal {
-        // Pull fee from user to this contract
-        xomToken.safeTransferFrom(
-            payer, address(this), totalFee
-        );
-
-        uint256 stakingAmount =
-            (totalFee * STAKING_SHARE) / BPS;
-        uint256 protocolAmount =
-            (totalFee * PROTOCOL_SHARE) / BPS;
-        // ODDAO gets remainder (avoids rounding dust)
-        uint256 oddaoAmount =
-            totalFee - stakingAmount - protocolAmount;
-
-        if (oddaoAmount > 0) {
-            xomToken.safeTransfer(
-                oddaoTreasury, oddaoAmount
-            );
-        }
-        if (stakingAmount > 0) {
-            xomToken.safeTransfer(
-                stakingPool, stakingAmount
-            );
-        }
-        if (protocolAmount > 0) {
-            xomToken.safeTransfer(
-                protocolTreasury, protocolAmount
-            );
-        }
+        xomToken.safeTransferFrom(payer, feeVault, totalFee);
     }
 
     /**

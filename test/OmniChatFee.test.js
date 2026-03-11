@@ -6,19 +6,19 @@ const { time } = require("@nomicfoundation/hardhat-network-helpers");
  * @title OmniChatFee Test Suite
  * @notice Comprehensive tests for the chat fee management contract
  * @dev Tests cover:
- *   1. Initialization (constructor, constants)
+ *   1. Initialization (constructor, constants, feeVault immutable)
  *   2. Free tier (20 messages/month tracking)
- *   3. Paid messages (fee collection, distribution)
+ *   3. Paid messages (fee collection, single transfer to feeVault)
  *   4. Bulk messages (10x fee)
- *   5. Fee distribution (push pattern to ODDAO/staking/protocol)
+ *   5. Fee distribution (100% to feeVault)
  *   6. Payment proofs (hasValidPayment)
  *   7. View functions (freeMessagesRemaining, nextMessageIndex)
- *   8. Admin functions (setBaseFee, scheduleRecipientUpdate/executeRecipientUpdate)
+ *   8. Admin functions (setBaseFee)
  *   9. Edge cases (month boundary reset, zero fee)
  */
 describe("OmniChatFee", function () {
   let chatFee, xom;
-  let owner, stakingPool, oddaoTreasury, protocolTreasury, validator1, validator2;
+  let owner, feeVault, validator1, validator2;
   let user1, user2;
 
   const BASE_FEE = ethers.parseEther("0.001"); // 0.001 XOM
@@ -26,7 +26,7 @@ describe("OmniChatFee", function () {
   const BULK_MULTIPLIER = 10;
 
   beforeEach(async function () {
-    [owner, stakingPool, oddaoTreasury, protocolTreasury, validator1, validator2, user1, user2] =
+    [owner, feeVault, validator1, validator2, user1, user2] =
       await ethers.getSigners();
 
     // Deploy mock XOM token
@@ -34,13 +34,11 @@ describe("OmniChatFee", function () {
     xom = await MockERC20.deploy("OmniCoin", "XOM");
     await xom.waitForDeployment();
 
-    // Deploy OmniChatFee (6 params: xomToken, stakingPool, oddaoTreasury, protocolTreasury, baseFee, trustedForwarder)
+    // Deploy OmniChatFee (4 params: xomToken, feeVault, baseFee, trustedForwarder)
     const OmniChatFee = await ethers.getContractFactory("OmniChatFee");
     chatFee = await OmniChatFee.deploy(
       await xom.getAddress(),
-      stakingPool.address,
-      oddaoTreasury.address,
-      protocolTreasury.address,
+      feeVault.address,
       BASE_FEE,
       ethers.ZeroAddress
     );
@@ -69,21 +67,9 @@ describe("OmniChatFee", function () {
       );
     });
 
-    it("should set staking pool address", async function () {
-      expect(await chatFee.stakingPool()).to.equal(
-        stakingPool.address
-      );
-    });
-
-    it("should set ODDAO treasury address", async function () {
-      expect(await chatFee.oddaoTreasury()).to.equal(
-        oddaoTreasury.address
-      );
-    });
-
-    it("should set protocol treasury address", async function () {
-      expect(await chatFee.protocolTreasury()).to.equal(
-        protocolTreasury.address
+    it("should set feeVault address", async function () {
+      expect(await chatFee.feeVault()).to.equal(
+        feeVault.address
       );
     });
 
@@ -94,9 +80,7 @@ describe("OmniChatFee", function () {
     it("should have correct constants", async function () {
       expect(await chatFee.FREE_TIER_LIMIT()).to.equal(20);
       expect(await chatFee.BULK_FEE_MULTIPLIER()).to.equal(10);
-      expect(await chatFee.ODDAO_SHARE()).to.equal(7000);
-      expect(await chatFee.STAKING_SHARE()).to.equal(2000);
-      expect(await chatFee.PROTOCOL_SHARE()).to.equal(1000);
+      expect(await chatFee.MIN_FEE()).to.equal(BigInt(1e15));
     });
 
     it("should reject zero token address", async function () {
@@ -105,58 +89,37 @@ describe("OmniChatFee", function () {
       await expect(
         OmniChatFee.deploy(
           ethers.ZeroAddress,
-          stakingPool.address,
-          oddaoTreasury.address,
-          protocolTreasury.address,
+          feeVault.address,
           BASE_FEE,
           ethers.ZeroAddress
         )
       ).to.be.revertedWithCustomError(chatFee, "ZeroChatAddress");
     });
 
-    it("should reject zero staking pool address", async function () {
+    it("should reject zero feeVault address", async function () {
       const OmniChatFee =
         await ethers.getContractFactory("OmniChatFee");
       await expect(
         OmniChatFee.deploy(
           await xom.getAddress(),
           ethers.ZeroAddress,
-          oddaoTreasury.address,
-          protocolTreasury.address,
           BASE_FEE,
           ethers.ZeroAddress
         )
       ).to.be.revertedWithCustomError(chatFee, "ZeroChatAddress");
     });
 
-    it("should reject zero ODDAO address", async function () {
+    it("should reject zero base fee", async function () {
       const OmniChatFee =
         await ethers.getContractFactory("OmniChatFee");
       await expect(
         OmniChatFee.deploy(
           await xom.getAddress(),
-          stakingPool.address,
-          ethers.ZeroAddress,
-          protocolTreasury.address,
-          BASE_FEE,
+          feeVault.address,
+          0,
           ethers.ZeroAddress
         )
-      ).to.be.revertedWithCustomError(chatFee, "ZeroChatAddress");
-    });
-
-    it("should reject zero protocol treasury address", async function () {
-      const OmniChatFee =
-        await ethers.getContractFactory("OmniChatFee");
-      await expect(
-        OmniChatFee.deploy(
-          await xom.getAddress(),
-          stakingPool.address,
-          oddaoTreasury.address,
-          ethers.ZeroAddress,
-          BASE_FEE,
-          ethers.ZeroAddress
-        )
-      ).to.be.revertedWithCustomError(chatFee, "ZeroChatAddress");
+      ).to.be.revertedWithCustomError(chatFee, "ZeroBaseFee");
     });
   });
 
@@ -269,27 +232,15 @@ describe("OmniChatFee", function () {
         );
     });
 
-    it("should distribute fee 70% ODDAO / 20% staking / 10% protocol", async function () {
-      const oddaoBefore = await xom.balanceOf(oddaoTreasury.address);
-      const stakingBefore = await xom.balanceOf(stakingPool.address);
-      const protocolBefore = await xom.balanceOf(protocolTreasury.address);
+    it("should send 100% of fee to feeVault", async function () {
+      const vaultBefore = await xom.balanceOf(feeVault.address);
 
       await chatFee
         .connect(user1)
         .payMessageFee(channelId, validator1.address);
 
-      const stakingShare = (BASE_FEE * 2000n) / 10000n;
-      const protocolShare = (BASE_FEE * 1000n) / 10000n;
-      const oddaoShare = BASE_FEE - stakingShare - protocolShare;
-
-      expect(await xom.balanceOf(oddaoTreasury.address)).to.equal(
-        oddaoBefore + oddaoShare
-      );
-      expect(await xom.balanceOf(stakingPool.address)).to.equal(
-        stakingBefore + stakingShare
-      );
-      expect(await xom.balanceOf(protocolTreasury.address)).to.equal(
-        protocolBefore + protocolShare
+      expect(await xom.balanceOf(feeVault.address)).to.equal(
+        vaultBefore + BASE_FEE
       );
     });
 
@@ -367,28 +318,16 @@ describe("OmniChatFee", function () {
         );
     });
 
-    it("should distribute bulk fee with correct 70/20/10 split", async function () {
+    it("should send 100% of bulk fee to feeVault", async function () {
       const bulkFee = BASE_FEE * BigInt(BULK_MULTIPLIER);
-      const oddaoBefore = await xom.balanceOf(oddaoTreasury.address);
-      const stakingBefore = await xom.balanceOf(stakingPool.address);
-      const protocolBefore = await xom.balanceOf(protocolTreasury.address);
+      const vaultBefore = await xom.balanceOf(feeVault.address);
 
       await chatFee
         .connect(user1)
         .payBulkMessageFee(channelId, validator1.address);
 
-      const stakingShare = (bulkFee * 2000n) / 10000n;
-      const protocolShare = (bulkFee * 1000n) / 10000n;
-      const oddaoShare = bulkFee - stakingShare - protocolShare;
-
-      expect(await xom.balanceOf(oddaoTreasury.address)).to.equal(
-        oddaoBefore + oddaoShare
-      );
-      expect(await xom.balanceOf(stakingPool.address)).to.equal(
-        stakingBefore + stakingShare
-      );
-      expect(await xom.balanceOf(protocolTreasury.address)).to.equal(
-        protocolBefore + protocolShare
+      expect(await xom.balanceOf(feeVault.address)).to.equal(
+        vaultBefore + bulkFee
       );
     });
 
@@ -410,7 +349,7 @@ describe("OmniChatFee", function () {
   });
 
   // -----------------------------------------------------------------
-  //  5. Fee Distribution (Push Pattern)
+  //  5. Fee Distribution (100% to feeVault)
   // -----------------------------------------------------------------
 
   describe("Fee Distribution", function () {
@@ -425,45 +364,27 @@ describe("OmniChatFee", function () {
       }
     });
 
-    it("should send 70% of fee to ODDAO treasury", async function () {
-      const before = await xom.balanceOf(oddaoTreasury.address);
+    it("should send 100% of fee to feeVault on each paid message", async function () {
+      const vaultBefore = await xom.balanceOf(feeVault.address);
       await chatFee
         .connect(user1)
         .payMessageFee(channelId, validator1.address);
-      const after = await xom.balanceOf(oddaoTreasury.address);
+      const vaultAfter = await xom.balanceOf(feeVault.address);
 
-      const stakingShare = (BASE_FEE * 2000n) / 10000n;
-      const protocolShare = (BASE_FEE * 1000n) / 10000n;
-      const oddaoShare = BASE_FEE - stakingShare - protocolShare;
-      expect(after - before).to.equal(oddaoShare);
+      expect(vaultAfter - vaultBefore).to.equal(BASE_FEE);
     });
 
-    it("should send 20% of fee to staking pool", async function () {
-      const before = await xom.balanceOf(stakingPool.address);
+    it("should not send any fee to the contract itself", async function () {
+      const contractBefore = await xom.balanceOf(await chatFee.getAddress());
       await chatFee
         .connect(user1)
         .payMessageFee(channelId, validator1.address);
-      const after = await xom.balanceOf(stakingPool.address);
-
-      const stakingShare = (BASE_FEE * 2000n) / 10000n;
-      expect(after - before).to.equal(stakingShare);
-    });
-
-    it("should send 10% of fee to protocol treasury", async function () {
-      const before = await xom.balanceOf(protocolTreasury.address);
-      await chatFee
-        .connect(user1)
-        .payMessageFee(channelId, validator1.address);
-      const after = await xom.balanceOf(protocolTreasury.address);
-
-      const protocolShare = (BASE_FEE * 1000n) / 10000n;
-      expect(after - before).to.equal(protocolShare);
+      const contractAfter = await xom.balanceOf(await chatFee.getAddress());
+      expect(contractAfter).to.equal(contractBefore);
     });
 
     it("should distribute fees across multiple paid messages correctly", async function () {
-      const oddaoBefore = await xom.balanceOf(oddaoTreasury.address);
-      const stakingBefore = await xom.balanceOf(stakingPool.address);
-      const protocolBefore = await xom.balanceOf(protocolTreasury.address);
+      const vaultBefore = await xom.balanceOf(feeVault.address);
 
       // Send 3 paid messages
       for (let i = 0; i < 3; i++) {
@@ -473,19 +394,25 @@ describe("OmniChatFee", function () {
       }
 
       const totalFee = BASE_FEE * 3n;
-      const stakingShare = (totalFee * 2000n) / 10000n;
-      const protocolShare = (totalFee * 1000n) / 10000n;
-      const oddaoShare = totalFee - stakingShare - protocolShare;
 
-      expect(await xom.balanceOf(oddaoTreasury.address)).to.equal(
-        oddaoBefore + oddaoShare
+      expect(await xom.balanceOf(feeVault.address)).to.equal(
+        vaultBefore + totalFee
       );
-      expect(await xom.balanceOf(stakingPool.address)).to.equal(
-        stakingBefore + stakingShare
-      );
-      expect(await xom.balanceOf(protocolTreasury.address)).to.equal(
-        protocolBefore + protocolShare
-      );
+    });
+
+    it("should deduct exact fee amount from user for each paid message", async function () {
+      const userBefore = await xom.balanceOf(user1.address);
+
+      // Send 3 paid messages
+      for (let i = 0; i < 3; i++) {
+        await chatFee
+          .connect(user1)
+          .payMessageFee(channelId, validator1.address);
+      }
+
+      const totalFee = BASE_FEE * 3n;
+      const userAfter = await xom.balanceOf(user1.address);
+      expect(userBefore - userAfter).to.equal(totalFee);
     });
   });
 
@@ -596,73 +523,10 @@ describe("OmniChatFee", function () {
       ).to.be.revertedWithCustomError(chatFee, "OwnableUnauthorizedAccount");
     });
 
-    it("should update staking pool address via timelocked schedule+execute", async function () {
-      await chatFee
-        .connect(owner)
-        .scheduleRecipientUpdate(user2.address, ethers.ZeroAddress);
-      await time.increase(24 * 60 * 60); // 24 hours timelock
-      await chatFee.connect(owner).executeRecipientUpdate();
-      expect(await chatFee.stakingPool()).to.equal(user2.address);
-    });
-
-    it("should update ODDAO treasury address via timelocked schedule+execute", async function () {
-      await chatFee
-        .connect(owner)
-        .scheduleRecipientUpdate(ethers.ZeroAddress, user2.address);
-      await time.increase(24 * 60 * 60);
-      await chatFee.connect(owner).executeRecipientUpdate();
-      expect(await chatFee.oddaoTreasury()).to.equal(user2.address);
-    });
-
-    it("should update both recipients at once via timelocked schedule+execute", async function () {
-      await chatFee
-        .connect(owner)
-        .scheduleRecipientUpdate(user1.address, user2.address);
-      await time.increase(24 * 60 * 60);
-      await chatFee.connect(owner).executeRecipientUpdate();
-      expect(await chatFee.stakingPool()).to.equal(user1.address);
-      expect(await chatFee.oddaoTreasury()).to.equal(user2.address);
-    });
-
-    it("should revert executeRecipientUpdate before timelock elapses", async function () {
-      await chatFee
-        .connect(owner)
-        .scheduleRecipientUpdate(user1.address, ethers.ZeroAddress);
+    it("should reject setBaseFee with zero value", async function () {
       await expect(
-        chatFee.connect(owner).executeRecipientUpdate()
-      ).to.be.revertedWithCustomError(chatFee, "RecipientTimelockActive");
-    });
-
-    it("should emit RecipientUpdateScheduled and RecipientsUpdated events", async function () {
-      await expect(
-        chatFee
-          .connect(owner)
-          .scheduleRecipientUpdate(user1.address, ethers.ZeroAddress)
-      ).to.emit(chatFee, "RecipientUpdateScheduled");
-
-      await time.increase(24 * 60 * 60);
-
-      await expect(
-        chatFee.connect(owner).executeRecipientUpdate()
-      )
-        .to.emit(chatFee, "RecipientsUpdated")
-        .withArgs(user1.address, oddaoTreasury.address, protocolTreasury.address);
-    });
-
-    it("should revert when both zero addresses passed to scheduleRecipientUpdate", async function () {
-      await expect(
-        chatFee
-          .connect(owner)
-          .scheduleRecipientUpdate(ethers.ZeroAddress, ethers.ZeroAddress)
-      ).to.be.revertedWithCustomError(chatFee, "NoRecipientsProvided");
-    });
-
-    it("should reject scheduleRecipientUpdate from non-owner", async function () {
-      await expect(
-        chatFee
-          .connect(user1)
-          .scheduleRecipientUpdate(user2.address, user2.address)
-      ).to.be.revertedWithCustomError(chatFee, "OwnableUnauthorizedAccount");
+        chatFee.connect(owner).setBaseFee(0)
+      ).to.be.revertedWithCustomError(chatFee, "ZeroBaseFee");
     });
   });
 
@@ -708,7 +572,7 @@ describe("OmniChatFee", function () {
       );
     });
 
-    it("should distribute fees to correct recipients regardless of validator param", async function () {
+    it("should send fees to feeVault regardless of validator param", async function () {
       // Exhaust free tier for user1
       for (let i = 0; i < 20; i++) {
         await chatFee
@@ -716,9 +580,7 @@ describe("OmniChatFee", function () {
           .payMessageFee(channelId, validator1.address);
       }
 
-      const oddaoBefore = await xom.balanceOf(oddaoTreasury.address);
-      const stakingBefore = await xom.balanceOf(stakingPool.address);
-      const protocolBefore = await xom.balanceOf(protocolTreasury.address);
+      const vaultBefore = await xom.balanceOf(feeVault.address);
 
       // Send paid message via validator1
       await chatFee
@@ -729,22 +591,9 @@ describe("OmniChatFee", function () {
         .connect(user1)
         .payMessageFee(channelId, validator2.address);
 
-      // Each message distributes: 70% ODDAO, 20% staking, 10% protocol
-      const perFeeStaking = (BASE_FEE * 2000n) / 10000n;
-      const perFeeProtocol = (BASE_FEE * 1000n) / 10000n;
-      const perFeeOddao = BASE_FEE - perFeeStaking - perFeeProtocol;
-
-      // ODDAO receives 70% from both messages
-      expect(await xom.balanceOf(oddaoTreasury.address)).to.equal(
-        oddaoBefore + perFeeOddao * 2n
-      );
-      // Staking receives 20% from both messages
-      expect(await xom.balanceOf(stakingPool.address)).to.equal(
-        stakingBefore + perFeeStaking * 2n
-      );
-      // Protocol receives 10% from both messages
-      expect(await xom.balanceOf(protocolTreasury.address)).to.equal(
-        protocolBefore + perFeeProtocol * 2n
+      // feeVault receives 100% from both messages
+      expect(await xom.balanceOf(feeVault.address)).to.equal(
+        vaultBefore + BASE_FEE * 2n
       );
     });
 

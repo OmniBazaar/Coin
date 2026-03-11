@@ -6,7 +6,7 @@
  * - Dual signature verification (EIP-712)
  * - Order matching logic verification
  * - Atomic settlement execution
- * - Fee distribution (70% LP, 20% ODDAO, 10% Protocol) with maker rebate
+ * - Fee distribution (70% LP, 30% Vault) with maker rebate
  * - Anyone can submit settlement (no VALIDATOR_ROLE required)
  * - Edge cases and security
  */
@@ -81,8 +81,7 @@ describe("DEXSettlement - Trustless Architecture", function () {
     let matchingValidator: any;
     let anyoneElse: any;
     let liquidityPool: any;
-    let oddao: any;
-    let protocolTreasury: any;
+    let feeVault: any;
 
     let ownerAddress: string;
     let makerAddress: string;
@@ -90,8 +89,7 @@ describe("DEXSettlement - Trustless Architecture", function () {
     let matchingValidatorAddress: string;
     let anyoneElseAddress: string;
     let liquidityPoolAddress: string;
-    let oddaoAddress: string;
-    let protocolTreasuryAddress: string;
+    let feeVaultAddress: string;
 
     // Mock ERC20 tokens for testing
     let tokenA: any;
@@ -100,7 +98,7 @@ describe("DEXSettlement - Trustless Architecture", function () {
     const INITIAL_BALANCE = ethers.parseUnits("1000000", 18);
 
     beforeEach(async function () {
-        [owner, maker, taker, matchingValidator, anyoneElse, liquidityPool, oddao, protocolTreasury] =
+        [owner, maker, taker, matchingValidator, anyoneElse, liquidityPool, feeVault] =
             await ethers.getSigners();
 
         ownerAddress = await owner.getAddress();
@@ -109,8 +107,7 @@ describe("DEXSettlement - Trustless Architecture", function () {
         matchingValidatorAddress = await matchingValidator.getAddress();
         anyoneElseAddress = await anyoneElse.getAddress();
         liquidityPoolAddress = await liquidityPool.getAddress();
-        oddaoAddress = await oddao.getAddress();
-        protocolTreasuryAddress = await protocolTreasury.getAddress();
+        feeVaultAddress = await feeVault.getAddress();
 
         // Deploy mock ERC20 tokens
         const ERC20Mock = await ethers.getContractFactory("ERC20Mock");
@@ -126,9 +123,8 @@ describe("DEXSettlement - Trustless Architecture", function () {
         // Deploy DEXSettlement
         const DEXSettlement = await ethers.getContractFactory("DEXSettlement");
         dexSettlement = await DEXSettlement.deploy(
-            liquidityPoolAddress,      // 70% of fees -> Liquidity Providers
-            oddaoAddress,              // 20% of fees -> ODDAO
-            protocolTreasuryAddress,   // 10% of fees -> Protocol Treasury
+            liquidityPoolAddress,      // 70% of net fees -> Liquidity Providers
+            feeVaultAddress,           // 30% of net fees -> UnifiedFeeVault
             ethers.ZeroAddress         // ERC-2771 trusted forwarder (none in tests)
         );
         await dexSettlement.waitForDeployment();
@@ -149,8 +145,7 @@ describe("DEXSettlement - Trustless Architecture", function () {
         it("Should set correct fee recipients", async function () {
             const feeRecipients = await dexSettlement.getFeeRecipients();
             expect(feeRecipients.liquidityPool).to.equal(liquidityPoolAddress);
-            expect(feeRecipients.oddao).to.equal(oddaoAddress);
-            expect(feeRecipients.protocolTreasury).to.equal(protocolTreasuryAddress);
+            expect(feeRecipients.feeVault).to.equal(feeVaultAddress);
         });
 
         it("Should initialize with correct limits", async function () {
@@ -655,7 +650,7 @@ describe("DEXSettlement - Trustless Architecture", function () {
         });
     });
 
-    describe("Fee Distribution (70% LP, 20% ODDAO, 10% Protocol) with Maker Rebate", function () {
+    describe("Fee Distribution (70% LP, 30% Vault) with Maker Rebate", function () {
         it("Should emit fee distribution event with net fees after rebate", async function () {
             const makerOrder = {
                 trader: makerAddress,
@@ -693,10 +688,9 @@ describe("DEXSettlement - Trustless Architecture", function () {
             const takerFee = (takerOrder.amountIn * 20n) / 10000n; // 0.2% taker fee
             const netFee = takerFee - makerRebate;
 
-            // 70/20/10 split on net fee (not total taker fee)
-            const oddaoAmount = (netFee * 2000n) / 10000n; // 20% -> ODDAO
-            const protocolAmount = (netFee * 1000n) / 10000n; // 10% -> Protocol
-            const lpAmount = netFee - oddaoAmount - protocolAmount; // 70% -> LP (remainder)
+            // 70/30 split on net fee (LP/Vault)
+            const lpAmount = (netFee * 7000n) / 10000n; // 70% -> LP
+            const vaultAmount = netFee - lpAmount; // 30% -> UnifiedFeeVault (remainder)
 
             const tx = await dexSettlement.settleTrade(
                 makerOrder, takerOrder, makerSignature, takerSignature
@@ -709,8 +703,7 @@ describe("DEXSettlement - Trustless Architecture", function () {
                 .withArgs(
                     matchingValidatorAddress,
                     lpAmount,
-                    oddaoAmount,
-                    protocolAmount,
+                    vaultAmount,
                     block!.timestamp
                 );
         });

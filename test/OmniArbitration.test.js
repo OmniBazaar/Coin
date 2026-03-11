@@ -10,9 +10,9 @@ describe("OmniArbitration", function () {
   let participation;
   let mockEscrow;
   let xom;
-  let owner, oddao, protocolTreasury;
+  let owner, feeVault;
 
-  // protocolTreasury: signers[2]
+  // feeVault: signers[1]
   // Arbitrators: signers[3..12]  (10 arbitrators)
   // Buyer:  signers[13]
   // Seller: signers[14]
@@ -83,8 +83,7 @@ describe("OmniArbitration", function () {
   beforeEach(async function () {
     const signers = await ethers.getSigners();
     owner = signers[0];
-    oddao = signers[1];
-    protocolTreasury = signers[2];
+    feeVault = signers[1];
     arbitrators = signers.slice(3, 13); // 10 arbitrators
     buyer = signers[13];
     seller = signers[14];
@@ -110,8 +109,7 @@ describe("OmniArbitration", function () {
         await participation.getAddress(),
         await mockEscrow.getAddress(),
         await xom.getAddress(),
-        oddao.address,
-        protocolTreasury.address
+        feeVault.address
       ],
       { initializer: "initialize", kind: "uups", constructorArgs: [ethers.ZeroAddress] }
     );
@@ -157,12 +155,8 @@ describe("OmniArbitration", function () {
       expect(await arbitration.minArbitratorStake()).to.equal(ethers.parseEther("10000"));
     });
 
-    it("should set ODDAO treasury address correctly", async function () {
-      expect(await arbitration.oddaoTreasury()).to.equal(oddao.address);
-    });
-
-    it("should set protocol treasury address correctly", async function () {
-      expect(await arbitration.protocolTreasury()).to.equal(protocolTreasury.address);
+    it("should set feeVault address correctly", async function () {
+      expect(await arbitration.feeVault()).to.equal(feeVault.address);
     });
 
     it("should set contract references correctly", async function () {
@@ -762,26 +756,23 @@ describe("OmniArbitration", function () {
       expect(result.totalFee).to.equal(expectedTotal);
     });
 
-    it("should split fee 70/20/10", async function () {
+    it("should split fee 70/30 (arbitrators/vault)", async function () {
       const amount = ethers.parseEther("1000");
       const result = await arbitration.calculateFee(amount);
 
       const totalFee = result.totalFee;
       const expectedArb = (totalFee * 7000n) / 10000n;        // 70%
-      const expectedProtocol = (totalFee * 1000n) / 10000n;   // 10%
-      const expectedOddao = totalFee - expectedArb - expectedProtocol; // 20%
+      const expectedVault = totalFee - expectedArb;            // 30%
 
       expect(result.arbitratorShare).to.equal(expectedArb);
-      expect(result.oddaoShare).to.equal(expectedOddao);
-      expect(result.protocolShare).to.equal(expectedProtocol);
+      expect(result.vaultShare).to.equal(expectedVault);
     });
 
     it("should return zero fees for zero amount", async function () {
       const result = await arbitration.calculateFee(0);
       expect(result.totalFee).to.equal(0);
       expect(result.arbitratorShare).to.equal(0);
-      expect(result.oddaoShare).to.equal(0);
-      expect(result.protocolShare).to.equal(0);
+      expect(result.vaultShare).to.equal(0);
     });
 
     it("should handle large amounts correctly", async function () {
@@ -868,24 +859,24 @@ describe("OmniArbitration", function () {
       ).to.be.reverted;
     });
 
-    it("should allow admin to update protocolTreasury", async function () {
+    it("should allow admin to update feeVault", async function () {
       const signers = await ethers.getSigners();
-      const newTreasury = signers[19];
-      await arbitration.connect(owner).setProtocolTreasury(newTreasury.address);
-      expect(await arbitration.protocolTreasury()).to.equal(newTreasury.address);
+      const newVault = signers[19];
+      await arbitration.connect(owner).setFeeVault(newVault.address);
+      expect(await arbitration.feeVault()).to.equal(newVault.address);
     });
 
-    it("should reject setProtocolTreasury from non-admin", async function () {
+    it("should reject setFeeVault from non-admin", async function () {
       const signers = await ethers.getSigners();
-      const newTreasury = signers[19];
+      const newVault = signers[19];
       await expect(
-        arbitration.connect(other).setProtocolTreasury(newTreasury.address)
+        arbitration.connect(other).setFeeVault(newVault.address)
       ).to.be.reverted;
     });
 
-    it("should reject setProtocolTreasury with zero address", async function () {
+    it("should reject setFeeVault with zero address", async function () {
       await expect(
-        arbitration.connect(owner).setProtocolTreasury(ethers.ZeroAddress)
+        arbitration.connect(owner).setFeeVault(ethers.ZeroAddress)
       ).to.be.revertedWithCustomError(arbitration, "ZeroAddress");
     });
   });

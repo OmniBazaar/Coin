@@ -213,7 +213,7 @@ error UpgradeImplementationMismatch(
  * - Evidence CIDs recorded on-chain (immutable once submitted)
  * - 7-day deadline; default refund to buyer on timeout
  * - Fee: 5% of disputed amount collected at dispute creation
- *   (70% arbitrators, 20% validator, 10% ODDAO)
+ *   (70% arbitrators, 30% UnifiedFeeVault)
  * - UUPS upgrades subject to 48-hour timelock
  *
  * Security:
@@ -312,11 +312,9 @@ contract OmniArbitration is
     /// @notice Fee split: arbitrators (7000 = 70%)
     uint256 public constant ARBITRATOR_FEE_SHARE = 7000;
 
-    /// @notice Fee split: ODDAO treasury (2000 = 20%)
-    uint256 public constant ODDAO_FEE_SHARE = 2000;
-
-    /// @notice Fee split: protocol treasury (1000 = 10%)
-    uint256 public constant PROTOCOL_FEE_SHARE = 1000;
+    /// @notice Fee split: UnifiedFeeVault (3000 = 30%)
+    /// @dev Vault handles internal 70/20/10 distribution
+    uint256 public constant VAULT_SHARE = 3000;
 
     /// @notice Basis points denominator
     uint256 private constant BPS = 10_000;
@@ -350,11 +348,13 @@ contract OmniArbitration is
     /// @notice XOM token for fees and stakes
     IERC20 public xomToken;
 
-    /// @notice ODDAO treasury address
-    address public oddaoTreasury;
+    /// @dev Removed: formerly oddaoTreasury (preserves storage layout)
+    // solhint-disable-next-line var-name-mixedcase
+    uint256 private __removedOddaoTreasury;
 
-    /// @notice Protocol treasury address (receives 10% of fees)
-    address public protocolTreasury;
+    /// @dev Removed: formerly protocolTreasury (preserves storage layout)
+    // solhint-disable-next-line var-name-mixedcase
+    uint256 private __removedProtocolTreasury;
 
     /// @notice Dispute counter
     uint256 public nextDisputeId;
@@ -412,9 +412,14 @@ contract OmniArbitration is
     /// @dev M-03: Enables O(1) swap-and-pop removal from pool
     mapping(address => uint256) public arbitratorPoolIndex;
 
+    /// @notice UnifiedFeeVault address for non-arbitrator fee routing
+    /// @dev Receives 30% of dispute fees; handles internal 70/20/10
+    ///      distribution (ODDAO / Staking Pool / Protocol Treasury)
+    address public feeVault;
+
     /// @notice Reserved storage gap for future upgradeable variables
-    /// @dev 50 - 6 new state variables = 44 slots reserved
-    uint256[44] private __gap;
+    /// @dev 50 - 7 new state variables = 43 slots reserved
+    uint256[43] private __gap;
 
     // ══════════════════════════════════════════════════════════════════
     //                              EVENTS
@@ -531,13 +536,11 @@ contract OmniArbitration is
     /// @notice Emitted when dispute fees are distributed
     /// @param disputeId Dispute ID
     /// @param arbitratorShare Total amount sent to arbitrators
-    /// @param oddaoShare Amount sent to ODDAO treasury
-    /// @param protocolShare Amount sent to protocol treasury
+    /// @param vaultShare Amount sent to UnifiedFeeVault
     event FeesDistributed(
         uint256 indexed disputeId,
         uint256 arbitratorShare,
-        uint256 oddaoShare,
-        uint256 protocolShare
+        uint256 vaultShare
     );
 
     /// @notice Emitted when escrow resolution call fails
@@ -570,21 +573,9 @@ contract OmniArbitration is
     /// @param implementation Cancelled implementation address
     event UpgradeCancelled(address indexed implementation);
 
-    /// @notice Emitted when ODDAO treasury address is updated
-    /// @param oldTreasury Previous treasury address
-    /// @param newTreasury New treasury address
-    event OddaoTreasuryUpdated(
-        address indexed oldTreasury,
-        address indexed newTreasury
-    );
-
-    /// @notice Emitted when protocol treasury address is updated
-    /// @param oldTreasury Previous protocol treasury address
-    /// @param newTreasury New protocol treasury address
-    event ProtocolTreasuryUpdated(
-        address indexed oldTreasury,
-        address indexed newTreasury
-    );
+    /// @notice Emitted when the UnifiedFeeVault address is updated
+    /// @param newVault New fee vault address
+    event FeeVaultUpdated(address indexed newVault);
 
     /// @notice Emitted when appeal arbitrator selection is finalized
     /// @param disputeId Dispute ID
@@ -623,26 +614,23 @@ contract OmniArbitration is
     /**
      * @notice Initialize the arbitration contract
      * @dev Sets up roles, contract references, and default parameters.
-     *      All five addresses must be non-zero.
+     *      All four addresses must be non-zero.
      * @param _participation OmniParticipation contract address
      * @param _escrow MinimalEscrow contract address
      * @param _xomToken XOM token contract address
-     * @param _oddaoTreasury ODDAO treasury address (receives 20%)
-     * @param _protocolTreasury Protocol treasury address (receives 10%)
+     * @param _feeVault UnifiedFeeVault address (receives 30% of fees)
      */
     function initialize(
         address _participation,
         address _escrow,
         address _xomToken,
-        address _oddaoTreasury,
-        address _protocolTreasury
+        address _feeVault
     ) external initializer {
         // M-01: Zero-address validation for all parameters
         if (_participation == address(0)) revert ZeroAddress();
         if (_escrow == address(0)) revert ZeroAddress();
         if (_xomToken == address(0)) revert ZeroAddress();
-        if (_oddaoTreasury == address(0)) revert ZeroAddress();
-        if (_protocolTreasury == address(0)) revert ZeroAddress();
+        if (_feeVault == address(0)) revert ZeroAddress();
 
         __AccessControl_init();
         __UUPSUpgradeable_init();
@@ -655,8 +643,7 @@ contract OmniArbitration is
         participation = IArbitrationParticipation(_participation);
         escrow = IArbitrationEscrow(_escrow);
         xomToken = IERC20(_xomToken);
-        oddaoTreasury = _oddaoTreasury;
-        protocolTreasury = _protocolTreasury;
+        feeVault = _feeVault;
 
         nextDisputeId = 1;
         minArbitratorStake = 10_000 ether; // 10,000 XOM
@@ -1028,7 +1015,7 @@ contract OmniArbitration is
     /**
      * @notice File an appeal on a resolved dispute
      * @dev Appellant stakes XOM (returned if appeal succeeds,
-     *      forfeited to ODDAO if appeal fails).
+     *      forfeited to UnifiedFeeVault if appeal fails).
      *      Escalates to 5-arbitrator panel with 3-of-5 majority.
      * @param disputeId Dispute ID to appeal
      */
@@ -1155,7 +1142,7 @@ contract OmniArbitration is
      * @notice Cast a vote on an appeal
      * @dev 3-of-5 majority resolves the appeal.
      *      H-03: Enforces appeal deadline.
-     *      H-05: Forfeited appeal stake goes to ODDAO treasury.
+     *      H-05: Forfeited appeal stake goes to UnifiedFeeVault.
      *      C-01/C-02: Distributes fees and triggers escrow on
      *      resolution.
      * @param disputeId Dispute ID
@@ -1232,9 +1219,9 @@ contract OmniArbitration is
                     a.appealStake
                 );
             } else {
-                // Appeal failed - forfeit stake to ODDAO
+                // Appeal failed - forfeit stake to fee vault
                 xomToken.safeTransfer(
-                    oddaoTreasury,
+                    feeVault,
                     a.appealStake
                 );
             }
@@ -1329,7 +1316,7 @@ contract OmniArbitration is
      * @notice Trigger default appeal resolution after deadline
      * @dev H-03: If the appeal deadline passes without 3-of-5
      *      majority, the original decision is upheld. The appeal
-     *      stake is forfeited to ODDAO.
+     *      stake is forfeited to UnifiedFeeVault.
      * @param disputeId Dispute ID with an expired appeal
      */
     function triggerDefaultAppealResolution(
@@ -1357,8 +1344,8 @@ contract OmniArbitration is
 
         d.status = DisputeStatus.Resolved;
 
-        // Forfeit appeal stake to ODDAO (appeal failed by timeout)
-        xomToken.safeTransfer(oddaoTreasury, a.appealStake);
+        // Forfeit appeal stake to fee vault (appeal failed by timeout)
+        xomToken.safeTransfer(feeVault, a.appealStake);
 
         // H-01: Decrement active dispute count for appeal
         // arbitrators only (original panel was already
@@ -1451,10 +1438,9 @@ contract OmniArbitration is
     /**
      * @notice Calculate arbitration fee for an amount
      * @param amount Disputed amount
-     * @return totalFee Total fee
+     * @return totalFee Total fee (5% of disputed amount)
      * @return arbitratorShare Amount to arbitrators (70%)
-     * @return oddaoShare Amount to ODDAO (20%)
-     * @return protocolShare Amount to protocol treasury (10%)
+     * @return vaultShare Amount to UnifiedFeeVault (30%)
      */
     function calculateFee(
         uint256 amount
@@ -1464,17 +1450,13 @@ contract OmniArbitration is
         returns (
             uint256 totalFee,
             uint256 arbitratorShare,
-            uint256 oddaoShare,
-            uint256 protocolShare
+            uint256 vaultShare
         )
     {
         totalFee = (amount * ARBITRATION_FEE_BPS) / BPS;
         arbitratorShare =
             (totalFee * ARBITRATOR_FEE_SHARE) / BPS;
-        protocolShare =
-            (totalFee * PROTOCOL_FEE_SHARE) / BPS;
-        oddaoShare =
-            totalFee - arbitratorShare - protocolShare;
+        vaultShare = totalFee - arbitratorShare;
     }
 
     // ══════════════════════════════════════════════════════════════════
@@ -1537,39 +1519,19 @@ contract OmniArbitration is
     }
 
     /**
-     * @notice Update the ODDAO treasury address
-     * @dev M-06: Allows admin to update treasury. Validates
+     * @notice Update the UnifiedFeeVault address
+     * @dev Allows admin to re-point fee routing. Validates
      *      non-zero address.
-     * @param _oddaoTreasury New ODDAO treasury address
+     * @param _feeVault New UnifiedFeeVault address
      */
-    function setOddaoTreasury(
-        address _oddaoTreasury
+    function setFeeVault(
+        address _feeVault
     ) external onlyRole(DEFAULT_ADMIN_ROLE) {
-        if (_oddaoTreasury == address(0)) revert ZeroAddress();
+        if (_feeVault == address(0)) revert ZeroAddress();
 
-        address oldTreasury = oddaoTreasury;
-        oddaoTreasury = _oddaoTreasury;
+        feeVault = _feeVault;
 
-        emit OddaoTreasuryUpdated(oldTreasury, _oddaoTreasury);
-    }
-
-    /**
-     * @notice Update the protocol treasury address
-     * @dev Allows admin to update protocol treasury. Validates
-     *      non-zero address.
-     * @param _protocolTreasury New protocol treasury address
-     */
-    function setProtocolTreasury(
-        address _protocolTreasury
-    ) external onlyRole(DEFAULT_ADMIN_ROLE) {
-        if (_protocolTreasury == address(0)) revert ZeroAddress();
-
-        address oldTreasury = protocolTreasury;
-        protocolTreasury = _protocolTreasury;
-
-        emit ProtocolTreasuryUpdated(
-            oldTreasury, _protocolTreasury
-        );
+        emit FeeVaultUpdated(_feeVault);
     }
 
     /**
@@ -1667,12 +1629,12 @@ contract OmniArbitration is
     }
 
     /**
-     * @notice Distribute the collected dispute fee per 70/20/10
-     *         split
+     * @notice Distribute the collected dispute fee per 70/30 split
      * @dev C-01: Splits the fee stored in d.disputeFee among
-     *      arbitrators (70%), ODDAO treasury (20%), and protocol
-     *      treasury (10%). Uses XOM tokens already held by this
-     *      contract from dispute creation.
+     *      arbitrators (70%) and UnifiedFeeVault (30%). The vault
+     *      handles the internal 70/20/10 sub-distribution. Uses
+     *      XOM tokens already held by this contract from dispute
+     *      creation.
      * @param disputeId Dispute ID whose fee to distribute
      */
     function _collectAndDistributeFee(
@@ -1687,11 +1649,8 @@ contract OmniArbitration is
 
         uint256 arbShare =
             (fee * ARBITRATOR_FEE_SHARE) / BPS;
-        uint256 protocolShare =
-            (fee * PROTOCOL_FEE_SHARE) / BPS;
-        // ODDAO gets remainder (avoids rounding dust)
-        uint256 oddaoShare =
-            fee - arbShare - protocolShare;
+        // Vault gets remainder (avoids rounding dust)
+        uint256 vaultAmount = fee - arbShare;
 
         // Distribute arbitrator share equally among panel members
         // Use initial panel (3 arbitrators) for fee split
@@ -1712,23 +1671,15 @@ contract OmniArbitration is
             }
         }
 
-        // ODDAO share (20%)
-        if (oddaoShare > 0) {
-            xomToken.safeTransfer(oddaoTreasury, oddaoShare);
-        }
-
-        // Protocol treasury share (10%)
-        if (protocolShare > 0) {
-            xomToken.safeTransfer(
-                protocolTreasury, protocolShare
-            );
+        // Fee vault share (30%)
+        if (vaultAmount > 0) {
+            xomToken.safeTransfer(feeVault, vaultAmount);
         }
 
         emit FeesDistributed(
             disputeId,
             arbShare,
-            oddaoShare,
-            protocolShare
+            vaultAmount
         );
     }
 

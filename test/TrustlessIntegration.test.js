@@ -155,8 +155,7 @@ describe("Trustless Architecture — Cross-Contract Integration", function () {
           await participation.getAddress(),
           await mockEscrow.getAddress(),
           await xom.getAddress(),
-          oddao.address,
-          oddao.address, // protocolTreasury (reuse for testing)
+          oddao.address, // feeVault (reuse oddao for testing)
         ],
         { initializer: "initialize", kind: "uups", constructorArgs: [ethers.ZeroAddress] }
       );
@@ -567,9 +566,7 @@ describe("Trustless Architecture — Cross-Contract Integration", function () {
       const OmniENS = await ethers.getContractFactory("OmniENS");
       ens = await OmniENS.deploy(
         await xom.getAddress(),
-        oddaoTreasury.address,
-        oddaoTreasury.address, // stakingPool (reuse for testing)
-        oddaoTreasury.address, // protocolTreasury (reuse for testing)
+        oddaoTreasury.address, // feeVault (reuse for testing)
         ethers.ZeroAddress     // trustedForwarder_ (disabled)
       );
       await ens.waitForDeployment();
@@ -587,8 +584,8 @@ describe("Trustless Architecture — Cross-Contract Integration", function () {
       const duration = MIN_DURATION; // 30 days
       const expectedFee = (FEE_PER_YEAR * BigInt(duration)) / BigInt(MAX_DURATION);
 
-      // Record ODDAO balance before
-      const oddaoBalanceBefore = await xom.balanceOf(oddaoTreasury.address);
+      // Record feeVault balance before (oddaoTreasury is reused as feeVault)
+      const vaultBalanceBefore = await xom.balanceOf(oddaoTreasury.address);
 
       // ── Register name (commit-reveal) ──
       const tx = await commitAndRegister(ens, user1, name, duration);
@@ -602,9 +599,9 @@ describe("Trustless Architecture — Cross-Contract Integration", function () {
       const resolvedName = await ens.reverseResolve(user1.address);
       expect(resolvedName).to.equal(name);
 
-      // ── Verify fee was collected to ODDAO ──
-      const oddaoBalanceAfter = await xom.balanceOf(oddaoTreasury.address);
-      expect(oddaoBalanceAfter - oddaoBalanceBefore).to.equal(expectedFee);
+      // ── Verify fee was collected to feeVault (100%) ──
+      const vaultBalanceAfter = await xom.balanceOf(oddaoTreasury.address);
+      expect(vaultBalanceAfter - vaultBalanceBefore).to.equal(expectedFee);
     });
 
     it("should prevent duplicate name registration until expiry", async function () {
@@ -690,15 +687,15 @@ describe("Trustless Architecture — Cross-Contract Integration", function () {
     });
 
     it("should correctly calculate proportional fees for different durations", async function () {
-      const oddaoBalanceBefore = await xom.balanceOf(oddaoTreasury.address);
+      const vaultBalanceBefore = await xom.balanceOf(oddaoTreasury.address);
 
       // Register for full year (365 days) using commit-reveal
       await commitAndRegister(ens, user1, "yearlong", MAX_DURATION);
 
-      const oddaoBalanceAfter = await xom.balanceOf(oddaoTreasury.address);
-      const feeCollected = oddaoBalanceAfter - oddaoBalanceBefore;
+      const vaultBalanceAfter = await xom.balanceOf(oddaoTreasury.address);
+      const feeCollected = vaultBalanceAfter - vaultBalanceBefore;
 
-      // Full year should cost exactly 10 XOM (FEE_PER_YEAR)
+      // Full year should cost exactly 10 XOM (FEE_PER_YEAR) — 100% to vault
       expect(feeCollected).to.equal(FEE_PER_YEAR);
     });
   });
@@ -728,9 +725,7 @@ describe("Trustless Architecture — Cross-Contract Integration", function () {
       const OmniChatFee = await ethers.getContractFactory("OmniChatFee");
       chatFee = await OmniChatFee.deploy(
         await xom.getAddress(),
-        stakingPool.address,
-        oddaoTreasury.address,
-        oddaoTreasury.address, // protocolTreasury (reuse for testing)
+        oddaoTreasury.address, // feeVault (reuse for testing)
         BASE_FEE,
         ethers.ZeroAddress     // trustedForwarder_ (disabled)
       );
@@ -789,7 +784,7 @@ describe("Trustless Architecture — Cross-Contract Integration", function () {
       }
     });
 
-    it("should charge the 21st message and distribute fees 70/20/10", async function () {
+    it("should charge the 21st message and route fee to vault", async function () {
       const channelId = ethers.id("general-chat");
 
       // ── Exhaust free tier (20 messages) ──
@@ -798,15 +793,9 @@ describe("Trustless Architecture — Cross-Contract Integration", function () {
       }
 
       // Record balances before paid message
-      // Note: OmniChatFee uses push pattern — fees go directly to recipients:
-      //   70% → oddaoTreasury (ODDAO_SHARE=7000)
-      //   20% → stakingPool   (STAKING_SHARE=2000)
-      //   10% → protocolTreasury (PROTOCOL_SHARE=1000)
-      // In this test setup, oddaoTreasury is reused as protocolTreasury,
-      // so oddao receives both the 70% and 10% shares.
+      // OmniChatFee sends 100% to feeVault (oddaoTreasury is reused as feeVault)
       const userBalBefore = await xom.balanceOf(user1.address);
-      const stakingBalBefore = await xom.balanceOf(stakingPool.address);
-      const oddaoBalBefore = await xom.balanceOf(oddaoTreasury.address);
+      const vaultBalBefore = await xom.balanceOf(oddaoTreasury.address);
 
       // ── Send 21st message (should be paid) ──
       const paidTx = await chatFee
@@ -827,18 +816,9 @@ describe("Trustless Architecture — Cross-Contract Integration", function () {
       const userBalAfter = await xom.balanceOf(user1.address);
       expect(userBalBefore - userBalAfter).to.equal(BASE_FEE);
 
-      // ── Verify 70/20/10 push-based fee distribution ──
-      const expectedStakingShare = (BASE_FEE * 2000n) / 10000n;
-      const expectedProtocolShare = (BASE_FEE * 1000n) / 10000n;
-      const expectedOddaoShare = BASE_FEE - expectedStakingShare - expectedProtocolShare;
-
-      // Staking pool received 20%
-      const stakingBalAfter = await xom.balanceOf(stakingPool.address);
-      expect(stakingBalAfter - stakingBalBefore).to.equal(expectedStakingShare);
-
-      // ODDAO treasury received 70% + 10% (since oddaoTreasury is reused as protocolTreasury)
-      const oddaoBalAfter = await xom.balanceOf(oddaoTreasury.address);
-      expect(oddaoBalAfter - oddaoBalBefore).to.equal(expectedOddaoShare + expectedProtocolShare);
+      // ── Verify 100% of fee went to feeVault ──
+      const vaultBalAfter = await xom.balanceOf(oddaoTreasury.address);
+      expect(vaultBalAfter - vaultBalBefore).to.equal(BASE_FEE);
 
       // ── Verify payment proof for the 21st message ──
       expect(
@@ -846,7 +826,7 @@ describe("Trustless Architecture — Cross-Contract Integration", function () {
       ).to.be.true;
     });
 
-    it("should distribute fees correctly across multiple paid messages", async function () {
+    it("should route fees correctly to vault across multiple paid messages", async function () {
       const channelId = ethers.id("support-chat");
 
       // Exhaust free tier
@@ -856,8 +836,7 @@ describe("Trustless Architecture — Cross-Contract Integration", function () {
 
       // Record balances before paid messages
       const userBalBefore = await xom.balanceOf(user1.address);
-      const stakingBalBefore = await xom.balanceOf(stakingPool.address);
-      const oddaoBalBefore = await xom.balanceOf(oddaoTreasury.address);
+      const vaultBalBefore = await xom.balanceOf(oddaoTreasury.address);
 
       // Send 5 paid messages
       for (let i = 0; i < 5; i++) {
@@ -868,19 +847,9 @@ describe("Trustless Architecture — Cross-Contract Integration", function () {
       const userBalAfter = await xom.balanceOf(user1.address);
       expect(userBalBefore - userBalAfter).to.equal(BASE_FEE * 5n);
 
-      // Verify push-based distribution across 5 messages:
-      //   70% → oddaoTreasury, 20% → stakingPool, 10% → protocolTreasury
-      //   (oddaoTreasury is reused as protocolTreasury in this test)
-      const perMsgStaking = (BASE_FEE * 2000n) / 10000n;
-      const perMsgProtocol = (BASE_FEE * 1000n) / 10000n;
-      const perMsgOddao = BASE_FEE - perMsgStaking - perMsgProtocol;
-
-      const stakingBalAfter = await xom.balanceOf(stakingPool.address);
-      expect(stakingBalAfter - stakingBalBefore).to.equal(perMsgStaking * 5n);
-
-      // ODDAO receives 70% + 10% since oddaoTreasury == protocolTreasury in test setup
-      const oddaoBalAfter = await xom.balanceOf(oddaoTreasury.address);
-      expect(oddaoBalAfter - oddaoBalBefore).to.equal((perMsgOddao + perMsgProtocol) * 5n);
+      // Verify feeVault received 100% of all fees
+      const vaultBalAfter = await xom.balanceOf(oddaoTreasury.address);
+      expect(vaultBalAfter - vaultBalBefore).to.equal(BASE_FEE * 5n);
 
       // Verify totalFeesCollected was updated
       expect(await chatFee.totalFeesCollected()).to.equal(BASE_FEE * 5n);
@@ -996,9 +965,7 @@ describe("Trustless Architecture — Cross-Contract Integration", function () {
       const OmniENS = await ethers.getContractFactory("OmniENS");
       ens = await OmniENS.deploy(
         await xom.getAddress(),
-        oddaoTreasury.address,
-        stakingPool.address,   // stakingPool
-        oddaoTreasury.address, // protocolTreasury (reuse for testing)
+        oddaoTreasury.address, // feeVault (reuse for testing)
         ethers.ZeroAddress     // trustedForwarder_ (disabled)
       );
 
@@ -1006,9 +973,7 @@ describe("Trustless Architecture — Cross-Contract Integration", function () {
       const OmniChatFee = await ethers.getContractFactory("OmniChatFee");
       chatFee = await OmniChatFee.deploy(
         await xom.getAddress(),
-        stakingPool.address,
-        oddaoTreasury.address,
-        oddaoTreasury.address, // protocolTreasury (reuse for testing)
+        oddaoTreasury.address, // feeVault (reuse for testing)
         BASE_FEE,
         ethers.ZeroAddress     // trustedForwarder_ (disabled)
       );

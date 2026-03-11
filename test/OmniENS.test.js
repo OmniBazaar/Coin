@@ -19,7 +19,7 @@ const { time } = require("@nomicfoundation/hardhat-network-helpers");
  */
 describe("OmniENS", function () {
   let ens, xom;
-  let owner, oddaoTreasury, stakingPool, protocolTreasury, user1, user2, user3;
+  let owner, feeVault, user1, user2, user3;
 
   const MIN_DURATION = 30 * 24 * 60 * 60; // 30 days
   const MAX_DURATION = 365 * 24 * 60 * 60; // 365 days
@@ -65,7 +65,7 @@ describe("OmniENS", function () {
   }
 
   beforeEach(async function () {
-    [owner, oddaoTreasury, stakingPool, protocolTreasury, user1, user2, user3] =
+    [owner, feeVault, user1, user2, user3] =
       await ethers.getSigners();
 
     // Deploy mock XOM token
@@ -73,13 +73,11 @@ describe("OmniENS", function () {
     xom = await MockERC20.deploy("OmniCoin", "XOM");
     await xom.waitForDeployment();
 
-    // Deploy OmniENS (4 constructor params: xom, oddao, stakingPool, protocolTreasury)
+    // Deploy OmniENS (3 constructor params: xom, feeVault, trustedForwarder)
     const OmniENS = await ethers.getContractFactory("OmniENS");
     ens = await OmniENS.deploy(
       await xom.getAddress(),
-      oddaoTreasury.address,
-      stakingPool.address,
-      protocolTreasury.address,
+      feeVault.address,
       ethers.ZeroAddress // trustedForwarder_ (disabled)
     );
     await ens.waitForDeployment();
@@ -109,21 +107,9 @@ describe("OmniENS", function () {
       expect(await ens.xomToken()).to.equal(await xom.getAddress());
     });
 
-    it("should set ODDAO treasury address", async function () {
-      expect(await ens.oddaoTreasury()).to.equal(
-        oddaoTreasury.address
-      );
-    });
-
-    it("should set staking pool address", async function () {
-      expect(await ens.stakingPool()).to.equal(
-        stakingPool.address
-      );
-    });
-
-    it("should set protocol treasury address", async function () {
-      expect(await ens.protocolTreasury()).to.equal(
-        protocolTreasury.address
+    it("should set fee vault address", async function () {
+      expect(await ens.feeVault()).to.equal(
+        feeVault.address
       );
     });
 
@@ -156,12 +142,6 @@ describe("OmniENS", function () {
       );
     });
 
-    it("should set fee distribution constants (70/20/10)", async function () {
-      expect(await ens.ODDAO_SHARE()).to.equal(7000);
-      expect(await ens.STAKING_SHARE()).to.equal(2000);
-      expect(await ens.PROTOCOL_SHARE()).to.equal(1000);
-    });
-
     it("should start with 0 total registrations", async function () {
       expect(await ens.totalRegistrations()).to.equal(0);
     });
@@ -171,47 +151,17 @@ describe("OmniENS", function () {
       await expect(
         OmniENS.deploy(
           ethers.ZeroAddress,
-          oddaoTreasury.address,
-          stakingPool.address,
-          protocolTreasury.address,
+          feeVault.address,
           ethers.ZeroAddress // trustedForwarder_ (disabled)
         )
       ).to.be.revertedWithCustomError(ens, "ZeroAddress");
     });
 
-    it("should reject zero ODDAO treasury address in constructor", async function () {
+    it("should reject zero fee vault address in constructor", async function () {
       const OmniENS = await ethers.getContractFactory("OmniENS");
       await expect(
         OmniENS.deploy(
           await xom.getAddress(),
-          ethers.ZeroAddress,
-          stakingPool.address,
-          protocolTreasury.address,
-          ethers.ZeroAddress // trustedForwarder_ (disabled)
-        )
-      ).to.be.revertedWithCustomError(ens, "ZeroAddress");
-    });
-
-    it("should reject zero staking pool address in constructor", async function () {
-      const OmniENS = await ethers.getContractFactory("OmniENS");
-      await expect(
-        OmniENS.deploy(
-          await xom.getAddress(),
-          oddaoTreasury.address,
-          ethers.ZeroAddress,
-          protocolTreasury.address,
-          ethers.ZeroAddress // trustedForwarder_ (disabled)
-        )
-      ).to.be.revertedWithCustomError(ens, "ZeroAddress");
-    });
-
-    it("should reject zero protocol treasury address in constructor", async function () {
-      const OmniENS = await ethers.getContractFactory("OmniENS");
-      await expect(
-        OmniENS.deploy(
-          await xom.getAddress(),
-          oddaoTreasury.address,
-          stakingPool.address,
           ethers.ZeroAddress,
           ethers.ZeroAddress // trustedForwarder_ (disabled)
         )
@@ -451,48 +401,30 @@ describe("OmniENS", function () {
       ).to.emit(ens, "NameRegistered");
     });
 
-    it("should charge proportional fee for 30 days split 70/20/10", async function () {
+    it("should send proportional fee for 30 days to feeVault", async function () {
       const totalFee =
         (FEE_PER_YEAR * BigInt(MIN_DURATION)) /
         BigInt(365 * 24 * 60 * 60);
-      const expectedStaking = (totalFee * 2000n) / 10000n;
-      const expectedProtocol = (totalFee * 1000n) / 10000n;
-      const expectedOddao = totalFee - expectedStaking - expectedProtocol;
 
-      const oddaoBefore = await xom.balanceOf(oddaoTreasury.address);
-      const stakingBefore = await xom.balanceOf(stakingPool.address);
-      const protocolBefore = await xom.balanceOf(protocolTreasury.address);
+      const vaultBefore = await xom.balanceOf(feeVault.address);
 
       await commitAndRegister(user1, "alice", MIN_DURATION);
 
-      const oddaoAfter = await xom.balanceOf(oddaoTreasury.address);
-      const stakingAfter = await xom.balanceOf(stakingPool.address);
-      const protocolAfter = await xom.balanceOf(protocolTreasury.address);
+      const vaultAfter = await xom.balanceOf(feeVault.address);
 
-      expect(oddaoAfter - oddaoBefore).to.equal(expectedOddao);
-      expect(stakingAfter - stakingBefore).to.equal(expectedStaking);
-      expect(protocolAfter - protocolBefore).to.equal(expectedProtocol);
+      expect(vaultAfter - vaultBefore).to.equal(totalFee);
     });
 
-    it("should charge proportional fee for 365 days split 70/20/10", async function () {
+    it("should send proportional fee for 365 days to feeVault", async function () {
       const totalFee = FEE_PER_YEAR;
-      const expectedStaking = (totalFee * 2000n) / 10000n;
-      const expectedProtocol = (totalFee * 1000n) / 10000n;
-      const expectedOddao = totalFee - expectedStaking - expectedProtocol;
 
-      const oddaoBefore = await xom.balanceOf(oddaoTreasury.address);
-      const stakingBefore = await xom.balanceOf(stakingPool.address);
-      const protocolBefore = await xom.balanceOf(protocolTreasury.address);
+      const vaultBefore = await xom.balanceOf(feeVault.address);
 
       await commitAndRegister(user1, "alice", MAX_DURATION);
 
-      const oddaoAfter = await xom.balanceOf(oddaoTreasury.address);
-      const stakingAfter = await xom.balanceOf(stakingPool.address);
-      const protocolAfter = await xom.balanceOf(protocolTreasury.address);
+      const vaultAfter = await xom.balanceOf(feeVault.address);
 
-      expect(oddaoAfter - oddaoBefore).to.equal(expectedOddao);
-      expect(stakingAfter - stakingBefore).to.equal(expectedStaking);
-      expect(protocolAfter - protocolBefore).to.equal(expectedProtocol);
+      expect(vaultAfter - vaultBefore).to.equal(totalFee);
     });
 
     it("should set correct expiry timestamp", async function () {
@@ -666,21 +598,13 @@ describe("OmniENS", function () {
 
       // Renew with MIN_DURATION, but since bob already has MAX_DURATION
       // from registration, the actual added time may be capped.
-      // Track combined fee across all three recipients.
-      const oddaoBefore = await xom.balanceOf(oddaoTreasury.address);
-      const stakingBefore = await xom.balanceOf(stakingPool.address);
-      const protocolBefore = await xom.balanceOf(protocolTreasury.address);
+      // Track fee received by feeVault.
+      const vaultBefore = await xom.balanceOf(feeVault.address);
 
       await ens.connect(user2).renew("bob", MIN_DURATION);
 
-      const oddaoAfter = await xom.balanceOf(oddaoTreasury.address);
-      const stakingAfter = await xom.balanceOf(stakingPool.address);
-      const protocolAfter = await xom.balanceOf(protocolTreasury.address);
-
-      const totalReceived =
-        (oddaoAfter - oddaoBefore) +
-        (stakingAfter - stakingBefore) +
-        (protocolAfter - protocolBefore);
+      const vaultAfter = await xom.balanceOf(feeVault.address);
+      const totalReceived = vaultAfter - vaultBefore;
 
       // Fee should be based on actual duration added, which may be
       // less than MIN_DURATION due to MAX_DURATION cap
@@ -704,27 +628,18 @@ describe("OmniENS", function () {
       ).to.be.revertedWithCustomError(ens, "DurationTooShort");
     });
 
-    it("should charge proportional fee for renewal split 70/20/10", async function () {
+    it("should send proportional fee for renewal to feeVault", async function () {
       const totalFee =
         (FEE_PER_YEAR * BigInt(MIN_DURATION)) /
         BigInt(365 * 24 * 60 * 60);
-      const expectedStaking = (totalFee * 2000n) / 10000n;
-      const expectedProtocol = (totalFee * 1000n) / 10000n;
-      const expectedOddao = totalFee - expectedStaking - expectedProtocol;
 
-      const oddaoBefore = await xom.balanceOf(oddaoTreasury.address);
-      const stakingBefore = await xom.balanceOf(stakingPool.address);
-      const protocolBefore = await xom.balanceOf(protocolTreasury.address);
+      const vaultBefore = await xom.balanceOf(feeVault.address);
 
       await ens.connect(user1).renew("alice", MIN_DURATION);
 
-      const oddaoAfter = await xom.balanceOf(oddaoTreasury.address);
-      const stakingAfter = await xom.balanceOf(stakingPool.address);
-      const protocolAfter = await xom.balanceOf(protocolTreasury.address);
+      const vaultAfter = await xom.balanceOf(feeVault.address);
 
-      expect(oddaoAfter - oddaoBefore).to.equal(expectedOddao);
-      expect(stakingAfter - stakingBefore).to.equal(expectedStaking);
-      expect(protocolAfter - protocolBefore).to.equal(expectedProtocol);
+      expect(vaultAfter - vaultBefore).to.equal(totalFee);
     });
   });
 

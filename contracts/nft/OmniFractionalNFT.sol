@@ -107,7 +107,8 @@ contract FractionToken is ERC20, ERC20Burnable {
  *      A holder of 100 % of shares can redeem (burn all, get NFT).
  *      Buyout mechanism lets any share-holder propose a buyout price;
  *      once funded, remaining share-holders can claim their pro-rata
- *      share. Platform creation fee sent to the fee recipient.
+ *      share. Platform creation fee sent to the UnifiedFeeVault for
+ *      70/20/10 distribution.
  */
 contract OmniFractionalNFT is
     ERC721Holder,
@@ -146,8 +147,8 @@ contract OmniFractionalNFT is
     // ── Storage ──────────────────────────────────────────────────────
     /// @notice Platform creation fee in bps (default 1 % = 100 bps).
     uint16 public creationFeeBps;
-    /// @notice Address receiving platform fees.
-    address public feeRecipient;
+    /// @notice UnifiedFeeVault address -- receives 100% of creation fees for 70/20/10 distribution.
+    address public feeVault;
     /// @notice Payment currency for creation fees.
     address public feeCurrency;
     /// @notice Next vault ID.
@@ -249,19 +250,20 @@ contract OmniFractionalNFT is
     // ── Constructor ──────────────────────────────────────────────────
     /**
      * @notice Deploy the fractionalization vault.
-     * @param initialFeeRecipient Platform fee recipient.
+     * @param initialFeeVault UnifiedFeeVault address -- receives 100% of creation fees
+     *        for 70/20/10 distribution.
      * @param initialFeeBps Fee in basis points (e.g. 100 = 1 %).
      * @param trustedForwarder_ Trusted ERC-2771 forwarder address.
      */
     constructor(
-        address initialFeeRecipient,
+        address initialFeeVault,
         uint16 initialFeeBps,
         address trustedForwarder_
     ) Ownable(msg.sender) ERC2771Context(trustedForwarder_) {
-        // NFTSuite M-04: Validate fee recipient is non-zero
-        if (initialFeeRecipient == address(0)) revert ZeroAddress();
+        // NFTSuite M-04: Validate fee vault is non-zero
+        if (initialFeeVault == address(0)) revert ZeroAddress();
         if (initialFeeBps > MAX_CREATION_FEE_BPS) revert FeeTooHigh();
-        feeRecipient = initialFeeRecipient;
+        feeVault = initialFeeVault;
         creationFeeBps = initialFeeBps;
     }
 
@@ -297,12 +299,12 @@ contract OmniFractionalNFT is
         ++nextVaultId;
 
         // M-01: Collect creation fee if configured. The fee is
-        // denominated in feeCurrency tokens and transferred to
-        // feeRecipient. If creationFeeBps is zero, no fee is charged.
+        // denominated in feeCurrency tokens and transferred to the
+        // UnifiedFeeVault. If creationFeeBps is zero, no fee is charged.
         if (
             creationFeeBps > 0 &&
             feeCurrency != address(0) &&
-            feeRecipient != address(0)
+            feeVault != address(0)
         ) {
             // Fee = totalShares * creationFeeBps / BPS_DENOMINATOR
             // Using totalShares as the fee base (share count as proxy
@@ -311,7 +313,7 @@ contract OmniFractionalNFT is
                 / BPS_DENOMINATOR;
             if (feeAmount > 0) {
                 IERC20(feeCurrency).safeTransferFrom(
-                    caller, feeRecipient, feeAmount
+                    caller, feeVault, feeAmount
                 );
             }
         }
@@ -527,13 +529,14 @@ contract OmniFractionalNFT is
     }
 
     /**
-     * @notice Update the fee recipient.
-     * @param newRecipient New recipient address.
+     * @notice Update the UnifiedFeeVault address -- receives 100% of
+     *         creation fees for 70/20/10 distribution.
+     * @param newFeeVault New UnifiedFeeVault address.
      */
-    function setFeeRecipient(address newRecipient) external onlyOwner {
-        // NFTSuite M-04: Validate new recipient is non-zero
-        if (newRecipient == address(0)) revert ZeroAddress();
-        feeRecipient = newRecipient;
+    function setFeeVault(address newFeeVault) external onlyOwner {
+        // NFTSuite M-04: Validate new fee vault is non-zero
+        if (newFeeVault == address(0)) revert ZeroAddress();
+        feeVault = newFeeVault;
     }
 
     // ── View functions ───────────────────────────────────────────────

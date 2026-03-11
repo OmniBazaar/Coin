@@ -908,58 +908,6 @@ contract UnifiedFeeVault is
         emit FeesDeposited(token, actualFee, caller);
     }
 
-    /**
-     * @notice Deposit and distribute an arbitration fee
-     * @dev Arbitration fee = 5% of disputed amount. Split:
-     *      70% arbitrator panel, 20% ODDAO, 10% protocol treasury.
-     *      Caller must have DEPOSITOR_ROLE and approved the fee.
-     * @param token XOM token address
-     * @param disputeAmount Amount in dispute
-     * @param arbitrator Arbitrator receiving primary share
-     */
-    function depositArbitrationFee(
-        address token,
-        uint256 disputeAmount,
-        address arbitrator
-    ) external nonReentrant onlyRole(DEPOSITOR_ROLE) whenNotPaused {
-        if (token == address(0)) revert ZeroAddress();
-        if (disputeAmount == 0) revert ZeroAmount();
-
-        uint256 totalFee = (disputeAmount * 500) / 10000; // 5%
-        if (totalFee == 0) revert ZeroAmount();
-
-        // H-01 audit fix: use _msgSender() for ERC-2771 meta-tx support
-        address arbCaller = _msgSender();
-
-        // M-02 audit fix: balance-before/after for fee-on-transfer
-        uint256 balBefore =
-            IERC20(token).balanceOf(address(this));
-        IERC20(token).safeTransferFrom(
-            arbCaller, address(this), totalFee
-        );
-        uint256 actualFee =
-            IERC20(token).balanceOf(address(this)) - balBefore;
-
-        uint256 arbShare = (actualFee * 7000) / 10000; // 70%
-        uint256 oddaoShare = (actualFee * 2000) / 10000; // 20%
-        uint256 protocolShare =
-            actualFee - arbShare - oddaoShare; // 10%
-
-        pendingClaims[arbitrator][token] += arbShare;
-        // C-01 audit fix: track total pending claims
-        totalPendingClaims[token] += arbShare;
-        pendingBridge[token] += oddaoShare;
-        _safePushOrQuarantine(
-            token, protocolTreasury, protocolShare
-        );
-
-        totalDistributed[token] += actualFee;
-        // AUDIT FIX (Round 6 FEE-AP-10): Cross-contract fee accounting
-        totalFeesCollected += actualFee;
-
-        emit FeesDeposited(token, actualFee, arbCaller);
-    }
-
     // ════════════════════════════════════════════════════════════════════
     //                     FEE BREAKDOWN VIEW FUNCTIONS
     // ════════════════════════════════════════════════════════════════════
@@ -988,32 +936,6 @@ contract UnifiedFeeVault is
         txFee = totalFee / 2;
         refFee = totalFee / 4;
         listFee = totalFee - txFee - refFee;
-    }
-
-    /**
-     * @notice Calculate arbitration fee breakdown
-     * @param disputeAmount Disputed amount
-     * @return totalFee Total 5% fee
-     * @return arbitratorShare 70% to arbitrator
-     * @return oddaoShare 20% to ODDAO
-     * @return protocolShare 10% to protocol treasury
-     */
-    function getArbitrationFeeBreakdown(
-        uint256 disputeAmount
-    )
-        external
-        pure
-        returns (
-            uint256 totalFee,
-            uint256 arbitratorShare,
-            uint256 oddaoShare,
-            uint256 protocolShare
-        )
-    {
-        totalFee = (disputeAmount * 500) / 10000;
-        arbitratorShare = (totalFee * 7000) / 10000;
-        oddaoShare = (totalFee * 2000) / 10000;
-        protocolShare = totalFee - arbitratorShare - oddaoShare;
     }
 
     /**

@@ -172,11 +172,11 @@ describe("TS-Contract Integration (G10 Audit Remediation)", function () {
   // ═════════════════════════════════════════════════════════════════════
   //  2. ENS REGISTRATION FLOW
   //     Deploy OmniENS + MockERC20 (XOM), register a name, verify
-  //     fees split correctly to all 3 recipients (70/20/10).
+  //     fees route 100% to UnifiedFeeVault.
   // ═════════════════════════════════════════════════════════════════════
 
-  describe("2. ENS Registration Flow (OmniENS + XOM)", function () {
-    let ens, xom;
+  describe("2. ENS Registration Flow (OmniENS → UnifiedFeeVault)", function () {
+    let ens, vault, xom;
 
     const FEE_PER_YEAR = ethers.parseEther("10"); // 10 XOM
     const MIN_DURATION = 30 * 24 * 60 * 60; // 30 days
@@ -202,13 +202,25 @@ describe("TS-Contract Integration (G10 Audit Remediation)", function () {
       xom = await MockERC20.deploy("OmniCoin", "XOM");
       await xom.waitForDeployment();
 
-      // Deploy OmniENS with 5 constructor params (including trustedForwarder)
+      // Deploy UnifiedFeeVault
+      const Vault = await ethers.getContractFactory("UnifiedFeeVault");
+      vault = await upgrades.deployProxy(
+        Vault,
+        [admin.address, stakingPool.address, protocolTreasury.address],
+        {
+          initializer: "initialize",
+          kind: "uups",
+          constructorArgs: [ethers.ZeroAddress],
+          unsafeAllow: ["constructor"]
+        }
+      );
+      await vault.waitForDeployment();
+
+      // Deploy OmniENS with feeVault (3 constructor params)
       const OmniENS = await ethers.getContractFactory("OmniENS");
       ens = await OmniENS.deploy(
         await xom.getAddress(),
-        oddaoTreasury.address,
-        stakingPool.address,
-        protocolTreasury.address,
+        await vault.getAddress(),
         ethers.ZeroAddress
       );
       await ens.waitForDeployment();
@@ -225,63 +237,36 @@ describe("TS-Contract Integration (G10 Audit Remediation)", function () {
         .approve(await ens.getAddress(), mintAmount);
     });
 
-    it("should register a name and distribute fees 70/20/10", async function () {
+    it("should register a name and route 100% of fee to vault", async function () {
       // Calculate expected fee for 30-day registration
       const totalFee =
         (FEE_PER_YEAR * BigInt(MIN_DURATION)) /
         BigInt(365 * 24 * 60 * 60);
 
-      const expectedStaking = (totalFee * STAKING_BPS) / BPS;
-      const expectedProtocol = (totalFee * PROTOCOL_BPS) / BPS;
-      const expectedOddao = totalFee - expectedStaking - expectedProtocol;
-
-      // Snapshot balances before
-      const oddaoBefore = await xom.balanceOf(oddaoTreasury.address);
-      const stakingBefore = await xom.balanceOf(stakingPool.address);
-      const protocolBefore = await xom.balanceOf(protocolTreasury.address);
+      const vaultBefore = await xom.balanceOf(await vault.getAddress());
 
       // Register a name
       await commitAndRegister(user1, "alice", MIN_DURATION);
 
-      // Verify fee distribution
+      // Verify 100% went to vault
       expect(
-        (await xom.balanceOf(oddaoTreasury.address)) - oddaoBefore
-      ).to.equal(expectedOddao);
-      expect(
-        (await xom.balanceOf(stakingPool.address)) - stakingBefore
-      ).to.equal(expectedStaking);
-      expect(
-        (await xom.balanceOf(protocolTreasury.address)) - protocolBefore
-      ).to.equal(expectedProtocol);
+        (await xom.balanceOf(await vault.getAddress())) - vaultBefore
+      ).to.equal(totalFee);
 
       // Verify name resolves
       expect(await ens.resolve("alice")).to.equal(user1.address);
     });
 
-    it("should verify full-year registration fee sums to 10 XOM across all recipients", async function () {
-      const oddaoBefore = await xom.balanceOf(oddaoTreasury.address);
-      const stakingBefore = await xom.balanceOf(stakingPool.address);
-      const protocolBefore = await xom.balanceOf(protocolTreasury.address);
+    it("should verify full-year registration fee of 10 XOM routes to vault", async function () {
+      const vaultBefore = await xom.balanceOf(await vault.getAddress());
 
       await commitAndRegister(user1, "bob", MAX_DURATION);
 
-      const oddaoReceived =
-        (await xom.balanceOf(oddaoTreasury.address)) - oddaoBefore;
-      const stakingReceived =
-        (await xom.balanceOf(stakingPool.address)) - stakingBefore;
-      const protocolReceived =
-        (await xom.balanceOf(protocolTreasury.address)) - protocolBefore;
+      const vaultReceived =
+        (await xom.balanceOf(await vault.getAddress())) - vaultBefore;
 
-      const totalReceived = oddaoReceived + stakingReceived + protocolReceived;
-
-      // Full year should be exactly 10 XOM
-      expect(totalReceived).to.equal(FEE_PER_YEAR);
-
-      // Verify the individual shares
-      expect(oddaoReceived).to.equal(
-        FEE_PER_YEAR - (FEE_PER_YEAR * STAKING_BPS) / BPS -
-        (FEE_PER_YEAR * PROTOCOL_BPS) / BPS
-      );
+      // Full year should be exactly 10 XOM to vault
+      expect(vaultReceived).to.equal(FEE_PER_YEAR);
     });
 
     it("should handle two users registering names with independent fees", async function () {
@@ -289,18 +274,16 @@ describe("TS-Contract Integration (G10 Audit Remediation)", function () {
         (FEE_PER_YEAR * BigInt(MIN_DURATION)) /
         BigInt(365 * 24 * 60 * 60);
 
-      const stakingBefore = await xom.balanceOf(stakingPool.address);
+      const vaultBefore = await xom.balanceOf(await vault.getAddress());
 
       // Two users register
       await commitAndRegister(user1, "alice", MIN_DURATION);
       await commitAndRegister(user2, "charlie", MIN_DURATION);
 
-      const expectedStakingTotal =
-        ((totalFee * STAKING_BPS) / BPS) * 2n;
-
+      // Vault received both fees
       expect(
-        (await xom.balanceOf(stakingPool.address)) - stakingBefore
-      ).to.equal(expectedStakingTotal);
+        (await xom.balanceOf(await vault.getAddress())) - vaultBefore
+      ).to.equal(totalFee * 2n);
 
       // Both names resolve
       expect(await ens.resolve("alice")).to.equal(user1.address);
@@ -311,11 +294,11 @@ describe("TS-Contract Integration (G10 Audit Remediation)", function () {
   // ═════════════════════════════════════════════════════════════════════
   //  3. CHAT FEE FLOW
   //     Deploy OmniChatFee + MockERC20 (XOM), pay a message fee,
-  //     verify 70/20/10 push distribution.
+  //     verify fees route 100% to UnifiedFeeVault.
   // ═════════════════════════════════════════════════════════════════════
 
-  describe("3. Chat Fee Flow (OmniChatFee + XOM)", function () {
-    let chatFee, xom;
+  describe("3. Chat Fee Flow (OmniChatFee → UnifiedFeeVault)", function () {
+    let chatFee, vault, xom;
 
     const BASE_FEE = ethers.parseEther("0.001"); // 0.001 XOM
     const FREE_TIER_LIMIT = 20;
@@ -327,19 +310,31 @@ describe("TS-Contract Integration (G10 Audit Remediation)", function () {
       xom = await MockERC20.deploy("OmniCoin", "XOM");
       await xom.waitForDeployment();
 
-      // Deploy OmniChatFee (5 params)
+      // Deploy UnifiedFeeVault
+      const Vault = await ethers.getContractFactory("UnifiedFeeVault");
+      vault = await upgrades.deployProxy(
+        Vault,
+        [admin.address, stakingPool.address, protocolTreasury.address],
+        {
+          initializer: "initialize",
+          kind: "uups",
+          constructorArgs: [ethers.ZeroAddress],
+          unsafeAllow: ["constructor"]
+        }
+      );
+      await vault.waitForDeployment();
+
+      // Deploy OmniChatFee with feeVault (4 params)
       const OmniChatFee = await ethers.getContractFactory("OmniChatFee");
       chatFee = await OmniChatFee.deploy(
         await xom.getAddress(),
-        stakingPool.address,
-        oddaoTreasury.address,
-        protocolTreasury.address,
+        await vault.getAddress(),
         BASE_FEE,
         ethers.ZeroAddress
       );
       await chatFee.waitForDeployment();
 
-      // Mint and approve
+      // Mint and approve — user approves chatFee (safeTransferFrom)
       const mintAmount = ethers.parseEther("1000");
       await xom.mint(user1.address, mintAmount);
       await xom
@@ -365,7 +360,7 @@ describe("TS-Contract Integration (G10 Audit Remediation)", function () {
       ).to.equal(0);
     });
 
-    it("should distribute paid message fee 70/20/10 after free tier", async function () {
+    it("should route paid message fee 100% to vault after free tier", async function () {
       // Exhaust free tier
       for (let i = 0; i < FREE_TIER_LIMIT; i++) {
         await chatFee
@@ -373,33 +368,18 @@ describe("TS-Contract Integration (G10 Audit Remediation)", function () {
           .payMessageFee(channelId, validator1.address);
       }
 
-      // Snapshot balances
-      const oddaoBefore = await xom.balanceOf(oddaoTreasury.address);
-      const stakingBefore = await xom.balanceOf(stakingPool.address);
-      const protocolBefore = await xom.balanceOf(
-        protocolTreasury.address
-      );
+      // Snapshot vault balance
+      const vaultBefore = await xom.balanceOf(await vault.getAddress());
 
       // Send a paid message
       await chatFee
         .connect(user1)
         .payMessageFee(channelId, validator1.address);
 
-      // Calculate expected splits
-      const stakingShare = (BASE_FEE * STAKING_BPS) / BPS;
-      const protocolShare = (BASE_FEE * PROTOCOL_BPS) / BPS;
-      const oddaoShare = BASE_FEE - stakingShare - protocolShare;
-
-      // Verify distribution
+      // Verify 100% went to vault
       expect(
-        (await xom.balanceOf(oddaoTreasury.address)) - oddaoBefore
-      ).to.equal(oddaoShare);
-      expect(
-        (await xom.balanceOf(stakingPool.address)) - stakingBefore
-      ).to.equal(stakingShare);
-      expect(
-        (await xom.balanceOf(protocolTreasury.address)) - protocolBefore
-      ).to.equal(protocolShare);
+        (await xom.balanceOf(await vault.getAddress())) - vaultBefore
+      ).to.equal(BASE_FEE);
 
       // Contract should hold zero (push pattern)
       expect(
@@ -407,32 +387,18 @@ describe("TS-Contract Integration (G10 Audit Remediation)", function () {
       ).to.equal(0n);
     });
 
-    it("should distribute bulk fee (10x) with correct 70/20/10 split", async function () {
+    it("should route bulk fee (10x) to vault", async function () {
       const bulkFee = BASE_FEE * 10n;
 
-      const oddaoBefore = await xom.balanceOf(oddaoTreasury.address);
-      const stakingBefore = await xom.balanceOf(stakingPool.address);
-      const protocolBefore = await xom.balanceOf(
-        protocolTreasury.address
-      );
+      const vaultBefore = await xom.balanceOf(await vault.getAddress());
 
       await chatFee
         .connect(user1)
         .payBulkMessageFee(channelId, validator1.address);
 
-      const stakingShare = (bulkFee * STAKING_BPS) / BPS;
-      const protocolShare = (bulkFee * PROTOCOL_BPS) / BPS;
-      const oddaoShare = bulkFee - stakingShare - protocolShare;
-
       expect(
-        (await xom.balanceOf(oddaoTreasury.address)) - oddaoBefore
-      ).to.equal(oddaoShare);
-      expect(
-        (await xom.balanceOf(stakingPool.address)) - stakingBefore
-      ).to.equal(stakingShare);
-      expect(
-        (await xom.balanceOf(protocolTreasury.address)) - protocolBefore
-      ).to.equal(protocolShare);
+        (await xom.balanceOf(await vault.getAddress())) - vaultBefore
+      ).to.equal(bulkFee);
     });
 
     it("should accumulate fees correctly across multiple paid messages", async function () {
@@ -443,7 +409,7 @@ describe("TS-Contract Integration (G10 Audit Remediation)", function () {
           .payMessageFee(channelId, validator1.address);
       }
 
-      const oddaoBefore = await xom.balanceOf(oddaoTreasury.address);
+      const vaultBefore = await xom.balanceOf(await vault.getAddress());
 
       // Send 5 paid messages
       const messageCount = 5;
@@ -454,13 +420,10 @@ describe("TS-Contract Integration (G10 Audit Remediation)", function () {
       }
 
       const totalFee = BASE_FEE * BigInt(messageCount);
-      const stakingTotal = (totalFee * STAKING_BPS) / BPS;
-      const protocolTotal = (totalFee * PROTOCOL_BPS) / BPS;
-      const oddaoTotal = totalFee - stakingTotal - protocolTotal;
 
       expect(
-        (await xom.balanceOf(oddaoTreasury.address)) - oddaoBefore
-      ).to.equal(oddaoTotal);
+        (await xom.balanceOf(await vault.getAddress())) - vaultBefore
+      ).to.equal(totalFee);
 
       expect(await chatFee.totalFeesCollected()).to.equal(totalFee);
     });
@@ -611,17 +574,15 @@ describe("TS-Contract Integration (G10 Audit Remediation)", function () {
 
   // ═════════════════════════════════════════════════════════════════════
   //  5. CROSS-CONTRACT FEE CONSISTENCY
-  //     Verify that the 70/20/10 math is identical across all
-  //     fee-distributing contracts: UnifiedFeeVault, OmniENS,
-  //     OmniChatFee. This ensures the TS validator layer sees
-  //     consistent splits regardless of which contract processes
-  //     the fee.
+  //     Verify that all fee-generating contracts correctly route 100%
+  //     to the UnifiedFeeVault, which owns the canonical 70/20/10 BPS
+  //     constants. This ensures the TS validator layer sees consistent
+  //     splits regardless of which contract processes the fee.
   // ═════════════════════════════════════════════════════════════════════
 
-  describe("5. Cross-Contract Fee Consistency", function () {
+  describe("5. Cross-Contract Fee Consistency (vault-mediated)", function () {
     let vault, ens, chatFee, xom;
 
-    const FEE_AMOUNT = ethers.parseEther("1000");
     const BASE_CHAT_FEE = ethers.parseEther("0.001");
     const MIN_COMMITMENT_AGE = 60;
     const MIN_DURATION = 30 * 24 * 60 * 60;
@@ -631,7 +592,7 @@ describe("TS-Contract Integration (G10 Audit Remediation)", function () {
       xom = await MockERC20.deploy("OmniCoin", "XOM");
       await xom.waitForDeployment();
 
-      // Deploy vault
+      // Deploy vault (canonical 70/20/10 split owner)
       const Vault = await ethers.getContractFactory("UnifiedFeeVault");
       vault = await upgrades.deployProxy(
         Vault,
@@ -645,50 +606,45 @@ describe("TS-Contract Integration (G10 Audit Remediation)", function () {
       );
       await vault.waitForDeployment();
 
-      // Deploy ENS (including trustedForwarder)
+      const vaultAddr = await vault.getAddress();
+
+      // Deploy ENS with vault as feeVault
       const OmniENS = await ethers.getContractFactory("OmniENS");
       ens = await OmniENS.deploy(
         await xom.getAddress(),
-        oddaoTreasury.address,
-        stakingPool.address,
-        protocolTreasury.address,
+        vaultAddr,
         ethers.ZeroAddress
       );
       await ens.waitForDeployment();
 
-      // Deploy ChatFee (including trustedForwarder)
+      // Deploy ChatFee with vault as feeVault
       const OmniChatFee = await ethers.getContractFactory("OmniChatFee");
       chatFee = await OmniChatFee.deploy(
         await xom.getAddress(),
-        stakingPool.address,
-        oddaoTreasury.address,
-        protocolTreasury.address,
+        vaultAddr,
         BASE_CHAT_FEE,
         ethers.ZeroAddress
       );
       await chatFee.waitForDeployment();
     });
 
-    it("should produce identical per-BPS splits for any given fee amount", async function () {
-      // All three contracts use the same 70/20/10 BPS constants
-      // Vault
+    it("should have canonical 70/20/10 BPS constants in vault", async function () {
+      // The vault is the single source of truth for fee splits
       expect(await vault.ODDAO_BPS()).to.equal(7000n);
       expect(await vault.STAKING_BPS()).to.equal(2000n);
       expect(await vault.PROTOCOL_BPS()).to.equal(1000n);
-
-      // ENS
-      expect(await ens.ODDAO_SHARE()).to.equal(7000n);
-      expect(await ens.STAKING_SHARE()).to.equal(2000n);
-      expect(await ens.PROTOCOL_SHARE()).to.equal(1000n);
-
-      // ChatFee
-      expect(await chatFee.ODDAO_SHARE()).to.equal(7000n);
-      expect(await chatFee.STAKING_SHARE()).to.equal(2000n);
-      expect(await chatFee.PROTOCOL_SHARE()).to.equal(1000n);
     });
 
-    it("should verify same rounding behavior (remainder goes to ODDAO/protocol)", async function () {
-      // Test with an amount that causes rounding
+    it("should route ENS and ChatFee fees to the same vault", async function () {
+      const vaultAddr = await vault.getAddress();
+
+      // Both contracts point to the same vault
+      expect(await ens.feeVault()).to.equal(vaultAddr);
+      expect(await chatFee.feeVault()).to.equal(vaultAddr);
+    });
+
+    it("should verify vault rounding behavior (remainder goes to protocol)", async function () {
+      // Test with amounts that cause rounding
       const amounts = [
         3n, // extreme dust
         ethers.parseEther("33.333333333333333333"),
@@ -697,10 +653,9 @@ describe("TS-Contract Integration (G10 Audit Remediation)", function () {
       ];
 
       for (const amount of amounts) {
-        const oddao = amount - (amount * STAKING_BPS) / BPS -
-          ((amount * PROTOCOL_BPS) / BPS);
+        const oddao = (amount * ODDAO_BPS) / BPS;
         const staking = (amount * STAKING_BPS) / BPS;
-        const protocol = (amount * PROTOCOL_BPS) / BPS;
+        const protocol = amount - oddao - staking;
 
         // Sum must always equal input
         expect(oddao + staking + protocol).to.equal(
@@ -891,86 +846,6 @@ describe("TS-Contract Integration (G10 Audit Remediation)", function () {
   });
 
   // ═════════════════════════════════════════════════════════════════════
-  //  7. ARBITRATION FEE SETTLEMENT
-  //     Verify depositArbitrationFee with 5% fee and 70/20/10 split.
-  // ═════════════════════════════════════════════════════════════════════
-
-  describe("7. Arbitration Fee Settlement (depositArbitrationFee)", function () {
-    let vault, xom;
-
-    const DISPUTE_AMOUNT = ethers.parseEther("200000");
-
-    beforeEach(async function () {
-      const MockERC20 = await ethers.getContractFactory("MockERC20");
-      xom = await MockERC20.deploy("OmniCoin", "XOM");
-      await xom.waitForDeployment();
-
-      const Vault = await ethers.getContractFactory("UnifiedFeeVault");
-      vault = await upgrades.deployProxy(
-        Vault,
-        [admin.address, stakingPool.address, protocolTreasury.address],
-        {
-          initializer: "initialize",
-          kind: "uups",
-          constructorArgs: [ethers.ZeroAddress],
-          unsafeAllow: ["constructor"]
-        }
-      );
-      await vault.waitForDeployment();
-
-      const DEPOSITOR_ROLE = await vault.DEPOSITOR_ROLE();
-      await vault
-        .connect(admin)
-        .grantRole(DEPOSITOR_ROLE, depositor.address);
-
-      // Fund depositor with 5% of dispute amount
-      const totalFee = (DISPUTE_AMOUNT * 500n) / 10000n;
-      await xom.mint(depositor.address, totalFee);
-      await xom.connect(depositor).approve(vault.target, totalFee);
-    });
-
-    it("should deposit arbitration fee and split 70% arbitrator, 20% ODDAO, 10% protocol treasury", async function () {
-      const arbitrator = user1;
-
-      const protocolBefore = await xom.balanceOf(protocolTreasury.address);
-
-      await vault.connect(depositor).depositArbitrationFee(
-        xom.target,
-        DISPUTE_AMOUNT,
-        arbitrator.address
-      );
-
-      const totalFee = (DISPUTE_AMOUNT * 500n) / 10000n;
-      const arbShare = (totalFee * 7000n) / 10000n;
-      const oddaoShare = (totalFee * 2000n) / 10000n;
-      const protocolShare = totalFee - arbShare - oddaoShare;
-
-      // Arbitrator share is claimable
-      expect(
-        await vault.getClaimable(arbitrator.address, xom.target)
-      ).to.equal(arbShare);
-
-      // ODDAO share is in pendingBridge
-      expect(await vault.pendingBridge(xom.target)).to.equal(oddaoShare);
-
-      // Protocol treasury received its push share
-      expect(
-        (await xom.balanceOf(protocolTreasury.address)) - protocolBefore
-      ).to.equal(protocolShare);
-
-      // Total distributed
-      expect(await vault.totalDistributed(xom.target)).to.equal(totalFee);
-
-      // Arbitrator claims
-      const arbBefore = await xom.balanceOf(arbitrator.address);
-      await vault.connect(arbitrator).claimPending(xom.target);
-      expect(
-        (await xom.balanceOf(arbitrator.address)) - arbBefore
-      ).to.equal(arbShare);
-    });
-  });
-
-  // ═════════════════════════════════════════════════════════════════════
   //  8. MULTI-TOKEN VAULT INTEGRATION
   //     Verify the vault handles XOM and a secondary token (USDC)
   //     independently with correct accounting.
@@ -1077,12 +952,12 @@ describe("TS-Contract Integration (G10 Audit Remediation)", function () {
   });
 
   // ═════════════════════════════════════════════════════════════════════
-  //  9. FULL LIFECYCLE: ENS -> VAULT EQUIVALENCE
-  //     Compare ENS direct distribution with vault-mediated distribution
-  //     to verify equivalent outcomes for the same fee amount.
+  //  9. FULL LIFECYCLE: ENS → VAULT → DISTRIBUTE
+  //     Register a name via OmniENS, verify fee flows to vault,
+  //     then distribute through vault and verify 70/20/10 split.
   // ═════════════════════════════════════════════════════════════════════
 
-  describe("9. Full Lifecycle: ENS vs Vault Fee Equivalence", function () {
+  describe("9. Full Lifecycle: ENS → Vault → 70/20/10 Distribution", function () {
     let ens, vault, xom;
 
     const FEE_PER_YEAR = ethers.parseEther("10");
@@ -1094,18 +969,7 @@ describe("TS-Contract Integration (G10 Audit Remediation)", function () {
       xom = await MockERC20.deploy("OmniCoin", "XOM");
       await xom.waitForDeployment();
 
-      // Deploy ENS (pushes fees directly to recipients, including trustedForwarder)
-      const OmniENS = await ethers.getContractFactory("OmniENS");
-      ens = await OmniENS.deploy(
-        await xom.getAddress(),
-        oddaoTreasury.address,
-        stakingPool.address,
-        protocolTreasury.address,
-        ethers.ZeroAddress
-      );
-      await ens.waitForDeployment();
-
-      // Deploy vault (accumulates then distributes)
+      // Deploy vault (accumulates then distributes 70/20/10)
       const Vault = await ethers.getContractFactory("UnifiedFeeVault");
       vault = await upgrades.deployProxy(
         Vault,
@@ -1118,19 +982,29 @@ describe("TS-Contract Integration (G10 Audit Remediation)", function () {
         }
       );
       await vault.waitForDeployment();
+
+      // Deploy ENS with vault as feeVault
+      const OmniENS = await ethers.getContractFactory("OmniENS");
+      ens = await OmniENS.deploy(
+        await xom.getAddress(),
+        await vault.getAddress(),
+        ethers.ZeroAddress
+      );
+      await ens.waitForDeployment();
     });
 
-    it("should produce the same staking share for 10 XOM whether pushed (ENS) or vault-mediated", async function () {
+    it("should produce correct 70/20/10 split for 10 XOM ENS fee via vault", async function () {
       const fee = FEE_PER_YEAR;
 
-      // Calculate expected staking share using same math as contracts
+      // Calculate expected splits
+      const expectedOddao = (fee * ODDAO_BPS) / BPS;
       const expectedStaking = (fee * STAKING_BPS) / BPS;
+      const expectedProtocol = fee - expectedOddao - expectedStaking;
 
-      // Path A: ENS direct push
+      // Register a name — fee goes ENS → vault
       await xom.mint(user1.address, fee);
       await xom.connect(user1).approve(await ens.getAddress(), fee);
 
-      const stakingBeforeENS = await xom.balanceOf(stakingPool.address);
       const secret = ethers.hexlify(ethers.randomBytes(32));
       const commitment = await ens.makeCommitment(
         "testname", user1.address, secret
@@ -1138,27 +1012,27 @@ describe("TS-Contract Integration (G10 Audit Remediation)", function () {
       await ens.connect(user1).commit(commitment);
       await time.increase(MIN_COMMITMENT_AGE + 1);
       await ens.connect(user1).register("testname", DURATION, secret);
-      const stakingAfterENS = await xom.balanceOf(stakingPool.address);
-      const ensStakingShare = stakingAfterENS - stakingBeforeENS;
 
-      // Path B: Vault deposit + distribute
-      const DEPOSITOR_ROLE = await vault.DEPOSITOR_ROLE();
-      await vault
-        .connect(admin)
-        .grantRole(DEPOSITOR_ROLE, depositor.address);
-      await xom.mint(depositor.address, fee);
-      await xom.connect(depositor).approve(vault.target, fee);
-      await vault.connect(depositor).deposit(xom.target, fee);
+      // Verify vault received the fee
+      expect(await xom.balanceOf(await vault.getAddress())).to.equal(fee);
 
-      const stakingBeforeVault = await xom.balanceOf(stakingPool.address);
-      await vault.connect(user1).distribute(xom.target);
-      const stakingAfterVault = await xom.balanceOf(stakingPool.address);
-      const vaultStakingShare = stakingAfterVault - stakingBeforeVault;
+      // Distribute through vault
+      const stakingBefore = await xom.balanceOf(stakingPool.address);
+      const protocolBefore = await xom.balanceOf(protocolTreasury.address);
 
-      // Both paths should produce the same staking share
-      expect(ensStakingShare).to.equal(expectedStaking);
-      expect(vaultStakingShare).to.equal(expectedStaking);
-      expect(ensStakingShare).to.equal(vaultStakingShare);
+      await vault.connect(user2).distribute(xom.target);
+
+      // Verify 70/20/10 split
+      expect(await vault.pendingBridge(xom.target)).to.equal(expectedOddao);
+      expect(
+        (await xom.balanceOf(stakingPool.address)) - stakingBefore
+      ).to.equal(expectedStaking);
+      expect(
+        (await xom.balanceOf(protocolTreasury.address)) - protocolBefore
+      ).to.equal(expectedProtocol);
+
+      // Total distributed matches fee
+      expect(await vault.totalDistributed(xom.target)).to.equal(fee);
     });
   });
 });

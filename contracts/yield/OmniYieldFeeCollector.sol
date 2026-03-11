@@ -9,7 +9,8 @@ import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol
  * @title OmniYieldFeeCollector
  * @author OmniCoin Development Team
  * @notice Collects a performance fee on yield earned through OmniBazaar
- *         and distributes it using the protocol's standard 70/20/10 split.
+ *         and forwards the entire fee to the UnifiedFeeVault for
+ *         protocol-standard 70/20/10 distribution.
  * @dev Users deposit directly into external DeFi protocols (Curve, Convex,
  *      Aave, Pendle, etc.). When they withdraw yield through OmniBazaar's
  *      UI, this contract collects the performance fee atomically.
@@ -18,17 +19,13 @@ import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol
  *   1. User withdraws yield from external protocol (off-chain step).
  *   2. User calls `collectFeeAndForward()` with their yield tokens.
  *   3. Contract deducts `performanceFeeBps` from the actual received amount.
- *   4. Fee is split 70/20/10 to ODDAO/stakingPool/protocol recipients.
+ *   4. Fee is forwarded in full to the UnifiedFeeVault, which handles
+ *      the 70/20/10 split (ODDAO / staking pool / protocol treasury).
  *   5. Net yield forwarded to user.
- *
- * Fee distribution (OmniBazaar standard 70/20/10 pattern):
- *   - 70% to oddaoTreasury
- *   - 20% to stakingPool
- *   - 10% to protocolTreasury
  *
  * Trustless guarantees:
  *   - Performance fee percentage is immutable (set at deploy).
- *   - All three recipient addresses are immutable (set at deploy).
+ *   - Fee vault address is immutable (set at deploy).
  *   - Contract never holds user funds between transactions.
  *   - All token transfers use SafeERC20.
  *   - Reentrancy guard on every external entry point.
@@ -47,24 +44,13 @@ contract OmniYieldFeeCollector is ReentrancyGuard {
     /// @notice Maximum allowed performance fee (10% = 1000 bps).
     uint256 private constant MAX_FEE_BPS = 1000;
 
-    /// @notice ODDAO share (70% = 7000 bps of fee).
-    uint256 private constant ODDAO_SHARE_BPS = 7000;
-
-    /// @notice Staking Pool share (20% = 2000 bps of fee).
-    uint256 private constant STAKING_SHARE_BPS = 2000;
-
     // -----------------------------------------------------------------------
     // State Variables (immutable + mutable)
     // -----------------------------------------------------------------------
 
-    /// @notice ODDAO treasury recipient (70% of fee).
-    address public immutable oddaoTreasury; // solhint-disable-line immutable-vars-naming
-
-    /// @notice Staking pool recipient (20% of fee).
-    address public immutable stakingPool; // solhint-disable-line immutable-vars-naming
-
-    /// @notice Protocol treasury recipient (10% of fee).
-    address public immutable protocolTreasury; // solhint-disable-line immutable-vars-naming
+    /// @notice UnifiedFeeVault address (receives 100% of collected fees
+    ///         for protocol-standard 70/20/10 distribution).
+    address public immutable feeVault; // solhint-disable-line immutable-vars-naming
 
     /// @notice Performance fee in basis points (e.g., 500 = 5%).
     uint256 public immutable performanceFeeBps; // solhint-disable-line immutable-vars-naming
@@ -76,11 +62,12 @@ contract OmniYieldFeeCollector is ReentrancyGuard {
     // Events
     // -----------------------------------------------------------------------
 
-    /// @notice Emitted when a performance fee is collected and distributed.
+    /// @notice Emitted when a performance fee is collected and forwarded
+    ///         to the UnifiedFeeVault.
     /// @param user Address of the yield earner.
     /// @param token The yield token.
     /// @param actualReceived Actual amount received (after any transfer fee).
-    /// @param totalFee Total fee collected across all recipients.
+    /// @param totalFee Total fee forwarded to the UnifiedFeeVault.
     /// @param netAmount Net yield forwarded to user.
     event FeeCollected(
         address indexed user,
@@ -108,7 +95,7 @@ contract OmniYieldFeeCollector is ReentrancyGuard {
     /// @notice Thrown when token address is the zero address.
     error InvalidTokenAddress();
 
-    /// @notice Thrown when a recipient address is the zero address.
+    /// @notice Thrown when the fee vault address is the zero address.
     error InvalidRecipient();
 
     /// @notice Thrown when performance fee exceeds safety cap.
@@ -116,29 +103,28 @@ contract OmniYieldFeeCollector is ReentrancyGuard {
     /// @param maxBps The maximum allowed fee in basis points
     error FeeExceedsCap(uint256 feeBps, uint256 maxBps);
 
-    /// @notice Thrown when caller is not the ODDAO treasury.
-    error NotOddaoTreasury();
+    /// @notice Thrown when caller is not the UnifiedFeeVault.
+    error NotFeeVault();
 
     // -----------------------------------------------------------------------
     // Constructor
     // -----------------------------------------------------------------------
 
     /**
-     * @notice Deploy the yield fee collector with 70/20/10 split recipients.
-     * @param _oddaoTreasury     ODDAO treasury recipient (70%).
-     * @param _stakingPool       Staking pool recipient (20%).
-     * @param _protocolTreasury  Protocol treasury recipient (10%).
-     * @param _performanceFeeBps Performance fee in basis points (max 1000).
+     * @notice Deploy the yield fee collector with a UnifiedFeeVault
+     *         destination.
+     * @dev The vault handles 70/20/10 distribution internally, so this
+     *      contract only needs a single recipient address.
+     * @param _feeVault            UnifiedFeeVault address (receives 100%
+     *                             of collected fees).
+     * @param _performanceFeeBps   Performance fee in basis points
+     *                             (max 1000 = 10%).
      */
     constructor(
-        address _oddaoTreasury,
-        address _stakingPool,
-        address _protocolTreasury,
+        address _feeVault,
         uint256 _performanceFeeBps
     ) {
-        if (_oddaoTreasury == address(0)) revert InvalidRecipient();
-        if (_stakingPool == address(0)) revert InvalidRecipient();
-        if (_protocolTreasury == address(0)) revert InvalidRecipient();
+        if (_feeVault == address(0)) revert InvalidRecipient();
         if (
             _performanceFeeBps == 0
             || _performanceFeeBps > MAX_FEE_BPS
@@ -146,9 +132,7 @@ contract OmniYieldFeeCollector is ReentrancyGuard {
             revert FeeExceedsCap(_performanceFeeBps, MAX_FEE_BPS);
         }
 
-        oddaoTreasury = _oddaoTreasury;
-        stakingPool = _stakingPool;
-        protocolTreasury = _protocolTreasury;
+        feeVault = _feeVault;
         performanceFeeBps = _performanceFeeBps;
     }
 
@@ -164,6 +148,8 @@ contract OmniYieldFeeCollector is ReentrancyGuard {
      *      `token`. The actual received amount may differ from
      *      `yieldAmount` for fee-on-transfer tokens. Fee and net
      *      amounts are calculated from the actual received balance.
+     *      The entire fee is forwarded to the UnifiedFeeVault, which
+     *      handles the protocol-standard 70/20/10 split.
      * @param token ERC20 yield token.
      * @param yieldAmount Total yield amount to transfer from user.
      */
@@ -191,7 +177,7 @@ contract OmniYieldFeeCollector is ReentrancyGuard {
             (actualReceived * performanceFeeBps) / BPS_DENOMINATOR;
         uint256 netAmount = actualReceived - totalFee;
 
-        // Distribute fee using 70/20/10 split
+        // Forward entire fee to UnifiedFeeVault
         if (totalFee > 0) {
             _distributeFee(token, totalFee);
             totalFeesCollected[token] += totalFee;
@@ -209,17 +195,17 @@ contract OmniYieldFeeCollector is ReentrancyGuard {
 
     /**
      * @notice Rescue tokens accidentally sent to this contract.
-     * @dev Only callable by oddaoTreasury. Sends all rescued
-     *      tokens to the oddaoTreasury address.
+     * @dev Only callable by the UnifiedFeeVault. Sends all rescued
+     *      tokens to the feeVault address.
      * @param token ERC20 token to rescue.
      */
     function rescueTokens(address token) external nonReentrant {
-        if (msg.sender != oddaoTreasury) {
-            revert NotOddaoTreasury();
+        if (msg.sender != feeVault) {
+            revert NotFeeVault();
         }
         uint256 balance = IERC20(token).balanceOf(address(this));
         if (balance > 0) {
-            IERC20(token).safeTransfer(oddaoTreasury, balance);
+            IERC20(token).safeTransfer(feeVault, balance);
             emit TokensRescued(token, balance);
         }
     }
@@ -250,39 +236,16 @@ contract OmniYieldFeeCollector is ReentrancyGuard {
     // -----------------------------------------------------------------------
 
     /**
-     * @notice Distribute the total fee using OmniBazaar 70/20/10 split.
-     * @dev ODDAO treasury receives 70%, staking pool receives 20%,
-     *      and protocol treasury receives the remainder (10%) to
-     *      avoid rounding dust loss.
-     * @param token The ERC20 token to distribute.
-     * @param totalFee The total fee amount to split.
+     * @notice Forward the total fee to the UnifiedFeeVault.
+     * @dev The vault handles the protocol-standard 70/20/10 split
+     *      (ODDAO / staking pool / protocol treasury) internally.
+     * @param token The ERC20 token to forward.
+     * @param totalFee The total fee amount to send to the vault.
      */
     function _distributeFee(
         address token,
         uint256 totalFee
     ) internal {
-        uint256 oddaoShare =
-            (totalFee * ODDAO_SHARE_BPS) / BPS_DENOMINATOR;
-        uint256 stakingShare =
-            (totalFee * STAKING_SHARE_BPS) / BPS_DENOMINATOR;
-        // Protocol gets the remainder to avoid rounding dust
-        uint256 protocolShare =
-            totalFee - oddaoShare - stakingShare;
-
-        if (oddaoShare > 0) {
-            IERC20(token).safeTransfer(
-                oddaoTreasury, oddaoShare
-            );
-        }
-        if (stakingShare > 0) {
-            IERC20(token).safeTransfer(
-                stakingPool, stakingShare
-            );
-        }
-        if (protocolShare > 0) {
-            IERC20(token).safeTransfer(
-                protocolTreasury, protocolShare
-            );
-        }
+        IERC20(token).safeTransfer(feeVault, totalFee);
     }
 }

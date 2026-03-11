@@ -5,7 +5,7 @@ describe("OmniFractionalNFT", function () {
   let fractional;
   let mockNFT;
   let mockERC20;
-  let owner, feeRecipient, user1, user2, user3;
+  let owner, feeVault, user1, user2, user3;
 
   const CREATION_FEE_BPS = 100; // 1%
   const TOTAL_SHARES = ethers.parseEther("1000"); // 1000 fraction tokens
@@ -14,7 +14,7 @@ describe("OmniFractionalNFT", function () {
   const FRACTION_SYMBOL = "fPUNK1";
 
   beforeEach(async function () {
-    [owner, feeRecipient, user1, user2, user3] = await ethers.getSigners();
+    [owner, feeVault, user1, user2, user3] = await ethers.getSigners();
 
     // Deploy mock NFT collection
     const MockERC721 = await ethers.getContractFactory("MockERC721");
@@ -27,7 +27,7 @@ describe("OmniFractionalNFT", function () {
     // Deploy OmniFractionalNFT
     const OmniFractionalNFT = await ethers.getContractFactory("OmniFractionalNFT");
     fractional = await OmniFractionalNFT.deploy(
-      feeRecipient.address,
+      feeVault.address,
       CREATION_FEE_BPS,
       ethers.ZeroAddress
     );
@@ -76,8 +76,8 @@ describe("OmniFractionalNFT", function () {
       expect(await fractional.owner()).to.equal(owner.address);
     });
 
-    it("Should set the correct fee recipient", async function () {
-      expect(await fractional.feeRecipient()).to.equal(feeRecipient.address);
+    it("Should set the correct fee vault", async function () {
+      expect(await fractional.feeVault()).to.equal(feeVault.address);
     });
 
     it("Should set the correct creation fee", async function () {
@@ -91,13 +91,13 @@ describe("OmniFractionalNFT", function () {
     it("Should reject creation fee above MAX_CREATION_FEE_BPS (500)", async function () {
       const OmniFractionalNFT = await ethers.getContractFactory("OmniFractionalNFT");
       await expect(
-        OmniFractionalNFT.deploy(feeRecipient.address, 501, ethers.ZeroAddress)
+        OmniFractionalNFT.deploy(feeVault.address, 501, ethers.ZeroAddress)
       ).to.be.revertedWithCustomError(fractional, "FeeTooHigh");
     });
 
     it("Should allow creation fee exactly at MAX_CREATION_FEE_BPS (500)", async function () {
       const OmniFractionalNFT = await ethers.getContractFactory("OmniFractionalNFT");
-      const maxFee = await OmniFractionalNFT.deploy(feeRecipient.address, 500, ethers.ZeroAddress);
+      const maxFee = await OmniFractionalNFT.deploy(feeVault.address, 500, ethers.ZeroAddress);
       expect(await maxFee.creationFeeBps()).to.equal(500);
     });
   });
@@ -793,15 +793,15 @@ describe("OmniFractionalNFT", function () {
       });
     });
 
-    describe("setFeeRecipient", function () {
-      it("Should allow owner to update fee recipient", async function () {
-        await fractional.connect(owner).setFeeRecipient(user3.address);
-        expect(await fractional.feeRecipient()).to.equal(user3.address);
+    describe("setFeeVault", function () {
+      it("Should allow owner to update fee vault", async function () {
+        await fractional.connect(owner).setFeeVault(user3.address);
+        expect(await fractional.feeVault()).to.equal(user3.address);
       });
 
       it("Should reject non-owner caller", async function () {
         await expect(
-          fractional.connect(user1).setFeeRecipient(user3.address)
+          fractional.connect(user1).setFeeVault(user3.address)
         ).to.be.revertedWithCustomError(fractional, "OwnableUnauthorizedAccount");
       });
     });
