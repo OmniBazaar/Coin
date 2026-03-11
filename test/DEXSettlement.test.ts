@@ -16,6 +16,28 @@ const { expect } = require('chai');
 const { ethers } = require('hardhat');
 
 /**
+ * Helper to compute a future deadline based on the current EVM block timestamp.
+ * Using the EVM timestamp (not Date.now()) is critical because earlier test suites
+ * call time.increase() which advances the EVM clock far beyond wall-clock time.
+ * @param offsetSeconds Seconds into the future (default: 1 year = 365 days)
+ * @returns A deadline timestamp guaranteed to be in the EVM future
+ */
+async function getFutureDeadline(offsetSeconds = 86400 * 365): Promise<number> {
+    const latestBlock = await ethers.provider.getBlock("latest");
+    return latestBlock!.timestamp + offsetSeconds;
+}
+
+/**
+ * Helper to compute a past deadline based on the current EVM block timestamp.
+ * @param offsetSeconds Seconds in the past (default: 3600 = 1 hour)
+ * @returns A deadline timestamp guaranteed to be in the EVM past
+ */
+async function getPastDeadline(offsetSeconds = 3600): Promise<number> {
+    const latestBlock = await ethers.provider.getBlock("latest");
+    return latestBlock!.timestamp - offsetSeconds;
+}
+
+/**
  * Helper function to sign order with EIP-712
  * @param order Order to sign
  * @param signer Signer wallet
@@ -106,7 +128,8 @@ describe("DEXSettlement - Trustless Architecture", function () {
         dexSettlement = await DEXSettlement.deploy(
             liquidityPoolAddress,      // 70% of fees -> Liquidity Providers
             oddaoAddress,              // 20% of fees -> ODDAO
-            protocolTreasuryAddress    // 10% of fees -> Protocol Treasury
+            protocolTreasuryAddress,   // 10% of fees -> Protocol Treasury
+            ethers.ZeroAddress         // ERC-2771 trusted forwarder (none in tests)
         );
         await dexSettlement.waitForDeployment();
 
@@ -148,7 +171,7 @@ describe("DEXSettlement - Trustless Architecture", function () {
                 amountIn: ethers.parseUnits("100", 18),
                 amountOut: ethers.parseUnits("100", 18),
                 price: 10000, // 1:1 price (in basis points)
-                deadline: Math.floor(Date.now() / 1000) + 3600,
+                deadline: await getFutureDeadline(),
                 salt: ethers.randomBytes(32),
                 matchingValidator: matchingValidatorAddress,
                 nonce: 0
@@ -167,7 +190,7 @@ describe("DEXSettlement - Trustless Architecture", function () {
                 amountIn: ethers.parseUnits("100", 18),
                 amountOut: ethers.parseUnits("100", 18),
                 price: 10000,
-                deadline: Math.floor(Date.now() / 1000) + 3600,
+                deadline: await getFutureDeadline(),
                 salt: ethers.randomBytes(32),
                 matchingValidator: matchingValidatorAddress,
                 nonce: 0
@@ -185,7 +208,7 @@ describe("DEXSettlement - Trustless Architecture", function () {
                 amountIn: ethers.parseUnits("100", 18),
                 amountOut: ethers.parseUnits("100", 18),
                 price: 10000,
-                deadline: Math.floor(Date.now() / 1000) + 3600,
+                deadline: await getFutureDeadline(),
                 salt: ethers.randomBytes(32),
                 matchingValidator: matchingValidatorAddress,
                 nonce: 0
@@ -208,7 +231,7 @@ describe("DEXSettlement - Trustless Architecture", function () {
                 amountIn: ethers.parseUnits("100", 18),
                 amountOut: ethers.parseUnits("100", 18),
                 price: 10000,
-                deadline: Math.floor(Date.now() / 1000) + 3600,
+                deadline: await getFutureDeadline(),
                 salt: ethers.randomBytes(32),
                 matchingValidator: matchingValidatorAddress,
                 nonce: 0
@@ -226,7 +249,7 @@ describe("DEXSettlement - Trustless Architecture", function () {
                 amountIn: ethers.parseUnits("100", 18),
                 amountOut: ethers.parseUnits("100", 18),
                 price: 10000,
-                deadline: Math.floor(Date.now() / 1000) + 3600,
+                deadline: await getFutureDeadline(),
                 salt: ethers.randomBytes(32),
                 matchingValidator: matchingValidatorAddress,
                 nonce: 0
@@ -269,7 +292,7 @@ describe("DEXSettlement - Trustless Architecture", function () {
                 amountIn: ethers.parseUnits("100", 18),
                 amountOut: ethers.parseUnits("100", 18),
                 price: 10000,
-                deadline: Math.floor(Date.now() / 1000) + 3600,
+                deadline: await getFutureDeadline(),
                 salt: ethers.hexlify(ethers.randomBytes(32)),
                 matchingValidator: matchingValidatorAddress,
                 nonce: 0
@@ -295,7 +318,7 @@ describe("DEXSettlement - Trustless Architecture", function () {
                 amountIn: ethers.parseUnits("100", 18),
                 amountOut: ethers.parseUnits("100", 18),
                 price: 10000,
-                deadline: Math.floor(Date.now() / 1000) + 3600,
+                deadline: await getFutureDeadline(),
                 salt: ethers.hexlify(ethers.randomBytes(32)),
                 matchingValidator: matchingValidatorAddress,
                 nonce: 0
@@ -319,7 +342,7 @@ describe("DEXSettlement - Trustless Architecture", function () {
                 amountIn: ethers.parseUnits("100", 18),
                 amountOut: ethers.parseUnits("100", 18),
                 price: 10000,
-                deadline: Math.floor(Date.now() / 1000) + 36000,
+                deadline: await getFutureDeadline(36000),
                 salt: ethers.hexlify(ethers.randomBytes(32)),
                 matchingValidator: matchingValidatorAddress,
                 nonce: 0
@@ -349,7 +372,7 @@ describe("DEXSettlement - Trustless Architecture", function () {
                 amountIn: ethers.parseUnits("100", 18),
                 amountOut: ethers.parseUnits("100", 18),
                 price: 10000,
-                deadline: Math.floor(Date.now() / 1000) + 3600,
+                deadline: await getFutureDeadline(),
                 salt: ethers.randomBytes(32),
                 matchingValidator: matchingValidatorAddress,
                 nonce: 0
@@ -363,7 +386,7 @@ describe("DEXSettlement - Trustless Architecture", function () {
                 amountIn: ethers.parseUnits("100", 18),
                 amountOut: ethers.parseUnits("100", 18),
                 price: 10000,
-                deadline: Math.floor(Date.now() / 1000) + 3600,
+                deadline: await getFutureDeadline(),
                 salt: ethers.randomBytes(32),
                 matchingValidator: matchingValidatorAddress,
                 nonce: 0
@@ -389,7 +412,7 @@ describe("DEXSettlement - Trustless Architecture", function () {
                 amountIn: ethers.parseUnits("100", 18),
                 amountOut: ethers.parseUnits("100", 18),
                 price: 10000,
-                deadline: Math.floor(Date.now() / 1000) + 3600,
+                deadline: await getFutureDeadline(),
                 salt: ethers.randomBytes(32),
                 matchingValidator: matchingValidatorAddress,
                 nonce: 0
@@ -403,7 +426,7 @@ describe("DEXSettlement - Trustless Architecture", function () {
                 amountIn: ethers.parseUnits("100", 18),
                 amountOut: ethers.parseUnits("100", 18),
                 price: 10000,
-                deadline: Math.floor(Date.now() / 1000) + 3600,
+                deadline: await getFutureDeadline(),
                 salt: ethers.randomBytes(32),
                 matchingValidator: matchingValidatorAddress,
                 nonce: 0
@@ -429,7 +452,7 @@ describe("DEXSettlement - Trustless Architecture", function () {
                 amountIn: ethers.parseUnits("100", 18),
                 amountOut: ethers.parseUnits("100", 18),
                 price: 10000,
-                deadline: Math.floor(Date.now() / 1000) + 3600,
+                deadline: await getFutureDeadline(),
                 salt: ethers.randomBytes(32),
                 matchingValidator: matchingValidatorAddress,
                 nonce: 0
@@ -443,7 +466,7 @@ describe("DEXSettlement - Trustless Architecture", function () {
                 amountIn: ethers.parseUnits("100", 18),
                 amountOut: ethers.parseUnits("100", 18),
                 price: 10000,
-                deadline: Math.floor(Date.now() / 1000) + 3600,
+                deadline: await getFutureDeadline(),
                 salt: ethers.randomBytes(32),
                 matchingValidator: matchingValidatorAddress,
                 nonce: 0
@@ -469,7 +492,7 @@ describe("DEXSettlement - Trustless Architecture", function () {
                 amountIn: ethers.parseUnits("100", 18),
                 amountOut: ethers.parseUnits("100", 18),
                 price: 15000, // Maker wants 1.5x
-                deadline: Math.floor(Date.now() / 1000) + 3600,
+                deadline: await getFutureDeadline(),
                 salt: ethers.randomBytes(32),
                 matchingValidator: matchingValidatorAddress,
                 nonce: 0
@@ -483,7 +506,7 @@ describe("DEXSettlement - Trustless Architecture", function () {
                 amountIn: ethers.parseUnits("100", 18),
                 amountOut: ethers.parseUnits("100", 18),
                 price: 10000, // Taker only pays 1x - mismatch!
-                deadline: Math.floor(Date.now() / 1000) + 3600,
+                deadline: await getFutureDeadline(),
                 salt: ethers.randomBytes(32),
                 matchingValidator: matchingValidatorAddress,
                 nonce: 0
@@ -511,7 +534,7 @@ describe("DEXSettlement - Trustless Architecture", function () {
                 amountIn: ethers.parseUnits("100", 18),
                 amountOut: ethers.parseUnits("100", 18),
                 price: 10000,
-                deadline: Math.floor(Date.now() / 1000) + 3600,
+                deadline: await getFutureDeadline(),
                 salt: ethers.randomBytes(32),
                 matchingValidator: matchingValidatorAddress,
                 nonce: 0
@@ -525,7 +548,7 @@ describe("DEXSettlement - Trustless Architecture", function () {
                 amountIn: ethers.parseUnits("100", 18),
                 amountOut: ethers.parseUnits("100", 18),
                 price: 10000,
-                deadline: Math.floor(Date.now() / 1000) + 3600,
+                deadline: await getFutureDeadline(),
                 salt: ethers.randomBytes(32),
                 matchingValidator: matchingValidatorAddress,
                 nonce: 0
@@ -554,7 +577,7 @@ describe("DEXSettlement - Trustless Architecture", function () {
                 amountIn: ethers.parseUnits("100", 18),
                 amountOut: ethers.parseUnits("100", 18),
                 price: 10000,
-                deadline: Math.floor(Date.now() / 1000) + 3600,
+                deadline: await getFutureDeadline(),
                 salt: ethers.randomBytes(32),
                 matchingValidator: matchingValidatorAddress,
                 nonce: 0
@@ -568,7 +591,7 @@ describe("DEXSettlement - Trustless Architecture", function () {
                 amountIn: ethers.parseUnits("100", 18),
                 amountOut: ethers.parseUnits("100", 18),
                 price: 10000,
-                deadline: Math.floor(Date.now() / 1000) + 3600,
+                deadline: await getFutureDeadline(),
                 salt: ethers.randomBytes(32),
                 matchingValidator: matchingValidatorAddress,
                 nonce: 0
@@ -597,7 +620,7 @@ describe("DEXSettlement - Trustless Architecture", function () {
                 amountIn: ethers.parseUnits("100", 18),
                 amountOut: ethers.parseUnits("100", 18),
                 price: 10000,
-                deadline: Math.floor(Date.now() / 1000) + 3600,
+                deadline: await getFutureDeadline(),
                 salt: ethers.randomBytes(32),
                 matchingValidator: matchingValidatorAddress,
                 nonce: 0
@@ -611,7 +634,7 @@ describe("DEXSettlement - Trustless Architecture", function () {
                 amountIn: ethers.parseUnits("100", 18),
                 amountOut: ethers.parseUnits("100", 18),
                 price: 10000,
-                deadline: Math.floor(Date.now() / 1000) + 3600,
+                deadline: await getFutureDeadline(),
                 salt: ethers.randomBytes(32),
                 matchingValidator: matchingValidatorAddress,
                 nonce: 0
@@ -642,7 +665,7 @@ describe("DEXSettlement - Trustless Architecture", function () {
                 amountIn: ethers.parseUnits("100", 18),
                 amountOut: ethers.parseUnits("100", 18),
                 price: 10000,
-                deadline: Math.floor(Date.now() / 1000) + 3600,
+                deadline: await getFutureDeadline(),
                 salt: ethers.randomBytes(32),
                 matchingValidator: matchingValidatorAddress,
                 nonce: 0
@@ -656,7 +679,7 @@ describe("DEXSettlement - Trustless Architecture", function () {
                 amountIn: ethers.parseUnits("100", 18),
                 amountOut: ethers.parseUnits("100", 18),
                 price: 10000,
-                deadline: Math.floor(Date.now() / 1000) + 3600,
+                deadline: await getFutureDeadline(),
                 salt: ethers.randomBytes(32),
                 matchingValidator: matchingValidatorAddress,
                 nonce: 0
@@ -701,7 +724,7 @@ describe("DEXSettlement - Trustless Architecture", function () {
                 amountIn: ethers.parseUnits("1000", 18),
                 amountOut: ethers.parseUnits("1000", 18),
                 price: 10000,
-                deadline: Math.floor(Date.now() / 1000) + 3600,
+                deadline: await getFutureDeadline(),
                 salt: ethers.randomBytes(32),
                 matchingValidator: matchingValidatorAddress,
                 nonce: 0
@@ -715,7 +738,7 @@ describe("DEXSettlement - Trustless Architecture", function () {
                 amountIn: ethers.parseUnits("1000", 18),
                 amountOut: ethers.parseUnits("1000", 18),
                 price: 10000,
-                deadline: Math.floor(Date.now() / 1000) + 3600,
+                deadline: await getFutureDeadline(),
                 salt: ethers.randomBytes(32),
                 matchingValidator: matchingValidatorAddress,
                 nonce: 0
@@ -749,7 +772,7 @@ describe("DEXSettlement - Trustless Architecture", function () {
                 amountIn: ethers.parseUnits("100", 18),
                 amountOut: ethers.parseUnits("100", 18),
                 price: 10000,
-                deadline: Math.floor(Date.now() / 1000) + 3600,
+                deadline: await getFutureDeadline(),
                 salt: ethers.randomBytes(32),
                 matchingValidator: matchingValidatorAddress,
                 nonce: 0
@@ -763,7 +786,7 @@ describe("DEXSettlement - Trustless Architecture", function () {
                 amountIn: ethers.parseUnits("100", 18),
                 amountOut: ethers.parseUnits("100", 18),
                 price: 10000,
-                deadline: Math.floor(Date.now() / 1000) + 3600,
+                deadline: await getFutureDeadline(),
                 salt: ethers.randomBytes(32),
                 matchingValidator: matchingValidatorAddress,
                 nonce: 0
@@ -800,7 +823,7 @@ describe("DEXSettlement - Trustless Architecture", function () {
                 amountIn: ethers.parseUnits("100", 18),
                 amountOut: ethers.parseUnits("100", 18),
                 price: 10000,
-                deadline: Math.floor(Date.now() / 1000) + 3600,
+                deadline: await getFutureDeadline(),
                 salt: ethers.randomBytes(32),
                 matchingValidator: matchingValidatorAddress,
                 nonce: 0
@@ -823,7 +846,7 @@ describe("DEXSettlement - Trustless Architecture", function () {
                 amountIn: ethers.parseUnits("100", 18),
                 amountOut: ethers.parseUnits("100", 18),
                 price: 10000,
-                deadline: Math.floor(Date.now() / 1000) - 3600, // Already expired
+                deadline: await getPastDeadline(), // Already expired
                 salt: ethers.randomBytes(32),
                 matchingValidator: matchingValidatorAddress,
                 nonce: 0
@@ -837,7 +860,7 @@ describe("DEXSettlement - Trustless Architecture", function () {
                 amountIn: ethers.parseUnits("100", 18),
                 amountOut: ethers.parseUnits("100", 18),
                 price: 10000,
-                deadline: Math.floor(Date.now() / 1000) + 3600,
+                deadline: await getFutureDeadline(),
                 salt: ethers.randomBytes(32),
                 matchingValidator: matchingValidatorAddress,
                 nonce: 0
@@ -863,7 +886,7 @@ describe("DEXSettlement - Trustless Architecture", function () {
                 amountIn: ethers.parseUnits("100", 18),
                 amountOut: ethers.parseUnits("100", 18),
                 price: 10000,
-                deadline: Math.floor(Date.now() / 1000) + 3600,
+                deadline: await getFutureDeadline(),
                 salt: ethers.randomBytes(32),
                 matchingValidator: matchingValidatorAddress,
                 nonce: 0
@@ -877,7 +900,7 @@ describe("DEXSettlement - Trustless Architecture", function () {
                 amountIn: ethers.parseUnits("100", 18),
                 amountOut: ethers.parseUnits("100", 18),
                 price: 10000,
-                deadline: Math.floor(Date.now() / 1000) + 3600,
+                deadline: await getFutureDeadline(),
                 salt: ethers.randomBytes(32),
                 matchingValidator: matchingValidatorAddress,
                 nonce: 0
@@ -912,7 +935,7 @@ describe("DEXSettlement - Trustless Architecture", function () {
                 amountIn: ethers.parseUnits("100", 18),
                 amountOut: ethers.parseUnits("100", 18),
                 price: 10000,
-                deadline: Math.floor(Date.now() / 1000) + 3600,
+                deadline: await getFutureDeadline(),
                 salt: ethers.randomBytes(32),
                 matchingValidator: matchingValidatorAddress, // Validator A
                 nonce: 0
@@ -926,7 +949,7 @@ describe("DEXSettlement - Trustless Architecture", function () {
                 amountIn: ethers.parseUnits("100", 18),
                 amountOut: ethers.parseUnits("100", 18),
                 price: 10000,
-                deadline: Math.floor(Date.now() / 1000) + 3600,
+                deadline: await getFutureDeadline(),
                 salt: ethers.randomBytes(32),
                 matchingValidator: anyoneElseAddress, // Validator B - MISMATCH!
                 nonce: 0
@@ -954,7 +977,7 @@ describe("DEXSettlement - Trustless Architecture", function () {
                 amountIn: ethers.parseUnits("100", 18),
                 amountOut: ethers.parseUnits("100", 18),
                 price: 10000,
-                deadline: Math.floor(Date.now() / 1000) + 3600,
+                deadline: await getFutureDeadline(),
                 salt: ethers.randomBytes(32),
                 matchingValidator: matchingValidatorAddress,
                 nonce: 0
@@ -968,7 +991,7 @@ describe("DEXSettlement - Trustless Architecture", function () {
                 amountIn: ethers.parseUnits("100", 18),
                 amountOut: ethers.parseUnits("100", 18),
                 price: 10000,
-                deadline: Math.floor(Date.now() / 1000) + 3600,
+                deadline: await getFutureDeadline(),
                 salt: ethers.randomBytes(32),
                 matchingValidator: matchingValidatorAddress,
                 nonce: 0
@@ -1007,7 +1030,7 @@ describe("DEXSettlement - Trustless Architecture", function () {
                 amountIn: ethers.parseUnits("1000", 18),
                 amountOut: ethers.parseUnits("1000", 18),
                 price: 10000,
-                deadline: Math.floor(Date.now() / 1000) + 3600,
+                deadline: await getFutureDeadline(),
                 salt: ethers.randomBytes(32),
                 matchingValidator: matchingValidatorAddress,
                 nonce: 0
@@ -1021,7 +1044,7 @@ describe("DEXSettlement - Trustless Architecture", function () {
                 amountIn: ethers.parseUnits("1000", 18),
                 amountOut: ethers.parseUnits("1000", 18),
                 price: 10000,
-                deadline: Math.floor(Date.now() / 1000) + 3600,
+                deadline: await getFutureDeadline(),
                 salt: ethers.randomBytes(32),
                 matchingValidator: matchingValidatorAddress,
                 nonce: 0
@@ -1083,7 +1106,7 @@ describe("DEXSettlement - Trustless Architecture", function () {
                 amountIn: ethers.parseUnits("100", 18),
                 amountOut: ethers.parseUnits("100", 18),
                 price: 10000,
-                deadline: Math.floor(Date.now() / 1000) + 3600,
+                deadline: await getFutureDeadline(),
                 salt: ethers.randomBytes(32),
                 matchingValidator: matchingValidatorAddress,
                 nonce: 0
@@ -1097,7 +1120,7 @@ describe("DEXSettlement - Trustless Architecture", function () {
                 amountIn: ethers.parseUnits("100", 18),
                 amountOut: ethers.parseUnits("100", 18),
                 price: 10000,
-                deadline: Math.floor(Date.now() / 1000) + 3600,
+                deadline: await getFutureDeadline(),
                 salt: ethers.randomBytes(32),
                 matchingValidator: matchingValidatorAddress,
                 nonce: 0
@@ -1140,7 +1163,7 @@ describe("DEXSettlement - Trustless Architecture", function () {
                 amountIn: ethers.parseUnits("100", 18),
                 amountOut: ethers.parseUnits("100", 18),
                 price: 10000,
-                deadline: Math.floor(Date.now() / 1000) + 3600,
+                deadline: await getFutureDeadline(),
                 salt: ethers.randomBytes(32),
                 matchingValidator: matchingValidatorAddress,
                 nonce: 0
@@ -1154,7 +1177,7 @@ describe("DEXSettlement - Trustless Architecture", function () {
                 amountIn: ethers.parseUnits("100", 18),
                 amountOut: ethers.parseUnits("100", 18),
                 price: 10000,
-                deadline: Math.floor(Date.now() / 1000) + 3600,
+                deadline: await getFutureDeadline(),
                 salt: ethers.randomBytes(32),
                 matchingValidator: matchingValidatorAddress,
                 nonce: 0
@@ -1190,7 +1213,6 @@ describe("DEXSettlement - Trustless Architecture", function () {
         let settlementAddress: string;
 
         const TRADE_AMOUNT = ethers.parseUnits("1000", 18);
-        const ONE_HOUR = 3600;
 
         beforeEach(async function () {
             // Deploy a 1% fee-on-transfer token
@@ -1214,7 +1236,7 @@ describe("DEXSettlement - Trustless Architecture", function () {
 
         it("should revert lockIntentCollateral with fee-on-transfer token", async function () {
             const intentId = ethers.keccak256(ethers.toUtf8Bytes("fot-lock-test-1"));
-            const deadline = Math.floor(Date.now() / 1000) + ONE_HOUR;
+            const deadline = await getFutureDeadline();
 
             // Attempt to lock collateral using fee-on-transfer token as tokenIn
             await expect(
@@ -1233,7 +1255,7 @@ describe("DEXSettlement - Trustless Architecture", function () {
 
         it("should allow lockIntentCollateral with standard ERC20", async function () {
             const intentId = ethers.keccak256(ethers.toUtf8Bytes("standard-lock-test-1"));
-            const deadline = Math.floor(Date.now() / 1000) + ONE_HOUR;
+            const deadline = await getFutureDeadline();
 
             // Lock collateral using standard tokenA — should succeed
             await expect(
@@ -1257,7 +1279,7 @@ describe("DEXSettlement - Trustless Architecture", function () {
 
         it("should revert settleIntent when solver uses fee-on-transfer token", async function () {
             const intentId = ethers.keccak256(ethers.toUtf8Bytes("fot-settle-test-1"));
-            const deadline = Math.floor(Date.now() / 1000) + ONE_HOUR;
+            const deadline = await getFutureDeadline();
 
             // Step 1: Lock collateral with standard tokenA as tokenIn
             //         and fee-on-transfer token as tokenOut

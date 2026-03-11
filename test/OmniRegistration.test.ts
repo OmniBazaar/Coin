@@ -259,6 +259,70 @@ describe('OmniRegistration', function () {
                 phoneHash('+1-555-2000'),
                 emailHash('kyc-user@test.com'),
             );
+
+            // Complete KYC Tier 1 via trustless phone + social verification
+            // so that kycTier1CompletedAt is set (required before tier 2 attestation).
+            const signers = await ethers.getSigners();
+            const kycAttestVerificationKey = signers[9];
+            await registration.connect(owner).setTrustedVerificationKey(kycAttestVerificationKey.address);
+
+            const registrationAddress = await registration.getAddress();
+            const chainId = (await ethers.provider.getNetwork()).chainId;
+            const domain = {
+                name: 'OmniRegistration',
+                version: '1',
+                chainId,
+                verifyingContract: registrationAddress,
+            };
+
+            const currentTime = await time.latest();
+            const deadline = currentTime + 3600;
+
+            // Phone verification
+            const verifyPhoneHash = phoneHash('+1-555-2000-verify');
+            const phoneNonce = keccak256(toUtf8Bytes('kyc-attest-phone-nonce'));
+            const phoneSig = await kycAttestVerificationKey.signTypedData(domain, {
+                PhoneVerification: [
+                    { name: 'user', type: 'address' },
+                    { name: 'phoneHash', type: 'bytes32' },
+                    { name: 'timestamp', type: 'uint256' },
+                    { name: 'nonce', type: 'bytes32' },
+                    { name: 'deadline', type: 'uint256' },
+                ],
+            }, {
+                user: user1.address,
+                phoneHash: verifyPhoneHash,
+                timestamp: currentTime,
+                nonce: phoneNonce,
+                deadline,
+            });
+            await registration.connect(user1).submitPhoneVerification(
+                verifyPhoneHash, currentTime, phoneNonce, deadline, phoneSig
+            );
+
+            // Social verification
+            const verifySocialHash = keccak256(toUtf8Bytes('twitter:kyc-attest-user'));
+            const socialNonce = keccak256(toUtf8Bytes('kyc-attest-social-nonce'));
+            const socialSig = await kycAttestVerificationKey.signTypedData(domain, {
+                SocialVerification: [
+                    { name: 'user', type: 'address' },
+                    { name: 'socialHash', type: 'bytes32' },
+                    { name: 'platform', type: 'string' },
+                    { name: 'timestamp', type: 'uint256' },
+                    { name: 'nonce', type: 'bytes32' },
+                    { name: 'deadline', type: 'uint256' },
+                ],
+            }, {
+                user: user1.address,
+                socialHash: verifySocialHash,
+                platform: 'twitter',
+                timestamp: currentTime,
+                nonce: socialNonce,
+                deadline,
+            });
+            await registration.connect(user1).submitSocialVerification(
+                verifySocialHash, 'twitter', currentTime, socialNonce, deadline, socialSig
+            );
         });
 
         it('should record attestation', async function () {
@@ -724,6 +788,16 @@ describe('OmniRegistration', function () {
                     constructorArgs: [ethers.ZeroAddress],
                 });
                 await freshRegistration.waitForDeployment();
+
+                // Register user1 in freshRegistration so it passes the NotRegistered check
+                const FRESH_VALIDATOR_ROLE = keccak256(toUtf8Bytes('VALIDATOR_ROLE'));
+                await freshRegistration.grantRole(FRESH_VALIDATOR_ROLE, validator1.address);
+                await freshRegistration.connect(validator1).registerUser(
+                    user1.address,
+                    ZeroAddress,
+                    phoneHash('+1-555-7006-reg'),
+                    emailHash('fresh-user@test.com')
+                );
 
                 const newPhoneHash = phoneHash('+1-555-7006');
                 const timestamp = await time.latest();
@@ -1836,6 +1910,16 @@ describe('OmniRegistration', function () {
         });
 
         it('should reject ID verification without KYC Tier 1', async function () {
+            // Register user2 so the NotRegistered check passes, but do NOT
+            // complete KYC Tier 1 (phone+social via trustless path) so
+            // kycTier1CompletedAt remains 0 and PreviousTierRequired is hit.
+            await registration.connect(validator1).registerUser(
+                user2.address,
+                ZeroAddress,
+                phoneHash('+1-555-TIER2-NOKYC'),
+                emailHash('tier2-nokyc@test.com')
+            );
+
             const idHash = keccak256(toUtf8Bytes('PASSPORT:AB123457:1990-01-01:US'));
             const country = 'US';
             const currentTime = await time.latest();

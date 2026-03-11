@@ -11,13 +11,44 @@ const { TASK_TEST_GET_TEST_FILES } = require("hardhat/builtin-tasks/task-names")
 
 subtask(TASK_TEST_GET_TEST_FILES).setAction(async (args, hre, runSuper) => {
   const files = await runSuper(args);
-  return files.filter((f) => {
+
+  // Hardhat only discovers .ts files when the config is hardhat.config.ts.
+  // Since ours is .js, manually discover .ts test files.
+  // Only do this for full-suite runs (no specific files passed).
+  let allFiles = files;
+  if (!args.testFiles || args.testFiles.length === 0) {
+    const { getAllFilesMatching } = require("hardhat/internal/util/fs-utils");
+    const tsFiles = await getAllFilesMatching(
+      hre.config.paths.tests,
+      (f) => f.endsWith(".ts")
+    );
+    allFiles = [...new Set([...files, ...tsFiles])];
+  }
+
+  const filtered = allFiles.filter((f) => {
     // Exclude deprecated tests
     if (f.includes("/deprecated/")) return false;
     // Only include files matching *.test.{js,ts} pattern
     if (!/\.test\.(js|ts)$/.test(f)) return false;
+    // Exclude COTI V2 framework tests (require COTI testnet, not Hardhat)
+    if (f.includes("/access/")) return false;
+    if (f.includes("/onboard/")) return false;
+    if (f.includes("/token/")) return false;
+    if (f.includes("/utils/mpc/")) return false;
+    // Exclude external-system tests (Jest/COTI wallet, validator infra)
+    if (f.endsWith("wallet.test.ts")) return false;
+    if (f.endsWith("validator-blockchain-integration.test.ts")) return false;
+    // Exclude legacy TS variants that import non-existent typechain-types
+    if (f.endsWith("OmniCoin-simple.test.ts")) return false;
+    if (f.endsWith("OmniCoinArbitration.test.ts")) return false;
+    if (/\/OmniCoin\.test\.ts$/.test(f)) return false;
     return true;
   });
+  if (process.env.DEBUG_TEST_FILES) {
+    console.log("TEST FILES DISCOVERED:", filtered.length);
+    filtered.forEach(f => console.log("  ", f));
+  }
+  return filtered;
 });
 
 /** @type import('hardhat/config').HardhatUserConfig */

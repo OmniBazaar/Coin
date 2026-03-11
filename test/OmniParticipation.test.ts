@@ -309,16 +309,20 @@ describe('OmniParticipation', function () {
         it('should update publisher activity to 4', async function () {
             // M-02: Graduated scoring requires >= 100,000 listings for 4 points
             // ATK-H04: Must increment in steps of MAX_LISTING_COUNT_DELTA (1000)
-            // ATK-H04: Daily limit is 50 verifier changes, so we need multiple days
-            // Day 1: set count from 0 -> 50,000 (50 increments of 1000)
-            for (let i = 1; i <= 50; i++) {
-                await participation.connect(verifier).setPublisherListingCount(validator1.address, i * 1000);
-            }
-            // Advance to next day to reset daily limit
-            await time.increase(86401);
-            // Day 2: set count from 50,000 -> 100,000 (50 increments of 1000)
-            for (let i = 51; i <= 100; i++) {
-                await participation.connect(verifier).setPublisherListingCount(validator1.address, i * 1000);
+            // SYBIL: Per-epoch score increase cap is 20 (MAX_SCORE_INCREASE_PER_EPOCH)
+            //   with SCORE_EPOCH_DURATION = 7 days. We need 100 increments total,
+            //   so we advance to a new epoch every 20 increments.
+            const EPOCH_SECONDS = 7 * 24 * 60 * 60; // 7 days
+            for (let batch = 0; batch < 5; batch++) {
+                if (batch > 0) {
+                    // Advance to a new epoch to reset per-user epoch score counter
+                    await time.increase(EPOCH_SECONDS + 1);
+                }
+                const start = batch * 20 + 1;
+                const end = start + 20;
+                for (let i = start; i < end; i++) {
+                    await participation.connect(verifier).setPublisherListingCount(validator1.address, i * 1000);
+                }
             }
             await participation.connect(validator1).submitServiceNodeHeartbeat();
 
@@ -841,33 +845,51 @@ describe('OmniParticipation', function () {
 
     describe('ATK-H04: Verifier Rate Limits', function () {
         it('should enforce daily verifier limit (50 changes/day)', async function () {
-            // Use up the 50 daily allowance with verifyTransactionClaim calls
-            for (let i = 0; i < 50; i++) {
-                await participation.connect(user1).claimMarketplaceTransactions([generateTxHash()]);
-                await participation.connect(verifier).verifyTransactionClaim(user1.address, i);
+            // Use up the 50 daily allowance with verifyTransactionClaim calls.
+            // SYBIL: Per-epoch score increase cap is 20 per user, so we spread
+            //   the 50 calls across 3 users (20 + 20 + 10) to stay within limits.
+            const users = [user1, user2, user3];
+            const counts = [20, 20, 10]; // 50 total
+            const claimIndices = [0, 0, 0];
+
+            for (let u = 0; u < users.length; u++) {
+                for (let i = 0; i < counts[u]; i++) {
+                    await participation.connect(users[u]).claimMarketplaceTransactions([generateTxHash()]);
+                    await participation.connect(verifier).verifyTransactionClaim(users[u].address, claimIndices[u]);
+                    claimIndices[u]++;
+                }
             }
 
-            // The 51st call should revert
+            // The 51st call should revert with DailyVerifierLimitExceeded
             await participation.connect(user1).claimMarketplaceTransactions([generateTxHash()]);
             await expect(
-                participation.connect(verifier).verifyTransactionClaim(user1.address, 50)
+                participation.connect(verifier).verifyTransactionClaim(user1.address, claimIndices[0])
             ).to.be.revertedWithCustomError(participation, 'DailyVerifierLimitExceeded');
         });
 
         it('should reset verifier limit after day boundary', async function () {
-            // Use up 50 changes
-            for (let i = 0; i < 50; i++) {
-                await participation.connect(user1).claimMarketplaceTransactions([generateTxHash()]);
-                await participation.connect(verifier).verifyTransactionClaim(user1.address, i);
+            // Use up 50 daily verifier changes, spreading across 3 users to
+            // stay within the per-epoch score increase cap of 20 per user.
+            const users = [user1, user2, user3];
+            const counts = [20, 20, 10]; // 50 total
+            const claimIndices = [0, 0, 0];
+
+            for (let u = 0; u < users.length; u++) {
+                for (let i = 0; i < counts[u]; i++) {
+                    await participation.connect(users[u]).claimMarketplaceTransactions([generateTxHash()]);
+                    await participation.connect(verifier).verifyTransactionClaim(users[u].address, claimIndices[u]);
+                    claimIndices[u]++;
+                }
             }
 
-            // Advance time past day boundary
+            // Advance time past day boundary (resets daily verifier limit)
             await time.increase(86401);
 
-            // Should succeed after day rolls over
-            await participation.connect(user2).claimMarketplaceTransactions([generateTxHash()]);
+            // Should succeed after day rolls over. Use validator1 to avoid
+            // hitting the epoch score cap on user1/user2/user3.
+            await participation.connect(validator1).claimMarketplaceTransactions([generateTxHash()]);
             await expect(
-                participation.connect(verifier).verifyTransactionClaim(user2.address, 0)
+                participation.connect(verifier).verifyTransactionClaim(validator1.address, 0)
             ).not.to.be.reverted;
         });
 

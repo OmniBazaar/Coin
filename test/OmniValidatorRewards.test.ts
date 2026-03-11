@@ -368,14 +368,37 @@ describe('OmniValidatorRewards', function () {
         });
 
         it('should skip epoch if no active validators', async function () {
-            // Wait for heartbeat timeout
+            // The epoch-based heartbeat check considers a validator active for
+            // epochs up to lastHeartbeatEpoch + heartbeatEpochWindow (10).
+            // We must first advance past that window so the next epoch to
+            // process falls outside it, then let the timestamp-based fallback
+            // also expire.
+
+            // Process all pending epochs while validators are still active
+            await time.increase(EPOCH_DURATION * 12);
+            await processAllPendingEpochs();
+
+            // Record rewards after active epochs
+            const rewardsBefore = await validatorRewards.accumulatedRewards(validator1.address);
+
+            // Now wait for heartbeat timeout so both epoch-based and
+            // timestamp-based checks consider validators inactive
             await time.increase(HEARTBEAT_TIMEOUT + 1);
 
-            await processNextEpoch();
+            // Process the next epoch -- validators should be inactive
+            const nextEpoch = (await validatorRewards.lastProcessedEpoch()) + BigInt(1);
+            const currentEpoch = await validatorRewards.getCurrentEpoch();
+            if (nextEpoch > currentEpoch) {
+                await time.increase(EPOCH_DURATION + 1);
+            }
+            const tx = await validatorRewards.processEpoch(nextEpoch);
 
-            // No rewards distributed
-            const rewards1 = await validatorRewards.accumulatedRewards(validator1.address);
-            expect(rewards1).to.equal(0);
+            // EpochProcessed is NOT emitted when activeCount == 0
+            await expect(tx).to.not.emit(validatorRewards, 'EpochProcessed');
+
+            // No additional rewards distributed
+            const rewardsAfter = await validatorRewards.accumulatedRewards(validator1.address);
+            expect(rewardsAfter).to.equal(rewardsBefore);
         });
 
         it('should update lastProcessedEpoch', async function () {
