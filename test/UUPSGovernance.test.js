@@ -1226,7 +1226,7 @@ describe("UUPS Governance System", function () {
       it("Should block upgrades after ossification", async function () {
         await governance.connect(admin).ossify();
 
-        // Must connect as admin (who has ADMIN_ROLE) to reach the ossification check
+        // Must connect as admin (who has DEFAULT_ADMIN_ROLE) to reach the ossification check
         const GovV2 = await ethers.getContractFactory(
           "OmniGovernance", admin
         );
@@ -1402,9 +1402,9 @@ describe("UUPS Governance System", function () {
       expect(await bridge.core()).to.equal(core.target);
     });
 
-    it("Should have ADMIN_ROLE set", async function () {
-      const ADMIN_ROLE = await bridge.ADMIN_ROLE();
-      expect(await bridge.hasRole(ADMIN_ROLE, admin.address)).to.be.true;
+    it("Should have DEFAULT_ADMIN_ROLE set", async function () {
+      const DEFAULT_ADMIN_ROLE = await bridge.DEFAULT_ADMIN_ROLE();
+      expect(await bridge.hasRole(DEFAULT_ADMIN_ROLE, admin.address)).to.be.true;
     });
 
     it("Should reject re-initialization", async function () {
@@ -1428,7 +1428,7 @@ describe("UUPS Governance System", function () {
     it("Should block upgrades after ossification", async function () {
       await bridge.connect(admin).ossify();
 
-      // Must connect as admin (who has ADMIN_ROLE) to reach ossification check
+      // Must connect as admin (who has DEFAULT_ADMIN_ROLE) to reach ossification check
       const OmniBridge = await ethers.getContractFactory(
         "OmniBridge", admin
       );

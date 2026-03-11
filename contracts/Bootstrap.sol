@@ -62,9 +62,6 @@ contract Bootstrap is AccessControl {
         string nodeId;
     }
 
-    /// @notice Role identifier for bootstrap administrator (emergency actions only)
-    bytes32 public constant BOOTSTRAP_ADMIN_ROLE = keccak256("BOOTSTRAP_ADMIN_ROLE");
-
     /// @notice Maximum number of nodes allowed in the registry (DoS protection)
     uint256 public constant MAX_NODES = 1000;
 
@@ -224,7 +221,6 @@ contract Bootstrap is AccessControl {
         if (bytes(_omniCoreRpcUrl).length == 0) revert InvalidParameter();
 
         _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
-        _grantRole(BOOTSTRAP_ADMIN_ROLE, msg.sender);
 
         omniCoreAddress = _omniCoreAddress;
         omniCoreChainId = _omniCoreChainId;
@@ -411,7 +407,7 @@ contract Bootstrap is AccessControl {
     function adminDeactivateNode(
         address nodeAddress,
         string calldata reason
-    ) external onlyRole(BOOTSTRAP_ADMIN_ROLE) {
+    ) external onlyRole(DEFAULT_ADMIN_ROLE) {
         NodeInfo storage info = nodeRegistry[nodeAddress];
         if (!info.active) revert NodeNotActive();
 
@@ -435,13 +431,13 @@ contract Bootstrap is AccessControl {
 
     /**
      * @notice Unban a previously banned node address
-     * @dev Only callable by BOOTSTRAP_ADMIN_ROLE. Allows the node
+     * @dev Only callable by DEFAULT_ADMIN_ROLE. Allows the node
      *      to re-register after a ban has been lifted.
      * @param nodeAddress Address of the node to unban
      */
     function adminUnbanNode(
         address nodeAddress
-    ) external onlyRole(BOOTSTRAP_ADMIN_ROLE) {
+    ) external onlyRole(DEFAULT_ADMIN_ROLE) {
         if (nodeAddress == address(0)) revert InvalidAddress();
         banned[nodeAddress] = false;
         emit NodeUnbanned(nodeAddress, msg.sender);
@@ -449,7 +445,7 @@ contract Bootstrap is AccessControl {
 
     /**
      * @notice Updates the OmniCore contract reference
-     * @dev Only callable by BOOTSTRAP_ADMIN_ROLE
+     * @dev Only callable by DEFAULT_ADMIN_ROLE
      * @param _omniCoreAddress New OmniCore contract address
      * @param _omniCoreChainId New chain ID
      * @param _omniCoreRpcUrl New RPC URL
@@ -458,7 +454,7 @@ contract Bootstrap is AccessControl {
         address _omniCoreAddress,
         uint256 _omniCoreChainId,
         string calldata _omniCoreRpcUrl
-    ) external onlyRole(BOOTSTRAP_ADMIN_ROLE) {
+    ) external onlyRole(DEFAULT_ADMIN_ROLE) {
         if (_omniCoreAddress == address(0)) revert InvalidAddress();
         if (_omniCoreChainId == 0) revert InvalidChainId();
         if (bytes(_omniCoreRpcUrl).length == 0) revert InvalidParameter();

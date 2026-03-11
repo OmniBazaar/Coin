@@ -175,9 +175,6 @@ contract OmniBridge is
     ///      validator processing before allowing sender to reclaim funds.
     uint256 public constant REFUND_DELAY = 7 days;
 
-    /// @notice Admin role for upgrade authorization (held by timelock)
-    bytes32 public constant ADMIN_ROLE = keccak256("ADMIN_ROLE");
-
     /// @notice Warp Messenger precompile address
     IWarpMessenger public constant WARP_MESSENGER = IWarpMessenger(0x0200000000000000000000000000000000000005);
 
@@ -415,7 +412,6 @@ contract OmniBridge is
         __UUPSUpgradeable_init();
 
         _grantRole(DEFAULT_ADMIN_ROLE, admin);
-        _grantRole(ADMIN_ROLE, admin);
 
         core = OmniCore(_core);
         blockchainId = WARP_MESSENGER.getBlockchainID();
@@ -795,7 +791,7 @@ contract OmniBridge is
      * @dev Can only be called by admin (through timelock). Once ossified,
      *      the contract can never be upgraded again.
      */
-    function ossify() external onlyRole(ADMIN_ROLE) {
+    function ossify() external onlyRole(DEFAULT_ADMIN_ROLE) {
         _ossified = true;
         emit ContractOssified(address(this));
     }
@@ -1021,7 +1017,7 @@ contract OmniBridge is
      */
     function _authorizeUpgrade(
         address newImplementation
-    ) internal view override onlyRole(ADMIN_ROLE) {
+    ) internal view override onlyRole(DEFAULT_ADMIN_ROLE) {
         if (_ossified) revert ContractIsOssified();
         (newImplementation);
     }

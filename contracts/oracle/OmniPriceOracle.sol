@@ -238,10 +238,6 @@ contract OmniPriceOracle is
     // on-chain verification rather than a role-based VALIDATOR_ROLE.
     // This ensures only currently-active validators can submit prices.
 
-    /// @notice Role for managing oracle configuration
-    bytes32 public constant ORACLE_ADMIN_ROLE =
-        keccak256("ORACLE_ADMIN_ROLE");
-
     /// @notice Basis points denominator (100% = 10000)
     uint256 private constant BPS = 10_000;
 
@@ -526,7 +522,6 @@ contract OmniPriceOracle is
         __Pausable_init();
 
         _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
-        _grantRole(ORACLE_ADMIN_ROLE, msg.sender);
 
         omniCore = IOmniCoreOracle(_omniCore);
 
@@ -883,7 +878,7 @@ contract OmniPriceOracle is
      */
     function registerToken(
         address token
-    ) external onlyRole(ORACLE_ADMIN_ROLE) {
+    ) external onlyRole(DEFAULT_ADMIN_ROLE) {
         if (token == address(0)) revert ZeroTokenAddress();
         if (isRegisteredToken[token]) return;
         if (registeredTokens.length >= MAX_TOKENS) {
@@ -905,7 +900,7 @@ contract OmniPriceOracle is
      */
     function deregisterToken(
         address token
-    ) external onlyRole(ORACLE_ADMIN_ROLE) {
+    ) external onlyRole(DEFAULT_ADMIN_ROLE) {
         if (!isRegisteredToken[token]) {
             revert TokenNotRegistered(token);
         }
@@ -934,7 +929,7 @@ contract OmniPriceOracle is
     function setChainlinkFeed(
         address token,
         address feed
-    ) external onlyRole(ORACLE_ADMIN_ROLE) {
+    ) external onlyRole(DEFAULT_ADMIN_ROLE) {
         if (token == address(0)) revert ZeroTokenAddress();
 
         if (feed == address(0)) {

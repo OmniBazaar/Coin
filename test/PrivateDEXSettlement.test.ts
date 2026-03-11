@@ -154,10 +154,10 @@ describe("PrivateDEXSettlement", function () {
             expect(await settlement.hasRole(DEFAULT_ADMIN_ROLE, admin.address)).to.be.true;
         });
 
-        it("should grant ADMIN_ROLE to admin", async function () {
+        it("should grant DEFAULT_ADMIN_ROLE to admin (admin functions use DEFAULT_ADMIN_ROLE)", async function () {
             const { settlement, admin } = await loadFixture(deployFixture);
-            const ADMIN_ROLE = await settlement.ADMIN_ROLE();
-            expect(await settlement.hasRole(ADMIN_ROLE, admin.address)).to.be.true;
+            const DEFAULT_ADMIN_ROLE = await settlement.DEFAULT_ADMIN_ROLE();
+            expect(await settlement.hasRole(DEFAULT_ADMIN_ROLE, admin.address)).to.be.true;
         });
 
         it("should grant SETTLER_ROLE to admin", async function () {
@@ -597,15 +597,15 @@ describe("PrivateDEXSettlement", function () {
             ).to.be.revertedWithCustomError(settlement, "InvalidAddress");
         });
 
-        it("should revert grantSettlerRole for non-ADMIN_ROLE", async function () {
+        it("should revert grantSettlerRole for non-DEFAULT_ADMIN_ROLE", async function () {
             const { settlement, outsider } = await loadFixture(deployFixture);
-            const ADMIN_ROLE = await settlement.ADMIN_ROLE();
+            const DEFAULT_ADMIN_ROLE = await settlement.DEFAULT_ADMIN_ROLE();
 
             await expect(
                 settlement.connect(outsider).grantSettlerRole(outsider.address)
             )
                 .to.be.revertedWithCustomError(settlement, "AccessControlUnauthorizedAccount")
-                .withArgs(outsider.address, ADMIN_ROLE);
+                .withArgs(outsider.address, DEFAULT_ADMIN_ROLE);
         });
     });
 
@@ -948,24 +948,24 @@ describe("PrivateDEXSettlement", function () {
             ).to.emit(settlement, "PrivateCollateralLocked");
         });
 
-        it("should revert pause for non-ADMIN_ROLE", async function () {
+        it("should revert pause for non-DEFAULT_ADMIN_ROLE", async function () {
             const { settlement, outsider } = await loadFixture(deployFixture);
-            const ADMIN_ROLE = await settlement.ADMIN_ROLE();
+            const DEFAULT_ADMIN_ROLE = await settlement.DEFAULT_ADMIN_ROLE();
 
             await expect(settlement.connect(outsider).pause())
                 .to.be.revertedWithCustomError(settlement, "AccessControlUnauthorizedAccount")
-                .withArgs(outsider.address, ADMIN_ROLE);
+                .withArgs(outsider.address, DEFAULT_ADMIN_ROLE);
         });
 
-        it("should revert unpause for non-ADMIN_ROLE", async function () {
+        it("should revert unpause for non-DEFAULT_ADMIN_ROLE", async function () {
             const { settlement, admin, outsider } = await loadFixture(deployFixture);
-            const ADMIN_ROLE = await settlement.ADMIN_ROLE();
+            const DEFAULT_ADMIN_ROLE = await settlement.DEFAULT_ADMIN_ROLE();
 
             await settlement.connect(admin).pause();
 
             await expect(settlement.connect(outsider).unpause())
                 .to.be.revertedWithCustomError(settlement, "AccessControlUnauthorizedAccount")
-                .withArgs(outsider.address, ADMIN_ROLE);
+                .withArgs(outsider.address, DEFAULT_ADMIN_ROLE);
         });
     });
 
@@ -1013,10 +1013,10 @@ describe("PrivateDEXSettlement", function () {
             ).to.be.revertedWithCustomError(settlement, "InvalidAddress");
         });
 
-        it("should revert for non-ADMIN_ROLE", async function () {
+        it("should revert for non-DEFAULT_ADMIN_ROLE", async function () {
             const { settlement, outsider, trader, solver } =
                 await loadFixture(deployFixture);
-            const ADMIN_ROLE = await settlement.ADMIN_ROLE();
+            const DEFAULT_ADMIN_ROLE = await settlement.DEFAULT_ADMIN_ROLE();
 
             await expect(
                 settlement
@@ -1024,7 +1024,7 @@ describe("PrivateDEXSettlement", function () {
                     .updateFeeRecipients(trader.address, solver.address, outsider.address)
             )
                 .to.be.revertedWithCustomError(settlement, "AccessControlUnauthorizedAccount")
-                .withArgs(outsider.address, ADMIN_ROLE);
+                .withArgs(outsider.address, DEFAULT_ADMIN_ROLE);
         });
     });
 
@@ -1091,25 +1091,25 @@ describe("PrivateDEXSettlement", function () {
             ).to.be.revertedWithCustomError(settlement, "ContractIsOssified");
         });
 
-        it("should revert requestOssification for non-ADMIN_ROLE", async function () {
+        it("should revert requestOssification for non-DEFAULT_ADMIN_ROLE", async function () {
             const { settlement, outsider } = await loadFixture(deployFixture);
-            const ADMIN_ROLE = await settlement.ADMIN_ROLE();
+            const DEFAULT_ADMIN_ROLE = await settlement.DEFAULT_ADMIN_ROLE();
 
             await expect(settlement.connect(outsider).requestOssification())
                 .to.be.revertedWithCustomError(settlement, "AccessControlUnauthorizedAccount")
-                .withArgs(outsider.address, ADMIN_ROLE);
+                .withArgs(outsider.address, DEFAULT_ADMIN_ROLE);
         });
 
-        it("should revert confirmOssification for non-ADMIN_ROLE", async function () {
+        it("should revert confirmOssification for non-DEFAULT_ADMIN_ROLE", async function () {
             const { settlement, admin, outsider } = await loadFixture(deployFixture);
-            const ADMIN_ROLE = await settlement.ADMIN_ROLE();
+            const DEFAULT_ADMIN_ROLE = await settlement.DEFAULT_ADMIN_ROLE();
 
             await settlement.connect(admin).requestOssification();
             await time.increase(7 * 24 * 60 * 60 + 1);
 
             await expect(settlement.connect(outsider).confirmOssification())
                 .to.be.revertedWithCustomError(settlement, "AccessControlUnauthorizedAccount")
-                .withArgs(outsider.address, ADMIN_ROLE);
+                .withArgs(outsider.address, DEFAULT_ADMIN_ROLE);
         });
 
         it("should allow upgrade before ossification", async function () {
@@ -1230,8 +1230,8 @@ describe("PrivateDEXSettlement", function () {
             expect(await settlement.SETTLER_ROLE()).to.equal(
                 ethers.id("SETTLER_ROLE")
             );
-            expect(await settlement.ADMIN_ROLE()).to.equal(
-                ethers.id("ADMIN_ROLE")
+            expect(await settlement.DEFAULT_ADMIN_ROLE()).to.equal(
+                ethers.ZeroHash
             );
         });
 

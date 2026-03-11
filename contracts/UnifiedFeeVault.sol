@@ -136,10 +136,6 @@ contract UnifiedFeeVault is
     bytes32 public constant ADMIN_ROLE =
         keccak256("ADMIN_ROLE");
 
-    /// @notice Role for fee management operations
-    bytes32 public constant FEE_MANAGER_ROLE =
-        keccak256("FEE_MANAGER_ROLE");
-
     /// @notice Timelock delay for configuration changes (48 hours)
     /// @dev Used for swap router and privacy bridge timelocks
     uint256 public constant RECIPIENT_CHANGE_DELAY = 48 hours;

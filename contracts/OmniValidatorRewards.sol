@@ -1488,6 +1488,20 @@ contract OmniValidatorRewards is
     }
 
     /**
+     * @notice Transfer admin authority over BLOCKCHAIN_ROLE to a new admin role
+     * @dev One-time admin call to delegate BLOCKCHAIN_ROLE management to
+     *      ValidatorProvisioner (via PROVISIONER_ROLE). After this call,
+     *      only holders of newAdminRole can grant/revoke BLOCKCHAIN_ROLE.
+     *      DEFAULT_ADMIN_ROLE can no longer grant/revoke BLOCKCHAIN_ROLE directly.
+     * @param newAdminRole The role that will become admin of BLOCKCHAIN_ROLE
+     */
+    function setBlockchainRoleAdmin(
+        bytes32 newAdminRole
+    ) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        _setRoleAdmin(BLOCKCHAIN_ROLE, newAdminRole);
+    }
+
+    /**
      * @notice Set minimum OmniCore stake required for reward eligibility
      * @dev V2 H-02 fix: Prevents Sybil attacks by requiring economic
      *      stake. Set to 0 initially (seed validators). Increase to

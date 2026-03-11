@@ -90,12 +90,11 @@ describe("OmniPriceOracle", function () {
   // ════════════════════════════════════════════════════════════════════
 
   describe("Initialization", function () {
-    it("should set the deployer as DEFAULT_ADMIN_ROLE and ORACLE_ADMIN_ROLE", async function () {
-      const DEFAULT_ADMIN = await oracle.DEFAULT_ADMIN_ROLE();
-      const ORACLE_ADMIN = await oracle.ORACLE_ADMIN_ROLE();
+    it("should set the deployer as DEFAULT_ADMIN_ROLE", async function () {
+      // ORACLE_ADMIN_ROLE was merged into DEFAULT_ADMIN_ROLE (bytes32(0))
+      const DEFAULT_ADMIN = ethers.ZeroHash;
 
       expect(await oracle.hasRole(DEFAULT_ADMIN, owner.address)).to.be.true;
-      expect(await oracle.hasRole(ORACLE_ADMIN, owner.address)).to.be.true;
     });
 
     it("should set default minValidators to 5", async function () {

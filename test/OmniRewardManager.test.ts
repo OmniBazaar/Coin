@@ -1227,9 +1227,9 @@ describe('OmniRewardManager', function () {
             // Set registration contract in reward manager
             await rewardManager.connect(admin).setRegistrationContract(await omniRegistration.getAddress());
 
-            // Grant BONUS_MARKER_ROLE to reward manager so it can mark bonuses as claimed
-            const BONUS_MARKER_ROLE = keccak256(ethers.toUtf8Bytes('BONUS_MARKER_ROLE'));
-            await omniRegistration.connect(owner).grantRole(BONUS_MARKER_ROLE, await rewardManager.getAddress());
+            // Set reward manager address so it can mark bonuses as claimed
+            // (BONUS_MARKER_ROLE replaced by omniRewardManagerAddress)
+            await omniRegistration.connect(owner).setOmniRewardManagerAddress(await rewardManager.getAddress());
         });
 
         /**

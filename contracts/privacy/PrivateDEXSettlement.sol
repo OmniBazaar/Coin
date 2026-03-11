@@ -174,10 +174,6 @@ contract PrivateDEXSettlement is
     bytes32 public constant SETTLER_ROLE =
         keccak256("SETTLER_ROLE");
 
-    /// @notice Role for admin operations
-    bytes32 public constant ADMIN_ROLE =
-        keccak256("ADMIN_ROLE");
-
     /// @notice Basis points divisor (100%)
     uint64 public constant BASIS_POINTS_DIVISOR = 10000;
 
@@ -429,7 +425,6 @@ contract PrivateDEXSettlement is
         __UUPSUpgradeable_init();
 
         _grantRole(DEFAULT_ADMIN_ROLE, admin);
-        _grantRole(ADMIN_ROLE, admin);
         _grantRole(SETTLER_ROLE, admin);
 
         feeRecipients = FeeRecipients({
@@ -765,7 +760,7 @@ contract PrivateDEXSettlement is
         address oddao,
         address stakingPool,
         address protocolTreasury
-    ) external onlyRole(ADMIN_ROLE) {
+    ) external onlyRole(DEFAULT_ADMIN_ROLE) {
         if (oddao == address(0)) revert InvalidAddress();
         if (stakingPool == address(0)) revert InvalidAddress();
         if (protocolTreasury == address(0)) revert InvalidAddress();
@@ -794,7 +789,7 @@ contract PrivateDEXSettlement is
      */
     function grantSettlerRole(
         address settler
-    ) external onlyRole(ADMIN_ROLE) {
+    ) external onlyRole(DEFAULT_ADMIN_ROLE) {
         if (settler == address(0)) revert InvalidAddress();
         _grantRole(SETTLER_ROLE, settler);
     }
@@ -805,8 +800,22 @@ contract PrivateDEXSettlement is
      */
     function revokeSettlerRole(
         address settler
-    ) external onlyRole(ADMIN_ROLE) {
+    ) external onlyRole(DEFAULT_ADMIN_ROLE) {
         _revokeRole(SETTLER_ROLE, settler);
+    }
+
+    /**
+     * @notice Transfer admin authority over SETTLER_ROLE to a new admin role
+     * @dev One-time admin call to delegate SETTLER_ROLE management to
+     *      ValidatorProvisioner (via PROVISIONER_ROLE). After this call,
+     *      only holders of newAdminRole can grant/revoke SETTLER_ROLE.
+     *      DEFAULT_ADMIN_ROLE can no longer grant/revoke SETTLER_ROLE directly.
+     * @param newAdminRole The role that will become admin of SETTLER_ROLE
+     */
+    function setSettlerRoleAdmin(
+        bytes32 newAdminRole
+    ) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        _setRoleAdmin(SETTLER_ROLE, newAdminRole);
     }
 
     /**
@@ -816,14 +825,14 @@ contract PrivateDEXSettlement is
      *      control. The previous redundant emergencyStop flag has
      *      been removed.
      */
-    function pause() external onlyRole(ADMIN_ROLE) {
+    function pause() external onlyRole(DEFAULT_ADMIN_ROLE) {
         _pause();
     }
 
     /**
      * @notice Unpause the contract (resumes operations)
      */
-    function unpause() external onlyRole(ADMIN_ROLE) {
+    function unpause() external onlyRole(DEFAULT_ADMIN_ROLE) {
         _unpause();
     }
 
@@ -839,7 +848,7 @@ contract PrivateDEXSettlement is
      */
     function requestOssification()
         external
-        onlyRole(ADMIN_ROLE)
+        onlyRole(DEFAULT_ADMIN_ROLE)
     {
         // solhint-disable-next-line not-rely-on-time
         ossificationRequestTime = block.timestamp;
@@ -859,7 +868,7 @@ contract PrivateDEXSettlement is
      */
     function confirmOssification()
         external
-        onlyRole(ADMIN_ROLE)
+        onlyRole(DEFAULT_ADMIN_ROLE)
     {
         if (ossificationRequestTime == 0) {
             revert OssificationNotRequested();
@@ -938,7 +947,7 @@ contract PrivateDEXSettlement is
         address caller = _msgSender();
         if (
             caller != recipient &&
-            !hasRole(ADMIN_ROLE, caller)
+            !hasRole(DEFAULT_ADMIN_ROLE, caller)
         ) {
             revert NotAuthorized();
         }
@@ -960,7 +969,7 @@ contract PrivateDEXSettlement is
      */
     function _authorizeUpgrade(
         address newImplementation // solhint-disable-line no-unused-vars
-    ) internal override onlyRole(ADMIN_ROLE) {
+    ) internal override onlyRole(DEFAULT_ADMIN_ROLE) {
         if (_ossified) revert ContractIsOssified();
     }
 

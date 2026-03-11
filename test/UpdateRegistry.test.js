@@ -184,11 +184,10 @@ describe("UpdateRegistry", function () {
       expect(await registry.isSigner(outsider.address)).to.be.false;
     });
 
-    it("should grant roles to deployer", async function () {
-      const DEFAULT_ADMIN_ROLE = await registry.DEFAULT_ADMIN_ROLE();
-      const RELEASE_MANAGER_ROLE = await registry.RELEASE_MANAGER_ROLE();
+    it("should grant DEFAULT_ADMIN_ROLE to deployer", async function () {
+      // RELEASE_MANAGER_ROLE was merged into DEFAULT_ADMIN_ROLE (bytes32(0))
+      const DEFAULT_ADMIN_ROLE = ethers.ZeroHash;
       expect(await registry.hasRole(DEFAULT_ADMIN_ROLE, owner.address)).to.be.true;
-      expect(await registry.hasRole(RELEASE_MANAGER_ROLE, owner.address)).to.be.true;
     });
 
     it("should emit SignerSetUpdated on deployment", async function () {

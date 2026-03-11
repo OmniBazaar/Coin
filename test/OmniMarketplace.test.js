@@ -77,11 +77,10 @@ describe("OmniMarketplace", function () {
         .true;
     });
 
-    it("Should grant MARKETPLACE_ADMIN_ROLE to deployer", async function () {
-      const MARKETPLACE_ADMIN_ROLE =
-        await marketplace.MARKETPLACE_ADMIN_ROLE();
+    it("Should grant DEFAULT_ADMIN_ROLE to deployer (marketplace admin merged)", async function () {
+      // MARKETPLACE_ADMIN_ROLE was merged into DEFAULT_ADMIN_ROLE (bytes32(0))
       expect(
-        await marketplace.hasRole(MARKETPLACE_ADMIN_ROLE, owner.address)
+        await marketplace.hasRole(ethers.ZeroHash, owner.address)
       ).to.be.true;
     });
 

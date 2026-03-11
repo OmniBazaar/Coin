@@ -1647,6 +1647,20 @@ contract OmniParticipation is // solhint-disable-line max-states-count
     }
 
     /**
+     * @notice Transfer admin authority over VERIFIER_ROLE to a new admin role
+     * @dev One-time admin call to delegate VERIFIER_ROLE management to
+     *      ValidatorProvisioner (via PROVISIONER_ROLE). After this call,
+     *      only holders of newAdminRole can grant/revoke VERIFIER_ROLE.
+     *      DEFAULT_ADMIN_ROLE can no longer grant/revoke VERIFIER_ROLE directly.
+     * @param newAdminRole The role that will become admin of VERIFIER_ROLE
+     */
+    function setVerifierRoleAdmin(
+        bytes32 newAdminRole
+    ) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        _setRoleAdmin(VERIFIER_ROLE, newAdminRole);
+    }
+
+    /**
      * @notice SYBIL: Check and increment per-user per-epoch score increase
      * @dev Called by all score-increasing verification functions. Reverts
      *      if the user would exceed MAX_SCORE_INCREASE_PER_EPOCH.

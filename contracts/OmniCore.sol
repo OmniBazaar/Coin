@@ -96,6 +96,9 @@ contract OmniCore is
     /// @notice Role for Avalanche validators
     bytes32 public constant AVALANCHE_VALIDATOR_ROLE = keccak256("AVALANCHE_VALIDATOR_ROLE");
 
+    /// @notice Role for ValidatorProvisioner contract to manage validators
+    bytes32 public constant PROVISIONER_ROLE = keccak256("PROVISIONER_ROLE");
+
     /// @notice Fee percentage for ODDAO (70% = 7000 basis points)
     uint256 public constant ODDAO_FEE_BPS = 7000;
 
@@ -638,6 +641,40 @@ contract OmniCore is
         }
 
         emit ValidatorUpdated(validator, active, block.timestamp); // solhint-disable-line not-rely-on-time
+    }
+
+    /**
+     * @notice Provision a new validator (used by ValidatorProvisioner)
+     * @dev Only PROVISIONER_ROLE can call. Performs the same logic as
+     *      setValidator(addr, true) — sets the validators mapping and
+     *      grants AVALANCHE_VALIDATOR_ROLE. This function exists because
+     *      setValidator() requires ADMIN_ROLE, which should not be given
+     *      to the ValidatorProvisioner contract.
+     * @param validator Address of the validator to provision
+     */
+    function provisionValidator(
+        address validator
+    ) external onlyRole(PROVISIONER_ROLE) {
+        if (validator == address(0)) revert InvalidAddress();
+        validators[validator] = true;
+        _grantRole(AVALANCHE_VALIDATOR_ROLE, validator);
+        emit ValidatorUpdated(validator, true, block.timestamp); // solhint-disable-line not-rely-on-time
+    }
+
+    /**
+     * @notice Deprovision a validator (used by ValidatorProvisioner)
+     * @dev Only PROVISIONER_ROLE can call. Performs the same logic as
+     *      setValidator(addr, false) — clears the validators mapping
+     *      and revokes AVALANCHE_VALIDATOR_ROLE.
+     * @param validator Address of the validator to deprovision
+     */
+    function deprovisionValidator(
+        address validator
+    ) external onlyRole(PROVISIONER_ROLE) {
+        if (validator == address(0)) revert InvalidAddress();
+        validators[validator] = false;
+        _revokeRole(AVALANCHE_VALIDATOR_ROLE, validator);
+        emit ValidatorUpdated(validator, false, block.timestamp); // solhint-disable-line not-rely-on-time
     }
 
     /**

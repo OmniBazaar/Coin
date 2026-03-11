@@ -69,7 +69,7 @@ interface IPrivateOmniCoin is IERC20 {
  * - Per-transaction conversion limits (configurable)
  * - Daily volume limits (calendar-day boundaries, configurable)
  * - Reentrancy protection on all conversion functions
- * - Role-based access control (OPERATOR, FEE_MANAGER, ADMIN)
+ * - Role-based access control (DEFAULT_ADMIN_ROLE)
  * - Solvency tracking: totalLocked == sum of outstanding bridge-minted pXOM
  * - bridgeMintedPXOM prevents genesis pXOM from draining bridge reserves
  * - Upgradeable via UUPS proxy pattern with ossification capability
@@ -87,12 +87,6 @@ contract OmniPrivacyBridge is
     // ========================================================================
     // CONSTANTS
     // ========================================================================
-
-    /// @notice Role identifier for operators who can pause/unpause
-    bytes32 public constant OPERATOR_ROLE = keccak256("OPERATOR_ROLE");
-
-    /// @notice Role identifier for fee management
-    bytes32 public constant FEE_MANAGER_ROLE = keccak256("FEE_MANAGER_ROLE");
 
     /// @notice Privacy conversion fee in basis points (50 = 0.5%)
     uint16 public constant PRIVACY_FEE_BPS = 50;
@@ -285,8 +279,6 @@ contract OmniPrivacyBridge is
 
         // Grant roles to deployer
         _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
-        _grantRole(OPERATOR_ROLE, msg.sender);
-        _grantRole(FEE_MANAGER_ROLE, msg.sender);
     }
 
     // ========================================================================
@@ -298,7 +290,7 @@ contract OmniPrivacyBridge is
      * @dev User must approve bridge contract before calling.
      *      Charges 0.5% fee. User can then call
      *      PrivateOmniCoin.convertToPrivate() to make pXOM private.
-     *      Fee XOM is held separately and withdrawable by FEE_MANAGER.
+     *      Fee XOM is held separately and withdrawable by admin.
      * @param amount Amount of XOM to convert
      */
     function convertXOMtoPXOM(
@@ -417,17 +409,17 @@ contract OmniPrivacyBridge is
 
     /**
      * @notice Pause all conversions
-     * @dev Only operator can pause
+     * @dev Only admin can pause
      */
-    function pause() external onlyRole(OPERATOR_ROLE) {
+    function pause() external onlyRole(DEFAULT_ADMIN_ROLE) {
         _pause();
     }
 
     /**
      * @notice Unpause conversions
-     * @dev Only operator can unpause
+     * @dev Only admin can unpause
      */
-    function unpause() external onlyRole(OPERATOR_ROLE) {
+    function unpause() external onlyRole(DEFAULT_ADMIN_ROLE) {
         _unpause();
     }
 
@@ -437,8 +429,8 @@ contract OmniPrivacyBridge is
      *      withdrawal to prevent redemptions against depleted
      *      reserves. Use only in emergency situations.
      *      SECURITY: Admin MUST be a multi-sig wallet with
-     *      timelock. Emergency withdraw supersedes FEE_MANAGER
-     *      separation: totalFeesCollected is zeroed
+     *      timelock. Emergency withdraw supersedes normal fee
+     *      withdrawal: totalFeesCollected is zeroed
      *      proportionally when XOM is withdrawn.
      * @param token Address of token to withdraw
      * @param to Recipient address
@@ -481,14 +473,14 @@ contract OmniPrivacyBridge is
 
     /**
      * @notice Withdraw accumulated conversion fees
-     * @dev Only fee manager can withdraw fees. Fees are held
+     * @dev Only admin can withdraw fees. Fees are held
      *      separately from locked funds and do not affect
      *      solvency of the bridge.
      * @param recipient Address to receive fees
      */
     function withdrawFees(
         address recipient
-    ) external onlyRole(FEE_MANAGER_ROLE) {
+    ) external onlyRole(DEFAULT_ADMIN_ROLE) {
         if (recipient == address(0)) revert ZeroAddress();
         uint256 fees = totalFeesCollected;
         if (fees == 0) revert ZeroAmount();
@@ -504,8 +496,9 @@ contract OmniPrivacyBridge is
      * @dev Can only be called by admin. Once ossified, the contract can never
      *      be upgraded again. IMPORTANT: The admin role MUST be behind a
      *      TimelockController before calling this function in production.
-     *      Accidental ossification permanently prevents bug fixes, feature
-     *      additions, and security patches. Consider using a two-step process:
+     *      Accidental ossification permanently prevents bug fixes,
+     *      feature additions, and security patches. Consider a
+     *      two-step process:
      *      1. Transfer admin role to a TimelockController with a 7-day delay.
      *      2. Propose ossification through the timelock.
      *      3. Execute after the delay period.

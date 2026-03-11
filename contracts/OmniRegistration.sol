@@ -51,8 +51,8 @@ contract OmniRegistration is
     /// @notice Role for KYC attestors (trusted validators)
     bytes32 public constant KYC_ATTESTOR_ROLE = keccak256("KYC_ATTESTOR_ROLE");
 
-    /// @notice Role for contracts/services authorized to mark bonuses as claimed
-    bytes32 public constant BONUS_MARKER_ROLE = keccak256("BONUS_MARKER_ROLE");
+    /// @dev REMOVED: BONUS_MARKER_ROLE replaced by omniRewardManagerAddress
+    ///      (state variable declared in storage gap section below)
 
     /// @notice Maximum registrations per day (rate limiting)
     uint256 public constant MAX_DAILY_REGISTRATIONS = 10000;
@@ -1673,9 +1673,10 @@ contract OmniRegistration is
     /**
      * @notice Mark welcome bonus as claimed for a user
      * @param user The user who claimed the bonus
-     * @dev Only callable by addresses with BONUS_MARKER_ROLE (e.g., OmniRewardManager)
+     * @dev Only callable by OmniRewardManager contract
      */
-    function markWelcomeBonusClaimed(address user) external onlyRole(BONUS_MARKER_ROLE) {
+    function markWelcomeBonusClaimed(address user) external {
+        if (msg.sender != omniRewardManagerAddress) revert Unauthorized();
         Registration storage reg = registrations[user];
         if (reg.timestamp == 0) revert NotRegistered();
         if (reg.welcomeBonusClaimed) revert BonusAlreadyClaimed();
@@ -1687,9 +1688,10 @@ contract OmniRegistration is
     /**
      * @notice Mark first sale bonus as claimed for a user
      * @param user The user who claimed the bonus
-     * @dev Only callable by addresses with BONUS_MARKER_ROLE (e.g., OmniRewardManager)
+     * @dev Only callable by OmniRewardManager contract
      */
-    function markFirstSaleBonusClaimed(address user) external onlyRole(BONUS_MARKER_ROLE) {
+    function markFirstSaleBonusClaimed(address user) external {
+        if (msg.sender != omniRewardManagerAddress) revert Unauthorized();
         Registration storage reg = registrations[user];
         if (reg.timestamp == 0) revert NotRegistered();
         if (reg.firstSaleBonusClaimed) revert BonusAlreadyClaimed();
@@ -1701,7 +1703,7 @@ contract OmniRegistration is
 
     /**
      * @notice Mark a user as having completed their first marketplace sale
-     * @dev Only callable by TRANSACTION_RECORDER_ROLE (marketplace/escrow contracts).
+     * @dev Only callable by authorized recorder contracts (marketplace/escrow).
      *      This flag gates the first sale bonus in OmniRewardManager, ensuring
      *      that users cannot claim the bonus without actually completing a sale.
      *      SYBIL-H05: Validates minimum sale amount, account age, and that
@@ -1714,7 +1716,10 @@ contract OmniRegistration is
         address seller,
         uint256 saleAmount,
         address buyer
-    ) external onlyRole(TRANSACTION_RECORDER_ROLE) {
+    ) external {
+        if (!authorizedRecorders[msg.sender]) {
+            revert UnauthorizedTransactionRecorder();
+        }
         Registration storage reg = registrations[seller];
         if (reg.timestamp == 0) revert NotRegistered();
 
@@ -1943,9 +1948,8 @@ contract OmniRegistration is
     /// @notice Volume tracking per user address
     mapping(address => VolumeTracking) public userVolumes;
 
-    /// @notice Role for contracts authorized to record transactions
-    /// @dev Marketplace and DEX contracts need this role to call recordTransaction()
-    bytes32 public constant TRANSACTION_RECORDER_ROLE = keccak256("TRANSACTION_RECORDER_ROLE");
+    /// @dev REMOVED: TRANSACTION_RECORDER_ROLE replaced by authorizedRecorders
+    ///      (state variable declared in storage gap section below)
 
     /**
      * @notice Check if transaction is within user's KYC tier limits
@@ -2034,7 +2038,7 @@ contract OmniRegistration is
      *      M-04: Now enforces tier limits on-chain (not just advisory).
      */
     function recordTransaction(address user, uint256 amount) external {
-        if (!hasRole(TRANSACTION_RECORDER_ROLE, msg.sender)) {
+        if (!authorizedRecorders[msg.sender]) {
             revert UnauthorizedTransactionRecorder();
         }
 
@@ -2351,6 +2355,55 @@ contract OmniRegistration is
     }
 
     // ═══════════════════════════════════════════════════════════════════════
+    //                    ROLE MANAGEMENT (Contract-to-Contract)
+    // ═══════════════════════════════════════════════════════════════════════
+
+    /**
+     * @notice Set the OmniRewardManager contract address
+     * @dev Only callable by DEFAULT_ADMIN_ROLE. Replaces the former
+     *      BONUS_MARKER_ROLE — only the OmniRewardManager can mark
+     *      bonuses as claimed.
+     * @param _omniRewardManager Address of the OmniRewardManager contract
+     */
+    function setOmniRewardManagerAddress(
+        address _omniRewardManager
+    ) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        omniRewardManagerAddress = _omniRewardManager;
+    }
+
+    /**
+     * @notice Authorize or deauthorize a contract as a transaction recorder
+     * @dev Only callable by DEFAULT_ADMIN_ROLE. Replaces the former
+     *      TRANSACTION_RECORDER_ROLE — used by MinimalEscrow and
+     *      DEXSettlement to record transactions for KYC limit tracking.
+     * @param recorder Contract address to authorize/deauthorize
+     * @param authorized Whether the address is authorized
+     */
+    function setAuthorizedRecorder(
+        address recorder,
+        bool authorized
+    ) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        authorizedRecorders[recorder] = authorized;
+    }
+
+    /**
+     * @notice Transfer admin authority over VALIDATOR_ROLE and
+     *         KYC_ATTESTOR_ROLE to a new admin role
+     * @dev One-time call by DEFAULT_ADMIN_ROLE to delegate validator
+     *      role management to ValidatorProvisioner. After this call,
+     *      only the holder of `newAdminRole` can grant/revoke
+     *      VALIDATOR_ROLE and KYC_ATTESTOR_ROLE.
+     * @param newAdminRole The role that will admin VALIDATOR_ROLE
+     *        and KYC_ATTESTOR_ROLE (e.g., PROVISIONER_ROLE)
+     */
+    function setValidatorRoleAdmin(
+        bytes32 newAdminRole
+    ) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        _setRoleAdmin(VALIDATOR_ROLE, newAdminRole);
+        _setRoleAdmin(KYC_ATTESTOR_ROLE, newAdminRole);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
     //                    ERC-2771 CONTEXT OVERRIDES
     // ═══════════════════════════════════════════════════════════════════════
 
@@ -2407,12 +2460,26 @@ contract OmniRegistration is
     /// @notice Whether contract is ossified (permanently non-upgradeable)
     bool private _ossified;
 
+    /// @notice Address of OmniRewardManager (only caller for bonus marking)
+    /// @dev Replaces BONUS_MARKER_ROLE — only ever held by one contract.
+    ///      Set via setOmniRewardManagerAddress().
+    address public omniRewardManagerAddress;
+
+    /// @notice Contracts authorized to record transactions
+    /// @dev Replaces TRANSACTION_RECORDER_ROLE — only held by specific
+    ///      contracts. Mappings do not consume sequential slots.
+    ///      Set via setAuthorizedRecorder().
+    mapping(address => bool) public authorizedRecorders;
+
     /**
      * @dev Reserved storage gap for future upgrades.
      *      Ensures that adding new state variables in upgraded versions
      *      does not corrupt existing storage layout. Standard UUPS pattern
      *      used by all other OmniBazaar upgradeable contracts.
      *      Reduced from 50 to 49 to accommodate _ossified.
+     *      Reduced from 49 to 48 to accommodate omniRewardManagerAddress.
+     *      (authorizedRecorders is a mapping and does not consume a
+     *      sequential slot.)
      */
-    uint256[49] private __gap;
+    uint256[48] private __gap;
 }

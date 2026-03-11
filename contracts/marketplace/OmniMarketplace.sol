@@ -127,10 +127,6 @@ contract OmniMarketplace is
         "uint256 expiry,uint256 nonce)"
     );
 
-    /// @notice Role for marketplace configuration
-    bytes32 public constant MARKETPLACE_ADMIN_ROLE =
-        keccak256("MARKETPLACE_ADMIN_ROLE");
-
     /// @notice Maximum expiry duration (365 days)
     uint256 public constant MAX_EXPIRY_DURATION = 365 days;
 
@@ -298,7 +294,6 @@ contract OmniMarketplace is
         __EIP712_init("OmniMarketplace", "1");
 
         _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
-        _grantRole(MARKETPLACE_ADMIN_ROLE, msg.sender);
 
         nextListingId = 1;
         defaultExpiry = 60 days;
@@ -707,7 +702,7 @@ contract OmniMarketplace is
      */
     function setDefaultExpiry(
         uint256 _defaultExpiry
-    ) external onlyRole(MARKETPLACE_ADMIN_ROLE) {
+    ) external onlyRole(DEFAULT_ADMIN_ROLE) {
         if (_defaultExpiry == 0) revert InvalidExpiry();
         if (_defaultExpiry > MAX_EXPIRY_DURATION) {
             revert ExpiryTooFar(MAX_EXPIRY_DURATION);

@@ -118,9 +118,6 @@ contract OmniGovernance is
     // Constants
     // =========================================================================
 
-    /// @notice Admin role for governance upgrades (held by timelock)
-    bytes32 public constant ADMIN_ROLE = keccak256("ADMIN_ROLE");
-
     /* solhint-disable gas-small-strings */
     /// @notice EIP-712 typehash for vote-by-signature
     bytes32 public constant VOTE_TYPEHASH = keccak256(
@@ -351,7 +348,6 @@ contract OmniGovernance is
         __EIP712_init("OmniGovernance", "1");
 
         _grantRole(DEFAULT_ADMIN_ROLE, admin);
-        _grantRole(ADMIN_ROLE, admin);
 
         omniCoin = IVotes(_omniCoin);
         omniCoinERC20 = IERC20(_omniCoin);
@@ -601,7 +597,7 @@ contract OmniGovernance is
 
         // L-03: Use dedicated authorization error
         address caller = _msgSender();
-        bool isAdmin = hasRole(ADMIN_ROLE, caller);
+        bool isAdmin = hasRole(DEFAULT_ADMIN_ROLE, caller);
 
         if (isAdmin) {
             // Admin (timelock) can always cancel at any stage
@@ -788,7 +784,7 @@ contract OmniGovernance is
      *      the contract can never be upgraded again. This is the strongest
      *      possible signal of decentralization.
      */
-    function ossify() external onlyRole(ADMIN_ROLE) {
+    function ossify() external onlyRole(DEFAULT_ADMIN_ROLE) {
         _ossified = true;
         emit ContractOssified(address(this));
     }
@@ -808,7 +804,10 @@ contract OmniGovernance is
      *      5. After this call, only governance proposals through the
      *         timelock can exercise admin powers
      */
-    function transferAdminToTimelock() external onlyRole(ADMIN_ROLE) {
+    function transferAdminToTimelock()
+        external
+        onlyRole(DEFAULT_ADMIN_ROLE)
+    {
         address timelockAddr = timelock;
         if (timelockAddr == address(0)) revert InvalidAddress();
 
@@ -817,12 +816,10 @@ contract OmniGovernance is
         // revocation must target the same address that passed the check.
         address caller = _msgSender();
 
-        // Grant admin roles to the timelock
-        _grantRole(ADMIN_ROLE, timelockAddr);
+        // Grant DEFAULT_ADMIN_ROLE to the timelock
         _grantRole(DEFAULT_ADMIN_ROLE, timelockAddr);
 
-        // Revoke admin roles from the caller
-        _revokeRole(ADMIN_ROLE, caller);
+        // Revoke DEFAULT_ADMIN_ROLE from the caller
         _revokeRole(DEFAULT_ADMIN_ROLE, caller);
 
         emit AdminTransferredToTimelock(caller, timelockAddr);
@@ -838,7 +835,7 @@ contract OmniGovernance is
      */
     function _authorizeUpgrade(
         address newImplementation
-    ) internal view override onlyRole(ADMIN_ROLE) {
+    ) internal view override onlyRole(DEFAULT_ADMIN_ROLE) {
         if (_ossified) revert ContractIsOssified();
         // newImplementation validated by UUPSUpgradeable
         (newImplementation);

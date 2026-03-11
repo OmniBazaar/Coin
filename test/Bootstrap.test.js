@@ -20,9 +20,9 @@ describe("Bootstrap", function () {
       FUJI_RPC_URL
     );
 
-    // Grant BOOTSTRAP_ADMIN_ROLE to admin account
-    const BOOTSTRAP_ADMIN_ROLE = await bootstrap.BOOTSTRAP_ADMIN_ROLE();
-    await bootstrap.grantRole(BOOTSTRAP_ADMIN_ROLE, admin.address);
+    // BOOTSTRAP_ADMIN_ROLE was merged into DEFAULT_ADMIN_ROLE (bytes32(0))
+    // Grant DEFAULT_ADMIN_ROLE to admin account
+    await bootstrap.grantRole(ethers.ZeroHash, admin.address);
   });
 
   describe("Initialization", function () {
@@ -32,12 +32,11 @@ describe("Bootstrap", function () {
       expect(await bootstrap.omniCoreRpcUrl()).to.equal(FUJI_RPC_URL);
     });
 
-    it("Should grant admin roles to deployer", async function () {
-      const DEFAULT_ADMIN_ROLE = await bootstrap.DEFAULT_ADMIN_ROLE();
-      const BOOTSTRAP_ADMIN_ROLE = await bootstrap.BOOTSTRAP_ADMIN_ROLE();
+    it("Should grant DEFAULT_ADMIN_ROLE to deployer", async function () {
+      // BOOTSTRAP_ADMIN_ROLE was merged into DEFAULT_ADMIN_ROLE (bytes32(0))
+      const DEFAULT_ADMIN_ROLE = ethers.ZeroHash;
 
       expect(await bootstrap.hasRole(DEFAULT_ADMIN_ROLE, owner.address)).to.be.true;
-      expect(await bootstrap.hasRole(BOOTSTRAP_ADMIN_ROLE, owner.address)).to.be.true;
     });
 
     it("Should reject invalid constructor parameters", async function () {
@@ -1088,29 +1087,29 @@ describe("Bootstrap", function () {
   //  NEW TESTS - Access Control Extended
   // =====================================================================
   describe("Access Control - Extended", function () {
-    it("Should allow DEFAULT_ADMIN to grant BOOTSTRAP_ADMIN_ROLE", async function () {
-      const BOOTSTRAP_ADMIN_ROLE = await bootstrap.BOOTSTRAP_ADMIN_ROLE();
-      await bootstrap.grantRole(BOOTSTRAP_ADMIN_ROLE, node1.address);
-      expect(await bootstrap.hasRole(BOOTSTRAP_ADMIN_ROLE, node1.address)).to.be.true;
+    it("Should allow DEFAULT_ADMIN to grant DEFAULT_ADMIN_ROLE to others", async function () {
+      // BOOTSTRAP_ADMIN_ROLE was merged into DEFAULT_ADMIN_ROLE (bytes32(0))
+      await bootstrap.grantRole(ethers.ZeroHash, node1.address);
+      expect(await bootstrap.hasRole(ethers.ZeroHash, node1.address)).to.be.true;
     });
 
-    it("Should allow DEFAULT_ADMIN to revoke BOOTSTRAP_ADMIN_ROLE", async function () {
-      const BOOTSTRAP_ADMIN_ROLE = await bootstrap.BOOTSTRAP_ADMIN_ROLE();
-      await bootstrap.revokeRole(BOOTSTRAP_ADMIN_ROLE, admin.address);
-      expect(await bootstrap.hasRole(BOOTSTRAP_ADMIN_ROLE, admin.address)).to.be.false;
+    it("Should allow DEFAULT_ADMIN to revoke DEFAULT_ADMIN_ROLE from others", async function () {
+      // BOOTSTRAP_ADMIN_ROLE was merged into DEFAULT_ADMIN_ROLE (bytes32(0))
+      await bootstrap.revokeRole(ethers.ZeroHash, admin.address);
+      expect(await bootstrap.hasRole(ethers.ZeroHash, admin.address)).to.be.false;
     });
 
     it("Should prevent non-admin from granting roles", async function () {
-      const BOOTSTRAP_ADMIN_ROLE = await bootstrap.BOOTSTRAP_ADMIN_ROLE();
+      // BOOTSTRAP_ADMIN_ROLE was merged into DEFAULT_ADMIN_ROLE (bytes32(0))
       await expect(
-        bootstrap.connect(node1).grantRole(BOOTSTRAP_ADMIN_ROLE, node2.address)
+        bootstrap.connect(node1).grantRole(ethers.ZeroHash, node2.address)
       ).to.be.revertedWithCustomError(bootstrap, "AccessControlUnauthorizedAccount");
     });
 
     it("Should allow role renunciation", async function () {
-      const BOOTSTRAP_ADMIN_ROLE = await bootstrap.BOOTSTRAP_ADMIN_ROLE();
-      await bootstrap.connect(admin).renounceRole(BOOTSTRAP_ADMIN_ROLE, admin.address);
-      expect(await bootstrap.hasRole(BOOTSTRAP_ADMIN_ROLE, admin.address)).to.be.false;
+      // BOOTSTRAP_ADMIN_ROLE was merged into DEFAULT_ADMIN_ROLE (bytes32(0))
+      await bootstrap.connect(admin).renounceRole(ethers.ZeroHash, admin.address);
+      expect(await bootstrap.hasRole(ethers.ZeroHash, admin.address)).to.be.false;
     });
 
     it("Should prevent non-admin from calling adminUnbanNode", async function () {
@@ -1356,9 +1355,9 @@ describe("Bootstrap", function () {
       expect(await bootstrap.MAX_TIME_WINDOW()).to.equal(30 * 24 * 60 * 60);
     });
 
-    it("Should have correct BOOTSTRAP_ADMIN_ROLE hash", async function () {
-      const expected = ethers.keccak256(ethers.toUtf8Bytes("BOOTSTRAP_ADMIN_ROLE"));
-      expect(await bootstrap.BOOTSTRAP_ADMIN_ROLE()).to.equal(expected);
+    it("Should have DEFAULT_ADMIN_ROLE as bytes32(0)", async function () {
+      // BOOTSTRAP_ADMIN_ROLE was merged into DEFAULT_ADMIN_ROLE (bytes32(0))
+      expect(await bootstrap.DEFAULT_ADMIN_ROLE()).to.equal(ethers.ZeroHash);
     });
   });
 });

@@ -3,14 +3,14 @@
  *
  * Tests all contract logic that does NOT require COTI MPC garbled circuits:
  *   1.  Initialization (roles, zero-address guards, initial state)
- *   2.  Access control (MATCHER_ROLE on trade functions, ADMIN_ROLE on params)
+ *   2.  Access control (MATCHER_ROLE on trade functions, DEFAULT_ADMIN_ROLE on params)
  *   3.  Ossification (two-step: request -> delay -> confirm, blocks upgrades)
  *   4.  Pause / unpause (paused blocks state-changing functions)
  *   5.  Matcher role management (grant / revoke, zero-address guard)
  *   6.  Cancel order (only order owner, status checks)
  *   7.  Cleanup user orders (voluntary compaction)
  *   8.  View functions (getPrivacyStats, getUserOrdersPaginated, getOrderBook)
- *   9.  Constants (MATCHER_ROLE, ADMIN_ROLE, MAX_ORDERS_PER_USER, etc.)
+ *   9.  Constants (MATCHER_ROLE, DEFAULT_ADMIN_ROLE, MAX_ORDERS_PER_USER, etc.)
  *  10.  Events and errors in ABI
  *  11.  UUPS upgradeability (before and after ossification)
  *
@@ -63,7 +63,6 @@ describe("PrivateDEX", function () {
         const MATCHER_ROLE = await dex.MATCHER_ROLE();
         await dex.connect(admin).grantMatcherRole(matcher.address);
 
-        const ADMIN_ROLE = await dex.ADMIN_ROLE();
         const DEFAULT_ADMIN_ROLE = await dex.DEFAULT_ADMIN_ROLE();
 
         return {
@@ -75,7 +74,6 @@ describe("PrivateDEX", function () {
             outsider,
             newAdmin,
             MATCHER_ROLE,
-            ADMIN_ROLE,
             DEFAULT_ADMIN_ROLE,
         };
     }
@@ -93,11 +91,11 @@ describe("PrivateDEX", function () {
             ).to.be.true;
         });
 
-        it("should grant ADMIN_ROLE to admin", async function () {
-            const { dex, admin, ADMIN_ROLE } =
+        it("should grant DEFAULT_ADMIN_ROLE to admin (admin functions use DEFAULT_ADMIN_ROLE)", async function () {
+            const { dex, admin, DEFAULT_ADMIN_ROLE } =
                 await loadFixture(deployFixture);
             expect(
-                await dex.hasRole(ADMIN_ROLE, admin.address)
+                await dex.hasRole(DEFAULT_ADMIN_ROLE, admin.address)
             ).to.be.true;
         });
 
@@ -243,8 +241,8 @@ describe("PrivateDEX", function () {
                 .withArgs(outsider.address, MATCHER_ROLE);
         });
 
-        it("should revert pause for non-ADMIN_ROLE", async function () {
-            const { dex, outsider, ADMIN_ROLE } =
+        it("should revert pause for non-DEFAULT_ADMIN_ROLE", async function () {
+            const { dex, outsider, DEFAULT_ADMIN_ROLE } =
                 await loadFixture(deployFixture);
 
             await expect(dex.connect(outsider).pause())
@@ -252,11 +250,11 @@ describe("PrivateDEX", function () {
                     dex,
                     "AccessControlUnauthorizedAccount"
                 )
-                .withArgs(outsider.address, ADMIN_ROLE);
+                .withArgs(outsider.address, DEFAULT_ADMIN_ROLE);
         });
 
-        it("should revert unpause for non-ADMIN_ROLE", async function () {
-            const { dex, admin, outsider, ADMIN_ROLE } =
+        it("should revert unpause for non-DEFAULT_ADMIN_ROLE", async function () {
+            const { dex, admin, outsider, DEFAULT_ADMIN_ROLE } =
                 await loadFixture(deployFixture);
 
             await dex.connect(admin).pause();
@@ -266,11 +264,11 @@ describe("PrivateDEX", function () {
                     dex,
                     "AccessControlUnauthorizedAccount"
                 )
-                .withArgs(outsider.address, ADMIN_ROLE);
+                .withArgs(outsider.address, DEFAULT_ADMIN_ROLE);
         });
 
-        it("should revert grantMatcherRole for non-ADMIN_ROLE", async function () {
-            const { dex, outsider, ADMIN_ROLE } =
+        it("should revert grantMatcherRole for non-DEFAULT_ADMIN_ROLE", async function () {
+            const { dex, outsider, DEFAULT_ADMIN_ROLE } =
                 await loadFixture(deployFixture);
 
             await expect(
@@ -282,11 +280,11 @@ describe("PrivateDEX", function () {
                     dex,
                     "AccessControlUnauthorizedAccount"
                 )
-                .withArgs(outsider.address, ADMIN_ROLE);
+                .withArgs(outsider.address, DEFAULT_ADMIN_ROLE);
         });
 
-        it("should revert revokeMatcherRole for non-ADMIN_ROLE", async function () {
-            const { dex, outsider, matcher, ADMIN_ROLE } =
+        it("should revert revokeMatcherRole for non-DEFAULT_ADMIN_ROLE", async function () {
+            const { dex, outsider, matcher, DEFAULT_ADMIN_ROLE } =
                 await loadFixture(deployFixture);
 
             await expect(
@@ -298,11 +296,11 @@ describe("PrivateDEX", function () {
                     dex,
                     "AccessControlUnauthorizedAccount"
                 )
-                .withArgs(outsider.address, ADMIN_ROLE);
+                .withArgs(outsider.address, DEFAULT_ADMIN_ROLE);
         });
 
-        it("should revert requestOssification for non-ADMIN_ROLE", async function () {
-            const { dex, outsider, ADMIN_ROLE } =
+        it("should revert requestOssification for non-DEFAULT_ADMIN_ROLE", async function () {
+            const { dex, outsider, DEFAULT_ADMIN_ROLE } =
                 await loadFixture(deployFixture);
 
             await expect(
@@ -312,11 +310,11 @@ describe("PrivateDEX", function () {
                     dex,
                     "AccessControlUnauthorizedAccount"
                 )
-                .withArgs(outsider.address, ADMIN_ROLE);
+                .withArgs(outsider.address, DEFAULT_ADMIN_ROLE);
         });
 
-        it("should revert confirmOssification for non-ADMIN_ROLE", async function () {
-            const { dex, admin, outsider, ADMIN_ROLE } =
+        it("should revert confirmOssification for non-DEFAULT_ADMIN_ROLE", async function () {
+            const { dex, admin, outsider, DEFAULT_ADMIN_ROLE } =
                 await loadFixture(deployFixture);
 
             // First request ossification as admin
@@ -331,7 +329,7 @@ describe("PrivateDEX", function () {
                     dex,
                     "AccessControlUnauthorizedAccount"
                 )
-                .withArgs(outsider.address, ADMIN_ROLE);
+                .withArgs(outsider.address, DEFAULT_ADMIN_ROLE);
         });
     });
 
@@ -1018,11 +1016,11 @@ describe("PrivateDEX", function () {
             );
         });
 
-        it("should expose ADMIN_ROLE as keccak256('ADMIN_ROLE')", async function () {
+        it("should use DEFAULT_ADMIN_ROLE (bytes32(0)) for admin functions", async function () {
             const { dex } = await loadFixture(deployFixture);
 
-            expect(await dex.ADMIN_ROLE()).to.equal(
-                ethers.id("ADMIN_ROLE")
+            expect(await dex.DEFAULT_ADMIN_ROLE()).to.equal(
+                ethers.ZeroHash
             );
         });
 
@@ -1180,7 +1178,6 @@ describe("PrivateDEX", function () {
                 dex,
                 admin,
                 matcher,
-                ADMIN_ROLE,
                 MATCHER_ROLE,
                 DEFAULT_ADMIN_ROLE,
             } = await loadFixture(deployFixture);
@@ -1203,9 +1200,6 @@ describe("PrivateDEX", function () {
                 )
             ).to.be.true;
             expect(
-                await upgraded.hasRole(ADMIN_ROLE, admin.address)
-            ).to.be.true;
-            expect(
                 await upgraded.hasRole(
                     MATCHER_ROLE,
                     matcher.address
@@ -1214,7 +1208,7 @@ describe("PrivateDEX", function () {
         });
 
         it("should revert upgrade from non-admin account", async function () {
-            const { dex, outsider, ADMIN_ROLE } =
+            const { dex, outsider, DEFAULT_ADMIN_ROLE } =
                 await loadFixture(deployFixture);
 
             const V2Factory = await ethers.getContractFactory(
@@ -1236,7 +1230,7 @@ describe("PrivateDEX", function () {
                     dex,
                     "AccessControlUnauthorizedAccount"
                 )
-                .withArgs(outsider.address, ADMIN_ROLE);
+                .withArgs(outsider.address, DEFAULT_ADMIN_ROLE);
         });
     });
 

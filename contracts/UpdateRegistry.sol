@@ -74,9 +74,6 @@ contract UpdateRegistry is AccessControl {
     //                    CONSTANTS
     // ============================================================
 
-    /// @notice Role for addresses allowed to submit releases (with valid signatures)
-    bytes32 public constant RELEASE_MANAGER_ROLE = keccak256("RELEASE_MANAGER_ROLE");
-
     /// @notice Maximum number of ODDAO signers allowed
     uint256 public constant MAX_SIGNERS = 20;
 
@@ -249,7 +246,7 @@ contract UpdateRegistry is AccessControl {
 
     /**
      * @notice Initializes the UpdateRegistry with ODDAO signers
-     * @dev Grants DEFAULT_ADMIN_ROLE and RELEASE_MANAGER_ROLE to the deployer.
+     * @dev Grants DEFAULT_ADMIN_ROLE to the deployer.
      *      Sets the initial signer set and threshold for multi-sig verification.
      * @param _signers Array of ODDAO signer addresses (must not contain duplicates or zero)
      * @param _threshold Number of signatures required (must be > 0 and <= signers.length)
@@ -259,7 +256,6 @@ contract UpdateRegistry is AccessControl {
         _validateSignerSet(_signers, _threshold);
 
         _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
-        _grantRole(RELEASE_MANAGER_ROLE, msg.sender);
 
         for (uint256 i = 0; i < _signers.length; ++i) {
             signers.push(_signers[i]);
@@ -276,7 +272,7 @@ contract UpdateRegistry is AccessControl {
 
     /**
      * @notice Publish a new software release with ODDAO multi-sig approval
-     * @dev The caller must have RELEASE_MANAGER_ROLE. Signatures are verified
+     * @dev The caller must have DEFAULT_ADMIN_ROLE. Signatures are verified
      *      against the authorized signer set. The signed message includes chain ID,
      *      contract address, and operationNonce to prevent replay attacks.
      *
@@ -305,7 +301,7 @@ contract UpdateRegistry is AccessControl {
         string calldata changelogCID,
         uint256 nonce,
         bytes[] calldata signatures
-    ) external onlyRole(RELEASE_MANAGER_ROLE) {
+    ) external onlyRole(DEFAULT_ADMIN_ROLE) {
         _validateReleaseInputs(component, version, binaryHash, minVersion, changelogCID);
 
         bytes32 componentHash = keccak256(bytes(component));
@@ -386,7 +382,7 @@ contract UpdateRegistry is AccessControl {
         string calldata reason,
         uint256 nonce,
         bytes[] calldata signatures
-    ) external onlyRole(RELEASE_MANAGER_ROLE) {
+    ) external onlyRole(DEFAULT_ADMIN_ROLE) {
         if (bytes(component).length == 0) revert EmptyComponent();
         if (bytes(version).length == 0) revert EmptyVersion();
         if (bytes(reason).length > MAX_REASON_LENGTH) {

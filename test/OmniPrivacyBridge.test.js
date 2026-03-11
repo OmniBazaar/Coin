@@ -3,7 +3,7 @@ const { ethers, upgrades } = require("hardhat");
 
 describe("OmniPrivacyBridge", function () {
   let omniCoin, privateOmniCoin, bridge;
-  let owner, operator, feeManager, user1, user2, user3;
+  let owner, user1, user2, user3;
 
   const INITIAL_SUPPLY = ethers.parseEther("1000000000"); // 1 billion
   const MAX_CONVERSION = ethers.parseEther("10000000"); // 10 million (initial limit)
@@ -12,7 +12,7 @@ describe("OmniPrivacyBridge", function () {
   const BPS_DENOMINATOR = 10000n;
 
   beforeEach(async function () {
-    [owner, operator, feeManager, user1, user2, user3] = await ethers.getSigners();
+    [owner, , , user1, user2, user3] = await ethers.getSigners();
 
     // Deploy OmniCoin (XOM)
     const OmniCoin = await ethers.getContractFactory("OmniCoin");
@@ -43,14 +43,6 @@ describe("OmniPrivacyBridge", function () {
     const BURNER_ROLE = await privateOmniCoin.BURNER_ROLE();
     await privateOmniCoin.grantRole(BURNER_ROLE, await bridge.getAddress());
 
-    // Grant operator role to operator account
-    const OPERATOR_ROLE = await bridge.OPERATOR_ROLE();
-    await bridge.grantRole(OPERATOR_ROLE, operator.address);
-
-    // Grant fee manager role to feeManager account
-    const FEE_MANAGER_ROLE = await bridge.FEE_MANAGER_ROLE();
-    await bridge.grantRole(FEE_MANAGER_ROLE, feeManager.address);
-
     // Transfer XOM to users for testing (from deployer's pre-minted supply)
     await omniCoin.transfer(user1.address, ethers.parseEther("15"));
     await omniCoin.transfer(user2.address, ethers.parseEther("15"));
@@ -72,12 +64,8 @@ describe("OmniPrivacyBridge", function () {
 
     it("Should set up roles correctly", async function () {
       const DEFAULT_ADMIN_ROLE = await bridge.DEFAULT_ADMIN_ROLE();
-      const OPERATOR_ROLE = await bridge.OPERATOR_ROLE();
-      const FEE_MANAGER_ROLE = await bridge.FEE_MANAGER_ROLE();
 
       expect(await bridge.hasRole(DEFAULT_ADMIN_ROLE, owner.address)).to.be.true;
-      expect(await bridge.hasRole(OPERATOR_ROLE, operator.address)).to.be.true;
-      expect(await bridge.hasRole(FEE_MANAGER_ROLE, feeManager.address)).to.be.true;
     });
 
     it("Should initialize with zero locked and converted amounts", async function () {
@@ -335,19 +323,19 @@ describe("OmniPrivacyBridge", function () {
   });
 
   describe("Admin Functions - Pause/Unpause", function () {
-    it("Should allow operator to pause", async function () {
-      await bridge.connect(operator).pause();
+    it("Should allow admin to pause", async function () {
+      await bridge.connect(owner).pause();
       expect(await bridge.paused()).to.be.true;
     });
 
-    it("Should allow operator to unpause", async function () {
-      await bridge.connect(operator).pause();
-      await bridge.connect(operator).unpause();
+    it("Should allow admin to unpause", async function () {
+      await bridge.connect(owner).pause();
+      await bridge.connect(owner).unpause();
       expect(await bridge.paused()).to.be.false;
     });
 
     it("Should block conversions when paused", async function () {
-      await bridge.connect(operator).pause();
+      await bridge.connect(owner).pause();
 
       const amount = ethers.parseEther("1");
       await omniCoin.connect(user1).approve(await bridge.getAddress(), amount);
@@ -357,7 +345,7 @@ describe("OmniPrivacyBridge", function () {
       ).to.be.revertedWithCustomError(bridge, "EnforcedPause");
     });
 
-    it("Should fail pause when called by non-operator", async function () {
+    it("Should fail pause when called by non-admin", async function () {
       await expect(
         bridge.connect(user1).pause()
       ).to.be.revertedWithCustomError(bridge, "AccessControlUnauthorizedAccount");

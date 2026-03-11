@@ -144,10 +144,6 @@ contract PrivateDEX is
     bytes32 public constant MATCHER_ROLE =
         keccak256("MATCHER_ROLE");
 
-    /// @notice Role identifier for admin operations
-    bytes32 public constant ADMIN_ROLE =
-        keccak256("ADMIN_ROLE");
-
     /// @notice Maximum orders per user to prevent spam
     uint256 public constant MAX_ORDERS_PER_USER = 100;
 
@@ -359,7 +355,6 @@ contract PrivateDEX is
         __UUPSUpgradeable_init();
 
         _grantRole(DEFAULT_ADMIN_ROLE, admin);
-        _grantRole(ADMIN_ROLE, admin);
         _grantRole(MATCHER_ROLE, admin);
     }
 
@@ -953,7 +948,7 @@ contract PrivateDEX is
      * @notice Pause all trading operations
      * @dev Only admin can pause
      */
-    function pause() external onlyRole(ADMIN_ROLE) {
+    function pause() external onlyRole(DEFAULT_ADMIN_ROLE) {
         _pause();
     }
 
@@ -961,7 +956,7 @@ contract PrivateDEX is
      * @notice Unpause trading operations
      * @dev Only admin can unpause
      */
-    function unpause() external onlyRole(ADMIN_ROLE) {
+    function unpause() external onlyRole(DEFAULT_ADMIN_ROLE) {
         _unpause();
     }
 
@@ -972,7 +967,7 @@ contract PrivateDEX is
      */
     function grantMatcherRole(
         address matcher
-    ) external onlyRole(ADMIN_ROLE) {
+    ) external onlyRole(DEFAULT_ADMIN_ROLE) {
         if (matcher == address(0)) revert InvalidAddress();
         _grantRole(MATCHER_ROLE, matcher);
     }
@@ -984,8 +979,22 @@ contract PrivateDEX is
      */
     function revokeMatcherRole(
         address matcher
-    ) external onlyRole(ADMIN_ROLE) {
+    ) external onlyRole(DEFAULT_ADMIN_ROLE) {
         _revokeRole(MATCHER_ROLE, matcher);
+    }
+
+    /**
+     * @notice Transfer admin authority over MATCHER_ROLE to a new admin role
+     * @dev One-time admin call to delegate MATCHER_ROLE management to
+     *      ValidatorProvisioner (via PROVISIONER_ROLE). After this call,
+     *      only holders of newAdminRole can grant/revoke MATCHER_ROLE.
+     *      DEFAULT_ADMIN_ROLE can no longer grant/revoke MATCHER_ROLE directly.
+     * @param newAdminRole The role that will become admin of MATCHER_ROLE
+     */
+    function setMatcherRoleAdmin(
+        bytes32 newAdminRole
+    ) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        _setRoleAdmin(MATCHER_ROLE, newAdminRole);
     }
 
     // ====================================================================
@@ -1001,7 +1010,7 @@ contract PrivateDEX is
      */
     function requestOssification()
         external
-        onlyRole(ADMIN_ROLE)
+        onlyRole(DEFAULT_ADMIN_ROLE)
     {
         // solhint-disable-next-line not-rely-on-time
         ossificationRequestTime = block.timestamp;
@@ -1020,7 +1029,7 @@ contract PrivateDEX is
      */
     function confirmOssification()
         external
-        onlyRole(ADMIN_ROLE)
+        onlyRole(DEFAULT_ADMIN_ROLE)
     {
         if (ossificationRequestTime == 0) {
             revert OssificationNotRequested();
@@ -1250,7 +1259,7 @@ contract PrivateDEX is
     )
         internal
         override
-        onlyRole(ADMIN_ROLE)
+        onlyRole(DEFAULT_ADMIN_ROLE)
     {
         if (_ossified) revert ContractIsOssified();
     }

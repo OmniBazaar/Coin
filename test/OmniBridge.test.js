@@ -1369,10 +1369,8 @@ describe("OmniBridge", function () {
     });
 
     it("Should assign correct roles during initialization", async function () {
-      const ADMIN_ROLE = await bridge.ADMIN_ROLE();
       const DEFAULT_ADMIN_ROLE = await bridge.DEFAULT_ADMIN_ROLE();
 
-      expect(await bridge.hasRole(ADMIN_ROLE, admin.address)).to.be.true;
       expect(await bridge.hasRole(DEFAULT_ADMIN_ROLE, admin.address)).to.be.true;
     });
 
