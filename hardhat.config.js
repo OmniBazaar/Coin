@@ -183,6 +183,16 @@ module.exports = {
       blockGasLimit: 30000000,
       allowUnlimitedContractSize: false
     },
+    // Ethereum Mainnet (for OmniBazaarResolver ENS deployment)
+    "ethereum-mainnet": {
+      url: process.env.ETH_RPC_URL || "https://ethereum-rpc.publicnode.com",
+      chainId: 1,
+      accounts: process.env.ETH_DEPLOYER_PRIVATE_KEY
+        ? [process.env.ETH_DEPLOYER_PRIVATE_KEY]
+        : [],
+      gasPrice: "auto",
+      timeout: 120000
+    },
     // COTI V2 Mainnet — MPC privacy contracts
     cotiMainnet: {
       url: "https://mainnet.coti.io/rpc",
