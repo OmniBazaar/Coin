@@ -552,7 +552,7 @@ describe("Trustless Architecture — Cross-Contract Integration", function () {
 
     const MIN_DURATION = 30 * 24 * 60 * 60; // 30 days
     const MAX_DURATION = 365 * 24 * 60 * 60; // 365 days
-    const FEE_PER_YEAR = ethers.parseEther("10"); // 10 XOM/year
+    const FEE_PER_YEAR = ethers.parseEther("1000"); // 1000 XOM/year
 
     beforeEach(async function () {
       [owner, oddaoTreasury, user1, user2, user3] = await ethers.getSigners();
@@ -572,7 +572,7 @@ describe("Trustless Architecture — Cross-Contract Integration", function () {
       await ens.waitForDeployment();
 
       // ── Fund users ──
-      const mintAmount = ethers.parseEther("10000");
+      const mintAmount = ethers.parseEther("100000");
       for (const user of [user1, user2, user3]) {
         await xom.mint(user.address, mintAmount);
         await xom.connect(user).approve(await ens.getAddress(), mintAmount);
@@ -695,7 +695,7 @@ describe("Trustless Architecture — Cross-Contract Integration", function () {
       const vaultBalanceAfter = await xom.balanceOf(oddaoTreasury.address);
       const feeCollected = vaultBalanceAfter - vaultBalanceBefore;
 
-      // Full year should cost exactly 10 XOM (FEE_PER_YEAR) — 100% to vault
+      // Full year should cost exactly 1000 XOM (FEE_PER_YEAR) — 100% to vault
       expect(feeCollected).to.equal(FEE_PER_YEAR);
     });
   });

@@ -178,7 +178,7 @@ describe("TS-Contract Integration (G10 Audit Remediation)", function () {
   describe("2. ENS Registration Flow (OmniENS → UnifiedFeeVault)", function () {
     let ens, vault, xom;
 
-    const FEE_PER_YEAR = ethers.parseEther("10"); // 10 XOM
+    const FEE_PER_YEAR = ethers.parseEther("1000"); // 1000 XOM
     const MIN_DURATION = 30 * 24 * 60 * 60; // 30 days
     const MAX_DURATION = 365 * 24 * 60 * 60; // 365 days
     const MIN_COMMITMENT_AGE = 60; // 1 minute
@@ -225,8 +225,8 @@ describe("TS-Contract Integration (G10 Audit Remediation)", function () {
       );
       await ens.waitForDeployment();
 
-      // Mint tokens to users and approve
-      const mintAmount = ethers.parseEther("10000");
+      // Mint tokens to users and approve (enough for 1000 XOM/yr)
+      const mintAmount = ethers.parseEther("100000");
       await xom.mint(user1.address, mintAmount);
       await xom.mint(user2.address, mintAmount);
       await xom
@@ -257,7 +257,7 @@ describe("TS-Contract Integration (G10 Audit Remediation)", function () {
       expect(await ens.resolve("alice")).to.equal(user1.address);
     });
 
-    it("should verify full-year registration fee of 10 XOM routes to vault", async function () {
+    it("should verify full-year registration fee of 1000 XOM routes to vault", async function () {
       const vaultBefore = await xom.balanceOf(await vault.getAddress());
 
       await commitAndRegister(user1, "bob", MAX_DURATION);
@@ -265,7 +265,7 @@ describe("TS-Contract Integration (G10 Audit Remediation)", function () {
       const vaultReceived =
         (await xom.balanceOf(await vault.getAddress())) - vaultBefore;
 
-      // Full year should be exactly 10 XOM to vault
+      // Full year should be exactly 1000 XOM to vault
       expect(vaultReceived).to.equal(FEE_PER_YEAR);
     });
 
@@ -960,7 +960,7 @@ describe("TS-Contract Integration (G10 Audit Remediation)", function () {
   describe("9. Full Lifecycle: ENS → Vault → 70/20/10 Distribution", function () {
     let ens, vault, xom;
 
-    const FEE_PER_YEAR = ethers.parseEther("10");
+    const FEE_PER_YEAR = ethers.parseEther("1000");
     const DURATION = 365 * 24 * 60 * 60; // 1 year
     const MIN_COMMITMENT_AGE = 60;
 
@@ -993,7 +993,7 @@ describe("TS-Contract Integration (G10 Audit Remediation)", function () {
       await ens.waitForDeployment();
     });
 
-    it("should produce correct 70/20/10 split for 10 XOM ENS fee via vault", async function () {
+    it("should produce correct 70/20/10 split for 1000 XOM ENS fee via vault", async function () {
       const fee = FEE_PER_YEAR;
 
       // Calculate expected splits

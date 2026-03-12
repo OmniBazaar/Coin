@@ -23,7 +23,7 @@ describe("OmniENS", function () {
 
   const MIN_DURATION = 30 * 24 * 60 * 60; // 30 days
   const MAX_DURATION = 365 * 24 * 60 * 60; // 365 days
-  const FEE_PER_YEAR = ethers.parseEther("10"); // 10 XOM
+  const FEE_PER_YEAR = ethers.parseEther("1000"); // 1000 XOM
   const MIN_COMMITMENT_AGE = 60; // 1 minute in seconds
 
   /**
@@ -82,8 +82,8 @@ describe("OmniENS", function () {
     );
     await ens.waitForDeployment();
 
-    // Mint tokens to users and approve
-    const mintAmount = ethers.parseEther("10000");
+    // Mint tokens to users and approve (enough for 1000 XOM/yr fees)
+    const mintAmount = ethers.parseEther("100000");
     await xom.mint(user1.address, mintAmount);
     await xom.mint(user2.address, mintAmount);
     await xom.mint(user3.address, mintAmount);
@@ -113,7 +113,7 @@ describe("OmniENS", function () {
       );
     });
 
-    it("should set default registration fee to 10 XOM/year", async function () {
+    it("should set default registration fee to 1000 XOM/year", async function () {
       expect(await ens.registrationFeePerYear()).to.equal(
         FEE_PER_YEAR
       );
@@ -861,6 +861,288 @@ describe("OmniENS", function () {
       await expect(
         ens.connect(user1).register("alice", MIN_DURATION, secret)
       ).to.not.emit(ens, "ReverseRecordOverwritten");
+    });
+  });
+
+  // -------------------------------------------------------------------
+  //  11. System Registration (auto-register at signup)
+  // -------------------------------------------------------------------
+
+  describe("System Registration", function () {
+    it("should register a name for a user (owner only)", async function () {
+      await ens
+        .connect(owner)
+        .systemRegister("alice", user1.address, MAX_DURATION);
+      expect(await ens.resolve("alice")).to.equal(user1.address);
+    });
+
+    it("should emit SystemNameRegistered event", async function () {
+      await expect(
+        ens
+          .connect(owner)
+          .systemRegister("alice", user1.address, MAX_DURATION)
+      ).to.emit(ens, "SystemNameRegistered");
+    });
+
+    it("should not charge any fee", async function () {
+      const vaultBefore = await xom.balanceOf(feeVault.address);
+      await ens
+        .connect(owner)
+        .systemRegister("alice", user1.address, MAX_DURATION);
+      const vaultAfter = await xom.balanceOf(feeVault.address);
+      expect(vaultAfter).to.equal(vaultBefore);
+    });
+
+    it("should bypass commit-reveal", async function () {
+      // No commit needed — just register directly
+      await ens
+        .connect(owner)
+        .systemRegister("alice", user1.address, MAX_DURATION);
+      expect(await ens.resolve("alice")).to.equal(user1.address);
+    });
+
+    it("should set reverse record", async function () {
+      await ens
+        .connect(owner)
+        .systemRegister("alice", user1.address, MAX_DURATION);
+      expect(await ens.reverseResolve(user1.address)).to.equal(
+        "alice"
+      );
+    });
+
+    it("should mark name as systemRegistered", async function () {
+      const nameHash = ethers.keccak256(ethers.toUtf8Bytes("alice"));
+      await ens
+        .connect(owner)
+        .systemRegister("alice", user1.address, MAX_DURATION);
+      expect(await ens.systemRegistered(nameHash)).to.be.true;
+    });
+
+    it("should increment totalRegistrations", async function () {
+      const before = await ens.totalRegistrations();
+      await ens
+        .connect(owner)
+        .systemRegister("alice", user1.address, MAX_DURATION);
+      expect(await ens.totalRegistrations()).to.equal(before + 1n);
+    });
+
+    it("should cap duration to MAX_DURATION", async function () {
+      const hugeD = MAX_DURATION * 10;
+      await ens
+        .connect(owner)
+        .systemRegister("alice", user1.address, hugeD);
+      const reg = await ens.getRegistration("alice");
+      const latest = await time.latest();
+      expect(reg.expiresAt).to.be.closeTo(
+        BigInt(latest) + BigInt(MAX_DURATION),
+        5
+      );
+    });
+
+    it("should floor duration to MIN_DURATION", async function () {
+      await ens
+        .connect(owner)
+        .systemRegister("alice", user1.address, 1);
+      const reg = await ens.getRegistration("alice");
+      const latest = await time.latest();
+      expect(reg.expiresAt).to.be.closeTo(
+        BigInt(latest) + BigInt(MIN_DURATION),
+        5
+      );
+    });
+
+    it("should reject from non-owner", async function () {
+      await expect(
+        ens
+          .connect(user1)
+          .systemRegister("alice", user1.address, MAX_DURATION)
+      ).to.be.revertedWithCustomError(
+        ens,
+        "OwnableUnauthorizedAccount"
+      );
+    });
+
+    it("should reject zero address owner", async function () {
+      await expect(
+        ens
+          .connect(owner)
+          .systemRegister("alice", ethers.ZeroAddress, MAX_DURATION)
+      ).to.be.revertedWithCustomError(ens, "ZeroAddress");
+    });
+
+    it("should reject if name is active and owned by regular user", async function () {
+      await commitAndRegister(user1, "alice", MAX_DURATION);
+      await expect(
+        ens
+          .connect(owner)
+          .systemRegister("alice", user2.address, MAX_DURATION)
+      ).to.be.revertedWithCustomError(ens, "NameTaken");
+    });
+
+    it("should allow re-registration of own system name (renewal)", async function () {
+      await ens
+        .connect(owner)
+        .systemRegister("alice", user1.address, MIN_DURATION);
+      // Wait for expiry
+      await time.increase(MIN_DURATION + 1);
+      // Re-register same system name for a new owner
+      await ens
+        .connect(owner)
+        .systemRegister("alice", user2.address, MAX_DURATION);
+      expect(await ens.resolve("alice")).to.equal(user2.address);
+    });
+
+    it("should not double-count totalRegistrations on re-register", async function () {
+      await ens
+        .connect(owner)
+        .systemRegister("alice", user1.address, MIN_DURATION);
+      const countAfterFirst = await ens.totalRegistrations();
+      await time.increase(MIN_DURATION + 1);
+      await ens
+        .connect(owner)
+        .systemRegister("alice", user1.address, MAX_DURATION);
+      expect(await ens.totalRegistrations()).to.equal(
+        countAfterFirst
+      );
+    });
+
+    it("should validate name format", async function () {
+      await expect(
+        ens
+          .connect(owner)
+          .systemRegister("AB", user1.address, MAX_DURATION)
+      ).to.be.revertedWithCustomError(ens, "InvalidNameLength");
+    });
+  });
+
+  // -------------------------------------------------------------------
+  //  12. System Name Protection
+  // -------------------------------------------------------------------
+
+  describe("System Name Protection", function () {
+    beforeEach(async function () {
+      await ens
+        .connect(owner)
+        .systemRegister("alice", user1.address, MIN_DURATION);
+    });
+
+    it("should block regular registration of system name even after expiry", async function () {
+      await time.increase(MIN_DURATION + 1);
+      // Name is expired but system-registered
+      const secret = ethers.hexlify(ethers.randomBytes(32));
+      const commitment = await ens.makeCommitment(
+        "alice",
+        user2.address,
+        secret
+      );
+      await ens.connect(user2).commit(commitment);
+      await time.increase(MIN_COMMITMENT_AGE + 1);
+      await expect(
+        ens.connect(user2).register("alice", MIN_DURATION, secret)
+      ).to.be.revertedWithCustomError(ens, "SystemReservedName");
+    });
+
+    it("should still allow isAvailable to return true for expired system name", async function () {
+      // isAvailable checks expiry only, not systemRegistered
+      // (the protection is in register(), not isAvailable())
+      await time.increase(MIN_DURATION + 1);
+      expect(await ens.isAvailable("alice")).to.be.true;
+    });
+
+    it("should return zero address for expired system name via resolve", async function () {
+      await time.increase(MIN_DURATION + 1);
+      expect(await ens.resolve("alice")).to.equal(ethers.ZeroAddress);
+    });
+
+    it("should allow owner to systemRegister over expired system name", async function () {
+      await time.increase(MIN_DURATION + 1);
+      await ens
+        .connect(owner)
+        .systemRegister("alice", user2.address, MAX_DURATION);
+      expect(await ens.resolve("alice")).to.equal(user2.address);
+    });
+
+    it("should not affect non-system names", async function () {
+      // Register a regular name
+      await commitAndRegister(user2, "bob", MIN_DURATION);
+      // Let it expire
+      await time.increase(MIN_DURATION + 1);
+      // Another user can re-register it
+      await commitAndRegister(user3, "bob", MIN_DURATION);
+      expect(await ens.resolve("bob")).to.equal(user3.address);
+    });
+  });
+
+  // -------------------------------------------------------------------
+  //  13. System Renewal
+  // -------------------------------------------------------------------
+
+  describe("System Renewal", function () {
+    beforeEach(async function () {
+      await ens
+        .connect(owner)
+        .systemRegister("alice", user1.address, MIN_DURATION);
+    });
+
+    it("should renew a system name (no fee)", async function () {
+      const regBefore = await ens.getRegistration("alice");
+      const vaultBefore = await xom.balanceOf(feeVault.address);
+
+      await ens
+        .connect(owner)
+        .systemRenew("alice", MIN_DURATION);
+
+      const regAfter = await ens.getRegistration("alice");
+      const vaultAfter = await xom.balanceOf(feeVault.address);
+
+      expect(regAfter.expiresAt).to.be.gt(regBefore.expiresAt);
+      expect(vaultAfter).to.equal(vaultBefore); // No fee
+    });
+
+    it("should emit NameRenewed event", async function () {
+      await expect(
+        ens.connect(owner).systemRenew("alice", MIN_DURATION)
+      ).to.emit(ens, "NameRenewed");
+    });
+
+    it("should renew after expiry (extends from now)", async function () {
+      await time.increase(MIN_DURATION + 1);
+      await ens
+        .connect(owner)
+        .systemRenew("alice", MIN_DURATION);
+      const reg = await ens.getRegistration("alice");
+      const latest = await time.latest();
+      expect(reg.expiresAt).to.be.closeTo(
+        BigInt(latest) + BigInt(MIN_DURATION),
+        5
+      );
+    });
+
+    it("should cap renewal at MAX_DURATION from now", async function () {
+      await ens
+        .connect(owner)
+        .systemRenew("alice", MAX_DURATION * 2);
+      const reg = await ens.getRegistration("alice");
+      const latest = await time.latest();
+      expect(reg.expiresAt).to.be.lte(
+        BigInt(latest) + BigInt(MAX_DURATION) + 5n
+      );
+    });
+
+    it("should reject from non-owner", async function () {
+      await expect(
+        ens.connect(user1).systemRenew("alice", MIN_DURATION)
+      ).to.be.revertedWithCustomError(
+        ens,
+        "OwnableUnauthorizedAccount"
+      );
+    });
+
+    it("should reject for non-system names", async function () {
+      await commitAndRegister(user2, "bob", MIN_DURATION);
+      await expect(
+        ens.connect(owner).systemRenew("bob", MIN_DURATION)
+      ).to.be.revertedWithCustomError(ens, "NameNotFound");
     });
   });
 });

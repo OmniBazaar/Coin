@@ -63,6 +63,10 @@ error CommitmentExpired();
 /// @dev L-03 audit fix: fee bounds validation
 error FeeOutOfBounds();
 
+/// @notice Name is system-reserved (auto-registered at signup)
+/// @dev Only systemRegister() can register/renew these names
+error SystemReservedName(string name);
+
 /**
  * @title OmniENS
  * @author OmniBazaar Team
@@ -80,7 +84,9 @@ error FeeOutOfBounds();
  * - Resolve: lookup owner by name
  * - Reverse resolve: lookup name by owner
  * - Auto-expiry: names released after expiry
- * - Registration fee: 10 XOM/year (anti-spam)
+ * - System registration: auto-register username at signup (free)
+ * - System names: protected from regular users even after expiry
+ * - Registration fee: 1000 XOM/year for additional names (~$5)
  * - Fee distribution: 100% to UnifiedFeeVault (vault handles 70/20/10)
  * - Name rules: 3-32 chars, alphanumeric + hyphens, lowercase
  *
@@ -184,6 +190,11 @@ contract OmniENS is ReentrancyGuard, Ownable2Step, ERC2771Context {
     ///      to the block.timestamp when commit() was called
     mapping(bytes32 => uint256) public commitments;
 
+    /// @notice Tracks names auto-registered at signup via
+    ///         systemRegister(). These names are protected from
+    ///         regular user registration even after expiry.
+    mapping(bytes32 => bool) public systemRegistered;
+
     // ══════════════════════════════════════════════════════════════════
     //                              EVENTS
     // ══════════════════════════════════════════════════════════════════
@@ -226,6 +237,16 @@ contract OmniENS is ReentrancyGuard, Ownable2Step, ERC2771Context {
     event RegistrationFeeUpdated(
         uint256 indexed oldFee,
         uint256 indexed newFee
+    );
+
+    /// @notice Emitted when a name is system-registered at signup
+    /// @param name Username that was registered
+    /// @param owner Address that owns the name
+    /// @param expiresAt Timestamp when registration expires
+    event SystemNameRegistered(
+        string name,
+        address indexed owner,
+        uint256 indexed expiresAt
     );
 
     /// @notice Emitted when a commitment is made
@@ -275,7 +296,7 @@ contract OmniENS is ReentrancyGuard, Ownable2Step, ERC2771Context {
 
         xomToken = IERC20(_xomToken);
         feeVault = _feeVault;
-        registrationFeePerYear = 10 ether; // 10 XOM per year
+        registrationFeePerYear = 1000 ether; // 1000 XOM (~$5/yr)
     }
 
     // ══════════════════════════════════════════════════════════════════
@@ -457,6 +478,108 @@ contract OmniENS is ReentrancyGuard, Ownable2Step, ERC2771Context {
     // ══════════════════════════════════════════════════════════════════
     //                        ADMIN FUNCTIONS
     // ══════════════════════════════════════════════════════════════════
+
+    /**
+     * @notice Register a name on behalf of a user at signup
+     * @dev Bypasses commit-reveal and fees. Only callable by the
+     *      contract owner (the validator network). Marks the name
+     *      as system-registered, protecting it from regular user
+     *      registration even after expiry. Duration is capped to
+     *      MAX_DURATION; the validator auto-renews via
+     *      systemRenew() before expiry.
+     * @param name Username to register (3-32 chars, lowercase)
+     * @param nameOwner Wallet address derived from user credentials
+     * @param duration Registration duration in seconds
+     */
+    function systemRegister(
+        string calldata name,
+        address nameOwner,
+        uint256 duration
+    ) external onlyOwner nonReentrant {
+        if (nameOwner == address(0)) revert ZeroAddress();
+        _validateName(name);
+
+        bytes32 nameHash = _nameHash(name);
+        Registration storage reg = registrations[nameHash];
+
+        // Allow if: unregistered, expired, or already system-owned
+        if (
+            reg.owner != address(0)
+                // solhint-disable-next-line not-rely-on-time
+                && block.timestamp < reg.expiresAt
+                && !systemRegistered[nameHash]
+        ) {
+            revert NameTaken(name);
+        }
+
+        // Clear old reverse record if applicable
+        if (
+            reg.owner != address(0)
+                && reverseRecords[reg.owner] == nameHash
+        ) {
+            delete reverseRecords[reg.owner];
+        }
+
+        // Cap duration within bounds
+        uint256 d = duration;
+        if (d > MAX_DURATION) d = MAX_DURATION;
+        if (d < MIN_DURATION) d = MIN_DURATION;
+
+        // solhint-disable-next-line not-rely-on-time
+        uint256 expiresAt = block.timestamp + d;
+        bool isNew = reg.owner == address(0)
+            && !systemRegistered[nameHash];
+
+        registrations[nameHash] = Registration({
+            owner: nameOwner,
+            // solhint-disable-next-line not-rely-on-time
+            registeredAt: block.timestamp,
+            expiresAt: expiresAt
+        });
+
+        systemRegistered[nameHash] = true;
+        _setReverseRecord(nameOwner, nameHash);
+        nameStrings[nameHash] = name;
+
+        if (isNew) ++totalRegistrations;
+
+        emit SystemNameRegistered(name, nameOwner, expiresAt);
+    }
+
+    /**
+     * @notice Renew a system-registered name (no fee)
+     * @dev Only callable by owner for system-registered names.
+     *      The validator calls this periodically to prevent
+     *      system names from expiring.
+     * @param name Name to renew
+     * @param additionalDuration Seconds to add (capped at
+     *        MAX_DURATION from now)
+     */
+    function systemRenew(
+        string calldata name,
+        uint256 additionalDuration
+    ) external onlyOwner nonReentrant {
+        bytes32 nameHash = _nameHash(name);
+        if (!systemRegistered[nameHash]) {
+            revert NameNotFound(name);
+        }
+
+        Registration storage reg = registrations[nameHash];
+
+        /* solhint-disable not-rely-on-time */
+        uint256 base = block.timestamp > reg.expiresAt
+            ? block.timestamp
+            : reg.expiresAt;
+        uint256 newExpiry = base + additionalDuration;
+
+        uint256 maxExpiry = block.timestamp + MAX_DURATION;
+        /* solhint-enable not-rely-on-time */
+        if (newExpiry > maxExpiry) newExpiry = maxExpiry;
+
+        reg.expiresAt = newExpiry;
+
+        emit NameRenewed(name, reg.owner, newExpiry);
+    }
 
     /**
      * @notice Update registration fee (owner only)
@@ -700,7 +823,11 @@ contract OmniENS is ReentrancyGuard, Ownable2Step, ERC2771Context {
             if (block.timestamp < reg.expiresAt) {
                 revert NameTaken(name);
             }
-            // Expired — clear old reverse record
+            // System-registered names protected even after expiry
+            if (systemRegistered[nameHash]) {
+                revert SystemReservedName(name);
+            }
+            // Expired non-system name — clear old reverse record
             if (reverseRecords[reg.owner] == nameHash) {
                 delete reverseRecords[reg.owner];
             }
