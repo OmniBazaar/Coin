@@ -1883,6 +1883,12 @@ contract OmniRewardManager is
 
         emit ReferralEpochCountUpdated(referrer, epoch, epochReferralCount[referrer][epoch]);
 
+        // SYBIL-H02: Referrer must have KYC Tier 1 to receive bonus
+        if (!registrationContract.hasKycTier1(referrer)) {
+            // Skip accumulation (don't revert — welcome bonus already claimed)
+            return;
+        }
+
         // Calculate total referral bonus
         uint256 referralAmount = _calculateReferralBonus(registrationNumber);
 
@@ -1895,6 +1901,13 @@ contract OmniRewardManager is
         // Get second-level referrer from registration contract
         IOmniRegistration.Registration memory referrerReg = registrationContract.getRegistration(referrer);
         address secondLevelReferrer = referrerReg.referrer;
+
+        // SYBIL-H02: Second-level referrer must also have KYC Tier 1
+        // If not, treat as no L2 referrer (their 20% share goes to ODDAO)
+        if (secondLevelReferrer != address(0) &&
+            !registrationContract.hasKycTier1(secondLevelReferrer)) {
+            secondLevelReferrer = address(0);
+        }
 
         // Calculate distribution amounts
         uint256 referrerAmount = (referralAmount * 70) / 100;

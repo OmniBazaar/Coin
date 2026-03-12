@@ -58,10 +58,52 @@ describe('OmniRegistration', function () {
         return keccak256(toUtf8Bytes(email));
     }
 
+    // Verification key signer (used to complete KYC Tier 1 for referrer)
+    let topLevelVerificationKey: any;
+
+    /**
+     * Helper: create EIP-712 social verification signature at top-level scope
+     */
+    async function createTopLevelSocialSig(
+        signer: any,
+        user: string,
+        socialHashVal: string,
+        platform: string,
+        timestampVal: number,
+        nonce: string,
+        deadline: number
+    ): Promise<string> {
+        const registrationAddress = await registration.getAddress();
+        const chainId = await ethers.provider.getNetwork().then((n: any) => n.chainId);
+        const domain = {
+            name: 'OmniRegistration',
+            version: '1',
+            chainId: chainId,
+            verifyingContract: registrationAddress,
+        };
+        const types = {
+            SocialVerification: [
+                { name: 'user', type: 'address' },
+                { name: 'socialHash', type: 'bytes32' },
+                { name: 'platform', type: 'string' },
+                { name: 'timestamp', type: 'uint256' },
+                { name: 'nonce', type: 'bytes32' },
+                { name: 'deadline', type: 'uint256' },
+            ],
+        };
+        return await signer.signTypedData(domain, types, {
+            user, socialHash: socialHashVal, platform,
+            timestamp: timestampVal, nonce, deadline,
+        });
+    }
+
     beforeEach(async function () {
         // Get signers
         [owner, validator1, validator2, validator3, validator4, user1, user2, referrer, unauthorized] =
             await ethers.getSigners();
+
+        const signers = await ethers.getSigners();
+        topLevelVerificationKey = signers[9];
 
         // Deploy OmniRegistration as proxy
         const OmniRegistration = await ethers.getContractFactory('OmniRegistration');
@@ -80,12 +122,28 @@ describe('OmniRegistration', function () {
         await registration.grantRole(KYC_ATTESTOR_ROLE, validator3.address);
         await registration.grantRole(KYC_ATTESTOR_ROLE, validator4.address);
 
+        // Set trusted verification key (needed for social verification)
+        await registration.connect(owner).setTrustedVerificationKey(topLevelVerificationKey.address);
+
         // Register referrer first (so they can be used as referrer)
         await registration.connect(validator1).registerUser(
             referrer.address,
             ZeroAddress, // No referrer for the first user
             phoneHash('+1-555-0000'),
             emailHash('referrer@test.com')
+        );
+
+        // SYBIL-H02: Complete KYC Tier 1 for referrer (phone already set, need social)
+        const socialHashVal = keccak256(toUtf8Bytes('twitter:referrer_handle'));
+        const currentTime = await time.latest();
+        const nonce = keccak256(toUtf8Bytes('referrer-social-nonce'));
+        const deadline = currentTime + 3600;
+        const sig = await createTopLevelSocialSig(
+            topLevelVerificationKey, referrer.address,
+            socialHashVal, 'twitter', currentTime, nonce, deadline
+        );
+        await registration.connect(referrer).submitSocialVerification(
+            socialHashVal, 'twitter', currentTime, nonce, deadline, sig
         );
     });
 
@@ -3031,6 +3089,176 @@ describe('OmniRegistration', function () {
             // But Tier 2 should NOT be complete yet (need address + selfie too)
             expect(await registration.hasKycTier2(user1.address)).to.be.false;
             expect(await registration.kycTier2CompletedAt(user1.address)).to.equal(0);
+        });
+    });
+
+    describe('SYBIL-H02: Referrer KYC Tier 1 Requirement', function () {
+        let tier0Referrer: any;
+
+        beforeEach(async function () {
+            const signers = await ethers.getSigners();
+            tier0Referrer = signers[10];
+
+            // Register tier0Referrer WITHOUT completing KYC Tier 1
+            // (has phone+email from registerUser but NO social verification)
+            await registration.connect(validator1).registerUser(
+                tier0Referrer.address,
+                ZeroAddress,
+                phoneHash('+1-555-9999'),
+                emailHash('tier0referrer@test.com')
+            );
+
+            // Verify tier0Referrer does NOT have KYC Tier 1
+            expect(await registration.hasKycTier1(tier0Referrer.address)).to.be.false;
+
+            // Verify the existing referrer DOES have KYC Tier 1
+            expect(await registration.hasKycTier1(referrer.address)).to.be.true;
+        });
+
+        it('registerUser should revert with Tier 0 referrer', async function () {
+            await expect(
+                registration.connect(validator1).registerUser(
+                    user2.address,
+                    tier0Referrer.address,
+                    phoneHash('+1-555-8001'),
+                    emailHash('newuser-t0ref@test.com')
+                )
+            ).to.be.revertedWithCustomError(registration, 'ReferrerKycRequired');
+        });
+
+        it('registerUser should succeed with Tier 1 referrer', async function () {
+            await registration.connect(validator1).registerUser(
+                user2.address,
+                referrer.address,
+                phoneHash('+1-555-8002'),
+                emailHash('newuser-t1ref@test.com')
+            );
+
+            const reg = await registration.getRegistration(user2.address);
+            expect(reg.referrer).to.equal(referrer.address);
+        });
+
+        it('registerUser should succeed with no referrer (address(0))', async function () {
+            await registration.connect(validator1).registerUser(
+                user2.address,
+                ZeroAddress,
+                phoneHash('+1-555-8003'),
+                emailHash('newuser-noref@test.com')
+            );
+
+            const reg = await registration.getRegistration(user2.address);
+            expect(reg.referrer).to.equal(ZeroAddress);
+        });
+
+        it('selfRegisterTrustless should revert with Tier 0 referrer', async function () {
+            const emailHashVal = emailHash('trustless-t0ref@test.com');
+            const emailTimestamp = await time.latest();
+            const emailNonce = keccak256(toUtf8Bytes('t0ref-email-nonce'));
+            const emailDeadline = emailTimestamp + 3600;
+            const registrationDeadline = emailTimestamp + 3600;
+
+            const registrationAddress = await registration.getAddress();
+            const chainId = await ethers.provider.getNetwork().then((n: any) => n.chainId);
+            const domain = {
+                name: 'OmniRegistration',
+                version: '1',
+                chainId: chainId,
+                verifyingContract: registrationAddress,
+            };
+
+            // Create email verification signature
+            const emailTypes = {
+                EmailVerification: [
+                    { name: 'user', type: 'address' },
+                    { name: 'emailHash', type: 'bytes32' },
+                    { name: 'timestamp', type: 'uint256' },
+                    { name: 'nonce', type: 'bytes32' },
+                    { name: 'deadline', type: 'uint256' },
+                ],
+            };
+            const emailSig = await topLevelVerificationKey.signTypedData(domain, emailTypes, {
+                user: user2.address,
+                emailHash: emailHashVal,
+                timestamp: emailTimestamp,
+                nonce: emailNonce,
+                deadline: emailDeadline,
+            });
+
+            // Create user registration signature
+            const regTypes = {
+                TrustlessRegistration: [
+                    { name: 'user', type: 'address' },
+                    { name: 'referrer', type: 'address' },
+                    { name: 'deadline', type: 'uint256' },
+                ],
+            };
+            const userSig = await user2.signTypedData(domain, regTypes, {
+                user: user2.address,
+                referrer: tier0Referrer.address,
+                deadline: registrationDeadline,
+            });
+
+            await expect(
+                registration.connect(user2).selfRegisterTrustless(
+                    emailHashVal, emailTimestamp, emailNonce, emailDeadline, emailSig,
+                    tier0Referrer.address, registrationDeadline, userSig
+                )
+            ).to.be.revertedWithCustomError(registration, 'ReferrerKycRequired');
+        });
+
+        it('selfRegisterTrustless should succeed with Tier 1 referrer', async function () {
+            const emailHashVal = emailHash('trustless-t1ref@test.com');
+            const emailTimestamp = await time.latest();
+            const emailNonce = keccak256(toUtf8Bytes('t1ref-email-nonce'));
+            const emailDeadline = emailTimestamp + 3600;
+            const registrationDeadline = emailTimestamp + 3600;
+
+            const registrationAddress = await registration.getAddress();
+            const chainId = await ethers.provider.getNetwork().then((n: any) => n.chainId);
+            const domain = {
+                name: 'OmniRegistration',
+                version: '1',
+                chainId: chainId,
+                verifyingContract: registrationAddress,
+            };
+
+            const emailTypes = {
+                EmailVerification: [
+                    { name: 'user', type: 'address' },
+                    { name: 'emailHash', type: 'bytes32' },
+                    { name: 'timestamp', type: 'uint256' },
+                    { name: 'nonce', type: 'bytes32' },
+                    { name: 'deadline', type: 'uint256' },
+                ],
+            };
+            const emailSig = await topLevelVerificationKey.signTypedData(domain, emailTypes, {
+                user: user2.address,
+                emailHash: emailHashVal,
+                timestamp: emailTimestamp,
+                nonce: emailNonce,
+                deadline: emailDeadline,
+            });
+
+            const regTypes = {
+                TrustlessRegistration: [
+                    { name: 'user', type: 'address' },
+                    { name: 'referrer', type: 'address' },
+                    { name: 'deadline', type: 'uint256' },
+                ],
+            };
+            const userSig = await user2.signTypedData(domain, regTypes, {
+                user: user2.address,
+                referrer: referrer.address,
+                deadline: registrationDeadline,
+            });
+
+            await registration.connect(user2).selfRegisterTrustless(
+                emailHashVal, emailTimestamp, emailNonce, emailDeadline, emailSig,
+                referrer.address, registrationDeadline, userSig
+            );
+
+            const reg = await registration.getRegistration(user2.address);
+            expect(reg.referrer).to.equal(referrer.address);
         });
     });
 });

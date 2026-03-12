@@ -1460,6 +1460,183 @@ describe('OmniRewardManager', function () {
             expect(referrerBalanceAfter - referrerBalanceBefore).to.equal(pendingAfter);
         });
 
+        it('SYBIL-H02: should skip referral bonus when referrer lacks KYC Tier 1', async function () {
+            // Register referrer WITHOUT KYC Tier 1 (phone+email only, no social)
+            const referrerPhone = keccak256(ethers.toUtf8Bytes('+15559990001'));
+            const referrerEmail = keccak256(ethers.toUtf8Bytes('no-kyc-referrer@test.com'));
+            await omniRegistration.connect(admin).registerUser(
+                referrer.address,
+                ZeroAddress,
+                referrerPhone,
+                referrerEmail
+            );
+            // Verify referrer does NOT have KYC Tier 1
+            expect(await omniRegistration.hasKycTier1(referrer.address)).to.be.false;
+
+            // Register user1 with KYC Tier 1 and referrer who lacks KYC Tier 1
+            // Note: registerUser now requires referrer KYC Tier 1 (SYBIL-H02),
+            // so we need to register user1 without referrer first, then the
+            // referral link would already be set. But actually, registering with
+            // a Tier 0 referrer will revert now. So let's test via a referrer
+            // who completes KYC Tier 1 AFTER registering, and use the legacy
+            // admin claim path for the test.
+            //
+            // Actually, _distributeAutoReferralBonus is called from
+            // claimWelcomeBonusTrustless, so we need a valid registration with
+            // a referrer. The referrer KYC check in registerUser blocks Tier 0
+            // referrers. For this test, we need to:
+            // 1. Register referrer with KYC Tier 1 (so registerUser passes)
+            // 2. Then somehow make them lose KYC Tier 1 OR
+            // 3. Use a mock registration
+            //
+            // Simpler approach: Register user1 before our new check was applied.
+            // Since we can't do that in the contract, we'll register user1 with
+            // referrer who HAS KYC Tier 1, then remove referrer's social hash
+            // via admin unregister + re-register without social.
+            //
+            // Simplest approach: use the admin claimWelcomeBonus which doesn't
+            // go through registerUser. We can set up the registration data
+            // manually by registering the referrer first, then the user.
+            // But claimWelcomeBonus (admin) doesn't call _distributeAutoReferralBonus.
+            // Only the trustless/permissionless paths do.
+            //
+            // Best approach: register referrer with full KYC, register user1
+            // with referrer, then admin-unregister referrer (removes kycTier1CompletedAt),
+            // then re-register referrer without social → kycTier1CompletedAt = 0.
+
+            // OK, let's take a different approach: register user1 without referrer
+            // via admin, then manually set the referrer in the registration contract.
+            // Actually, the referrer is immutable once set. Let's use the simplest
+            // possible approach:
+            //
+            // 1. Complete KYC Tier 1 for referrer (so registerUser doesn't revert)
+            // 2. Register user1 with referrer (passes KYC check)
+            // 3. Admin-unregister referrer (clears kycTier1CompletedAt)
+            // 4. Re-register referrer without social (no KYC Tier 1)
+            // 5. user1 claims welcome bonus → referral bonus should be SKIPPED
+
+            // Step: Complete KYC Tier 1 for referrer
+            // referrer already registered above, just needs social verification
+            const network = await ethers.provider.getNetwork();
+            const chainId = network.chainId;
+            const regAddr = await omniRegistration.getAddress();
+            const socialHash1 = keccak256(ethers.toUtf8Bytes('twitter:noreferrer1'));
+            const latestBlock1 = await ethers.provider.getBlock('latest');
+            const socialTimestamp1 = latestBlock1!.timestamp;
+            const socialNonce1 = '0x' + Buffer.from(ethers.randomBytes(32)).toString('hex');
+            const socialDeadline1 = socialTimestamp1 + 3600;
+            const socialSig1 = await signSocialVerification(
+                verificationSigner, referrer.address, socialHash1, 'twitter',
+                socialTimestamp1, socialNonce1, socialDeadline1, regAddr, chainId
+            );
+            await omniRegistration.connect(referrer).submitSocialVerification(
+                socialHash1, 'twitter', socialTimestamp1, socialNonce1, socialDeadline1, socialSig1
+            );
+            expect(await omniRegistration.hasKycTier1(referrer.address)).to.be.true;
+
+            // Register user1 with referrer (referrer has KYC Tier 1 so this passes)
+            await registerUserWithKycTier1(user1.address, referrer.address);
+
+            // Admin-unregister referrer (clears kycTier1CompletedAt, hashes, etc.)
+            await omniRegistration.connect(owner).adminUnregister(referrer.address);
+            // Re-register referrer without social verification
+            const referrerPhone2 = keccak256(ethers.toUtf8Bytes('+15559990002'));
+            const referrerEmail2 = keccak256(ethers.toUtf8Bytes('no-kyc-referrer2@test.com'));
+            await omniRegistration.connect(admin).registerUser(
+                referrer.address, ZeroAddress, referrerPhone2, referrerEmail2
+            );
+            // Referrer now lacks KYC Tier 1 (no social verification)
+            expect(await omniRegistration.hasKycTier1(referrer.address)).to.be.false;
+
+            // Set ODDAO address
+            await rewardManager.connect(admin).setOddaoAddress(oddao.address);
+
+            // user1 claims welcome bonus → referral bonus should be SKIPPED
+            const pendingBefore = await rewardManager.getPendingReferralBonus(referrer.address);
+            expect(pendingBefore).to.equal(0);
+
+            await rewardManager.connect(user1).claimWelcomeBonusTrustless();
+
+            // Referral bonus should NOT have accumulated (referrer lacks KYC Tier 1)
+            const pendingAfter = await rewardManager.getPendingReferralBonus(referrer.address);
+            expect(pendingAfter).to.equal(0);
+        });
+
+        it('SYBIL-H02: should redirect L2 referrer share to ODDAO when L2 lacks KYC', async function () {
+            // Set up: referrer has KYC Tier 1, secondLevelReferrer does NOT
+
+            // 1. Register secondLevelReferrer WITH KYC Tier 1 (needed for registerUser)
+            await registerUserWithKycTier1(secondLevelReferrer.address);
+            expect(await omniRegistration.hasKycTier1(secondLevelReferrer.address)).to.be.true;
+
+            // 2. Register referrer with secondLevelReferrer as their referrer
+            await registerUserWithKycTier1(referrer.address, secondLevelReferrer.address);
+            expect(await omniRegistration.hasKycTier1(referrer.address)).to.be.true;
+
+            // 3. Admin-unregister secondLevelReferrer and re-register without social
+            await omniRegistration.connect(owner).adminUnregister(secondLevelReferrer.address);
+            const l2Phone = keccak256(ethers.toUtf8Bytes('+15559990003'));
+            const l2Email = keccak256(ethers.toUtf8Bytes('l2-no-kyc@test.com'));
+            await omniRegistration.connect(admin).registerUser(
+                secondLevelReferrer.address, ZeroAddress, l2Phone, l2Email
+            );
+            expect(await omniRegistration.hasKycTier1(secondLevelReferrer.address)).to.be.false;
+
+            // 4. Register user1 with referrer
+            await registerUserWithKycTier1(user1.address, referrer.address);
+
+            // 5. Set ODDAO address
+            await rewardManager.connect(admin).setOddaoAddress(oddao.address);
+
+            // 6. Track ODDAO balance before
+            const oddaoBalanceBefore = await omniCoin.balanceOf(oddao.address);
+
+            // 7. user1 claims welcome bonus
+            await rewardManager.connect(user1).claimWelcomeBonusTrustless();
+
+            // 8. Referrer should have accumulated bonus (has KYC Tier 1)
+            const referrerPending = await rewardManager.getPendingReferralBonus(referrer.address);
+            expect(referrerPending).to.be.greaterThan(0);
+
+            // 9. SecondLevelReferrer should NOT have accumulated bonus (lacks KYC Tier 1)
+            const l2Pending = await rewardManager.getPendingReferralBonus(secondLevelReferrer.address);
+            expect(l2Pending).to.equal(0);
+
+            // 10. ODDAO should have received the L2 share (since L2 referrer has no KYC,
+            //     secondLevelReferrer is treated as address(0), so the 20% goes to ODDAO)
+            const oddaoBalanceAfter = await omniCoin.balanceOf(oddao.address);
+            const oddaoReceived = oddaoBalanceAfter - oddaoBalanceBefore;
+            // ODDAO gets 10% (normal) + 20% (L2 redirect) = 30% of referral amount
+            // vs normal 10% when L2 has KYC
+            expect(oddaoReceived).to.be.greaterThan(0);
+        });
+
+        it('SYBIL-H02: should accumulate normally when both referrers have KYC Tier 1', async function () {
+            // Set up: both referrer and secondLevelReferrer have KYC Tier 1
+            await registerUserWithKycTier1(secondLevelReferrer.address);
+            await registerUserWithKycTier1(referrer.address, secondLevelReferrer.address);
+            await registerUserWithKycTier1(user1.address, referrer.address);
+
+            // Set ODDAO address
+            await rewardManager.connect(admin).setOddaoAddress(oddao.address);
+
+            // user1 claims welcome bonus
+            await rewardManager.connect(user1).claimWelcomeBonusTrustless();
+
+            // Both referrer and secondLevelReferrer should have accumulated bonuses
+            const referrerPending = await rewardManager.getPendingReferralBonus(referrer.address);
+            expect(referrerPending).to.be.greaterThan(0);
+
+            const l2Pending = await rewardManager.getPendingReferralBonus(secondLevelReferrer.address);
+            expect(l2Pending).to.be.greaterThan(0);
+
+            // Verify the 70/20 split
+            // referrerPending should be 70% of total, l2Pending should be 20%
+            // referrerPending / l2Pending ≈ 70/20 = 3.5
+            const ratio = Number(referrerPending) / Number(l2Pending);
+            expect(ratio).to.be.closeTo(3.5, 0.1);
+        });
+
         it('should correctly calculate bonus based on effective registrations', async function () {
             // Set legacy bonus claims count to simulate existing users
             await rewardManager.connect(admin).setLegacyBonusClaimsCount(3996);

@@ -629,6 +629,10 @@ contract OmniRegistration is
     /// @dev SYBIL-H05: Sale amount too low, account too new, or shared referrer detected
     error FirstSaleRequirementsNotMet();
 
+    /// @notice Referrer has not completed KYC Tier 1 (email + phone + social)
+    /// @dev SYBIL-H02: Prevents Tier 0 accounts from acting as referrers
+    error ReferrerKycRequired();
+
     // ═══════════════════════════════════════════════════════════════════════
     //                           INITIALIZATION
     // ═══════════════════════════════════════════════════════════════════════
@@ -739,6 +743,9 @@ contract OmniRegistration is
 
             // Referrer must be a registered user (not just any address)
             if (registrations[referrer].timestamp == 0) revert InvalidReferrer();
+
+            // SYBIL-H02: Referrer must have completed KYC Tier 1
+            if (kycTier1CompletedAt[referrer] == 0) revert ReferrerKycRequired();
         }
 
         // Check daily rate limit
@@ -930,6 +937,9 @@ contract OmniRegistration is
         if (referrer != address(0)) {
             if (referrer == user) revert SelfReferralNotAllowed();
             if (registrations[referrer].timestamp == 0) revert InvalidReferrer();
+
+            // SYBIL-H02: Referrer must have completed KYC Tier 1
+            if (kycTier1CompletedAt[referrer] == 0) revert ReferrerKycRequired();
         }
 
         // Check daily rate limit
