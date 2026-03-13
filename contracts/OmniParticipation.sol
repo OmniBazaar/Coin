@@ -1356,15 +1356,29 @@ contract OmniParticipation is // solhint-disable-line max-states-count
     /**
      * @notice Check if user can be a validator
      * @dev L-01: Uses internal _calculateScore() for gas efficiency.
-     *      Requires both minimum score (50) and KYC Tier 4.
+     *      Requires both minimum score (50) and KYC Tier 3.
      * @param user Address to check
-     * @return True if score >= 50 AND has KYC Tier 4
+     * @return True if score >= 50 AND has KYC Tier 3
      */
     function canBeValidator(address user) external view returns (bool) {
         (uint256 score,,,,,,,,,) = _calculateScore(user);
-        bool hasRequiredKYC = registration.hasKycTier4(user);
+        bool hasRequiredKYC = registration.hasKycTier3(user);
         // solhint-disable-next-line gas-strict-inequalities
         return score >= MIN_VALIDATOR_SCORE && hasRequiredKYC;
+    }
+
+    /**
+     * @notice Check if user can be a service node (Tier 2 + 25 PoP)
+     * @dev Requires KYC Tier 2 and minimum participation score of 25.
+     *      Service nodes store and serve marketplace listings.
+     * @param user Address to check
+     * @return True if score >= 25 AND has KYC Tier 2
+     */
+    function canBeServiceNode(address user) external view returns (bool) {
+        (uint256 score,,,,,,,,,) = _calculateScore(user);
+        bool hasRequiredKYC = registration.hasKycTier2(user);
+        // solhint-disable-next-line gas-strict-inequalities
+        return score >= MIN_LISTING_NODE_SCORE && hasRequiredKYC;
     }
 
     /**

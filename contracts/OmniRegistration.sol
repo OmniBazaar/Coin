@@ -198,11 +198,23 @@ contract OmniRegistration is
         "SelfieVerification(address user,bytes32 selfieHash,uint256 similarity,uint256 timestamp,bytes32 nonce,uint256 deadline)"
     );
 
-    /// @notice EIP-712 typehash for video verification proof (KYC Tier 3 - DEPRECATED)
-    /// @dev DEPRECATED: Tier 3 now uses accredited investor verification, not video
-    ///      Keeping for backwards compatibility during upgrade
-    bytes32 public constant VIDEO_VERIFICATION_TYPEHASH = keccak256(
-        "VideoVerification(address user,bytes32 sessionHash,uint256 timestamp,bytes32 nonce,uint256 deadline)"
+    /// @notice EIP-712 typehash for Persona identity verification (KYC Tier 3)
+    /// @dev Used by submitPersonaVerification() for Persona-based identity verification
+    bytes32 public constant PERSONA_VERIFICATION_TYPEHASH = keccak256(
+        "PersonaVerification(address user,bytes32 verificationHash,uint256 timestamp,bytes32 nonce,uint256 deadline)"
+    );
+
+    /// @notice EIP-712 typehash for accredited investor self-certification
+    /// @dev Used by submitAccreditedInvestorCertification() for SEC 501(a) attestation
+    // solhint-disable-next-line max-line-length
+    bytes32 public constant ACCREDITED_INVESTOR_TYPEHASH = keccak256(
+        "AccreditedInvestorCertification(address user,uint8 criteria,bool certified,uint256 timestamp,bytes32 nonce,uint256 deadline)"
+    );
+
+    /// @notice EIP-712 typehash for AML/PEP screening clearance
+    /// @dev Used by submitAMLClearance() for sanctions screening attestation
+    bytes32 public constant AML_CLEARANCE_TYPEHASH = keccak256(
+        "AMLClearance(address user,bool cleared,uint256 timestamp,bytes32 nonce,uint256 deadline)"
     );
 
     /// @notice EIP-712 typehash for third-party KYC attestation (KYC Tier 4)
@@ -259,6 +271,32 @@ contract OmniRegistration is
     /// @dev Set by TRANSACTION_RECORDER_ROLE when a sale is finalized.
     ///      Used by OmniRewardManager to gate first sale bonus claims.
     mapping(address => bool) public firstSaleCompleted;
+
+    // ═══════════════════════════════════════════════════════════════════════
+    //               PERSONA / AML / ACCREDITED INVESTOR STORAGE
+    // ═══════════════════════════════════════════════════════════════════════
+
+    /// @notice Persona verification hash per user (keccak256 of inquiry ID + result)
+    /// @dev Non-zero value indicates Persona identity verification completed
+    mapping(address => bytes32) public personaVerificationHashes;
+
+    /// @notice Whether user has self-certified as accredited investor
+    mapping(address => bool) public isAccreditedInvestor;
+
+    /// @notice SEC Rule 501(a) criteria bitmask for accredited investor
+    /// @dev Bit 0: net worth > $1M, Bit 1: individual income > $200K,
+    ///      Bit 2: joint income > $300K, Bit 3: Series 7/65/82 license,
+    ///      Bit 4: knowledgeable employee of fund
+    mapping(address => uint8) public accreditedInvestorCriteria;
+
+    /// @notice Timestamp when accredited investor certification was submitted
+    mapping(address => uint256) public accreditedInvestorCertifiedAt;
+
+    /// @notice Whether user has passed AML/PEP screening
+    mapping(address => bool) public amlCleared;
+
+    /// @notice Timestamp when AML clearance was last updated
+    mapping(address => uint256) public amlClearedAt;
 
     // ═══════════════════════════════════════════════════════════════════════
     //                              EVENTS
@@ -503,6 +541,48 @@ contract OmniRegistration is
         address indexed user,
         bytes32 indexed selfieHash,
         uint256 similarity,
+        uint256 timestamp
+    );
+
+    /// @notice Emitted when Persona identity verification is completed
+    /// @param user The user who completed Persona verification
+    /// @param verificationHash Hash of Persona inquiry ID + result
+    /// @param timestamp Off-chain verification timestamp
+    event PersonaVerified(
+        address indexed user,
+        bytes32 indexed verificationHash,
+        uint256 timestamp
+    );
+
+    /// @notice Emitted when accredited investor certification is submitted
+    /// @param user The user who submitted certification
+    /// @param criteria SEC 501(a) criteria bitmask
+    /// @param isAccredited Whether user certified as accredited
+    /// @param timestamp Block timestamp of certification
+    event AccreditedInvestorCertified(
+        address indexed user,
+        uint8 criteria,
+        bool isAccredited,
+        uint256 timestamp
+    );
+
+    /// @notice Emitted when AML/PEP screening result is submitted
+    /// @param user The user who was screened
+    /// @param cleared Whether the user passed AML screening
+    /// @param timestamp Off-chain screening timestamp
+    event AMLCleared(
+        address indexed user,
+        bool cleared,
+        uint256 timestamp
+    );
+
+    /// @notice Emitted when admin resets a user's KYC Tier 3 (e.g., sanctions hit)
+    /// @param user The user whose Tier 3 was revoked
+    /// @param admin The admin who performed the reset
+    /// @param timestamp Block timestamp of reset
+    event KycTier3Reset(
+        address indexed user,
+        address indexed admin,
         uint256 timestamp
     );
 
@@ -1481,9 +1561,20 @@ contract OmniRegistration is
         emit SelfieVerified(user, selfieHash, similarity, timestamp); // solhint-disable-line not-rely-on-time
     }
 
-    /// @notice Submit video verification proof (KYC Tier 3, requires Tier 2)
-    function submitVideoVerification(
-        bytes32 sessionHash,
+    // ═══════════════════════════════════════════════════════════════════════
+    //                    PERSONA VERIFICATION (KYC TIER 3)
+    // ═══════════════════════════════════════════════════════════════════════
+
+    /// @notice Submit Persona identity verification result (KYC Tier 3 step 1)
+    /// @dev Requires Tier 2 completed. Stores the Persona verification hash.
+    ///      Tier 3 also requires AML clearance (via submitAMLClearance).
+    /// @param verificationHash Keccak256 hash of Persona inquiry ID + result
+    /// @param timestamp Off-chain timestamp of Persona verification completion
+    /// @param nonce Unique nonce to prevent replay attacks
+    /// @param deadline EIP-712 deadline for signature validity
+    /// @param signature EIP-712 signature from trusted verification key
+    function submitPersonaVerification(
+        bytes32 verificationHash,
         uint256 timestamp,
         bytes32 nonce,
         uint256 deadline,
@@ -1494,30 +1585,28 @@ contract OmniRegistration is
 
         _verifyAttestation(
             keccak256(abi.encode(
-                VIDEO_VERIFICATION_TYPEHASH, caller, sessionHash,
+                PERSONA_VERIFICATION_TYPEHASH, caller, verificationHash,
                 timestamp, nonce, deadline
             )),
             nonce, deadline, signature
         );
 
-        videoSessionHashes[caller] = sessionHash;
-        kycTier3CompletedAt[caller] = block.timestamp; // solhint-disable-line not-rely-on-time
-
-        Registration storage reg = registrations[caller];
-        if (reg.kycTier < 3) {
-            uint8 oldTier = reg.kycTier;
-            reg.kycTier = 3;
-            emit KYCUpgraded(caller, oldTier, 3);
-        }
-        emit VideoVerified(caller, sessionHash, timestamp); // solhint-disable-line not-rely-on-time
-        emit KycTier3Completed(caller, block.timestamp); // solhint-disable-line not-rely-on-time
+        personaVerificationHashes[caller] = verificationHash;
+        emit PersonaVerified(caller, verificationHash, timestamp);
+        _checkAndUpdateKycTier3(caller);
     }
 
-    /// @notice Submit video verification on behalf of a user (relay pattern)
+    /// @notice Submit Persona verification on behalf of a user (relay pattern)
     /// @dev ANYONE can relay. User address is verified in signature.
-    function submitVideoVerificationFor(
+    /// @param user Address of the user being verified
+    /// @param verificationHash Keccak256 hash of Persona inquiry ID + result
+    /// @param timestamp Off-chain timestamp of Persona verification completion
+    /// @param nonce Unique nonce to prevent replay attacks
+    /// @param deadline EIP-712 deadline for signature validity
+    /// @param signature EIP-712 signature from trusted verification key
+    function submitPersonaVerificationFor(
         address user,
-        bytes32 sessionHash,
+        bytes32 verificationHash,
         uint256 timestamp,
         bytes32 nonce,
         uint256 deadline,
@@ -1527,23 +1616,94 @@ contract OmniRegistration is
 
         _verifyAttestation(
             keccak256(abi.encode(
-                VIDEO_VERIFICATION_TYPEHASH, user, sessionHash,
+                PERSONA_VERIFICATION_TYPEHASH, user, verificationHash,
                 timestamp, nonce, deadline
             )),
             nonce, deadline, signature
         );
 
-        videoSessionHashes[user] = sessionHash;
-        kycTier3CompletedAt[user] = block.timestamp; // solhint-disable-line not-rely-on-time
+        personaVerificationHashes[user] = verificationHash;
+        emit PersonaVerified(user, verificationHash, timestamp);
+        _checkAndUpdateKycTier3(user);
+    }
 
-        Registration storage reg = registrations[user];
-        if (reg.kycTier < 3) {
-            uint8 oldTier = reg.kycTier;
-            reg.kycTier = 3;
-            emit KYCUpgraded(user, oldTier, 3);
+    // ═══════════════════════════════════════════════════════════════════════
+    //                    AML CLEARANCE (KYC TIER 3)
+    // ═══════════════════════════════════════════════════════════════════════
+
+    /// @notice Submit AML/PEP screening clearance for a user (trusted key only)
+    /// @dev Only callable via trusted verification key signature.
+    ///      Combined with Persona verification, completes Tier 3.
+    /// @param user Address of the user being cleared
+    /// @param cleared Whether the user passed AML screening
+    /// @param timestamp Off-chain timestamp of AML screening
+    /// @param nonce Unique nonce to prevent replay attacks
+    /// @param deadline EIP-712 deadline for signature validity
+    /// @param signature EIP-712 signature from trusted verification key
+    function submitAMLClearance(
+        address user,
+        bool cleared,
+        uint256 timestamp,
+        bytes32 nonce,
+        uint256 deadline,
+        bytes calldata signature
+    ) external nonReentrant {
+        _verifyAttestation(
+            keccak256(abi.encode(
+                AML_CLEARANCE_TYPEHASH, user, cleared,
+                timestamp, nonce, deadline
+            )),
+            nonce, deadline, signature
+        );
+
+        amlCleared[user] = cleared;
+        amlClearedAt[user] = block.timestamp; // solhint-disable-line not-rely-on-time
+        emit AMLCleared(user, cleared, timestamp);
+
+        if (cleared) {
+            _checkAndUpdateKycTier3(user);
         }
-        emit VideoVerified(user, sessionHash, timestamp); // solhint-disable-line not-rely-on-time
-        emit KycTier3Completed(user, block.timestamp); // solhint-disable-line not-rely-on-time
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    //                ACCREDITED INVESTOR CERTIFICATION (OPTIONAL)
+    // ═══════════════════════════════════════════════════════════════════════
+
+    /// @notice Submit accredited investor self-certification (optional, Tier 3+)
+    /// @dev Requires Persona verification completed. User can certify as
+    ///      accredited or explicitly as NOT accredited. The accredited flag
+    ///      is NOT required for Tier 3 completion.
+    /// @param criteria Bitmask of SEC Rule 501(a) criteria met by user
+    /// @param certified Whether the user certifies as accredited investor
+    /// @param timestamp Off-chain timestamp of certification
+    /// @param nonce Unique nonce to prevent replay attacks
+    /// @param deadline EIP-712 deadline for signature validity
+    /// @param signature EIP-712 signature from trusted verification key
+    function submitAccreditedInvestorCertification(
+        uint8 criteria,
+        bool certified,
+        uint256 timestamp,
+        bytes32 nonce,
+        uint256 deadline,
+        bytes calldata signature
+    ) external nonReentrant {
+        address caller = _msgSender();
+        if (personaVerificationHashes[caller] == bytes32(0)) {
+            revert PreviousTierRequired();
+        }
+
+        _verifyAttestation(
+            keccak256(abi.encode(
+                ACCREDITED_INVESTOR_TYPEHASH, caller, criteria,
+                certified, timestamp, nonce, deadline
+            )),
+            nonce, deadline, signature
+        );
+
+        isAccreditedInvestor[caller] = certified;
+        accreditedInvestorCriteria[caller] = criteria;
+        accreditedInvestorCertifiedAt[caller] = block.timestamp; // solhint-disable-line not-rely-on-time
+        emit AccreditedInvestorCertified(caller, criteria, certified, block.timestamp);
     }
 
     /// @notice Submit third-party KYC proof (KYC Tier 4, requires Tier 3)
@@ -2278,8 +2438,10 @@ contract OmniRegistration is
      * @dev Tier 2 requires THREE verifications:
      *      1. ID verification (userIDHashes[user] != 0)
      *      2. Address verification (userAddressHashes[user] != 0)
-     *      3. Selfie verification (selfieVerified[user] == true)
-     *      Only marks Tier 2 complete when ALL three are present.
+     *      Only marks Tier 2 complete when BOTH are present.
+     *      Note: Selfie is NOT required for Tier 2.
+     *      Note: Selfie is NOT required for Tier 2; identity verification
+     *      (gov ID + live selfie + face match) is handled by Persona at Tier 3.
      *      H-01 fix: Also synchronizes Registration.kycTier so that
      *      canClaimWelcomeBonus() and other checks reading Registration.kycTier
      *      return correct results for trustless-path users.
@@ -2288,10 +2450,9 @@ contract OmniRegistration is
         // Must have Tier 1 first
         if (kycTier1CompletedAt[user] == 0) return;
 
-        // Must have all three Tier 2 verifications
-        if (userIDHashes[user] == bytes32(0)) return;         // No ID
-        if (userAddressHashes[user] == bytes32(0)) return;    // No address
-        if (!selfieVerified[user]) return;                     // No selfie
+        // Must have both Tier 2 verifications (name hash via ID + address hash)
+        if (userIDHashes[user] == bytes32(0)) return;         // No name hash
+        if (userAddressHashes[user] == bytes32(0)) return;    // No address hash
 
         // All requirements met - mark Tier 2 complete (only if not already complete)
         if (kycTier2CompletedAt[user] == 0) {
@@ -2309,6 +2470,76 @@ contract OmniRegistration is
             // solhint-disable-next-line not-rely-on-time
             emit KycTier2Completed(user, block.timestamp);
         }
+    }
+
+    /**
+     * @notice Internal check for KYC Tier 3 completion
+     * @dev Tier 3 requires:
+     *      1. Persona verification (personaVerificationHashes[user] != 0)
+     *      2. AML clearance (amlCleared[user] == true)
+     *      Accredited investor certification is NOT required for Tier 3.
+     * @param user Address of user to check
+     */
+    function _checkAndUpdateKycTier3(address user) internal {
+        // Must have Tier 2 first
+        if (kycTier2CompletedAt[user] == 0) return;
+
+        // Must have Persona verification
+        if (personaVerificationHashes[user] == bytes32(0)) return;
+
+        // Must have AML clearance
+        if (!amlCleared[user]) return;
+
+        // All requirements met - mark Tier 3 complete (only if not already complete)
+        if (kycTier3CompletedAt[user] == 0) {
+            // solhint-disable-next-line not-rely-on-time
+            kycTier3CompletedAt[user] = block.timestamp;
+
+            Registration storage reg = registrations[user];
+            if (reg.kycTier < 3) {
+                uint8 oldTier = reg.kycTier;
+                reg.kycTier = 3;
+                emit KYCUpgraded(user, oldTier, 3);
+            }
+
+            // solhint-disable-next-line not-rely-on-time
+            emit KycTier3Completed(user, block.timestamp);
+        }
+    }
+
+    /**
+     * @notice Admin function to revoke KYC Tier 3 (e.g., user found on sanctions list)
+     * @dev Only callable by DEFAULT_ADMIN_ROLE. Resets Persona verification,
+     *      AML clearance, and Tier 3 completion. Also resets Tier 4 if present.
+     *      Does NOT reset accredited investor status (separate concern).
+     * @param user Address of the user whose Tier 3 is being revoked
+     */
+    function resetKycTier3(address user) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        if (registrations[user].timestamp == 0) revert NotRegistered();
+
+        // Reset Persona and AML data
+        personaVerificationHashes[user] = bytes32(0);
+        amlCleared[user] = false;
+        amlClearedAt[user] = 0;
+
+        // Reset Tier 3 completion
+        kycTier3CompletedAt[user] = 0;
+
+        // Reset Tier 4 if present (depends on Tier 3)
+        if (kycTier4CompletedAt[user] != 0) {
+            kycTier4CompletedAt[user] = 0;
+            userKYCProvider[user] = address(0);
+        }
+
+        // Downgrade Registration.kycTier
+        Registration storage reg = registrations[user];
+        if (reg.kycTier >= 3) {
+            uint8 oldTier = reg.kycTier;
+            reg.kycTier = 2;
+            emit KYCUpgraded(user, oldTier, 2);
+        }
+
+        emit KycTier3Reset(user, _msgSender(), block.timestamp); // solhint-disable-line not-rely-on-time
     }
 
     /**

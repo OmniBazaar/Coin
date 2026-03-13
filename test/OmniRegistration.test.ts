@@ -1960,7 +1960,7 @@ describe('OmniRegistration', function () {
 
             // ID verification should succeed but NOT complete Tier 2 yet
             await expect(tx).to.emit(registration, 'IDVerified');
-            // KycTier2Completed should NOT be emitted (need address + selfie too)
+            // KycTier2Completed should NOT be emitted (need address too)
 
             // Tier 2 should NOT be complete after just ID
             expect(await registration.hasKycTier2(user1.address)).to.be.false;
@@ -2157,16 +2157,16 @@ describe('OmniRegistration', function () {
         });
     });
 
-    describe('KYC Tier 3 - Video Verification', function () {
+    describe('KYC Tier 3 - Persona + AML Verification', function () {
         let trustedKey: any;
 
         /**
-         * Generate video verification signature
+         * Generate Persona verification signature
          */
-        async function signVideoVerification(
+        async function signPersonaVerification(
             signer: any,
             user: string,
-            sessionHash: string,
+            verificationHash: string,
             timestamp: number,
             nonce: string,
             deadline: number
@@ -2179,9 +2179,9 @@ describe('OmniRegistration', function () {
             };
 
             const types = {
-                VideoVerification: [
+                PersonaVerification: [
                     { name: 'user', type: 'address' },
-                    { name: 'sessionHash', type: 'bytes32' },
+                    { name: 'verificationHash', type: 'bytes32' },
                     { name: 'timestamp', type: 'uint256' },
                     { name: 'nonce', type: 'bytes32' },
                     { name: 'deadline', type: 'uint256' },
@@ -2190,7 +2190,88 @@ describe('OmniRegistration', function () {
 
             const value = {
                 user,
-                sessionHash,
+                verificationHash,
+                timestamp,
+                nonce,
+                deadline,
+            };
+
+            return await signer.signTypedData(domain, types, value);
+        }
+
+        /**
+         * Generate AML clearance signature
+         */
+        async function signAMLClearance(
+            signer: any,
+            user: string,
+            cleared: boolean,
+            timestamp: number,
+            nonce: string,
+            deadline: number
+        ): Promise<string> {
+            const domain = {
+                name: 'OmniRegistration',
+                version: '1',
+                chainId: (await ethers.provider.getNetwork()).chainId,
+                verifyingContract: await registration.getAddress(),
+            };
+
+            const types = {
+                AMLClearance: [
+                    { name: 'user', type: 'address' },
+                    { name: 'cleared', type: 'bool' },
+                    { name: 'timestamp', type: 'uint256' },
+                    { name: 'nonce', type: 'bytes32' },
+                    { name: 'deadline', type: 'uint256' },
+                ],
+            };
+
+            const value = {
+                user,
+                cleared,
+                timestamp,
+                nonce,
+                deadline,
+            };
+
+            return await signer.signTypedData(domain, types, value);
+        }
+
+        /**
+         * Generate accredited investor certification signature
+         */
+        async function signAccreditedInvestorCertification(
+            signer: any,
+            user: string,
+            criteria: number,
+            certified: boolean,
+            timestamp: number,
+            nonce: string,
+            deadline: number
+        ): Promise<string> {
+            const domain = {
+                name: 'OmniRegistration',
+                version: '1',
+                chainId: (await ethers.provider.getNetwork()).chainId,
+                verifyingContract: await registration.getAddress(),
+            };
+
+            const types = {
+                AccreditedInvestorCertification: [
+                    { name: 'user', type: 'address' },
+                    { name: 'criteria', type: 'uint8' },
+                    { name: 'certified', type: 'bool' },
+                    { name: 'timestamp', type: 'uint256' },
+                    { name: 'nonce', type: 'bytes32' },
+                    { name: 'deadline', type: 'uint256' },
+                ],
+            };
+
+            const value = {
+                user,
+                criteria,
+                certified,
                 timestamp,
                 nonce,
                 deadline,
@@ -2377,7 +2458,7 @@ describe('OmniRegistration', function () {
                 idSig
             );
 
-            // NEW v2: Complete Tier 2 - Address verification (required)
+            // Complete Tier 2 - Address verification (required)
             const addressHash = keccak256(toUtf8Bytes(`123 Main:NYC:10001:US:utility-${uniqueId}`));
             const addressNonce = keccak256(toUtf8Bytes(`tier3-addr-${uniqueId}`));
             const addressTypes = {
@@ -2410,67 +2491,198 @@ describe('OmniRegistration', function () {
                 addressSig
             );
 
-            // NEW v2: Complete Tier 2 - Selfie verification (required)
-            const selfieHash = keccak256(toUtf8Bytes(`selfie-${uniqueId}`));
-            const selfieNonce = keccak256(toUtf8Bytes(`tier3-selfie-${uniqueId}`));
-            const selfieTypes = {
-                SelfieVerification: [
-                    { name: 'user', type: 'address' },
-                    { name: 'selfieHash', type: 'bytes32' },
-                    { name: 'similarity', type: 'uint256' },
-                    { name: 'timestamp', type: 'uint256' },
-                    { name: 'nonce', type: 'bytes32' },
-                    { name: 'deadline', type: 'uint256' },
-                ],
-            };
-            const selfieSig = await trustedKey.signTypedData(domain, selfieTypes, {
-                user: user1.address,
-                selfieHash,
-                similarity: 92,
-                timestamp: currentTime,
-                nonce: selfieNonce,
-                deadline,
-            });
-            await registration.connect(user1).submitSelfieVerification(
-                selfieHash,
-                92,
-                currentTime,
-                selfieNonce,
-                deadline,
-                selfieSig
-            );
+            // Tier 2 should now be complete (ID + address, no selfie required)
         });
 
-        it('should complete video verification (KYC Tier 3)', async function () {
-            const sessionHash = keccak256(toUtf8Bytes('VIDEO_SESSION_12345'));
+        it('should complete Persona verification', async function () {
+            const verificationHash = keccak256(toUtf8Bytes('PERSONA_INQ_12345:passed'));
             const currentTime = await time.latest();
-            const nonce = keccak256(toUtf8Bytes('video-nonce-1'));
+            const nonce = keccak256(toUtf8Bytes('persona-nonce-1'));
             const deadline = currentTime + 3600;
 
-            const signature = await signVideoVerification(
+            const signature = await signPersonaVerification(
                 trustedKey,
                 user1.address,
-                sessionHash,
+                verificationHash,
                 currentTime,
                 nonce,
                 deadline
             );
 
-            const tx = await registration.connect(user1).submitVideoVerification(
-                sessionHash,
+            const tx = await registration.connect(user1).submitPersonaVerification(
+                verificationHash,
                 currentTime,
                 nonce,
                 deadline,
                 signature
             );
 
-            await expect(tx).to.emit(registration, 'VideoVerified');
-            await expect(tx).to.emit(registration, 'KycTier3Completed');
+            await expect(tx)
+                .to.emit(registration, 'PersonaVerified')
+                .withArgs(user1.address, verificationHash, currentTime);
 
-            expect(await registration.hasKycTier3(user1.address)).to.be.true;
+            expect(await registration.personaVerificationHashes(user1.address))
+                .to.equal(verificationHash);
+
+            // Tier 3 should NOT be complete (AML also needed)
+            expect(await registration.hasKycTier3(user1.address)).to.be.false;
         });
 
-        it('should reject video verification without KYC Tier 2', async function () {
+        it('should complete AML clearance', async function () {
+            const currentTime = await time.latest();
+            const nonce = keccak256(toUtf8Bytes('aml-nonce-1'));
+            const deadline = currentTime + 3600;
+
+            const signature = await signAMLClearance(
+                trustedKey,
+                user1.address,
+                true,
+                currentTime,
+                nonce,
+                deadline
+            );
+
+            const tx = await registration.connect(owner).submitAMLClearance(
+                user1.address,
+                true,
+                currentTime,
+                nonce,
+                deadline,
+                signature
+            );
+
+            await expect(tx)
+                .to.emit(registration, 'AMLCleared')
+                .withArgs(user1.address, true, currentTime);
+
+            expect(await registration.amlCleared(user1.address)).to.be.true;
+            expect(await registration.amlClearedAt(user1.address)).to.be.gt(0);
+
+            // Tier 3 should NOT be complete (Persona also needed)
+            expect(await registration.hasKycTier3(user1.address)).to.be.false;
+        });
+
+        it('should complete Tier 3 when both Persona and AML are done', async function () {
+            const currentTime = await time.latest();
+            const deadline = currentTime + 3600;
+
+            // Step 1: Submit Persona verification
+            const verificationHash = keccak256(toUtf8Bytes('PERSONA_INQ_FULL:passed'));
+            const personaNonce = keccak256(toUtf8Bytes('persona-nonce-full'));
+
+            const personaSig = await signPersonaVerification(
+                trustedKey,
+                user1.address,
+                verificationHash,
+                currentTime,
+                personaNonce,
+                deadline
+            );
+
+            await registration.connect(user1).submitPersonaVerification(
+                verificationHash,
+                currentTime,
+                personaNonce,
+                deadline,
+                personaSig
+            );
+
+            // Step 2: Submit AML clearance (should trigger Tier 3 completion)
+            const amlNonce = keccak256(toUtf8Bytes('aml-nonce-full'));
+            const amlSig = await signAMLClearance(
+                trustedKey,
+                user1.address,
+                true,
+                currentTime,
+                amlNonce,
+                deadline
+            );
+
+            const tx = await registration.connect(owner).submitAMLClearance(
+                user1.address,
+                true,
+                currentTime,
+                amlNonce,
+                deadline,
+                amlSig
+            );
+
+            // Should emit both AMLCleared and KycTier3Completed + KYCUpgraded
+            await expect(tx)
+                .to.emit(registration, 'AMLCleared')
+                .withArgs(user1.address, true, currentTime);
+            await expect(tx).to.emit(registration, 'KycTier3Completed');
+            await expect(tx)
+                .to.emit(registration, 'KYCUpgraded')
+                .withArgs(user1.address, 2, 3);
+
+            // Verify Tier 3 is complete
+            expect(await registration.kycTier3CompletedAt(user1.address)).to.be.gt(0);
+            expect(await registration.hasKycTier3(user1.address)).to.be.true;
+            expect(await registration.getUserKYCTier(user1.address)).to.equal(3);
+        });
+
+        it('should NOT complete Tier 3 with only Persona', async function () {
+            const currentTime = await time.latest();
+            const deadline = currentTime + 3600;
+
+            const verificationHash = keccak256(toUtf8Bytes('PERSONA_INQ_ONLY:passed'));
+            const nonce = keccak256(toUtf8Bytes('persona-nonce-only'));
+
+            const signature = await signPersonaVerification(
+                trustedKey,
+                user1.address,
+                verificationHash,
+                currentTime,
+                nonce,
+                deadline
+            );
+
+            await registration.connect(user1).submitPersonaVerification(
+                verificationHash,
+                currentTime,
+                nonce,
+                deadline,
+                signature
+            );
+
+            // Tier 3 should NOT be complete
+            expect(await registration.kycTier3CompletedAt(user1.address)).to.equal(0);
+            expect(await registration.hasKycTier3(user1.address)).to.be.false;
+            expect(await registration.getUserKYCTier(user1.address)).to.equal(2);
+        });
+
+        it('should NOT complete Tier 3 with only AML', async function () {
+            const currentTime = await time.latest();
+            const deadline = currentTime + 3600;
+
+            const nonce = keccak256(toUtf8Bytes('aml-nonce-only'));
+
+            const signature = await signAMLClearance(
+                trustedKey,
+                user1.address,
+                true,
+                currentTime,
+                nonce,
+                deadline
+            );
+
+            await registration.connect(owner).submitAMLClearance(
+                user1.address,
+                true,
+                currentTime,
+                nonce,
+                deadline,
+                signature
+            );
+
+            // Tier 3 should NOT be complete (no Persona)
+            expect(await registration.kycTier3CompletedAt(user1.address)).to.equal(0);
+            expect(await registration.hasKycTier3(user1.address)).to.be.false;
+            expect(await registration.getUserKYCTier(user1.address)).to.equal(2);
+        });
+
+        it('should reject Persona verification without Tier 2', async function () {
             // Register user2 with only Tier 1 (unique identifiers)
             const noTier2Unique = Date.now().toString() + Math.random().toString().slice(2, 8);
             const noTier2RegPhone = `+1-NOTIER2-REG-${noTier2Unique}`;
@@ -2538,27 +2750,401 @@ describe('OmniRegistration', function () {
                 socialSig
             );
 
-            // Try video verification without Tier 2
-            const sessionHash = keccak256(toUtf8Bytes('VIDEO_SESSION_USER2'));
-            const nonce = keccak256(toUtf8Bytes('video-nonce-2'));
-            const signature = await signVideoVerification(
+            // Try Persona verification without Tier 2
+            const verificationHash = keccak256(toUtf8Bytes('PERSONA_INQ_NO_TIER2'));
+            const nonce = keccak256(toUtf8Bytes('persona-nonce-notier2'));
+            const signature = await signPersonaVerification(
                 trustedKey,
                 user2.address,
-                sessionHash,
+                verificationHash,
                 currentTime,
                 nonce,
                 deadline
             );
 
             await expect(
-                registration.connect(user2).submitVideoVerification(
-                    sessionHash,
+                registration.connect(user2).submitPersonaVerification(
+                    verificationHash,
                     currentTime,
                     nonce,
                     deadline,
                     signature
                 )
             ).to.be.revertedWithCustomError(registration, 'PreviousTierRequired');
+        });
+
+        it('should allow submitPersonaVerificationFor (relay)', async function () {
+            const verificationHash = keccak256(toUtf8Bytes('PERSONA_INQ_RELAY:passed'));
+            const currentTime = await time.latest();
+            const nonce = keccak256(toUtf8Bytes('persona-nonce-relay'));
+            const deadline = currentTime + 3600;
+
+            const signature = await signPersonaVerification(
+                trustedKey,
+                user1.address,
+                verificationHash,
+                currentTime,
+                nonce,
+                deadline
+            );
+
+            // Submit via relay (unauthorized submitter, but valid signature for user1)
+            const tx = await registration.connect(unauthorized).submitPersonaVerificationFor(
+                user1.address,
+                verificationHash,
+                currentTime,
+                nonce,
+                deadline,
+                signature
+            );
+
+            await expect(tx)
+                .to.emit(registration, 'PersonaVerified')
+                .withArgs(user1.address, verificationHash, currentTime);
+
+            expect(await registration.personaVerificationHashes(user1.address))
+                .to.equal(verificationHash);
+        });
+
+        it('should reject AML clearance with cleared=false', async function () {
+            const currentTime = await time.latest();
+            const deadline = currentTime + 3600;
+
+            const nonce = keccak256(toUtf8Bytes('aml-nonce-false'));
+
+            const signature = await signAMLClearance(
+                trustedKey,
+                user1.address,
+                false,
+                currentTime,
+                nonce,
+                deadline
+            );
+
+            const tx = await registration.connect(owner).submitAMLClearance(
+                user1.address,
+                false,
+                currentTime,
+                nonce,
+                deadline,
+                signature
+            );
+
+            await expect(tx)
+                .to.emit(registration, 'AMLCleared')
+                .withArgs(user1.address, false, currentTime);
+
+            expect(await registration.amlCleared(user1.address)).to.be.false;
+
+            // Tier 3 should NOT be completed even with Persona (AML not cleared)
+            // Submit Persona first
+            const verificationHash = keccak256(toUtf8Bytes('PERSONA_INQ_AML_FALSE'));
+            const personaNonce = keccak256(toUtf8Bytes('persona-nonce-aml-false'));
+            const personaSig = await signPersonaVerification(
+                trustedKey,
+                user1.address,
+                verificationHash,
+                currentTime,
+                personaNonce,
+                deadline
+            );
+            await registration.connect(user1).submitPersonaVerification(
+                verificationHash,
+                currentTime,
+                personaNonce,
+                deadline,
+                personaSig
+            );
+
+            expect(await registration.kycTier3CompletedAt(user1.address)).to.equal(0);
+            expect(await registration.hasKycTier3(user1.address)).to.be.false;
+        });
+
+        it('should submit accredited investor as accredited', async function () {
+            // First complete Persona verification (required for accredited investor)
+            const currentTime = await time.latest();
+            const deadline = currentTime + 3600;
+
+            const verificationHash = keccak256(toUtf8Bytes('PERSONA_INQ_ACCREDITED'));
+            const personaNonce = keccak256(toUtf8Bytes('persona-nonce-accredited'));
+            const personaSig = await signPersonaVerification(
+                trustedKey,
+                user1.address,
+                verificationHash,
+                currentTime,
+                personaNonce,
+                deadline
+            );
+            await registration.connect(user1).submitPersonaVerification(
+                verificationHash,
+                currentTime,
+                personaNonce,
+                deadline,
+                personaSig
+            );
+
+            // Submit accredited investor certification
+            const criteria = 0x03; // Example: income + net worth criteria
+            const nonce = keccak256(toUtf8Bytes('accredited-nonce-1'));
+            const signature = await signAccreditedInvestorCertification(
+                trustedKey,
+                user1.address,
+                criteria,
+                true,
+                currentTime,
+                nonce,
+                deadline
+            );
+
+            const tx = await registration.connect(user1).submitAccreditedInvestorCertification(
+                criteria,
+                true,
+                currentTime,
+                nonce,
+                deadline,
+                signature
+            );
+
+            await expect(tx).to.emit(registration, 'AccreditedInvestorCertified');
+
+            expect(await registration.isAccreditedInvestor(user1.address)).to.be.true;
+            expect(await registration.accreditedInvestorCriteria(user1.address)).to.equal(3);
+        });
+
+        it('should submit accredited investor as NOT accredited', async function () {
+            // First complete Persona verification (required)
+            const currentTime = await time.latest();
+            const deadline = currentTime + 3600;
+
+            const verificationHash = keccak256(toUtf8Bytes('PERSONA_INQ_NOT_ACCREDITED'));
+            const personaNonce = keccak256(toUtf8Bytes('persona-nonce-not-accredited'));
+            const personaSig = await signPersonaVerification(
+                trustedKey,
+                user1.address,
+                verificationHash,
+                currentTime,
+                personaNonce,
+                deadline
+            );
+            await registration.connect(user1).submitPersonaVerification(
+                verificationHash,
+                currentTime,
+                personaNonce,
+                deadline,
+                personaSig
+            );
+
+            // Submit as NOT accredited
+            const nonce = keccak256(toUtf8Bytes('accredited-nonce-not'));
+            const signature = await signAccreditedInvestorCertification(
+                trustedKey,
+                user1.address,
+                0,
+                false,
+                currentTime,
+                nonce,
+                deadline
+            );
+
+            await registration.connect(user1).submitAccreditedInvestorCertification(
+                0,
+                false,
+                currentTime,
+                nonce,
+                deadline,
+                signature
+            );
+
+            expect(await registration.isAccreditedInvestor(user1.address)).to.be.false;
+            expect(await registration.accreditedInvestorCriteria(user1.address)).to.equal(0);
+        });
+
+        it('should reject accredited investor without Persona', async function () {
+            // user1 has Tier 2 but no Persona verification yet
+            const currentTime = await time.latest();
+            const deadline = currentTime + 3600;
+
+            const nonce = keccak256(toUtf8Bytes('accredited-nonce-no-persona'));
+            const signature = await signAccreditedInvestorCertification(
+                trustedKey,
+                user1.address,
+                0x03,
+                true,
+                currentTime,
+                nonce,
+                deadline
+            );
+
+            await expect(
+                registration.connect(user1).submitAccreditedInvestorCertification(
+                    0x03,
+                    true,
+                    currentTime,
+                    nonce,
+                    deadline,
+                    signature
+                )
+            ).to.be.revertedWithCustomError(registration, 'PreviousTierRequired');
+        });
+
+        it('should resetKycTier3', async function () {
+            const currentTime = await time.latest();
+            const deadline = currentTime + 3600;
+
+            // Complete Tier 3: Persona + AML
+            const verificationHash = keccak256(toUtf8Bytes('PERSONA_INQ_RESET'));
+            const personaNonce = keccak256(toUtf8Bytes('persona-nonce-reset'));
+            const personaSig = await signPersonaVerification(
+                trustedKey,
+                user1.address,
+                verificationHash,
+                currentTime,
+                personaNonce,
+                deadline
+            );
+            await registration.connect(user1).submitPersonaVerification(
+                verificationHash,
+                currentTime,
+                personaNonce,
+                deadline,
+                personaSig
+            );
+
+            const amlNonce = keccak256(toUtf8Bytes('aml-nonce-reset'));
+            const amlSig = await signAMLClearance(
+                trustedKey,
+                user1.address,
+                true,
+                currentTime,
+                amlNonce,
+                deadline
+            );
+            await registration.connect(owner).submitAMLClearance(
+                user1.address,
+                true,
+                currentTime,
+                amlNonce,
+                deadline,
+                amlSig
+            );
+
+            // Verify Tier 3 is complete
+            expect(await registration.hasKycTier3(user1.address)).to.be.true;
+            expect(await registration.getUserKYCTier(user1.address)).to.equal(3);
+
+            // Admin resets Tier 3
+            const tx = await registration.connect(owner).resetKycTier3(user1.address);
+
+            await expect(tx)
+                .to.emit(registration, 'KYCUpgraded')
+                .withArgs(user1.address, 3, 2);
+            await expect(tx).to.emit(registration, 'KycTier3Reset');
+
+            // Verify reset
+            expect(await registration.kycTier3CompletedAt(user1.address)).to.equal(0);
+            expect(await registration.personaVerificationHashes(user1.address))
+                .to.equal(ethers.ZeroHash);
+            expect(await registration.amlCleared(user1.address)).to.be.false;
+            expect(await registration.getUserKYCTier(user1.address)).to.equal(2);
+        });
+
+        it('resetKycTier3 should also reset Tier 4 if present', async function () {
+            const currentTime = await time.latest();
+            const deadline = currentTime + 3600;
+
+            // Complete Tier 3: Persona + AML
+            const verificationHash = keccak256(toUtf8Bytes('PERSONA_INQ_RESET_T4'));
+            const personaNonce = keccak256(toUtf8Bytes('persona-nonce-reset-t4'));
+            const personaSig = await signPersonaVerification(
+                trustedKey,
+                user1.address,
+                verificationHash,
+                currentTime,
+                personaNonce,
+                deadline
+            );
+            await registration.connect(user1).submitPersonaVerification(
+                verificationHash,
+                currentTime,
+                personaNonce,
+                deadline,
+                personaSig
+            );
+
+            const amlNonce = keccak256(toUtf8Bytes('aml-nonce-reset-t4'));
+            const amlSig = await signAMLClearance(
+                trustedKey,
+                user1.address,
+                true,
+                currentTime,
+                amlNonce,
+                deadline
+            );
+            await registration.connect(owner).submitAMLClearance(
+                user1.address,
+                true,
+                currentTime,
+                amlNonce,
+                deadline,
+                amlSig
+            );
+
+            // Complete Tier 4: Third-party KYC
+            await registration.connect(owner).addKYCProvider(validator4.address, 'TestProvider');
+
+            const kycNonce = keccak256(toUtf8Bytes('kyc-tier4-reset-nonce'));
+            const kycDomain = {
+                name: 'OmniRegistration',
+                version: '1',
+                chainId: (await ethers.provider.getNetwork()).chainId,
+                verifyingContract: await registration.getAddress(),
+            };
+            const kycTypes = {
+                ThirdPartyKYC: [
+                    { name: 'user', type: 'address' },
+                    { name: 'provider', type: 'address' },
+                    { name: 'timestamp', type: 'uint256' },
+                    { name: 'nonce', type: 'bytes32' },
+                    { name: 'deadline', type: 'uint256' },
+                ],
+            };
+            const kycSig = await validator4.signTypedData(kycDomain, kycTypes, {
+                user: user1.address,
+                provider: validator4.address,
+                timestamp: currentTime,
+                nonce: kycNonce,
+                deadline,
+            });
+            await registration.connect(user1).submitThirdPartyKYC(
+                validator4.address,
+                currentTime,
+                kycNonce,
+                deadline,
+                kycSig
+            );
+
+            // Verify Tier 4 is complete
+            expect(await registration.hasKycTier4(user1.address)).to.be.true;
+            expect(await registration.getUserKYCTier(user1.address)).to.equal(4);
+
+            // Admin resets Tier 3 (should also reset Tier 4)
+            const tx = await registration.connect(owner).resetKycTier3(user1.address);
+
+            await expect(tx)
+                .to.emit(registration, 'KYCUpgraded')
+                .withArgs(user1.address, 4, 2);
+            await expect(tx).to.emit(registration, 'KycTier3Reset');
+
+            // Verify both Tier 3 and Tier 4 are reset
+            expect(await registration.kycTier3CompletedAt(user1.address)).to.equal(0);
+            expect(await registration.kycTier4CompletedAt(user1.address)).to.equal(0);
+            expect(await registration.getUserKYCTier(user1.address)).to.equal(2);
+        });
+
+        it('should reject resetKycTier3 from non-admin', async function () {
+            await expect(
+                registration.connect(unauthorized).resetKycTier3(user1.address)
+            ).to.be.reverted;
         });
 
         it('should verify hasKycTier3 returns false before verification', async function () {
@@ -2723,7 +3309,7 @@ describe('OmniRegistration', function () {
                 idSig
             );
 
-            // NEW v2: Address verification (Tier 2 requirement)
+            // Address verification (Tier 2 requirement)
             const addressHash = keccak256(toUtf8Bytes(`123 Main:NYC:10001:US:utility-${uniqueId}`));
             const addressNonce = keccak256(toUtf8Bytes(`tier4-addr-${uniqueId}`));
             const addressTypes = {
@@ -2756,62 +3342,63 @@ describe('OmniRegistration', function () {
                 addressSig
             );
 
-            // NEW v2: Selfie verification (Tier 2 requirement)
-            const selfieHash = keccak256(toUtf8Bytes(`selfie-${uniqueId}`));
-            const selfieNonce = keccak256(toUtf8Bytes(`tier4-selfie-${uniqueId}`));
-            const selfieTypes = {
-                SelfieVerification: [
+            // Tier 2 complete (ID + address, no selfie required)
+
+            // Persona verification (Tier 3 step 1)
+            const personaHash = keccak256(toUtf8Bytes(`PERSONA_INQ_TIER4_${uniqueId}`));
+            const personaNonce = keccak256(toUtf8Bytes(`tier4-persona-${uniqueId}`));
+            const personaTypes = {
+                PersonaVerification: [
                     { name: 'user', type: 'address' },
-                    { name: 'selfieHash', type: 'bytes32' },
-                    { name: 'similarity', type: 'uint256' },
+                    { name: 'verificationHash', type: 'bytes32' },
                     { name: 'timestamp', type: 'uint256' },
                     { name: 'nonce', type: 'bytes32' },
                     { name: 'deadline', type: 'uint256' },
                 ],
             };
-            const selfieSig = await trustedKey.signTypedData(domain, selfieTypes, {
+            const personaSig = await trustedKey.signTypedData(domain, personaTypes, {
                 user: user.address,
-                selfieHash,
-                similarity: 92,
+                verificationHash: personaHash,
                 timestamp: currentTime,
-                nonce: selfieNonce,
+                nonce: personaNonce,
                 deadline,
             });
-            await registration.connect(user).submitSelfieVerification(
-                selfieHash,
-                92,
+            await registration.connect(user).submitPersonaVerification(
+                personaHash,
                 currentTime,
-                selfieNonce,
+                personaNonce,
                 deadline,
-                selfieSig
+                personaSig
             );
 
-            // Video verification (Tier 3)
-            const sessionHash = keccak256(toUtf8Bytes(`VIDEO_${uniqueId}`));
-            const videoNonce = keccak256(toUtf8Bytes(`tier4-video-${uniqueId}`));
-            const videoTypes = {
-                VideoVerification: [
+            // AML clearance (Tier 3 step 2)
+            const amlNonce = keccak256(toUtf8Bytes(`tier4-aml-${uniqueId}`));
+            const amlTypes = {
+                AMLClearance: [
                     { name: 'user', type: 'address' },
-                    { name: 'sessionHash', type: 'bytes32' },
+                    { name: 'cleared', type: 'bool' },
                     { name: 'timestamp', type: 'uint256' },
                     { name: 'nonce', type: 'bytes32' },
                     { name: 'deadline', type: 'uint256' },
                 ],
             };
-            const videoSig = await trustedKey.signTypedData(domain, videoTypes, {
+            const amlSig = await trustedKey.signTypedData(domain, amlTypes, {
                 user: user.address,
-                sessionHash,
+                cleared: true,
                 timestamp: currentTime,
-                nonce: videoNonce,
+                nonce: amlNonce,
                 deadline,
             });
-            await registration.connect(user).submitVideoVerification(
-                sessionHash,
+            await registration.connect(owner).submitAMLClearance(
+                user.address,
+                true,
                 currentTime,
-                videoNonce,
+                amlNonce,
                 deadline,
-                videoSig
+                amlSig
             );
+
+            // Tier 3 complete (Persona + AML)
         }
 
         beforeEach(async function () {
@@ -3086,7 +3673,7 @@ describe('OmniRegistration', function () {
             // Relay should succeed and emit IDVerified
             await expect(tx).to.emit(registration, 'IDVerified');
 
-            // But Tier 2 should NOT be complete yet (need address + selfie too)
+            // But Tier 2 should NOT be complete yet (need address too)
             expect(await registration.hasKycTier2(user1.address)).to.be.false;
             expect(await registration.kycTier2CompletedAt(user1.address)).to.equal(0);
         });

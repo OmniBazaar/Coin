@@ -322,7 +322,7 @@ contract ValidatorProvisioner is
 
         // Default qualification thresholds
         minParticipationScore = 50;
-        minKYCTier = 4;
+        minKYCTier = 3;
         minStakeAmount = 1_000_000 ether; // 1M XOM (18 decimals)
     }
 
