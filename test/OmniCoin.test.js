@@ -6,7 +6,7 @@ describe("OmniCoin", function () {
   let omniCoin;
   let owner, minter, burner, user1, user2, user3;
 
-  const INITIAL_SUPPLY = ethers.parseEther("16600000000"); // 16.6 billion (full pre-mint at genesis)
+  const INITIAL_SUPPLY = ethers.parseEther("16800000000"); // 16.8 billion (full pre-mint at genesis)
   const USER_FUNDING = ethers.parseEther("100000"); // 100K per test user
 
   beforeEach(async function () {
@@ -710,8 +710,8 @@ describe("OmniCoin", function () {
       expect(await freshCoin.hasRole(BURNER_ROLE, owner.address)).to.be.true;
     });
 
-    it("MAX_SUPPLY should equal 16.6 billion tokens (18 decimals)", async function () {
-      const expected = ethers.parseEther("16600000000");
+    it("MAX_SUPPLY should equal 16.8 billion tokens (18 decimals)", async function () {
+      const expected = ethers.parseEther("16800000000");
       expect(await omniCoin.MAX_SUPPLY()).to.equal(expected);
     });
 

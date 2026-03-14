@@ -210,8 +210,8 @@ describe('StakingRewardPool — Adversarial (Round 8)', function () {
     it('should handle maximum possible stake without overflow', async function () {
       const { pool, omniCore, staker } = await loadFixture(deployFixture);
 
-      // Set a very large stake (16.6B XOM -- total supply)
-      const maxStake = ethers.parseEther('16600000000');
+      // Set a very large stake (16.8B XOM -- total supply)
+      const maxStake = ethers.parseEther('16800000000');
       const now = await time.latest();
       await omniCore.setStake(staker.address, maxStake, 5, 730 * 86400, now + 730 * 86400, true);
 

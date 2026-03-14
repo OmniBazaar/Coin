@@ -152,10 +152,10 @@ contract PrivateOmniCoin is
     /// Max private balance: type(uint64).max / 1e6 = 18,446,744 XOM
     uint256 public constant PRIVACY_SCALING_FACTOR = 1e12;
 
-    /// @notice Maximum lifetime supply: 16.6 billion XOM
+    /// @notice Maximum lifetime supply: 16.8 billion XOM
     /// @dev Defense-in-depth cap matching OmniCoin.MAX_SUPPLY to prevent
     ///      compromised minter from inflating pXOM beyond intended limits.
-    uint256 public constant MAX_SUPPLY = 16_600_000_000 * 10 ** 18;
+    uint256 public constant MAX_SUPPLY = 16_800_000_000 * 10 ** 18;
 
     /// @notice Timelock delay for privacy disable (7 days)
     /// @dev ATK-H07: Gives users time to exit private positions

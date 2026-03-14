@@ -7,7 +7,7 @@ describe("LegacyBalanceClaim", function () {
   //  Constants
   // ════════════════════════════════════════════════════════════════════
 
-  const MAX_MIGRATION_SUPPLY = ethers.parseEther("4130000000"); // 4.13B XOM
+  const MAX_MIGRATION_SUPPLY = ethers.parseEther("4320000000"); // 4.32B XOM
   const MIGRATION_DURATION = 730n * 24n * 60n * 60n; // 730 days in seconds
   const FUNDING_AMOUNT = ethers.parseEther("5000000000"); // 5B XOM (more than max to ensure enough)
 
@@ -1742,9 +1742,9 @@ describe("LegacyBalanceClaim", function () {
       expect(await claim.MIGRATION_DURATION()).to.equal(730n * 24n * 60n * 60n);
     });
 
-    it("should have correct MAX_MIGRATION_SUPPLY of 4.13B XOM", async function () {
+    it("should have correct MAX_MIGRATION_SUPPLY of 4.32B XOM", async function () {
       const { claim } = await loadFixture(deployFixture);
-      expect(await claim.MAX_MIGRATION_SUPPLY()).to.equal(ethers.parseEther("4130000000"));
+      expect(await claim.MAX_MIGRATION_SUPPLY()).to.equal(ethers.parseEther("4320000000"));
     });
 
     it("should have correct MAX_VALIDATORS of 20", async function () {

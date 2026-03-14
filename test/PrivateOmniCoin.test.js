@@ -655,7 +655,7 @@ describe("PrivateOmniCoin", function () {
         it("Should have correct MAX_SUPPLY", async function () {
             const { token } = await loadFixture(deployPrivateOmniCoinFixture);
 
-            const expectedMax = ethers.parseEther("16600000000"); // 16.6 billion
+            const expectedMax = ethers.parseEther("16800000000"); // 16.8 billion
             expect(await token.MAX_SUPPLY()).to.equal(expectedMax);
         });
     });

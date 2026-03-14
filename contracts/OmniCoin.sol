@@ -22,12 +22,12 @@ import {Context} from "@openzeppelin/contracts/utils/Context.sol";
  * Key features:
  * - 18 decimal places for full Ethereum compatibility
  * - Role-based access control for minting/burning
- * - On-chain MAX_SUPPLY cap of 16.6 billion XOM (defense-in-depth)
+ * - On-chain MAX_SUPPLY cap of 16.8 billion XOM (defense-in-depth)
  * - Two-step admin transfer with 48-hour delay (M-03 remediation)
  * - Pausable for emergency stops
  * - ERC20Permit for gasless approvals (EIP-2612)
  * - ERC20Votes for on-chain governance delegation and checkpointed voting power
- * - Full genesis supply of 16.6 billion tokens (pre-minted to deployer for pool funding)
+ * - Full genesis supply of 16.8 billion tokens (pre-minted to deployer for pool funding)
  * - ERC2771Context for gasless meta-transactions via OmniForwarder
  *
  * Gasless Support:
@@ -74,15 +74,15 @@ contract OmniCoin is
     ///      cannot independently drain funds — it can only burn tokens, not transfer them.
     bytes32 public constant BURNER_ROLE = keccak256("BURNER_ROLE");
 
-    /// @notice Full genesis supply: 16.6 billion XOM pre-minted to deployer
+    /// @notice Full genesis supply: 16.8 billion XOM pre-minted to deployer
     /// @dev All tokens are created at genesis. The deployer distributes them
     ///      to pool contracts (LegacyBalanceClaim, OmniRewardManager,
-    ///      StakingRewardPool) and then revokes MINTER_ROLE permanently.
+    ///      OmniValidatorRewards) and then revokes MINTER_ROLE permanently.
     ///      This eliminates infinite-mint attack vectors.
-    uint256 public constant INITIAL_SUPPLY = 16_600_000_000 * 10 ** 18;
+    uint256 public constant INITIAL_SUPPLY = 16_800_000_000 * 10 ** 18;
 
-    /// @notice Maximum lifetime supply: 16.6 billion XOM (all minted at genesis)
-    uint256 public constant MAX_SUPPLY = 16_600_000_000 * 10 ** 18;
+    /// @notice Maximum lifetime supply: 16.8 billion XOM (all minted at genesis)
+    uint256 public constant MAX_SUPPLY = 16_800_000_000 * 10 ** 18;
 
     // Immutable state variables
     /// @notice Address that deployed the contract (only address that can call initialize)

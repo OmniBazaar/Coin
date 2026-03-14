@@ -75,7 +75,7 @@ contract OmniRewardManager is
     uint256 public constant HISTORICAL_BURN_2019 = 8_400_000_000 * 10 ** 18;
 
     /// @notice Effective total supply (actual tokens that will exist)
-    uint256 public constant EFFECTIVE_TOTAL_SUPPLY = 16_600_000_000 * 10 ** 18;
+    uint256 public constant EFFECTIVE_TOTAL_SUPPLY = 16_800_000_000 * 10 ** 18;
 
     /// @notice Role for upgrading the contract implementation
     bytes32 public constant UPGRADER_ROLE = keccak256("UPGRADER_ROLE");

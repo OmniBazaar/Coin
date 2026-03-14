@@ -54,10 +54,10 @@ describe("MintController", function () {
   });
 
   describe("View Functions", function () {
-    it("maxSupplyCap should return 16.6 billion", async function () {
+    it("maxSupplyCap should return 16.8 billion", async function () {
       const { controller } = await loadFixture(deployFixture);
       const cap = await controller.maxSupplyCap();
-      expect(cap).to.equal(ethers.parseEther("16600000000"));
+      expect(cap).to.equal(ethers.parseEther("16800000000"));
     });
 
     it("remainingMintable should account for initial supply", async function () {

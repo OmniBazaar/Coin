@@ -151,7 +151,7 @@ module.exports = {
     },
     // Avalanche Mainnet Subnet-EVM (Production)
     mainnet: {
-      url: process.env.MAINNET_RPC_URL || "http://65.108.205.116:9650/ext/bc/2tNbY8HXgSa3qwgSkhh6XS5F7UCPPu6fP3Gv7jjeeMgNoC3ioA/rpc",
+      url: process.env.MAINNET_RPC_URL || "http://65.108.205.116:9650/ext/bc/2PuAuG7y7B94YXu13dsuwc9cR5EdUjFS24AULeWL5Lm1AtPcKj/rpc",
       chainId: 88008,
       accounts: process.env.MAINNET_DEPLOYER_PRIVATE_KEY
         ? [process.env.MAINNET_DEPLOYER_PRIVATE_KEY]

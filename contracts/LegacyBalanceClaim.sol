@@ -28,7 +28,7 @@ import {Context} from
  *
  * Architecture:
  * - Stores 4,735 legacy user balances indexed by username hash
- * - Contract is PRE-FUNDED with 4.13B XOM by the deployer at setup
+ * - Contract is PRE-FUNDED with 4.32B XOM by the deployer at setup
  * - Claims are fulfilled via transfer (NOT minting) from the contract's balance
  * - Backend validator validates username/password off-chain
  * - Validator signs a proof that is verified on-chain via ECDSA
@@ -75,10 +75,10 @@ contract LegacyBalanceClaim is
     uint256 public constant MIGRATION_DURATION = 730 days;
 
     /// @notice Maximum total XOM that can be distributed through legacy migration
-    /// @dev 4.13 billion XOM (genesis circulating supply) with 18 decimals.
+    /// @dev 4.32 billion XOM (legacy circulating supply) with 18 decimals.
     ///      This caps total distribution via this contract to prevent exceeding
     ///      the pre-funded balance even if the owner loads more balances than expected.
-    uint256 public constant MAX_MIGRATION_SUPPLY = 4_130_000_000e18;
+    uint256 public constant MAX_MIGRATION_SUPPLY = 4_320_000_000e18;
 
     /// @notice Maximum number of validators allowed in the set
     uint256 public constant MAX_VALIDATORS = 20;

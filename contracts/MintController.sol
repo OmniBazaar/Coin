@@ -74,9 +74,9 @@ contract MintController is
         keccak256("PAUSER_ROLE");
 
     /// @notice Maximum total supply of XOM tokens
-    /// @dev 16.6 billion with 18 decimals. Immutable and
+    /// @dev 16.8 billion with 18 decimals. Immutable and
     ///      cannot be changed post-deployment.
-    uint256 public constant MAX_SUPPLY = 16_600_000_000e18;
+    uint256 public constant MAX_SUPPLY = 16_800_000_000e18;
 
     /// @notice Duration of a rate-limiting epoch (1 hour)
     uint256 public constant EPOCH_DURATION = 1 hours;
