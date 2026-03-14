@@ -195,6 +195,14 @@ contract LiquidityBootstrappingPool is ReentrancyGuard, Ownable, Pausable, ERC27
         uint256 indexed remainingXom
     );
 
+    /// @notice Emitted when the treasury address is updated
+    /// @param oldTreasury Previous treasury address
+    /// @param newTreasury New treasury address
+    event TreasuryUpdated(
+        address indexed oldTreasury,
+        address indexed newTreasury
+    );
+
     /* solhint-enable gas-indexed-events */
 
     // ============ Errors ============
@@ -359,16 +367,18 @@ contract LiquidityBootstrappingPool is ReentrancyGuard, Ownable, Pausable, ERC27
             revert LBPAlreadyStarted();
         }
 
+        address caller = _msgSender();
+
         if (xomAmount > 0) {
             XOM_TOKEN.safeTransferFrom(
-                msg.sender, address(this), xomAmount
+                caller, address(this), xomAmount
             );
             xomReserve += xomAmount;
         }
 
         if (counterAssetAmount > 0) {
             COUNTER_ASSET_TOKEN.safeTransferFrom(
-                msg.sender, address(this), counterAssetAmount
+                caller, address(this), counterAssetAmount
             );
             counterAssetReserve += counterAssetAmount;
         }
@@ -502,7 +512,9 @@ contract LiquidityBootstrappingPool is ReentrancyGuard, Ownable, Pausable, ERC27
      */
     function setTreasury(address _treasury) external onlyOwner {
         if (_treasury == address(0)) revert InvalidParameters();
+        address oldTreasury = treasury;
         treasury = _treasury;
+        emit TreasuryUpdated(oldTreasury, _treasury);
     }
 
     // ============ External View Functions ============

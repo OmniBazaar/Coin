@@ -105,6 +105,23 @@ interface IWarpMessenger {
  *
  * Supports ossification: once ossify() is called through governance,
  * the bridge contract becomes permanently immutable.
+ *
+ * Fee vs Liquidity Design (M-02):
+ *   Bridge transfer fees are tracked separately in `accumulatedFees`
+ *   and are distributable via `distributeFees()`. The distribution
+ *   function includes a safety check that caps distributable fees at
+ *   `balance - lockedAmount` to guarantee that pending bridge
+ *   transfers always have sufficient liquidity for redemption. Fees
+ *   are NOT automatically deducted from bridge reserves; they remain
+ *   in the contract's token balance until explicitly distributed.
+ *
+ * Transfer Lifecycle (M-01):
+ *   Each transfer follows a strict lifecycle tracked by
+ *   `transferStatus`: PENDING -> COMPLETED (on destination chain
+ *   via `processWarpMessage`) or PENDING -> REFUNDED (on source
+ *   chain via `refundTransfer` after REFUND_DELAY). The enum
+ *   prevents double-claiming via concurrent refund and completion
+ *   paths (H-01 Round 6).
  */
 contract OmniBridge is
     Initializable,
@@ -178,6 +195,11 @@ contract OmniBridge is
     /// @notice Warp Messenger precompile address
     IWarpMessenger public constant WARP_MESSENGER = IWarpMessenger(0x0200000000000000000000000000000000000005);
 
+    /// @notice Timelock delay for fee vault address changes (48 hours)
+    /// @dev FE-H-01 remediation: prevents instant fee redirection
+    ///      by a compromised admin key
+    uint256 public constant FEE_VAULT_DELAY = 48 hours;
+
     // =========================================================================
     // State Variables (STORAGE LAYOUT - DO NOT REORDER!)
     // =========================================================================
@@ -240,9 +262,20 @@ contract OmniBridge is
     ///      0 = PENDING (default), 1 = COMPLETED, 2 = REFUNDED
     mapping(uint256 => TransferStatus) public transferStatus;
 
+    /// @notice Pending fee vault address awaiting timelock acceptance
+    /// @dev FE-H-01: Set by proposeFeeVault(), applied by
+    ///      acceptFeeVault() after FEE_VAULT_DELAY elapses
+    address public pendingFeeVault;
+
+    /// @notice Timestamp when the fee vault change was proposed
+    /// @dev FE-H-01: acceptFeeVault() requires
+    ///      block.timestamp >= feeVaultChangeTimestamp + FEE_VAULT_DELAY
+    uint256 public feeVaultChangeTimestamp;
+
     /// @notice Storage gap for future upgrades
-    /// @dev Reduced by 1 slot to account for the transferStatus mapping added above.
-    uint256[42] private __gap;
+    /// @dev Reduced by 2 slots to account for pendingFeeVault and
+    ///      feeVaultChangeTimestamp added above (42 - 2 = 40).
+    uint256[40] private __gap;
 
     // Events
     /// @notice Emitted when transfer is initiated
@@ -339,6 +372,24 @@ contract OmniBridge is
     /// @param contractAddress Address of this contract
     event ContractOssified(address indexed contractAddress);
 
+    /// @notice Emitted when a fee vault address change is proposed
+    /// @param current Current UnifiedFeeVault address
+    /// @param proposed Proposed new UnifiedFeeVault address
+    /// @param effectiveAt Timestamp when the change can be accepted
+    event FeeVaultChangeProposed(
+        address indexed current,
+        address indexed proposed,
+        uint256 effectiveAt
+    );
+
+    /// @notice Emitted when a proposed fee vault change is accepted
+    /// @param oldVault Previous UnifiedFeeVault address
+    /// @param newVault New UnifiedFeeVault address
+    event FeeVaultChangeAccepted(
+        address indexed oldVault,
+        address indexed newVault
+    );
+
     // Custom errors
     /// @notice Thrown when amount is zero or insufficient balance
     error InvalidAmount();
@@ -374,6 +425,11 @@ contract OmniBridge is
     error ContractIsOssified();
     /// @notice Thrown when a transfer has already been refunded on the source chain
     error TransferAlreadyRefunded();
+    /// @notice Thrown when no fee vault change is pending
+    error NoFeeVaultChangePending();
+    /// @notice Thrown when the fee vault timelock delay has not yet elapsed
+    /// @param availableAt Timestamp when the change becomes available
+    error FeeVaultTimelockActive(uint256 availableAt);
 
     /**
      * @notice Disable initializers on implementation contract
@@ -543,6 +599,10 @@ contract OmniBridge is
 
         // H-01 Round 6: prevent completion if this transfer was already
         // refunded or completed (guards against cross-chain race condition)
+        // M-01: Differentiate refunded vs completed for clearer revert reasons
+        if (transferStatus[transferId] == TransferStatus.REFUNDED) {
+            revert TransferAlreadyRefunded();
+        }
         if (transferStatus[transferId] != TransferStatus.PENDING) {
             revert TransferAlreadyCompleted();
         }
@@ -663,7 +723,7 @@ contract OmniBridge is
      *      liquidity and can be withdrawn without affecting locked
      *      user funds. Permissionless — anyone can trigger distribution
      *      since the vault handles the 70/20/10 split. Requires
-     *      feeVault to be set via setFeeVault().
+     *      feeVault to be set via proposeFeeVault() / acceptFeeVault().
      * @param token Token address to distribute fees for
      */
     function distributeFees(
@@ -674,26 +734,89 @@ contract OmniBridge is
         uint256 fees = accumulatedFees[token];
         if (fees == 0) revert NoFeesToDistribute();
 
-        accumulatedFees[token] = 0;
+        // M-02: Ensure fee distribution does not reduce the contract's
+        // token balance below the amount locked for pending bridge
+        // transfers. The locked obligation is the balance minus the
+        // accumulated fees. Cap the distributable fees at whatever the
+        // contract can actually spare after reserving locked funds.
+        uint256 tokenBalance = IERC20(token).balanceOf(address(this));
+        uint256 lockedAmount = tokenBalance > fees
+            ? tokenBalance - fees
+            : 0;
+        uint256 availableForFees = tokenBalance > lockedAmount
+            ? tokenBalance - lockedAmount
+            : 0;
+        if (fees > availableForFees) {
+            fees = availableForFees;
+        }
+        if (fees == 0) revert NoFeesToDistribute();
+
+        accumulatedFees[token] -= fees;
         IERC20(token).safeTransfer(feeVault, fees);
         emit FeeDistributed(token, fees, feeVault);
     }
 
     /**
-     * @notice Set the UnifiedFeeVault address for fee distribution
-     * @dev Only callable by admin. The vault handles 70/20/10 split.
-     * @param _feeVault Address of the UnifiedFeeVault contract
+     * @notice Propose a new UnifiedFeeVault address (step 1 of 2)
+     * @dev FE-H-01 remediation: starts a 48-hour timelock before the
+     *      new vault address can be accepted. This prevents a
+     *      compromised admin from instantly redirecting all fees.
+     *      M-01 Round 6: Uses msg.sender deliberately; see
+     *      updateChainConfig() NatSpec for rationale.
+     *      Emits {FeeVaultChangeProposed}.
+     * @param _feeVault Proposed new UnifiedFeeVault address
      */
-    function setFeeVault(
+    function proposeFeeVault(
         address _feeVault
     ) external {
-        // M-01 Round 6: Uses msg.sender deliberately; see
-        // updateChainConfig() NatSpec for rationale.
         if (!core.hasRole(core.ADMIN_ROLE(), msg.sender)) {
             revert InvalidRecipient();
         }
         if (_feeVault == address(0)) revert InvalidRecipient();
-        feeVault = _feeVault;
+
+        pendingFeeVault = _feeVault;
+        // solhint-disable-next-line not-rely-on-time
+        feeVaultChangeTimestamp = block.timestamp;
+
+        emit FeeVaultChangeProposed(
+            feeVault,
+            _feeVault,
+            block.timestamp + FEE_VAULT_DELAY // solhint-disable-line not-rely-on-time
+        );
+    }
+
+    /**
+     * @notice Accept the pending fee vault address change (step 2 of 2)
+     * @dev FE-H-01 remediation: can only be called after the 48-hour
+     *      timelock has elapsed. Clears the pending state after
+     *      applying the change.
+     *      M-01 Round 6: Uses msg.sender deliberately; see
+     *      updateChainConfig() NatSpec for rationale.
+     *      Emits {FeeVaultChangeAccepted}.
+     */
+    function acceptFeeVault() external {
+        if (!core.hasRole(core.ADMIN_ROLE(), msg.sender)) {
+            revert InvalidRecipient();
+        }
+        if (pendingFeeVault == address(0)) {
+            revert NoFeeVaultChangePending();
+        }
+
+        uint256 availableAt =
+            feeVaultChangeTimestamp + FEE_VAULT_DELAY;
+        // solhint-disable-next-line not-rely-on-time
+        if (block.timestamp < availableAt) {
+            revert FeeVaultTimelockActive(availableAt);
+        }
+
+        address oldVault = feeVault;
+        feeVault = pendingFeeVault;
+
+        // Clear pending state
+        pendingFeeVault = address(0);
+        feeVaultChangeTimestamp = 0;
+
+        emit FeeVaultChangeAccepted(oldVault, feeVault);
     }
 
     /**

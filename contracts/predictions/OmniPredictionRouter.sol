@@ -49,6 +49,11 @@ contract OmniPredictionRouter is Ownable2Step, ReentrancyGuard, ERC1155Holder, E
     /// @notice Minimum gas reserved for post-call operations (M-03 mitigation).
     uint256 private constant GAS_RESERVE = 50_000;
 
+    /// @notice Timelock delay for fee vault address changes (48 hours)
+    /// @dev FE-H-01 remediation: prevents instant fee redirection
+    ///      by a compromised owner key
+    uint256 public constant FEE_VAULT_DELAY = 48 hours;
+
     // -----------------------------------------------------------------------
     // Immutable State
     // -----------------------------------------------------------------------
@@ -62,6 +67,15 @@ contract OmniPredictionRouter is Ownable2Step, ReentrancyGuard, ERC1155Holder, E
 
     /// @notice UnifiedFeeVault address -- receives 100% of prediction fees for 70/20/10 distribution
     address public feeVault;
+
+    /// @notice Pending fee vault address awaiting timelock acceptance
+    /// @dev FE-H-01: Set by proposeFeeVault(), applied by acceptFeeVault()
+    address public pendingFeeVault;
+
+    /// @notice Timestamp when the fee vault change was proposed
+    /// @dev FE-H-01: acceptFeeVault() requires
+    ///      block.timestamp >= feeVaultChangeTimestamp + FEE_VAULT_DELAY
+    uint256 public feeVaultChangeTimestamp;
 
     /// @notice Approved prediction market platforms that can be called
     /// @dev Only addresses in this mapping may be used as platformTarget
@@ -95,10 +109,20 @@ contract OmniPredictionRouter is Ownable2Step, ReentrancyGuard, ERC1155Holder, E
         bool indexed approved
     );
 
-    /// @notice Emitted when the UnifiedFeeVault address is updated
+    /// @notice Emitted when a fee vault address change is proposed
+    /// @param current Current UnifiedFeeVault address
+    /// @param proposed Proposed new UnifiedFeeVault address
+    /// @param effectiveAt Timestamp when the change can be accepted
+    event FeeVaultChangeProposed(
+        address indexed current,
+        address indexed proposed,
+        uint256 effectiveAt
+    );
+
+    /// @notice Emitted when a proposed fee vault change is accepted
     /// @param oldVault Previous UnifiedFeeVault address
     /// @param newVault New UnifiedFeeVault address
-    event FeeVaultUpdated(
+    event FeeVaultChangeAccepted(
         address indexed oldVault,
         address indexed newVault
     );
@@ -148,6 +172,13 @@ contract OmniPredictionRouter is Ownable2Step, ReentrancyGuard, ERC1155Holder, E
     /// @notice Thrown when a fee-on-transfer token delivers less than expected (M-01)
     error FeeOnTransferNotSupported();
 
+    /// @notice Thrown when no fee vault change is pending
+    error NoFeeVaultChangePending();
+
+    /// @notice Thrown when the fee vault timelock delay has not yet elapsed
+    /// @param availableAt Timestamp when the change becomes available
+    error FeeVaultTimelockActive(uint256 availableAt);
+
     /// @notice Thrown when the platform target has no deployed code (M-04)
     error PlatformNotContract();
 
@@ -181,20 +212,55 @@ contract OmniPredictionRouter is Ownable2Step, ReentrancyGuard, ERC1155Holder, E
     // -----------------------------------------------------------------------
 
     /**
-     * @notice Update the UnifiedFeeVault address that receives 100% of
-     *         prediction fees for 70/20/10 distribution.
-     * @param feeVault_ New UnifiedFeeVault address
-     * @dev Pioneer Phase: no timelock. Will be replaced with
-     *      timelocked version before multi-sig handoff.
+     * @notice Propose a new UnifiedFeeVault address (step 1 of 2)
+     * @dev FE-H-01 remediation: starts a 48-hour timelock before the
+     *      new vault address can be accepted. This prevents a
+     *      compromised owner from instantly redirecting all fees.
+     *      Emits {FeeVaultChangeProposed}.
+     * @param feeVault_ Proposed new UnifiedFeeVault address
      */
-    function setFeeVault(
+    function proposeFeeVault(
         address feeVault_
     ) external onlyOwner {
         if (feeVault_ == address(0)) revert InvalidFeeVault();
 
+        pendingFeeVault = feeVault_;
+        // solhint-disable-next-line not-rely-on-time
+        feeVaultChangeTimestamp = block.timestamp;
+
+        emit FeeVaultChangeProposed(
+            feeVault,
+            feeVault_,
+            block.timestamp + FEE_VAULT_DELAY // solhint-disable-line not-rely-on-time
+        );
+    }
+
+    /**
+     * @notice Accept the pending fee vault address change (step 2 of 2)
+     * @dev FE-H-01 remediation: can only be called after the 48-hour
+     *      timelock has elapsed. Clears the pending state after
+     *      applying the change. Emits {FeeVaultChangeAccepted}.
+     */
+    function acceptFeeVault() external onlyOwner {
+        if (pendingFeeVault == address(0)) {
+            revert NoFeeVaultChangePending();
+        }
+
+        uint256 availableAt =
+            feeVaultChangeTimestamp + FEE_VAULT_DELAY;
+        // solhint-disable-next-line not-rely-on-time
+        if (block.timestamp < availableAt) {
+            revert FeeVaultTimelockActive(availableAt);
+        }
+
         address oldVault = feeVault;
-        feeVault = feeVault_;
-        emit FeeVaultUpdated(oldVault, feeVault_);
+        feeVault = pendingFeeVault;
+
+        // Clear pending state
+        pendingFeeVault = address(0);
+        feeVaultChangeTimestamp = 0;
+
+        emit FeeVaultChangeAccepted(oldVault, feeVault);
     }
 
     /**

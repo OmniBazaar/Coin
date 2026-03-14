@@ -51,6 +51,9 @@ contract OmniPaymaster is IPaymaster, Ownable {
     /// @notice Default XOM fee per operation (0.001 XOM = 1e15 wei at 18 decimals)
     uint256 public constant DEFAULT_XOM_GAS_FEE = 1e15;
 
+    /// @notice Maximum number of accounts in a batch whitelist call
+    uint256 public constant MAX_BATCH_SIZE = 100;
+
     // ══════════════════════════════════════════════════════════════
     //                      STATE VARIABLES
     // ══════════════════════════════════════════════════════════════
@@ -192,6 +195,12 @@ contract OmniPaymaster is IPaymaster, Ownable {
 
     /// @notice EntryPoint call failed
     error EntryPointCallFailed();
+
+    /// @notice Fee value is invalid (zero)
+    error InvalidFee();
+
+    /// @notice Batch size exceeds MAX_BATCH_SIZE
+    error BatchTooLarge();
 
     // ══════════════════════════════════════════════════════════════
     //                        MODIFIERS
@@ -406,6 +415,7 @@ contract OmniPaymaster is IPaymaster, Ownable {
      * @param newFee The new XOM fee per operation (in wei)
      */
     function setXomGasFee(uint256 newFee) external onlyOwner {
+        if (newFee == 0) revert InvalidFee();
         xomGasFee = newFee;
         emit XomGasFeeUpdated(newFee);
     }
@@ -439,6 +449,7 @@ contract OmniPaymaster is IPaymaster, Ownable {
     function whitelistAccountBatch(
         address[] calldata accounts
     ) external onlyOwner {
+        if (accounts.length > MAX_BATCH_SIZE) revert BatchTooLarge();
         uint256 len = accounts.length;
         for (uint256 i; i < len; ++i) {
             if (accounts[i] == address(0)) revert InvalidAddress();

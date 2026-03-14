@@ -202,6 +202,14 @@ interface IOmniCore {
  *   via setRoleMultiplier() still takes precedence if non-zero.
  * - Bootstrap.sol reference: added bootstrapContract state variable
  *   set via reinitializeV2().
+ *
+ * Audit Fixes (2026-03-13 Round 7):
+ * - H-01: _bootstrapRoleMultiplier cross-checks OmniCore stake
+ *   before granting 1.5x gateway bonus; minStakeForRewards
+ *   defaults to 1M XOM (not 0) for Sybil protection from deploy.
+ * - M-01: Removed redundant _epochTxnCount mapping (renamed to
+ *   __removed_epochTxnCount for storage layout preservation).
+ *   Cap checks now use transactionsProcessed directly.
  */
 // solhint-disable max-states-count
 contract OmniValidatorRewards is
@@ -435,11 +443,12 @@ contract OmniValidatorRewards is
     ///      rewardMultiplier resets to 0 (default = 100%).
     mapping(address => uint256) public penaltyExpiresAt;
 
-    /// @notice Per-epoch per-validator transaction count cap
-    /// @dev Audit M-04 Round 4: Prevents BLOCKCHAIN_ROLE from
-    ///      inflating a single validator's tx count unboundedly.
+    /// @notice REMOVED — was per-epoch per-validator txn count
+    /// @dev M-01 Round 7 fix: Renamed to preserve storage layout
+    ///      (UUPS upgradeable). Replaced by transactionsProcessed
+    ///      which already tracks the same data. DO NOT write to.
     mapping(uint256 => mapping(address => uint256))
-        private _epochTxnCount;
+        private __removed_epochTxnCount;
 
     /// @notice Bootstrap.sol contract for auto role multiplier
     /// @dev V2: Set via reinitializeV2(). Used in _computeEpochWeights
@@ -449,8 +458,9 @@ contract OmniValidatorRewards is
 
     /// @notice Minimum OmniCore stake required for reward eligibility
     /// @dev V2: Prevents Sybil attacks by requiring economic stake.
-    ///      Default 0 (seed validators have no stake). Admin should
-    ///      set to >= 1,000,000 XOM before public launch.
+    ///      H-01 fix: Defaults to 1,000,000 XOM (18 decimals) at
+    ///      deployment for Sybil protection. Seed validators bypass
+    ///      via stakeExempt mapping. Adjustable by admin.
     uint256 public minStakeForRewards;
 
     /// @notice Pending admin address for two-step admin transfer
@@ -867,6 +877,9 @@ contract OmniValidatorRewards is
      *      contract for auto role multiplier derivation. Gateway nodes
      *      (type 0) automatically get 1.5x; computation nodes (type 1)
      *      get 1.0x. Manual setRoleMultiplier() overrides still work.
+     *      H-01 fix: minStakeForRewards defaults to 1M XOM (not 0)
+     *      for Sybil protection from deployment. Seed validators
+     *      must be added to stakeExempt mapping separately.
      * @param _bootstrap Address of the Bootstrap.sol contract on L1
      */
     function reinitializeV2(
@@ -874,9 +887,10 @@ contract OmniValidatorRewards is
     ) external onlyRole(DEFAULT_ADMIN_ROLE) reinitializer(2) {
         if (_bootstrap == address(0)) revert ZeroAddress();
         bootstrapContract = _bootstrap;
-        // H-02 fix: default 0 (seed validators work immediately).
-        // Admin should call setMinStakeForRewards() before public launch.
-        minStakeForRewards = 0;
+        // H-01 fix: Default to 1M XOM (18 decimals) for Sybil
+        // protection from deployment. Seed validators use
+        // stakeExempt mapping to bypass this requirement.
+        minStakeForRewards = 1_000_000 ether;
     }
 
     // ══════════════════════════════════════════════════════════════════
@@ -923,13 +937,14 @@ contract OmniValidatorRewards is
 
         uint256 currentEpoch = getCurrentEpoch();
         // M-04 Round 4: Per-epoch per-validator txn cap
+        // M-01 Round 7: Use transactionsProcessed directly
+        // (removed redundant _epochTxnCount mapping)
         if (
-            _epochTxnCount[currentEpoch][validator]
+            transactionsProcessed[validator][currentEpoch]
                 > MAX_TXN_PER_EPOCH_PER_VALIDATOR - 1
         ) {
             revert TxnCapExceeded();
         }
-        ++_epochTxnCount[currentEpoch][validator];
 
         ++transactionsProcessed[validator][currentEpoch];
         ++epochTotalTransactions[currentEpoch];
@@ -960,18 +975,19 @@ contract OmniValidatorRewards is
 
         uint256 currentEpoch = getCurrentEpoch();
         // M-04 Round 4: Per-epoch per-validator txn cap
+        // M-01 Round 7: Use transactionsProcessed directly
+        // (removed redundant _epochTxnCount mapping)
         uint256 current =
-            _epochTxnCount[currentEpoch][validator];
+            transactionsProcessed[validator][currentEpoch];
         if (
             current + count
                 > MAX_TXN_PER_EPOCH_PER_VALIDATOR
         ) {
             revert TxnCapExceeded();
         }
-        _epochTxnCount[currentEpoch][validator] =
-            current + count;
 
-        transactionsProcessed[validator][currentEpoch] += count;
+        transactionsProcessed[validator][currentEpoch] =
+            current + count;
         epochTotalTransactions[currentEpoch] += count;
 
         emit TransactionProcessed(
@@ -2344,8 +2360,19 @@ contract OmniValidatorRewards is
             validator
         ) returns (bool isActive, uint8 nodeType) {
             // Gateway (type 0) with active heartbeat => 1.5x
+            // H-01: Cross-check OmniCore stake to prevent Sybil
+            // dilution via permissionless Bootstrap registration.
+            // Nodes without economic stake get base multiplier.
             if (isActive && nodeType == 0) {
-                return 15000;
+                try omniCore.getStake(validator)
+                    returns (IOmniCore.Stake memory s)
+                {
+                    if (s.active && s.amount > 0) {
+                        return 15000;
+                    }
+                } catch {
+                    // Stake check failed — default to 1.0x
+                }
             }
         } catch {
             // Bootstrap call failed — default to 1.0x

@@ -195,6 +195,14 @@ contract OmniTreasury is
     ///         renounce or be revoked while the contract is paused.
     error CannotRemoveLastAdminWhilePaused();
 
+    /// @notice Thrown when transitionGovernance targets the
+    ///         treasury contract itself.
+    error InvalidGovernanceTarget();
+
+    /// @notice Thrown when revoking the last admin would leave
+    ///         the treasury permanently without an administrator.
+    error CannotRemoveLastAdmin();
+
     // ─────────────────────────── Constructor ─────────────────────────
 
     /**
@@ -544,6 +552,9 @@ contract OmniTreasury is
         if (newGovernance == address(0)) revert ZeroAddress();
         if (newGuardian == address(0)) revert ZeroAddress();
         if (newAdmin == address(0)) revert ZeroAddress();
+        if (newGovernance == address(this)) {
+            revert InvalidGovernanceTarget();
+        }
 
         // M-01 Round 6: Revoke all outstanding ERC-20 approvals
         // before transferring control to prevent stale approvals
@@ -651,9 +662,11 @@ contract OmniTreasury is
 
     /**
      * @dev Track `_adminCount` when DEFAULT_ADMIN_ROLE is revoked.
-     *      Prevents removing the last admin while the contract is
-     *      paused, which would permanently brick the treasury
-     *      (no one could call `unpause()`).
+     *      Always prevents removing the last admin to avoid
+     *      permanently bricking the treasury. Additionally reverts
+     *      with a more specific error when paused, since the
+     *      treasury would be unrecoverable without an admin to
+     *      call `unpause()`.
      */
     function _revokeRole(
         bytes32 role,
@@ -662,10 +675,12 @@ contract OmniTreasury is
         if (
             role == DEFAULT_ADMIN_ROLE &&
             hasRole(role, account) &&
-            _adminCount == 1 &&
-            paused()
+            _adminCount == 1
         ) {
-            revert CannotRemoveLastAdminWhilePaused();
+            if (paused()) {
+                revert CannotRemoveLastAdminWhilePaused();
+            }
+            revert CannotRemoveLastAdmin();
         }
 
         revoked = super._revokeRole(role, account);

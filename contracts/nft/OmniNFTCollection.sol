@@ -148,6 +148,8 @@ contract OmniNFTCollection is
     error ZeroAddress();
     /// @dev Thrown when the caller is not the pending owner (M-01).
     error NotPendingOwner();
+    /// @dev Thrown when royalty bps > 0 but recipient is zero address.
+    error InvalidRoyaltyConfig();
 
     /// @notice Emitted when a 2-step ownership transfer is initiated.
     /// @param previousOwner Current owner who initiated transfer.
@@ -209,6 +211,10 @@ contract OmniNFTCollection is
         // M-04: Validate owner is non-zero
         if (_owner == address(0)) revert ZeroAddress();
         if (_royaltyBps > MAX_ROYALTY_BPS) revert RoyaltyTooHigh();
+        // Prevent silently setting royalties that can never be paid
+        if (_royaltyBps > 0 && _royaltyRecipient == address(0)) {
+            revert InvalidRoyaltyConfig();
+        }
 
         owner = _owner;
         maxSupply = _maxSupply;
@@ -219,7 +225,7 @@ contract OmniNFTCollection is
         _collectionSymbol = _symbol;
 
         // ERC-2981 default royalty
-        if (_royaltyBps > 0 && _royaltyRecipient != address(0)) {
+        if (_royaltyBps > 0) {
             _setDefaultRoyalty(_royaltyRecipient, _royaltyBps);
         }
     }

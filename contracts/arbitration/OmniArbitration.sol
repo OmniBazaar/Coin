@@ -173,6 +173,20 @@ error SelectionTooEarly(
 /// @notice Arbitrator selection already finalized
 error SelectionAlreadyFinalized(uint256 disputeId);
 
+/// @notice Dispute status is invalid for the requested operation
+error InvalidDisputeStatus();
+
+/// @notice Appeal status is invalid for the requested operation
+error InvalidAppealStatus();
+
+/// @notice Appeal window has not yet expired; resolution cannot
+///         be finalized
+/// @param appealDeadline Timestamp when appeal window expires
+error AppealWindowActive(uint48 appealDeadline);
+
+/// @notice Resolution has already been finalized (escrow already moved)
+error ResolutionAlreadyFinalized(uint256 disputeId);
+
 /// @notice Upgrade timelock not yet elapsed
 /// @param scheduledAt When the upgrade was scheduled
 /// @param availableAt When the upgrade becomes available
@@ -191,6 +205,13 @@ error UpgradeImplementationMismatch(
     address expected,
     address provided
 );
+
+/// @notice No fee vault change is currently pending
+error NoFeeVaultChangePending();
+
+/// @notice Fee vault timelock delay has not yet elapsed
+/// @param availableAt Timestamp when the change becomes available
+error FeeVaultTimelockActive(uint256 availableAt);
 
 /**
  * @title OmniArbitration
@@ -277,6 +298,18 @@ contract OmniArbitration is
         bytes32[] evidenceCIDs;
         uint256 disputeFee;
         uint256 selectionBlock;
+        /// @dev H-01 (Round 7): Timestamp after which the initial
+        ///      resolution can be finalized if no appeal is filed.
+        ///      Set when 2-of-3 majority resolves the dispute.
+        uint48 appealDeadline;
+        /// @dev H-01 (Round 7): Cached direction of the initial
+        ///      resolution (true = release to seller, false = refund
+        ///      buyer). Used by finalizeResolution() to execute the
+        ///      escrow movement after the appeal window expires.
+        bool resolutionDirection;
+        /// @dev H-01 (Round 7): Whether the escrow resolution has
+        ///      been executed. Prevents double escrow resolution.
+        bool escrowFinalized;
     }
 
     /// @notice Appeal record
@@ -306,6 +339,12 @@ contract OmniArbitration is
     /// @notice Appeal deadline (5 days)
     uint256 public constant APPEAL_DEADLINE = 5 days;
 
+    /// @notice Window after initial resolution during which an
+    ///         appeal can be filed (3 days)
+    /// @dev H-01 (Round 7): Escrow funds are held until this window
+    ///      expires or an appeal resolves
+    uint256 public constant APPEAL_WINDOW = 3 days;
+
     /// @notice Arbitration fee in basis points (500 = 5%)
     uint256 public constant ARBITRATION_FEE_BPS = 500;
 
@@ -334,6 +373,11 @@ contract OmniArbitration is
     /// @notice Maximum allowed arbitrator stake (10,000,000 XOM)
     uint256 public constant MIN_STAKE_UPPER_BOUND =
         10_000_000 ether;
+
+    /// @notice Timelock delay for fee vault address changes (48 hours)
+    /// @dev FE-H-01 remediation: prevents instant fee redirection
+    ///      by a compromised admin key
+    uint256 public constant FEE_VAULT_DELAY = 48 hours;
 
     // ══════════════════════════════════════════════════════════════════
     //                          STATE VARIABLES
@@ -417,9 +461,19 @@ contract OmniArbitration is
     ///      distribution (ODDAO / Staking Pool / Protocol Treasury)
     address public feeVault;
 
+    /// @notice Pending fee vault address awaiting timelock acceptance
+    /// @dev FE-H-01: Set by proposeFeeVault(), applied by
+    ///      acceptFeeVault() after FEE_VAULT_DELAY elapses
+    address public pendingFeeVault;
+
+    /// @notice Timestamp when the fee vault change was proposed
+    /// @dev FE-H-01: acceptFeeVault() requires
+    ///      block.timestamp >= feeVaultChangeTimestamp + FEE_VAULT_DELAY
+    uint256 public feeVaultChangeTimestamp;
+
     /// @notice Reserved storage gap for future upgradeable variables
-    /// @dev 50 - 7 new state variables = 43 slots reserved
-    uint256[43] private __gap;
+    /// @dev 50 - 9 new state variables = 41 slots reserved
+    uint256[41] private __gap;
 
     // ══════════════════════════════════════════════════════════════════
     //                              EVENTS
@@ -573,9 +627,23 @@ contract OmniArbitration is
     /// @param implementation Cancelled implementation address
     event UpgradeCancelled(address indexed implementation);
 
-    /// @notice Emitted when the UnifiedFeeVault address is updated
-    /// @param newVault New fee vault address
-    event FeeVaultUpdated(address indexed newVault);
+    /// @notice Emitted when a fee vault address change is proposed
+    /// @param current Current UnifiedFeeVault address
+    /// @param proposed Proposed new UnifiedFeeVault address
+    /// @param effectiveAt Timestamp when the change can be accepted
+    event FeeVaultChangeProposed(
+        address indexed current,
+        address indexed proposed,
+        uint256 effectiveAt
+    );
+
+    /// @notice Emitted when a proposed fee vault change is accepted
+    /// @param oldVault Previous UnifiedFeeVault address
+    /// @param newVault New UnifiedFeeVault address
+    event FeeVaultChangeAccepted(
+        address indexed oldVault,
+        address indexed newVault
+    );
 
     /// @notice Emitted when appeal arbitrator selection is finalized
     /// @param disputeId Dispute ID
@@ -587,12 +655,35 @@ contract OmniArbitration is
         uint256 deadline
     );
 
+    /// @notice Emitted when a stale appeal is cancelled because the
+    ///         blockhash for arbitrator selection has expired (>256
+    ///         blocks). The appeal stake is returned to the appellant
+    ///         and the dispute reverts to Resolved status.
+    /// @param disputeId Dispute ID whose appeal was cancelled
+    /// @param appellant Address that filed the appeal and receives
+    ///        the returned stake
+    /// @param stakeReturned Amount of XOM returned to the appellant
+    event StaleAppealCancelled(
+        uint256 indexed disputeId,
+        address indexed appellant,
+        uint256 stakeReturned
+    );
+
     /// @notice Emitted when minimum arbitrator stake is updated
     /// @param oldStake Previous minimum stake
     /// @param newStake New minimum stake
     event MinStakeUpdated(
         uint256 oldStake,
         uint256 newStake
+    );
+
+    /// @notice Emitted when escrow resolution is finalized after
+    ///         the appeal window expires without an appeal
+    /// @param disputeId Dispute ID
+    /// @param isRelease True if funds released to seller
+    event ResolutionFinalized(
+        uint256 indexed disputeId,
+        bool isRelease
     );
 
     // ══════════════════════════════════════════════════════════════════
@@ -1032,6 +1123,16 @@ contract OmniArbitration is
         }
         if (d.appealed) revert AlreadyAppealed(disputeId);
 
+        // H-01 (Round 7): Appeal must be filed within the appeal
+        // window set during initial resolution
+        // solhint-disable-next-line not-rely-on-time
+        if (
+            d.appealDeadline != 0 &&
+            block.timestamp > uint256(d.appealDeadline)
+        ) {
+            revert DeadlineExpired();
+        }
+
         // Only buyer or seller can appeal
         if (caller != d.buyer && caller != d.seller) {
             revert NotEscrowParty();
@@ -1236,7 +1337,10 @@ contract OmniArbitration is
             // C-01: Distribute collected fees
             _collectAndDistributeFee(disputeId);
 
-            // C-02: Trigger escrow fund movement
+            // H-01 (Round 7): Execute escrow resolution with the
+            // appeal's verdict (may differ from original). Mark as
+            // finalized to prevent double resolution.
+            d.escrowFinalized = true;
             _triggerEscrowResolution(
                 d.escrowId,
                 isRelease
@@ -1273,6 +1377,14 @@ contract OmniArbitration is
         ) {
             revert DisputeAlreadyResolved(disputeId);
         }
+        // M-01 (Audit): Reject Appealed disputes -- the appeal panel
+        // owns resolution now. Allowing default resolution here would
+        // try to decrement activeDisputeCount for the original 3
+        // arbitrators whose counts were already decremented in
+        // _resolveDispute(), causing underflow.
+        if (d.status == DisputeStatus.Appealed) {
+            revert DisputeAlreadyResolved(disputeId);
+        }
         // M-02 (Round 6): Reject PendingSelection disputes -- arbitrators
         // have not been selected yet, so default resolution is premature.
         // The dispute creator must call finalizeArbitratorSelection() first.
@@ -1303,7 +1415,7 @@ contract OmniArbitration is
         // C-02: Default is refund to buyer
         _triggerEscrowResolution(d.escrowId, false);
 
-        emit DisputeDefaultResolved(disputeId, msg.sender);
+        emit DisputeDefaultResolved(disputeId, _msgSender());
         emit DisputeResolved(
             disputeId,
             VoteType.Refund,
@@ -1322,6 +1434,17 @@ contract OmniArbitration is
     function triggerDefaultAppealResolution(
         uint256 disputeId
     ) external nonReentrant {
+        // M-02 (Audit): Reject appeals still in AppealPendingSelection.
+        // When finalizeAppealSelection() has not been called yet,
+        // a.deadline == 0, which passes the timestamp check below.
+        // Operating on an unfinalized appeal would decrement
+        // activeDisputeCount for zero-address arbitrators, corrupt
+        // dispute state, and forfeit the appeal stake prematurely.
+        Dispute storage d = disputes[disputeId];
+        if (d.status == DisputeStatus.AppealPendingSelection) {
+            revert SelectionNotFinalized(disputeId);
+        }
+
         Appeal storage a = appeals[disputeId];
         if (a.disputeId == 0) revert DisputeNotFound(disputeId);
         if (a.resolved) revert DisputeAlreadyResolved(disputeId);
@@ -1332,8 +1455,6 @@ contract OmniArbitration is
         }
 
         a.resolved = true;
-
-        Dispute storage d = disputes[disputeId];
 
         // Original decision is upheld
         VoteType originalOutcome = d.releaseVotes >= 2
@@ -1364,6 +1485,117 @@ contract OmniArbitration is
             disputeId,
             originalOutcome,
             false
+        );
+    }
+
+    /**
+     * @notice Cancel a stale appeal whose blockhash has expired
+     * @dev M-02 (Audit): Recovery path when finalizeAppealSelection()
+     *      was not called within 256 blocks of the appeal's
+     *      selectionBlock. After 256 blocks, blockhash() returns
+     *      bytes32(0), making arbitrator selection impossible. This
+     *      function returns the appeal stake to the appellant and
+     *      reverts the dispute to Resolved status so the original
+     *      resolution can proceed via finalizeResolution().
+     *
+     *      Anyone can call this function once the blockhash has
+     *      expired to unblock the dispute.
+     *
+     * @param disputeId Dispute ID with a stale appeal
+     */
+    function cancelStaleAppeal(
+        uint256 disputeId
+    ) external nonReentrant {
+        Dispute storage d = disputes[disputeId];
+        if (d.createdAt == 0) revert DisputeNotFound(disputeId);
+        if (d.status != DisputeStatus.AppealPendingSelection) {
+            revert InvalidDisputeStatus();
+        }
+
+        Appeal storage a = appeals[disputeId];
+
+        // Blockhash is only available for the most recent 256 blocks
+        if (block.number <= a.selectionBlock + 256) {
+            revert SelectionNotFinalized(disputeId);
+        }
+
+        // Return appeal stake to the appellant
+        uint256 stake = a.appealStake;
+        a.resolved = true;
+
+        // Revert dispute back to Resolved so finalizeResolution()
+        // can execute the original verdict
+        d.status = DisputeStatus.Resolved;
+
+        // Transfer stake back
+        if (stake > 0) {
+            xomToken.safeTransfer(a.appellant, stake);
+        }
+
+        emit StaleAppealCancelled(
+            disputeId,
+            a.appellant,
+            stake
+        );
+    }
+
+    // ══════════════════════════════════════════════════════════════════
+    //                   DEFERRED ESCROW FINALIZATION
+    // ══════════════════════════════════════════════════════════════════
+
+    /**
+     * @notice Finalize the escrow resolution after the appeal window
+     *         has expired without an appeal being filed
+     * @dev H-01 (Round 7): Escrow fund movement is deferred from
+     *      the initial 2-of-3 resolution to prevent irrecoverable
+     *      funds if an appeal overturns the decision. This function
+     *      can be called by anyone once the appeal window has expired
+     *      and no appeal was filed (dispute status is still Resolved,
+     *      not Appealed or AppealPendingSelection).
+     * @param disputeId Dispute ID whose escrow resolution to finalize
+     */
+    function finalizeResolution(
+        uint256 disputeId
+    ) external nonReentrant {
+        Dispute storage d = disputes[disputeId];
+        if (d.createdAt == 0) revert DisputeNotFound(disputeId);
+
+        // Only applicable to disputes that were resolved via
+        // 2-of-3 majority and are still in Resolved status
+        // (i.e., no appeal was filed)
+        if (d.status != DisputeStatus.Resolved) {
+            revert InvalidDisputeStatus();
+        }
+
+        // Prevent double finalization
+        if (d.escrowFinalized) {
+            revert ResolutionAlreadyFinalized(disputeId);
+        }
+
+        // Appeal window must have an actual deadline set
+        // (only set by _resolveDispute, not by default resolution)
+        if (d.appealDeadline == 0) {
+            revert InvalidDisputeStatus();
+        }
+
+        // Appeal window must have expired
+        // solhint-disable-next-line not-rely-on-time
+        if (block.timestamp < uint256(d.appealDeadline)) {
+            revert AppealWindowActive(d.appealDeadline);
+        }
+
+        // Mark as finalized to prevent double escrow resolution
+        d.escrowFinalized = true;
+
+        // C-02: Execute the deferred escrow fund movement
+        _triggerEscrowResolution(
+            d.escrowId,
+            d.resolutionDirection
+        );
+
+        emit ResolutionFinalized(
+            disputeId,
+            d.resolutionDirection
         );
     }
 
@@ -1519,19 +1751,59 @@ contract OmniArbitration is
     }
 
     /**
-     * @notice Update the UnifiedFeeVault address
-     * @dev Allows admin to re-point fee routing. Validates
-     *      non-zero address.
-     * @param _feeVault New UnifiedFeeVault address
+     * @notice Propose a new UnifiedFeeVault address (step 1 of 2)
+     * @dev FE-H-01 remediation: starts a 48-hour timelock before the
+     *      new vault address can be accepted. This prevents a
+     *      compromised admin from instantly redirecting all fees.
+     *      Emits {FeeVaultChangeProposed}.
+     * @param _feeVault Proposed new UnifiedFeeVault address
      */
-    function setFeeVault(
+    function proposeFeeVault(
         address _feeVault
     ) external onlyRole(DEFAULT_ADMIN_ROLE) {
         if (_feeVault == address(0)) revert ZeroAddress();
 
-        feeVault = _feeVault;
+        pendingFeeVault = _feeVault;
+        // solhint-disable-next-line not-rely-on-time
+        feeVaultChangeTimestamp = block.timestamp;
 
-        emit FeeVaultUpdated(_feeVault);
+        emit FeeVaultChangeProposed(
+            feeVault,
+            _feeVault,
+            // solhint-disable-next-line not-rely-on-time
+            block.timestamp + FEE_VAULT_DELAY
+        );
+    }
+
+    /**
+     * @notice Accept the pending fee vault address change (step 2 of 2)
+     * @dev FE-H-01 remediation: can only be called after the 48-hour
+     *      timelock has elapsed. Clears the pending state after
+     *      applying the change. Emits {FeeVaultChangeAccepted}.
+     */
+    function acceptFeeVault()
+        external
+        onlyRole(DEFAULT_ADMIN_ROLE)
+    {
+        if (pendingFeeVault == address(0)) {
+            revert NoFeeVaultChangePending();
+        }
+
+        uint256 availableAt =
+            feeVaultChangeTimestamp + FEE_VAULT_DELAY;
+        // solhint-disable-next-line not-rely-on-time
+        if (block.timestamp < availableAt) {
+            revert FeeVaultTimelockActive(availableAt);
+        }
+
+        address oldVault = feeVault;
+        feeVault = pendingFeeVault;
+
+        // Clear pending state
+        pendingFeeVault = address(0);
+        feeVaultChangeTimestamp = 0;
+
+        emit FeeVaultChangeAccepted(oldVault, feeVault);
     }
 
     /**
@@ -1595,8 +1867,14 @@ contract OmniArbitration is
 
     /**
      * @notice Resolve a dispute with the given outcome
-     * @dev C-01: Distributes fees. C-02: Triggers escrow fund
-     *      movement. H-01: Decrements active dispute counts.
+     * @dev H-01 (Round 7): Escrow fund movement is deferred until
+     *      the appeal window expires or an appeal resolves. Sets
+     *      appealDeadline and resolutionDirection so that
+     *      finalizeResolution() can execute the escrow movement
+     *      later, or castAppealVote()/triggerDefaultAppealResolution()
+     *      can override with the appeal verdict.
+     *      C-01: Distributes fees.
+     *      H-01: Decrements active dispute counts.
      * @param disputeId Dispute ID to resolve
      * @param outcome Winning vote type (Release or Refund)
      * @param isRelease True if outcome is Release (to seller)
@@ -1609,6 +1887,14 @@ contract OmniArbitration is
         Dispute storage d = disputes[disputeId];
         d.status = DisputeStatus.Resolved;
 
+        // H-01 (Round 7): Record the resolution direction and set
+        // an appeal window. Escrow funds stay locked until the
+        // window expires without an appeal or an appeal resolves.
+        d.resolutionDirection = isRelease;
+        // solhint-disable-next-line not-rely-on-time
+        d.appealDeadline =
+            uint48(block.timestamp + APPEAL_WINDOW);
+
         // H-01: Decrement active dispute count for each arbitrator
         for (uint256 i = 0; i < 3; ++i) {
             --activeDisputeCount[d.arbitrators[i]];
@@ -1617,8 +1903,11 @@ contract OmniArbitration is
         // C-01: Distribute collected fees
         _collectAndDistributeFee(disputeId);
 
-        // C-02: Trigger escrow fund movement
-        _triggerEscrowResolution(d.escrowId, isRelease);
+        // H-01 (Round 7): Do NOT call _triggerEscrowResolution()
+        // here. Escrow resolution is deferred to either:
+        //   1. finalizeResolution() after appeal window expires
+        //   2. castAppealVote() when appeal majority is reached
+        //   3. triggerDefaultAppealResolution() on appeal timeout
 
         emit DisputeResolved(
             disputeId,

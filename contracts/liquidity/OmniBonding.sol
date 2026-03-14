@@ -351,6 +351,9 @@ contract OmniBonding is ReentrancyGuard, Ownable2Step, Pausable, ERC2771Context 
     /// @notice Thrown when rescueToken is called with XOM address
     error CannotRescueXom();
 
+    /// @notice Thrown when XOM is added as a bond asset
+    error InvalidBondAsset();
+
     // ============ Constructor ============
 
     /**
@@ -412,6 +415,7 @@ contract OmniBonding is ReentrancyGuard, Ownable2Step, Pausable, ERC2771Context 
         uint256 dailyCapacity
     ) external onlyOwner {
         if (asset == address(0)) revert InvalidParameters();
+        if (asset == address(XOM)) revert InvalidBondAsset();
         // solhint-disable-next-line gas-strict-inequalities
         if (bondAssets.length >= MAX_BOND_ASSETS) {
             revert TooManyAssets();
@@ -787,14 +791,15 @@ contract OmniBonding is ReentrancyGuard, Ownable2Step, Pausable, ERC2771Context 
      *        received)
      */
     function depositXom(uint256 amount) external onlyOwner {
+        address caller = _msgSender();
         uint256 balBefore = XOM.balanceOf(address(this));
-        XOM.safeTransferFrom(msg.sender, address(this), amount);
+        XOM.safeTransferFrom(caller, address(this), amount);
         uint256 actualReceived =
             XOM.balanceOf(address(this)) - balBefore;
         if (actualReceived != amount) {
             revert TransferAmountMismatch();
         }
-        emit XomDeposited(msg.sender, amount);
+        emit XomDeposited(caller, amount);
     }
 
     /**

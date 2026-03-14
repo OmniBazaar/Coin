@@ -160,6 +160,10 @@ error InvalidParameter();
 ///         Chainlink fallback is available
 error InsufficientPriceSources();
 
+/// @notice minimumSources cannot exceed minValidators (would cause
+///         permanent Chainlink fallback or revert)
+error MinimumSourcesTooHigh();
+
 /**
  * @title OmniPriceOracle
  * @author OmniBazaar Team
@@ -982,6 +986,13 @@ contract OmniPriceOracle is
                     MAX_SUBMISSIONS_PER_ROUND
                 );
             }
+            // M-01: Prevent minValidators from being set below
+            // minimumSources. If minValidators < minimumSources,
+            // rounds auto-finalize before enough sources report,
+            // forcing permanent Chainlink fallback or revert.
+            if (_minValidators < minimumSources) {
+                revert MinimumSourcesTooHigh();
+            }
             minValidators = _minValidators;
         }
         if (_consensusTolerance > 0) {
@@ -1127,6 +1138,15 @@ contract OmniPriceOracle is
         uint256 _minimumSources
     ) external onlyRole(DEFAULT_ADMIN_ROLE) {
         if (_minimumSources == 0) revert InvalidParameter();
+        // M-01: Prevent minimumSources from exceeding minValidators.
+        // If minimumSources > minValidators, _finalizeRound() will
+        // always take the Chainlink fallback path (or revert), because
+        // rounds auto-finalize at minValidators submissions, which is
+        // less than minimumSources. This effectively disables
+        // validator-sourced pricing permanently.
+        if (_minimumSources > minValidators) {
+            revert MinimumSourcesTooHigh();
+        }
         minimumSources = _minimumSources;
         emit MinimumSourcesUpdated(_minimumSources);
     }

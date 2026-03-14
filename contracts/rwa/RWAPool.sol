@@ -176,6 +176,12 @@ contract RWAPool is ERC20, IRWAPool {
     ///      by limiting sync() to one call per block.
     error SyncRateLimited();
 
+    /// @notice Thrown when a token address is the zero address
+    error InvalidToken();
+
+    /// @notice Thrown when token0 and token1 are the same address
+    error DuplicateTokens();
+
     // ========================================================================
     // MODIFIERS
     // ========================================================================
@@ -225,6 +231,9 @@ contract RWAPool is ERC20, IRWAPool {
         address _token1
     ) external override onlyFactory {
         if (token0 != address(0)) revert AlreadyInitialized();
+        if (_token0 == address(0)) revert InvalidToken();
+        if (_token1 == address(0)) revert InvalidToken();
+        if (_token0 == _token1) revert DuplicateTokens();
 
         token0 = _token0;
         token1 = _token1;
@@ -345,10 +354,11 @@ contract RWAPool is ERC20, IRWAPool {
      *      never decreases. Fees are handled upstream by RWAAMM, so the
      *      pool's K-check uses raw balances without fee adjustment.
      *
-     *      Flash swaps are disabled (audit fix H-02): passing non-empty
-     *      data will revert with FlashSwapsDisabled(). Flash swaps are
-     *      incompatible with RWA compliance because tokens are sent to
-     *      the recipient before any compliance verification occurs.
+     *      Flash swaps are disabled (audit fix H-02 + M-01): passing
+     *      non-empty data will revert with FlashSwapsDisabled() BEFORE
+     *      any token transfers occur. Flash swaps are incompatible with
+     *      RWA compliance because tokens would otherwise be sent to the
+     *      recipient before any compliance verification occurs.
      *
      *      Audit M-02 (read-only reentrancy): The optimistic transfer
      *      pattern means getReserves() returns stale values during
@@ -372,21 +382,23 @@ contract RWAPool is ERC20, IRWAPool {
             amount0Out, amount1Out, _reserve0, _reserve1
         );
 
+        // Audit fix H-02 + M-01: Flash swap check moved BEFORE
+        // optimistic transfers. Flash swaps are disabled for RWA
+        // pools because tokens would be transferred to the recipient
+        // before any compliance verification occurs, creating a
+        // securities law violation. Checking before transfer ensures
+        // non-compliant recipients never receive regulated tokens,
+        // even transiently.
+        if (data.length > 0) {
+            revert FlashSwapsDisabled();
+        }
+
         // Optimistically transfer output
         if (amount0Out > 0) {
             IERC20(token0).safeTransfer(to, amount0Out);
         }
         if (amount1Out > 0) {
             IERC20(token1).safeTransfer(to, amount1Out);
-        }
-
-        // Audit fix H-02: Flash swaps are disabled for RWA pools.
-        // Flash swaps transfer tokens to the recipient BEFORE any
-        // compliance verification occurs. Even if the callback repays,
-        // the non-compliant user has already received regulated
-        // securities, creating a securities law violation.
-        if (data.length > 0) {
-            revert FlashSwapsDisabled();
         }
 
         // Get updated balances and verify invariants

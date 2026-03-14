@@ -5,6 +5,7 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {Ownable2Step, Ownable} from "@openzeppelin/contracts/access/Ownable2Step.sol";
+import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
 import {ERC2771Context} from "@openzeppelin/contracts/metatx/ERC2771Context.sol";
 import {Context} from "@openzeppelin/contracts/utils/Context.sol";
 
@@ -37,7 +38,7 @@ import {Context} from "@openzeppelin/contracts/utils/Context.sol";
  *   - Immutable storage for fee cap.
  *   - Custom errors instead of revert strings.
  */
-contract OmniFeeRouter is Ownable2Step, ReentrancyGuard, ERC2771Context {
+contract OmniFeeRouter is Ownable2Step, ReentrancyGuard, Pausable, ERC2771Context {
     using SafeERC20 for IERC20;
 
     // -----------------------------------------------------------------------
@@ -49,6 +50,12 @@ contract OmniFeeRouter is Ownable2Step, ReentrancyGuard, ERC2771Context {
 
     /// @notice Timelock delay for fee collector changes (24 hours)
     uint256 public constant FEE_COLLECTOR_DELAY = 24 hours;
+
+    /// @notice Timelock delay for router allowlist changes (12 hours)
+    /// @dev M-01: Prevents instant allowlist manipulation by a
+    ///      compromised owner key. Shorter than fee collector delay
+    ///      because router changes are more operationally urgent.
+    uint256 public constant ROUTER_ALLOWLIST_DELAY = 12 hours;
 
     /// @notice Minimum total swap amount (M-03 Round 6)
     /// @dev Prevents dust swaps that result in zero fees
@@ -78,6 +85,17 @@ contract OmniFeeRouter is Ownable2Step, ReentrancyGuard, ERC2771Context {
 
     /// @notice Timestamp when pending fee collector can be applied
     uint256 public feeCollectorChangeTime;
+
+    /// @notice Pending router allowlist change: router address
+    /// @dev M-01: Router allowlist changes are timelocked to prevent
+    ///      instant manipulation by a compromised owner key.
+    address public pendingRouter;
+
+    /// @notice Pending router allowlist change: allowed status
+    bool public pendingRouterAllowed;
+
+    /// @notice Timestamp when pending router change can be applied
+    uint256 public routerChangeTime;
 
     // -----------------------------------------------------------------------
     // Events
@@ -130,6 +148,20 @@ contract OmniFeeRouter is Ownable2Step, ReentrancyGuard, ERC2771Context {
         uint256 indexed effectiveTime
     );
 
+    /// @notice Emitted when a router allowlist change is proposed (M-01).
+    /// @param router The router address.
+    /// @param allowed Proposed allowed status.
+    /// @param effectiveTime When the change can be applied.
+    event RouterChangeProposed(
+        address indexed router,
+        bool indexed allowed,
+        uint256 effectiveTime
+    );
+
+    /// @notice Emitted when a pending router change is cancelled.
+    /// @param router The router address whose change was cancelled.
+    event RouterChangeCancelled(address indexed router);
+
     // -----------------------------------------------------------------------
     // Custom Errors
     // -----------------------------------------------------------------------
@@ -172,6 +204,12 @@ contract OmniFeeRouter is Ownable2Step, ReentrancyGuard, ERC2771Context {
 
     /// @notice Thrown when swap amount is below minimum (M-03 Round 6).
     error AmountTooSmall();
+
+    /// @notice Thrown when no pending router change exists (M-01).
+    error NoPendingRouterChange();
+
+    /// @notice Thrown when the router allowlist timelock has not elapsed.
+    error RouterTimelockNotExpired();
 
     // -----------------------------------------------------------------------
     // Constructor
@@ -230,7 +268,7 @@ contract OmniFeeRouter is Ownable2Step, ReentrancyGuard, ERC2771Context {
         bytes calldata routerCalldata,
         uint256 minOutput,
         uint256 deadline
-    ) external nonReentrant {
+    ) external nonReentrant whenNotPaused {
         // solhint-disable-next-line not-rely-on-time
         if (block.timestamp > deadline) revert DeadlineExpired();
         _validateTokens(inputToken, outputToken);
@@ -326,19 +364,67 @@ contract OmniFeeRouter is Ownable2Step, ReentrancyGuard, ERC2771Context {
     }
 
     /**
-     * @notice Add or remove a router from the allowlist (M-01 Round 6)
+     * @notice Propose adding or removing a router from the allowlist
+     *         (M-01 audit fix: timelocked)
      * @param router Address of the external DEX router
-     * @param allowed Whether the router is allowed
-     * @dev Only allowlisted routers can be called via swapWithFee().
+     * @param allowed Whether the router should be allowed
+     * @dev Queues the change with a 12-hour timelock. Call
+     *      `applyRouterChange()` after the delay to apply.
      */
-    function setRouterAllowed(
+    function proposeRouterChange(
         address router,
         bool allowed
     ) external onlyOwner {
         if (router == address(0)) revert InvalidRouterAddress();
 
+        pendingRouter = router;
+        pendingRouterAllowed = allowed;
+        // solhint-disable-next-line not-rely-on-time
+        routerChangeTime = block.timestamp + ROUTER_ALLOWLIST_DELAY;
+        emit RouterChangeProposed(
+            router, allowed, routerChangeTime
+        );
+    }
+
+    /**
+     * @notice Apply a pending router allowlist change after timelock
+     *         (M-01 audit fix)
+     * @dev Reverts if timelock has not elapsed or no pending change
+     *      exists.
+     */
+    function applyRouterChange() external onlyOwner {
+        if (pendingRouter == address(0)) {
+            revert NoPendingRouterChange();
+        }
+        // solhint-disable-next-line not-rely-on-time
+        if (block.timestamp < routerChangeTime) {
+            revert RouterTimelockNotExpired();
+        }
+
+        address router = pendingRouter;
+        bool allowed = pendingRouterAllowed;
+        delete pendingRouter;
+        delete pendingRouterAllowed;
+        delete routerChangeTime;
+
         allowedRouters[router] = allowed;
         emit RouterAllowlistUpdated(router, allowed);
+    }
+
+    /**
+     * @notice Cancel a pending router allowlist change
+     * @dev Allows the owner to abort a timelocked router change
+     *      before it takes effect.
+     */
+    function cancelRouterChange() external onlyOwner {
+        if (pendingRouter == address(0)) {
+            revert NoPendingRouterChange();
+        }
+        address router = pendingRouter;
+        delete pendingRouter;
+        delete pendingRouterAllowed;
+        delete routerChangeTime;
+        emit RouterChangeCancelled(router);
     }
 
     /**
@@ -361,6 +447,25 @@ contract OmniFeeRouter is Ownable2Step, ReentrancyGuard, ERC2771Context {
      */
     function renounceOwnership() public pure override {
         revert InvalidFeeCollector();
+    }
+
+    /**
+     * @notice Pause all swap operations (M-02 audit fix)
+     * @dev Only callable by owner. Prevents swapWithFee from executing
+     *      during emergencies (e.g., exploited router, price
+     *      manipulation).
+     */
+    function pause() external onlyOwner {
+        _pause();
+    }
+
+    /**
+     * @notice Unpause swap operations (M-02 audit fix)
+     * @dev Only callable by owner. Resumes normal swapWithFee
+     *      execution.
+     */
+    function unpause() external onlyOwner {
+        _unpause();
     }
 
     // -----------------------------------------------------------------------

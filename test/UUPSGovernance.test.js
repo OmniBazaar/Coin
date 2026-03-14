@@ -219,7 +219,7 @@ describe("UUPS Governance System", function () {
     });
 
     it("Should classify ossify() as critical (GOV-ATK-H02)", async function () {
-      const ossifySel = "0x32e3a7b4"; // bytes4(keccak256("ossify()"))
+      const ossifySel = "0x7271518a"; // bytes4(keccak256("ossify()"))
       expect(await timelock.isCriticalSelector(ossifySel)).to.be.true;
     });
 

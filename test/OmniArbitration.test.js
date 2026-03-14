@@ -859,25 +859,72 @@ describe("OmniArbitration", function () {
       ).to.be.reverted;
     });
 
-    it("should allow admin to update feeVault", async function () {
+    it("should allow admin to update feeVault via propose + accept timelock", async function () {
       const signers = await ethers.getSigners();
       const newVault = signers[19];
-      await arbitration.connect(owner).setFeeVault(newVault.address);
+
+      await arbitration.connect(owner).proposeFeeVault(newVault.address);
+      await ethers.provider.send("evm_increaseTime", [48 * 3600]);
+      await ethers.provider.send("evm_mine", []);
+      await arbitration.connect(owner).acceptFeeVault();
+
       expect(await arbitration.feeVault()).to.equal(newVault.address);
     });
 
-    it("should reject setFeeVault from non-admin", async function () {
+    it("should emit FeeVaultChangeProposed on propose", async function () {
       const signers = await ethers.getSigners();
       const newVault = signers[19];
       await expect(
-        arbitration.connect(other).setFeeVault(newVault.address)
+        arbitration.connect(owner).proposeFeeVault(newVault.address)
+      ).to.emit(arbitration, "FeeVaultChangeProposed");
+    });
+
+    it("should emit FeeVaultChangeAccepted on accept", async function () {
+      const signers = await ethers.getSigners();
+      const newVault = signers[19];
+
+      await arbitration.connect(owner).proposeFeeVault(newVault.address);
+      await ethers.provider.send("evm_increaseTime", [48 * 3600]);
+      await ethers.provider.send("evm_mine", []);
+
+      await expect(
+        arbitration.connect(owner).acceptFeeVault()
+      ).to.emit(arbitration, "FeeVaultChangeAccepted")
+        .withArgs(feeVault.address, newVault.address);
+    });
+
+    it("should reject proposeFeeVault from non-admin", async function () {
+      const signers = await ethers.getSigners();
+      const newVault = signers[19];
+      await expect(
+        arbitration.connect(other).proposeFeeVault(newVault.address)
       ).to.be.reverted;
     });
 
-    it("should reject setFeeVault with zero address", async function () {
+    it("should reject proposeFeeVault with zero address", async function () {
       await expect(
-        arbitration.connect(owner).setFeeVault(ethers.ZeroAddress)
+        arbitration.connect(owner).proposeFeeVault(ethers.ZeroAddress)
       ).to.be.revertedWithCustomError(arbitration, "ZeroAddress");
+    });
+
+    it("should reject acceptFeeVault before timelock elapses", async function () {
+      const signers = await ethers.getSigners();
+      const newVault = signers[19];
+
+      await arbitration.connect(owner).proposeFeeVault(newVault.address);
+      // Only advance 1 hour — not enough
+      await ethers.provider.send("evm_increaseTime", [3600]);
+      await ethers.provider.send("evm_mine", []);
+
+      await expect(
+        arbitration.connect(owner).acceptFeeVault()
+      ).to.be.revertedWithCustomError(arbitration, "FeeVaultTimelockActive");
+    });
+
+    it("should reject acceptFeeVault without a proposal", async function () {
+      await expect(
+        arbitration.connect(owner).acceptFeeVault()
+      ).to.be.revertedWithCustomError(arbitration, "NoFeeVaultChangePending");
     });
   });
 

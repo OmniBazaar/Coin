@@ -12,7 +12,7 @@ const { loadFixture, time } = require("@nomicfoundation/hardhat-network-helpers"
  *       slippage, deadline, path validation, zero-input, same-token,
  *       zero-recipient, unregistered source, paused state
  *   3.  addLiquiditySource / removeLiquiditySource
- *   4.  setSwapFee / setFeeVault
+ *   4.  setSwapFee / proposeFeeVault + acceptFeeVault (48h timelock)
  *   5.  rescueTokens
  *   6.  getQuote — estimation, fee math, path validation
  *   7.  getSwapStats — volume & fee tracking
@@ -1074,48 +1074,90 @@ describe("OmniSwapRouter", function () {
   });
 
   // ===========================================================================
-  // 6. setFeeVault
+  // 6. proposeFeeVault / acceptFeeVault (48h timelock)
   // ===========================================================================
 
-  describe("setFeeVault", function () {
-    it("Should update feeVault", async function () {
+  describe("proposeFeeVault / acceptFeeVault", function () {
+    /** @dev 48 hours in seconds — matches FEE_VAULT_DELAY in contract */
+    const FEE_VAULT_DELAY = 48 * 3600;
+
+    it("Should update feeVault after propose + timelock + accept", async function () {
       const { router, owner, other } = await loadFixture(deployRouterFixture);
 
-      await router.connect(owner).setFeeVault(other.address);
+      await router.connect(owner).proposeFeeVault(other.address);
+      await ethers.provider.send("evm_increaseTime", [FEE_VAULT_DELAY]);
+      await ethers.provider.send("evm_mine", []);
+      await router.connect(owner).acceptFeeVault();
+
       expect(await router.feeVault()).to.equal(other.address);
     });
 
-    it("Should emit FeeVaultUpdated event", async function () {
+    it("Should emit FeeVaultChangeProposed event on propose", async function () {
+      const { router, owner, other } = await loadFixture(deployRouterFixture);
+
+      await expect(router.connect(owner).proposeFeeVault(other.address))
+        .to.emit(router, "FeeVaultChangeProposed");
+    });
+
+    it("Should emit FeeVaultChangeAccepted event on accept", async function () {
       const { router, owner, feeVault, other } = await loadFixture(deployRouterFixture);
 
-      await expect(router.connect(owner).setFeeVault(other.address))
-        .to.emit(router, "FeeVaultUpdated")
+      await router.connect(owner).proposeFeeVault(other.address);
+      await ethers.provider.send("evm_increaseTime", [FEE_VAULT_DELAY]);
+      await ethers.provider.send("evm_mine", []);
+
+      await expect(router.connect(owner).acceptFeeVault())
+        .to.emit(router, "FeeVaultChangeAccepted")
         .withArgs(feeVault.address, other.address);
     });
 
-    it("Should revert with InvalidRecipientAddress when new recipient is zero", async function () {
+    it("Should revert with InvalidRecipientAddress when proposing zero address", async function () {
       const { router, owner } = await loadFixture(deployRouterFixture);
 
       await expect(
-        router.connect(owner).setFeeVault(ethers.ZeroAddress)
+        router.connect(owner).proposeFeeVault(ethers.ZeroAddress)
       ).to.be.revertedWithCustomError(router, "InvalidRecipientAddress");
     });
 
-    it("Should revert with OwnableUnauthorizedAccount when called by non-owner", async function () {
+    it("Should revert with OwnableUnauthorizedAccount when proposeFeeVault called by non-owner", async function () {
       const { router, user, other } = await loadFixture(deployRouterFixture);
 
       await expect(
-        router.connect(user).setFeeVault(other.address)
+        router.connect(user).proposeFeeVault(other.address)
       ).to.be.revertedWithCustomError(router, "OwnableUnauthorizedAccount");
     });
 
-    it("Should direct fees to the new recipient after update", async function () {
+    it("Should revert with FeeVaultTimelockActive when accepting before timelock elapses", async function () {
+      const { router, owner, other } = await loadFixture(deployRouterFixture);
+
+      await router.connect(owner).proposeFeeVault(other.address);
+      // Only advance 1 hour — not enough
+      await ethers.provider.send("evm_increaseTime", [3600]);
+      await ethers.provider.send("evm_mine", []);
+
+      await expect(
+        router.connect(owner).acceptFeeVault()
+      ).to.be.revertedWithCustomError(router, "FeeVaultTimelockActive");
+    });
+
+    it("Should revert with NoFeeVaultChangePending when accepting without a proposal", async function () {
+      const { router, owner } = await loadFixture(deployRouterFixture);
+
+      await expect(
+        router.connect(owner).acceptFeeVault()
+      ).to.be.revertedWithCustomError(router, "NoFeeVaultChangePending");
+    });
+
+    it("Should direct fees to the new recipient after propose + accept", async function () {
       const { router, tokenA, tokenB, sourceId, user, owner, other, newOwner, futureDeadline } =
         await loadFixture(deployRouterFixture);
 
-      await router.connect(owner).setFeeVault(newOwner.address);
-      const deadline = await futureDeadline();
+      await router.connect(owner).proposeFeeVault(newOwner.address);
+      await ethers.provider.send("evm_increaseTime", [FEE_VAULT_DELAY]);
+      await ethers.provider.send("evm_mine", []);
+      await router.connect(owner).acceptFeeVault();
 
+      const deadline = await futureDeadline();
       const newRecipientBalBefore = await tokenA.balanceOf(newOwner.address);
 
       await router.connect(user).swap({
@@ -1571,7 +1613,7 @@ describe("OmniSwapRouter", function () {
 
       // Admin functions should still work
       await expect(router.connect(owner).setSwapFee(50)).to.not.be.reverted;
-      await expect(router.connect(owner).setFeeVault(owner.address)).to.not.be.reverted;
+      await expect(router.connect(owner).proposeFeeVault(owner.address)).to.not.be.reverted;
     });
   });
 

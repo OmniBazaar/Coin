@@ -213,9 +213,15 @@ contract OmniCore is
     ///      The 10% fee share goes to the protocol treasury, not individual validators.
     address public protocolTreasuryAddress;
 
-    /// @notice Storage gap for future upgrades (reserve 41 slots)
-    /// @dev Reduced from 42 to 41: added protocolTreasuryAddress
-    uint256[41] private __gap;
+    /// @notice Whether legacy DEX settlement functions are permanently disabled
+    /// @dev M-01 audit: One-way flag set by disableDEXSettlement(). Once true,
+    ///      depositToDEX, withdrawFromDEX, and all deprecated settlement
+    ///      functions revert with DEXSettlementDisabled(). Cannot be unset.
+    bool public dexSettlementDisabled;
+
+    /// @notice Storage gap for future upgrades (reserve 40 slots)
+    /// @dev Reduced from 41 to 40: added dexSettlementDisabled
+    uint256[40] private __gap;
 
     // Events
     /// @notice Emitted when a service is registered or updated
@@ -393,6 +399,11 @@ contract OmniCore is
     /// @notice Emitted when a pending admin transfer is cancelled
     event AdminTransferCancelled();
 
+    /// @notice Emitted when DEX settlement functions are permanently disabled
+    /// @dev M-01 audit: Once emitted, depositToDEX, withdrawFromDEX, and all
+    ///      deprecated settlement functions are permanently non-callable.
+    event DEXSettlementPermanentlyDisabled();
+
     // Custom errors
     error InvalidAddress();
     error InvalidAmount();
@@ -412,6 +423,10 @@ contract OmniCore is
     error AdminTransferNotReady();
     /// @notice Thrown when caller is not the pending admin
     error NotPendingAdmin();
+    /// @notice Thrown when a deprecated function is called (M-01 remediation)
+    error DeprecatedFunction();
+    /// @notice Thrown when DEX settlement is permanently disabled (M-01 audit)
+    error DEXSettlementDisabled();
 
     /**
      * @notice Constructor that disables initializers for the implementation contract
@@ -735,6 +750,20 @@ contract OmniCore is
     }
 
     /**
+     * @notice Permanently disable all DEX settlement functions (one-way)
+     * @dev M-01 audit remediation: Once called, depositToDEX, withdrawFromDEX,
+     *      and all deprecated settlement functions (settleDEXTrade, batchSettleDEX,
+     *      distributeDEXFees, settlePrivateDEXTrade, batchSettlePrivateDEX) will
+     *      revert with DEXSettlementDisabled(). This is irreversible. Users must
+     *      withdraw remaining dexBalances before this is called, or an admin-assisted
+     *      migration must be arranged. Only callable by ADMIN_ROLE (timelock).
+     */
+    function disableDEXSettlement() external onlyRole(ADMIN_ROLE) {
+        dexSettlementDisabled = true;
+        emit DEXSettlementPermanentlyDisabled();
+    }
+
+    /**
      * @notice Pause all staking, DEX, and legacy claim operations
      * @dev Only admin can pause. M-04 remediation: enables emergency stops
      *      without requiring a full UUPS upgrade.
@@ -870,18 +899,9 @@ contract OmniCore is
         uint256 amount,
         bytes32 orderId
     ) external onlyRole(AVALANCHE_VALIDATOR_ROLE) whenNotPaused {
-        if (buyer == address(0) || seller == address(0) || token == address(0)) {
-            revert InvalidAddress();
-        }
-        if (amount == 0) revert InvalidAmount();
-
-        // Simple balance transfer
-        if (dexBalances[seller][token] < amount) revert InvalidAmount();
-
-        dexBalances[seller][token] -= amount;
-        dexBalances[buyer][token] += amount;
-
-        emit DEXSettlement(buyer, seller, token, amount, orderId);
+        if (dexSettlementDisabled) revert DEXSettlementDisabled();
+        // M-01: Function deprecated in favour of DEXSettlement.sol
+        revert DeprecatedFunction();
     }
 
     /**
@@ -901,26 +921,9 @@ contract OmniCore is
         uint256[] calldata amounts,
         bytes32 batchId
     ) external onlyRole(AVALANCHE_VALIDATOR_ROLE) whenNotPaused {
-        uint256 length = buyers.length;
-        if (length == 0 || length != sellers.length ||
-            length != tokens.length || length != amounts.length) {
-            revert InvalidAmount();
-        }
-
-        uint256 settled = 0;
-        for (uint256 i = 0; i < length; ++i) {
-            uint256 available = dexBalances[sellers[i]][tokens[i]];
-            // solhint-disable-next-line gas-strict-inequalities
-            if (available >= amounts[i]) {
-                dexBalances[sellers[i]][tokens[i]] -= amounts[i];
-                dexBalances[buyers[i]][tokens[i]] += amounts[i];
-                ++settled;
-            } else {
-                emit SettlementSkipped(sellers[i], tokens[i], amounts[i], available);
-            }
-        }
-
-        emit BatchSettlement(batchId, settled);
+        if (dexSettlementDisabled) revert DEXSettlementDisabled();
+        // M-01: Function deprecated in favour of DEXSettlement.sol
+        revert DeprecatedFunction();
     }
 
     /**
@@ -935,22 +938,9 @@ contract OmniCore is
         address token,
         uint256 totalFee
     ) external onlyRole(AVALANCHE_VALIDATOR_ROLE) whenNotPaused {
-        if (totalFee == 0) return;
-
-        // Calculate fee splits using basis points for precision
-        uint256 oddaoFee = (totalFee * ODDAO_FEE_BPS) / BASIS_POINTS;
-        uint256 stakingFee = (totalFee * STAKING_FEE_BPS) / BASIS_POINTS;
-        uint256 protocolFee = totalFee - oddaoFee - stakingFee;
-
-        if (oddaoFee > 0) {
-            dexBalances[oddaoAddress][token] += oddaoFee;
-        }
-        if (stakingFee > 0) {
-            dexBalances[stakingPoolAddress][token] += stakingFee;
-        }
-        if (protocolFee > 0) {
-            dexBalances[protocolTreasuryAddress][token] += protocolFee;
-        }
+        if (dexSettlementDisabled) revert DEXSettlementDisabled();
+        // M-01: Function deprecated in favour of DEXSettlement.sol
+        revert DeprecatedFunction();
     }
 
     // =============================================================================
@@ -977,18 +967,9 @@ contract OmniCore is
         bytes32 cotiTxHash,
         uint256 cotiBlockNumber
     ) external onlyRole(AVALANCHE_VALIDATOR_ROLE) whenNotPaused {
-        if (buyer == address(0) || seller == address(0)) revert InvalidAddress();
-        if (token == address(0)) revert InvalidAddress();
-        if (cotiTxHash == bytes32(0)) revert InvalidSignature();
-
-        emit PrivateDEXSettlement(
-            buyer,
-            seller,
-            token,
-            encryptedAmount,
-            cotiTxHash,
-            cotiBlockNumber
-        );
+        if (dexSettlementDisabled) revert DEXSettlementDisabled();
+        // M-01: Function deprecated in favour of DEXSettlement.sol
+        revert DeprecatedFunction();
     }
 
     /**
@@ -1010,35 +991,9 @@ contract OmniCore is
         bytes32[] calldata cotiTxHashes,
         uint256 cotiBlockNumber
     ) external onlyRole(AVALANCHE_VALIDATOR_ROLE) whenNotPaused {
-        uint256 count = buyers.length;
-        if (
-            sellers.length != count ||
-            tokens.length != count ||
-            encryptedAmounts.length != count ||
-            cotiTxHashes.length != count
-        ) revert InvalidAmount();
-
-        for (uint256 i = 0; i < count; ++i) {
-            if (buyers[i] == address(0) || sellers[i] == address(0)) revert InvalidAddress();
-            if (tokens[i] == address(0)) revert InvalidAddress();
-
-            emit PrivateDEXSettlement(
-                buyers[i],
-                sellers[i],
-                tokens[i],
-                encryptedAmounts[i],
-                cotiTxHashes[i],
-                cotiBlockNumber
-            );
-        }
-
-        bytes32 batchId = keccak256(abi.encodePacked(
-            block.number,
-            cotiBlockNumber,
-            count
-        ));
-
-        emit BatchPrivateSettlement(batchId, count, cotiBlockNumber);
+        if (dexSettlementDisabled) revert DEXSettlementDisabled();
+        // M-01: Function deprecated in favour of DEXSettlement.sol
+        revert DeprecatedFunction();
     }
 
     /**
@@ -1048,6 +1003,7 @@ contract OmniCore is
      * @param amount Amount to deposit
      */
     function depositToDEX(address token, uint256 amount) external nonReentrant whenNotPaused {
+        if (dexSettlementDisabled) revert DEXSettlementDisabled();
         if (token == address(0)) revert InvalidAddress();
         if (amount == 0) revert InvalidAmount();
 
@@ -1068,6 +1024,7 @@ contract OmniCore is
      * @param amount Amount to withdraw
      */
     function withdrawFromDEX(address token, uint256 amount) external nonReentrant whenNotPaused {
+        if (dexSettlementDisabled) revert DEXSettlementDisabled();
         if (amount == 0) revert InvalidAmount();
         address caller = _msgSender();
         if (dexBalances[caller][token] < amount) revert InvalidAmount();

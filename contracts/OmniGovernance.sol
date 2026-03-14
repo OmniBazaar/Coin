@@ -586,8 +586,13 @@ contract OmniGovernance is
      *      below threshold) or by anyone with ADMIN_ROLE (emergency).
      * @param proposalId Proposal to cancel
      */
-    function cancel(uint256 proposalId) external {
+    function cancel(uint256 proposalId) external nonReentrant {
         Proposal storage proposal = proposals[proposalId];
+
+        // M-01: Validate proposal exists before cancellation
+        if (proposal.proposer == address(0)) {
+            revert ProposalNotFound();
+        }
 
         if (proposal.executed || proposal.cancelled) {
             revert InvalidProposalState(

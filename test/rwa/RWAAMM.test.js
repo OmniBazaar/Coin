@@ -795,7 +795,7 @@ describe('RWAAMM Protocol', function () {
         it('Should have correct constant fee split ratios', async function () {
             expect(await amm.FEE_LP_BPS()).to.equal(7000n);        // 70%
             expect(await amm.FEE_STAKING_BPS()).to.equal(2000n);   // 20%
-            expect(await amm.FEE_LIQUIDITY_BPS()).to.equal(1000n); // 10%
+            expect(await amm.FEE_PROTOCOL_BPS()).to.equal(1000n);  // 10%
 
             // Verify they add to 100%
             const total = 7000n + 2000n + 1000n;

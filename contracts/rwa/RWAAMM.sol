@@ -91,8 +91,8 @@ contract RWAAMM is IRWAAMM, ReentrancyGuard, ERC2771Context {
     /// @notice Fee split: Staking Pool (20%)
     uint256 public constant FEE_STAKING_BPS = 2000;
 
-    /// @notice Fee split: Liquidity Pool (10%)
-    uint256 public constant FEE_LIQUIDITY_BPS = 1000;
+    /// @notice Fee split: Protocol Treasury (10%)
+    uint256 public constant FEE_PROTOCOL_BPS = 1000;
 
     /// @notice Minimum liquidity locked on first deposit
     uint256 public constant MINIMUM_LIQUIDITY = 1000;

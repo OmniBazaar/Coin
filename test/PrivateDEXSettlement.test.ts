@@ -9,7 +9,7 @@
  *  5.  Status transitions (double-lock, settle-when-not-locked)
  *  6.  Cancel (only trader, cannot cancel settled/empty, min lock duration)
  *  7.  Pausable (paused contract blocks lock, settle, and cancel)
- *  8.  Fee recipients (updateFeeRecipients, zero-address revert)
+ *  8.  Fee recipients (updateFeeRecipients with liquidityPool/feeVault, zero-address revert)
  *  9.  Ossification (two-step: requestOssification + confirmOssification)
  * 10.  View functions (getPrivateCollateral, getFeeRecipients, getNonce)
  * 11.  Constants (fee BPS, roles)
@@ -31,13 +31,13 @@ const {
 describe("PrivateDEXSettlement", function () {
     /**
      * Shared deployment fixture.
-     * Deploys the UUPS proxy with four init args:
-     * admin, oddao, stakingPool, protocolTreasury.
+     * Deploys the UUPS proxy with three init args:
+     * admin, liquidityPool, feeVault.
      */
     async function deployFixture() {
         const [
-            admin, settler, trader, solver, protocolTreasury,
-            oddao, stakingPool, outsider
+            admin, settler, trader, solver, liquidityPool,
+            feeVault, outsider
         ] = await ethers.getSigners();
 
         const Factory = await ethers.getContractFactory("PrivateDEXSettlement");
@@ -45,9 +45,8 @@ describe("PrivateDEXSettlement", function () {
             Factory,
             [
                 admin.address,
-                oddao.address,
-                stakingPool.address,
-                protocolTreasury.address,
+                liquidityPool.address,
+                feeVault.address,
             ],
             {
                 initializer: "initialize",
@@ -72,9 +71,8 @@ describe("PrivateDEXSettlement", function () {
             settler,
             trader,
             solver,
-            protocolTreasury,
-            oddao,
-            stakingPool,
+            liquidityPool,
+            feeVault,
             outsider,
             tokenIn,
             tokenOut,
@@ -167,12 +165,11 @@ describe("PrivateDEXSettlement", function () {
         });
 
         it("should set fee recipients correctly", async function () {
-            const { settlement, oddao, stakingPool, protocolTreasury } =
+            const { settlement, liquidityPool, feeVault } =
                 await loadFixture(deployFixture);
             const recipients = await settlement.getFeeRecipients();
-            expect(recipients.oddao).to.equal(oddao.address);
-            expect(recipients.stakingPool).to.equal(stakingPool.address);
-            expect(recipients.protocolTreasury).to.equal(protocolTreasury.address);
+            expect(recipients.liquidityPool).to.equal(liquidityPool.address);
+            expect(recipients.feeVault).to.equal(feeVault.address);
         });
 
         it("should start with totalSettlements = 0", async function () {
@@ -192,11 +189,11 @@ describe("PrivateDEXSettlement", function () {
 
         it("should revert when admin is zero address", async function () {
             const Factory = await ethers.getContractFactory("PrivateDEXSettlement");
-            const [, , , , protocolTreasury, oddao, stakingPool] = await ethers.getSigners();
+            const [, , , , liquidityPool, feeVault] = await ethers.getSigners();
             await expect(
                 upgrades.deployProxy(
                     Factory,
-                    [ethers.ZeroAddress, oddao.address, stakingPool.address, protocolTreasury.address],
+                    [ethers.ZeroAddress, liquidityPool.address, feeVault.address],
                     {
                         initializer: "initialize",
                         kind: "uups",
@@ -207,13 +204,13 @@ describe("PrivateDEXSettlement", function () {
             ).to.be.revertedWithCustomError(Factory, "InvalidAddress");
         });
 
-        it("should revert when oddao is zero address", async function () {
+        it("should revert when liquidityPool is zero address", async function () {
             const Factory = await ethers.getContractFactory("PrivateDEXSettlement");
-            const [admin, , , , protocolTreasury, , stakingPool] = await ethers.getSigners();
+            const [admin, , , , , feeVault] = await ethers.getSigners();
             await expect(
                 upgrades.deployProxy(
                     Factory,
-                    [admin.address, ethers.ZeroAddress, stakingPool.address, protocolTreasury.address],
+                    [admin.address, ethers.ZeroAddress, feeVault.address],
                     {
                         initializer: "initialize",
                         kind: "uups",
@@ -224,30 +221,13 @@ describe("PrivateDEXSettlement", function () {
             ).to.be.revertedWithCustomError(Factory, "InvalidAddress");
         });
 
-        it("should revert when stakingPool is zero address", async function () {
+        it("should revert when feeVault is zero address", async function () {
             const Factory = await ethers.getContractFactory("PrivateDEXSettlement");
-            const [admin, , , , protocolTreasury, oddao] = await ethers.getSigners();
+            const [admin, , , , liquidityPool] = await ethers.getSigners();
             await expect(
                 upgrades.deployProxy(
                     Factory,
-                    [admin.address, oddao.address, ethers.ZeroAddress, protocolTreasury.address],
-                    {
-                        initializer: "initialize",
-                        kind: "uups",
-                        constructorArgs: [ethers.ZeroAddress],
-                        unsafeAllow: ["constructor"],
-                    }
-                )
-            ).to.be.revertedWithCustomError(Factory, "InvalidAddress");
-        });
-
-        it("should revert when protocolTreasury is zero address", async function () {
-            const Factory = await ethers.getContractFactory("PrivateDEXSettlement");
-            const [admin, , , , , oddao, stakingPool] = await ethers.getSigners();
-            await expect(
-                upgrades.deployProxy(
-                    Factory,
-                    [admin.address, oddao.address, stakingPool.address, ethers.ZeroAddress],
+                    [admin.address, liquidityPool.address, ethers.ZeroAddress],
                     {
                         initializer: "initialize",
                         kind: "uups",
@@ -983,33 +963,23 @@ describe("PrivateDEXSettlement", function () {
             // Cannot run on Hardhat.
         });
 
-        it("should revert when oddao is zero address", async function () {
-            const { settlement, admin, solver, outsider } = await loadFixture(deployFixture);
+        it("should revert when liquidityPool is zero address", async function () {
+            const { settlement, admin, solver } = await loadFixture(deployFixture);
 
             await expect(
                 settlement
                     .connect(admin)
-                    .updateFeeRecipients(ethers.ZeroAddress, solver.address, outsider.address)
+                    .updateFeeRecipients(ethers.ZeroAddress, solver.address)
             ).to.be.revertedWithCustomError(settlement, "InvalidAddress");
         });
 
-        it("should revert when stakingPool is zero address", async function () {
-            const { settlement, admin, trader, outsider } = await loadFixture(deployFixture);
+        it("should revert when feeVault is zero address", async function () {
+            const { settlement, admin, trader } = await loadFixture(deployFixture);
 
             await expect(
                 settlement
                     .connect(admin)
-                    .updateFeeRecipients(trader.address, ethers.ZeroAddress, outsider.address)
-            ).to.be.revertedWithCustomError(settlement, "InvalidAddress");
-        });
-
-        it("should revert when protocolTreasury is zero address", async function () {
-            const { settlement, admin, trader, solver } = await loadFixture(deployFixture);
-
-            await expect(
-                settlement
-                    .connect(admin)
-                    .updateFeeRecipients(trader.address, solver.address, ethers.ZeroAddress)
+                    .updateFeeRecipients(trader.address, ethers.ZeroAddress)
             ).to.be.revertedWithCustomError(settlement, "InvalidAddress");
         });
 
@@ -1021,7 +991,7 @@ describe("PrivateDEXSettlement", function () {
             await expect(
                 settlement
                     .connect(outsider)
-                    .updateFeeRecipients(trader.address, solver.address, outsider.address)
+                    .updateFeeRecipients(trader.address, solver.address)
             )
                 .to.be.revertedWithCustomError(settlement, "AccessControlUnauthorizedAccount")
                 .withArgs(outsider.address, DEFAULT_ADMIN_ROLE);
@@ -1176,13 +1146,12 @@ describe("PrivateDEXSettlement", function () {
         });
 
         it("getFeeRecipients should return current recipients", async function () {
-            const { settlement, oddao, stakingPool, protocolTreasury } =
+            const { settlement, liquidityPool, feeVault } =
                 await loadFixture(deployFixture);
 
             const recipients = await settlement.getFeeRecipients();
-            expect(recipients.oddao).to.equal(oddao.address);
-            expect(recipients.stakingPool).to.equal(stakingPool.address);
-            expect(recipients.protocolTreasury).to.equal(protocolTreasury.address);
+            expect(recipients.liquidityPool).to.equal(liquidityPool.address);
+            expect(recipients.feeVault).to.equal(feeVault.address);
         });
 
         it("getFeeRecord should return empty record for unknown intentId", async function () {
@@ -1190,9 +1159,8 @@ describe("PrivateDEXSettlement", function () {
 
             const record = await settlement.getFeeRecord(ethers.id("no-fees"));
             // Encrypted fields are ctUint64 (uint256), default 0
-            expect(record.oddaoFee).to.equal(0n);
-            expect(record.stakingPoolFee).to.equal(0n);
-            expect(record.protocolFee).to.equal(0n);
+            expect(record.lpFee).to.equal(0n);
+            expect(record.vaultFee).to.equal(0n);
         });
 
         it("getAccumulatedFees should return 0 for caller querying own fees", async function () {
@@ -1203,19 +1171,19 @@ describe("PrivateDEXSettlement", function () {
         });
 
         it("getAccumulatedFees should revert for unauthorized caller", async function () {
-            const { settlement, outsider, oddao } = await loadFixture(deployFixture);
+            const { settlement, outsider, liquidityPool } = await loadFixture(deployFixture);
 
-            // outsider queries oddao's fees -- should revert NotAuthorized
+            // outsider queries liquidityPool's fees -- should revert NotAuthorized
             await expect(
-                settlement.connect(outsider).getAccumulatedFees(oddao.address)
+                settlement.connect(outsider).getAccumulatedFees(liquidityPool.address)
             ).to.be.revertedWithCustomError(settlement, "NotAuthorized");
         });
 
         it("getAccumulatedFees should allow admin to query any address", async function () {
-            const { settlement, admin, oddao } = await loadFixture(deployFixture);
+            const { settlement, admin, liquidityPool } = await loadFixture(deployFixture);
 
             // Admin can query anyone's fees
-            expect(await settlement.connect(admin).getAccumulatedFees(oddao.address)).to.equal(0n);
+            expect(await settlement.connect(admin).getAccumulatedFees(liquidityPool.address)).to.equal(0n);
         });
     });
 
@@ -1239,20 +1207,18 @@ describe("PrivateDEXSettlement", function () {
             const { settlement } = await loadFixture(deployFixture);
 
             expect(await settlement.BASIS_POINTS_DIVISOR()).to.equal(10000n);
-            expect(await settlement.ODDAO_SHARE_BPS()).to.equal(7000n);
-            expect(await settlement.STAKING_POOL_SHARE_BPS()).to.equal(2000n);
-            expect(await settlement.PROTOCOL_SHARE_BPS()).to.equal(1000n);
+            expect(await settlement.LP_SHARE_BPS()).to.equal(7000n);
+            expect(await settlement.VAULT_SHARE_BPS()).to.equal(3000n);
             expect(await settlement.TRADING_FEE_BPS()).to.equal(20n);
         });
 
         it("fee share BPS should sum to BASIS_POINTS_DIVISOR", async function () {
             const { settlement } = await loadFixture(deployFixture);
 
-            const oddao = await settlement.ODDAO_SHARE_BPS();
-            const staking = await settlement.STAKING_POOL_SHARE_BPS();
-            const protocol = await settlement.PROTOCOL_SHARE_BPS();
+            const lpShare = await settlement.LP_SHARE_BPS();
+            const vaultShare = await settlement.VAULT_SHARE_BPS();
 
-            expect(oddao + staking + protocol).to.equal(
+            expect(lpShare + vaultShare).to.equal(
                 await settlement.BASIS_POINTS_DIVISOR()
             );
         });
@@ -1304,7 +1270,7 @@ describe("PrivateDEXSettlement", function () {
         });
 
         it.skip("settlePrivateIntent -- fee calculation and distribution (Requires COTI testnet)", function () {
-            // 0.2% trading fee split 70/20/10 (ODDAO/StakingPool/ProtocolTreasury)
+            // 0.2% trading fee split 70/30 (LP Pool/UnifiedFeeVault)
             // -- all encrypted arithmetic via MPC garbled circuits.
         });
 

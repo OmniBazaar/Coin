@@ -590,6 +590,14 @@ contract OmniRegistration is
     /// @param contractAddress Address of this contract
     event ContractOssified(address indexed contractAddress);
 
+    /// @notice Emitted when ossification is requested (starts delay)
+    /// @param requestedAt Timestamp when ossification was requested
+    event OssificationRequested(uint256 indexed requestedAt);
+
+    /// @notice Emitted when ossification is executed after delay
+    /// @param executedAt Timestamp when ossification was executed
+    event OssificationExecuted(uint256 indexed executedAt);
+
     // ═══════════════════════════════════════════════════════════════════════
     //                              ERRORS
     // ═══════════════════════════════════════════════════════════════════════
@@ -704,6 +712,15 @@ contract OmniRegistration is
 
     /// @notice Thrown when contract is ossified and upgrade attempted
     error ContractIsOssified();
+
+    /// @notice Thrown when ossification has not been requested
+    error OssificationNotRequested();
+
+    /// @notice Thrown when ossification delay has not elapsed
+    error OssificationDelayNotMet();
+
+    /// @notice Thrown when ossification has already been requested
+    error OssificationAlreadyRequested();
 
     /// @notice Thrown when first sale doesn't meet minimum requirements
     /// @dev SYBIL-H05: Sale amount too low, account too new, or shared referrer detected
@@ -1648,6 +1665,9 @@ contract OmniRegistration is
         uint256 deadline,
         bytes calldata signature
     ) external nonReentrant {
+        // M-01: Verify user is registered before processing AML clearance
+        if (registrations[user].timestamp == 0) revert NotRegistered();
+
         _verifyAttestation(
             keccak256(abi.encode(
                 AML_CLEARANCE_TYPEHASH, user, cleared,
@@ -2370,7 +2390,8 @@ contract OmniRegistration is
      * @param user Address to unregister
      * @dev Clears ALL registration data: email/phone/social/ID/address hashes,
      *      KYC tier timestamps, provider data, volume tracking, referral counts,
-     *      and firstSaleCompleted. Ensures clean re-registration.
+     *      firstSaleCompleted, persona verification, AML clearance, and
+     *      accredited investor state. Ensures clean re-registration.
      */
     function _unregisterUser(address user) internal {
         Registration storage reg = registrations[user];
@@ -2424,6 +2445,16 @@ contract OmniRegistration is
         delete userCountries[user];
         delete userVolumes[user];
         delete firstSaleCompleted[user];
+
+        // H-01 FIX: Clear Persona/AML/Accredited Investor state
+        delete personaVerificationHashes[user];
+        delete isAccreditedInvestor[user];
+        delete accreditedInvestorCriteria[user];
+        delete accreditedInvestorCertifiedAt[user];
+        delete amlCleared[user];
+        delete amlClearedAt[user];
+        delete referralCounts[user];
+
         delete registrations[user];
 
         --totalRegistrations;
@@ -2543,23 +2574,56 @@ contract OmniRegistration is
     }
 
     /**
-     * @notice Permanently remove upgrade capability (one-way, irreversible)
-     * @dev Can only be called by admin. Once ossified, the contract can never
-     *      be upgraded again. IMPORTANT: The admin role MUST be behind a
-     *      TimelockController before calling this function in production.
-     *      Accidental ossification permanently prevents bug fixes.
+     * @notice Request ossification (starts 48-hour delay)
+     * @dev Two-phase ossification prevents accidental or malicious
+     *      irreversible lockout. Once confirmed after OSSIFICATION_DELAY,
+     *      the contract becomes permanently non-upgradeable.
+     *      Only callable by DEFAULT_ADMIN_ROLE.
+     */
+    function requestOssification()
+        external
+        onlyRole(DEFAULT_ADMIN_ROLE)
+    {
+        if (ossificationRequestedAt != 0) {
+            revert OssificationAlreadyRequested();
+        }
+        // solhint-disable-next-line not-rely-on-time
+        ossificationRequestedAt = block.timestamp;
+        // solhint-disable-next-line not-rely-on-time
+        emit OssificationRequested(block.timestamp);
+    }
+
+    /**
+     * @notice Confirm and execute ossification after delay
+     * @dev Requires OSSIFICATION_DELAY (48 hours) to have elapsed
+     *      since requestOssification() was called. Once executed,
+     *      no further proxy upgrades are possible (irreversible).
      *
      *      Upgrade Validation Process (M-02):
-     *      Before ANY production upgrade, run OpenZeppelin validateUpgrade()
-     *      from hardhat-upgrades to verify storage layout compatibility:
-     *      require('openzeppelin/hardhat-upgrades').validateUpgrade(V1, V2)
-     *      This ensures new state variables consume gap slots correctly and
-     *      do not corrupt existing storage. The storage gap is sized at 49
-     *      (50 - 1 for _ossified) to provide room for future additions.
+     *      Before ANY production upgrade, run OpenZeppelin
+     *      validateUpgrade() from hardhat-upgrades to verify storage
+     *      layout compatibility:
+     *      require('openzeppelin/hardhat-upgrades')
+     *        .validateUpgrade(V1, V2)
+     *      This ensures new state variables consume gap slots
+     *      correctly and do not corrupt existing storage.
      */
     function ossify() external onlyRole(DEFAULT_ADMIN_ROLE) {
+        if (ossificationRequestedAt == 0) {
+            revert OssificationNotRequested();
+        }
+        if (
+            // solhint-disable-next-line not-rely-on-time
+            block.timestamp
+                < ossificationRequestedAt + OSSIFICATION_DELAY
+        ) {
+            revert OssificationDelayNotMet();
+        }
+        delete ossificationRequestedAt;
         _ossified = true;
         emit ContractOssified(address(this));
+        // solhint-disable-next-line not-rely-on-time
+        emit OssificationExecuted(block.timestamp);
     }
 
     /**
@@ -2701,6 +2765,12 @@ contract OmniRegistration is
     /// @notice Whether contract is ossified (permanently non-upgradeable)
     bool private _ossified;
 
+    /// @notice Delay required between requesting and executing ossification
+    uint256 public constant OSSIFICATION_DELAY = 48 hours;
+
+    /// @notice Timestamp when ossification was requested (0 = not requested)
+    uint256 public ossificationRequestedAt;
+
     /// @notice Address of OmniRewardManager (only caller for bonus marking)
     /// @dev Replaces BONUS_MARKER_ROLE — only ever held by one contract.
     ///      Set via setOmniRewardManagerAddress().
@@ -2719,8 +2789,9 @@ contract OmniRegistration is
      *      used by all other OmniBazaar upgradeable contracts.
      *      Reduced from 50 to 49 to accommodate _ossified.
      *      Reduced from 49 to 48 to accommodate omniRewardManagerAddress.
+     *      Reduced from 48 to 47 to accommodate ossificationRequestedAt.
      *      (authorizedRecorders is a mapping and does not consume a
      *      sequential slot.)
      */
-    uint256[48] private __gap;
+    uint256[47] private __gap;
 }

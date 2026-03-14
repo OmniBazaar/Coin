@@ -121,6 +121,9 @@ contract LiquidityMining is ReentrancyGuard, Ownable2Step, Pausable, ERC2771Cont
     /// @notice Maximum number of pools allowed
     uint256 public constant MAX_POOLS = 50;
 
+    /// @notice Maximum number of pools claimable in a single claimAll call
+    uint256 public constant MAX_CLAIM_POOLS = 50;
+
     /// @notice Minimum vesting period (1 day)
     uint256 public constant MIN_VESTING_PERIOD = 1 days;
 
@@ -341,6 +344,9 @@ contract LiquidityMining is ReentrancyGuard, Ownable2Step, Pausable, ERC2771Cont
     /// @notice Thrown when withdrawal is attempted before MIN_STAKE_DURATION
     error MinStakeDurationNotMet();
 
+    /// @notice Thrown when claimAll iterates over more pools than allowed
+    error TooManyPools();
+
     // ============ Constructor ============
 
     /**
@@ -546,14 +552,18 @@ contract LiquidityMining is ReentrancyGuard, Ownable2Step, Pausable, ERC2771Cont
         pool.lpToken.safeTransferFrom(caller, address(this), amount);
         uint256 received = pool.lpToken.balanceOf(address(this)) - balBefore;
 
+        // M-01: Only set stake timestamp on first stake, not re-stakes.
+        // Re-staking should NOT reset the MIN_STAKE_DURATION timer.
+        if (user.amount == 0) {
+            // H-01 Round 6: record stake timestamp for MIN_STAKE_DURATION
+            // solhint-disable-next-line not-rely-on-time
+            stakeTimestamp[poolId][caller] = block.timestamp;
+        }
+
         // Update user stake with actual received amount
         user.amount += received;
         user.rewardDebt =
             (user.amount * pool.accRewardPerShare) / REWARD_PRECISION;
-
-        // H-01 Round 6: record stake timestamp for MIN_STAKE_DURATION
-        // solhint-disable-next-line not-rely-on-time
-        stakeTimestamp[poolId][caller] = block.timestamp;
 
         // Update pool total
         pool.totalStaked += received;
@@ -669,6 +679,7 @@ contract LiquidityMining is ReentrancyGuard, Ownable2Step, Pausable, ERC2771Cont
     {
         address caller = _msgSender();
         uint256 poolLen = pools.length;
+        if (poolLen > MAX_CLAIM_POOLS) revert TooManyPools();
         for (uint256 i = 0; i < poolLen; ) {
             _updatePool(i);
             UserStake storage user = userStakes[i][caller];
@@ -788,7 +799,7 @@ contract LiquidityMining is ReentrancyGuard, Ownable2Step, Pausable, ERC2771Cont
      * @param amount Amount of XOM to deposit
      */
     function depositRewards(uint256 amount) external onlyOwner {
-        xom.safeTransferFrom(msg.sender, address(this), amount);
+        xom.safeTransferFrom(_msgSender(), address(this), amount);
     }
 
     /**

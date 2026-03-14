@@ -2,6 +2,8 @@
 pragma solidity 0.8.24;
 
 import {IPausable} from "./interfaces/IPausable.sol";
+import {ReentrancyGuard} from
+    "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
 /**
  * @title EmergencyGuardian
@@ -49,7 +51,7 @@ import {IPausable} from "./interfaces/IPausable.sol";
  *
  * This contract is immutable (not UUPS upgradeable).
  */
-contract EmergencyGuardian {
+contract EmergencyGuardian is ReentrancyGuard {
     // Constants
     /// @notice Minimum number of guardian signatures required to cancel
     /// @dev Fixed at 3 regardless of guardian count. See contract NatSpec
@@ -244,7 +246,7 @@ contract EmergencyGuardian {
      *      governance (via timelock) can unpause.
      * @param target Address of the pausable contract to pause
      */
-    function pauseContract(address target) external onlyGuardian {
+    function pauseContract(address target) external onlyGuardian nonReentrant {
         if (!isPausable[target]) revert NotPausable();
 
         IPausable(target).pause();

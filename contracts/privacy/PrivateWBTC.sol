@@ -199,17 +199,27 @@ contract PrivateWBTC is
     event BridgeBurn(address indexed from, uint256 amount);
 
     /// @notice Emitted when converted to private
+    /// @dev AUDIT FIX (PRIV-H02): Plaintext amount replaced with a
+    ///      keyed hash to prevent leaking conversion amounts on-chain.
+    ///      Off-chain systems that know the amount can verify by
+    ///      recomputing: keccak256(abi.encode(amount, timestamp, user)).
     /// @param user User address
-    /// @param publicAmount Amount in WBTC units (8 decimals)
+    /// @param amountHash keccak256(abi.encode(amount, block.timestamp,
+    ///        msg.sender)) -- opaque commitment hiding the real amount
     event ConvertedToPrivate(
-        address indexed user, uint256 publicAmount
+        address indexed user, bytes32 amountHash
     );
 
     /// @notice Emitted when converted to public
+    /// @dev AUDIT FIX (PRIV-H02): Plaintext amount replaced with a
+    ///      keyed hash to prevent leaking conversion amounts on-chain.
+    ///      Off-chain systems that know the amount can verify by
+    ///      recomputing: keccak256(abi.encode(amount, timestamp, user)).
     /// @param user User address
-    /// @param publicAmount Amount in WBTC units (8 decimals)
+    /// @param amountHash keccak256(abi.encode(amount, block.timestamp,
+    ///        msg.sender)) -- opaque commitment hiding the real amount
     event ConvertedToPublic(
-        address indexed user, uint256 publicAmount
+        address indexed user, bytes32 amountHash
     );
 
     /// @notice Emitted on private transfer (amount hidden)
@@ -230,10 +240,15 @@ contract PrivateWBTC is
     event PrivacyStatusChanged(bool indexed enabled);
 
     /// @notice Emitted when an emergency private balance recovery occurs
+    /// @dev AUDIT FIX (PRIV-H02): Plaintext amount replaced with a
+    ///      keyed hash to prevent leaking recovered balance amounts.
+    ///      Admin can verify via: keccak256(abi.encode(amount,
+    ///      block.timestamp, user)).
     /// @param user Address whose private balance was recovered
-    /// @param publicAmount Amount credited (8-decimal)
+    /// @param amountHash keccak256(abi.encode(amount, block.timestamp,
+    ///        user)) -- opaque commitment hiding the real amount
     event EmergencyPrivateRecovery(
-        address indexed user, uint256 publicAmount
+        address indexed user, bytes32 amountHash
     );
 
     /// @notice Emitted when permanently ossified
@@ -445,7 +460,17 @@ contract PrivateWBTC is
         // Shadow ledger (scaled units)
         _shadowLedger[msg.sender] += scaledAmount;
 
-        emit ConvertedToPrivate(msg.sender, usedAmount);
+        // PRIV-H02: Emit hash instead of plaintext amount
+        emit ConvertedToPrivate(
+            msg.sender,
+            keccak256(
+                abi.encode(
+                    usedAmount,
+                    block.timestamp,
+                    msg.sender
+                )
+            )
+        );
     }
 
     /**
@@ -492,7 +517,17 @@ contract PrivateWBTC is
             _shadowLedger[msg.sender] -= uint256(plainAmount);
         }
 
-        emit ConvertedToPublic(msg.sender, publicAmount);
+        // PRIV-H02: Emit hash instead of plaintext amount
+        emit ConvertedToPublic(
+            msg.sender,
+            keccak256(
+                abi.encode(
+                    publicAmount,
+                    block.timestamp,
+                    msg.sender
+                )
+            )
+        );
     }
 
     /**
@@ -500,7 +535,7 @@ contract PrivateWBTC is
      * @dev Dust is the sub-SCALING_FACTOR remainder from each
      *      convertToPrivate call. Credits publicBalances.
      */
-    function claimDust() external nonReentrant {
+    function claimDust() external nonReentrant whenNotPaused {
         uint256 dust = dustBalances[msg.sender];
         if (dust == 0) revert NoDustToClaim();
 
@@ -577,6 +612,7 @@ contract PrivateWBTC is
         external
         onlyRole(DEFAULT_ADMIN_ROLE)
     {
+        delete privacyDisableScheduledAt;
         privacyEnabled = true;
         emit PrivacyStatusChanged(true);
     }
@@ -664,7 +700,17 @@ contract PrivateWBTC is
         publicBalances[user] += publicAmount;
         totalPublicSupply += publicAmount;
 
-        emit EmergencyPrivateRecovery(user, publicAmount);
+        // PRIV-H02: Emit hash instead of plaintext amount
+        emit EmergencyPrivateRecovery(
+            user,
+            keccak256(
+                abi.encode(
+                    publicAmount,
+                    block.timestamp,
+                    user
+                )
+            )
+        );
     }
 
     /**
@@ -732,7 +778,7 @@ contract PrivateWBTC is
     ///      that would undermine privacy. Only tracks direct deposits
     ///      via convertToPrivate; not updated by privateTransfer.
     /// @param account Address to query
-    /// @return Shadow ledger balance in BTC units (8 decimals)
+    /// @return Shadow ledger balance in 6 decimals (MPC-scaled)
     function getShadowLedgerBalance(
         address account
     ) external view returns (uint256) {

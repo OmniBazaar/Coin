@@ -69,7 +69,9 @@ interface IPrivateOmniCoin is IERC20 {
  * - Per-transaction conversion limits (configurable)
  * - Daily volume limits (calendar-day boundaries, configurable)
  * - Reentrancy protection on all conversion functions
- * - Role-based access control (DEFAULT_ADMIN_ROLE)
+ * - Dual-role access control: OPERATOR_ROLE for routine operations
+ *   (pause, unpause, limit adjustments), DEFAULT_ADMIN_ROLE for
+ *   critical functions (emergency withdraw, fee withdrawal, ossify)
  * - Solvency tracking: totalLocked == sum of outstanding bridge-minted pXOM
  * - bridgeMintedPXOM prevents genesis pXOM from draining bridge reserves
  * - Upgradeable via UUPS proxy pattern with ossification capability
@@ -96,6 +98,14 @@ contract OmniPrivacyBridge is
 
     /// @notice Minimum conversion amount to prevent dust attacks
     uint256 public constant MIN_CONVERSION_AMOUNT = 1e15; // 0.001 tokens
+
+    /// @notice Role for routine operational functions (pause, parameter tuning)
+    /// @dev M-01 audit fix: separates routine operations from critical admin
+    ///      functions (emergency withdraw, ossification) to reduce single-key
+    ///      risk. OPERATOR_ROLE holders can adjust limits and pause/unpause,
+    ///      while DEFAULT_ADMIN_ROLE is reserved for critical operations.
+    bytes32 public constant OPERATOR_ROLE =
+        keccak256("OPERATOR_ROLE");
 
     // ========================================================================
     // STATE VARIABLES
@@ -139,16 +149,24 @@ contract OmniPrivacyBridge is
     /// @notice Whether contract is ossified (permanently non-upgradeable)
     bool private _ossified;
 
+    /// @notice Delay required between requesting and executing ossification
+    uint256 public constant OSSIFICATION_DELAY = 48 hours;
+
+    /// @notice Timestamp when ossification was requested (0 = not requested)
+    uint256 public ossificationRequestedAt;
+
     /**
      * @dev Storage gap for future upgrades
-     * @notice Reserves storage slots to allow adding new variables in upgrades
-     * Current storage: 12 variables (omniCoin, privateOmniCoin,
-     * maxConversionLimit, totalLocked, totalConvertedToPrivate,
-     * totalConvertedToPublic, bridgeMintedPXOM, totalFeesCollected,
-     * dailyVolumeLimit, currentDayVolume, currentDayStart, _ossified)
-     * Gap size: 50 - 12 = 38 slots reserved
+     * @notice Reserves storage slots to allow adding new variables
+     *         in upgrades. Current storage: 13 variables (omniCoin,
+     *         privateOmniCoin, maxConversionLimit, totalLocked,
+     *         totalConvertedToPrivate, totalConvertedToPublic,
+     *         bridgeMintedPXOM, totalFeesCollected, dailyVolumeLimit,
+     *         currentDayVolume, currentDayStart, _ossified,
+     *         ossificationRequestedAt)
+     *         Gap size: 50 - 13 = 37 slots reserved
      */
-    uint256[38] private __gap;
+    uint256[37] private __gap;
 
     // ========================================================================
     // EVENTS
@@ -201,6 +219,14 @@ contract OmniPrivacyBridge is
     /// @param contractAddress Address of this contract
     event ContractOssified(address indexed contractAddress);
 
+    /// @notice Emitted when ossification is requested (starts delay)
+    /// @param requestedAt Timestamp when ossification was requested
+    event OssificationRequested(uint256 indexed requestedAt);
+
+    /// @notice Emitted when ossification is executed after delay
+    /// @param executedAt Timestamp when ossification was executed
+    event OssificationExecuted(uint256 indexed executedAt);
+
     // ========================================================================
     // CUSTOM ERRORS
     // ========================================================================
@@ -228,6 +254,15 @@ contract OmniPrivacyBridge is
 
     /// @notice Thrown when contract is ossified and upgrade attempted
     error ContractIsOssified();
+
+    /// @notice Thrown when ossification has not been requested
+    error OssificationNotRequested();
+
+    /// @notice Thrown when ossification delay has not elapsed
+    error OssificationDelayNotMet();
+
+    /// @notice Thrown when ossification has already been requested
+    error OssificationAlreadyRequested();
 
     // ========================================================================
     // CONSTRUCTOR & INITIALIZATION
@@ -279,6 +314,7 @@ contract OmniPrivacyBridge is
 
         // Grant roles to deployer
         _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
+        _grantRole(OPERATOR_ROLE, msg.sender);
     }
 
     // ========================================================================
@@ -378,13 +414,16 @@ contract OmniPrivacyBridge is
 
     /**
      * @notice Update maximum single conversion limit
-     * @dev Only admin can update. There is no upper bound other
-     *      than uint256 max; admin should set prudent limits.
+     * @dev M-01 audit fix: restricted to OPERATOR_ROLE (not
+     *      DEFAULT_ADMIN_ROLE) to separate routine parameter
+     *      tuning from critical admin operations.
+     *      There is no upper bound other than uint256 max;
+     *      operator should set prudent limits.
      * @param newLimit New maximum conversion amount
      */
     function setMaxConversionLimit(
         uint256 newLimit
-    ) external onlyRole(DEFAULT_ADMIN_ROLE) {
+    ) external onlyRole(OPERATOR_ROLE) {
         if (newLimit == 0) revert ZeroAmount();
 
         uint256 oldLimit = maxConversionLimit;
@@ -395,13 +434,16 @@ contract OmniPrivacyBridge is
 
     /**
      * @notice Update the daily volume limit for conversions
-     * @dev Only admin can update. Set to 0 to disable the
-     *      daily limit (unlimited conversions).
+     * @dev M-01 audit fix: restricted to OPERATOR_ROLE (not
+     *      DEFAULT_ADMIN_ROLE) to separate routine parameter
+     *      tuning from critical admin operations.
+     *      Set to 0 to disable the daily limit (unlimited
+     *      conversions).
      * @param newLimit New daily volume limit (0 = unlimited)
      */
     function setDailyVolumeLimit(
         uint256 newLimit
-    ) external onlyRole(DEFAULT_ADMIN_ROLE) {
+    ) external onlyRole(OPERATOR_ROLE) {
         uint256 oldLimit = dailyVolumeLimit;
         dailyVolumeLimit = newLimit;
         emit DailyVolumeLimitUpdated(oldLimit, newLimit);
@@ -409,17 +451,21 @@ contract OmniPrivacyBridge is
 
     /**
      * @notice Pause all conversions
-     * @dev Only admin can pause
+     * @dev M-01 audit fix: restricted to OPERATOR_ROLE (not
+     *      DEFAULT_ADMIN_ROLE) so that routine operational
+     *      controls are separated from critical admin functions.
      */
-    function pause() external onlyRole(DEFAULT_ADMIN_ROLE) {
+    function pause() external onlyRole(OPERATOR_ROLE) {
         _pause();
     }
 
     /**
      * @notice Unpause conversions
-     * @dev Only admin can unpause
+     * @dev M-01 audit fix: restricted to OPERATOR_ROLE (not
+     *      DEFAULT_ADMIN_ROLE) so that routine operational
+     *      controls are separated from critical admin functions.
      */
-    function unpause() external onlyRole(DEFAULT_ADMIN_ROLE) {
+    function unpause() external onlyRole(OPERATOR_ROLE) {
         _unpause();
     }
 
@@ -480,7 +526,7 @@ contract OmniPrivacyBridge is
      */
     function withdrawFees(
         address recipient
-    ) external onlyRole(DEFAULT_ADMIN_ROLE) {
+    ) external onlyRole(DEFAULT_ADMIN_ROLE) whenNotPaused {
         if (recipient == address(0)) revert ZeroAddress();
         uint256 fees = totalFeesCollected;
         if (fees == 0) revert ZeroAmount();
@@ -492,20 +538,47 @@ contract OmniPrivacyBridge is
     }
 
     /**
-     * @notice Permanently remove upgrade capability (one-way, irreversible)
-     * @dev Can only be called by admin. Once ossified, the contract can never
-     *      be upgraded again. IMPORTANT: The admin role MUST be behind a
-     *      TimelockController before calling this function in production.
-     *      Accidental ossification permanently prevents bug fixes,
-     *      feature additions, and security patches. Consider a
-     *      two-step process:
-     *      1. Transfer admin role to a TimelockController with a 7-day delay.
-     *      2. Propose ossification through the timelock.
-     *      3. Execute after the delay period.
+     * @notice Request ossification (starts 48-hour delay)
+     * @dev Two-phase ossification prevents accidental or malicious
+     *      irreversible lockout. Once confirmed after
+     *      OSSIFICATION_DELAY, the contract becomes permanently
+     *      non-upgradeable. Only callable by DEFAULT_ADMIN_ROLE.
+     */
+    function requestOssification()
+        external
+        onlyRole(DEFAULT_ADMIN_ROLE)
+    {
+        if (ossificationRequestedAt != 0) {
+            revert OssificationAlreadyRequested();
+        }
+        // solhint-disable-next-line not-rely-on-time
+        ossificationRequestedAt = block.timestamp;
+        // solhint-disable-next-line not-rely-on-time
+        emit OssificationRequested(block.timestamp);
+    }
+
+    /**
+     * @notice Confirm and execute ossification after delay
+     * @dev Requires OSSIFICATION_DELAY (48 hours) to have elapsed
+     *      since requestOssification() was called. Once executed,
+     *      no further proxy upgrades are possible (irreversible).
      */
     function ossify() external onlyRole(DEFAULT_ADMIN_ROLE) {
+        if (ossificationRequestedAt == 0) {
+            revert OssificationNotRequested();
+        }
+        if (
+            // solhint-disable-next-line not-rely-on-time
+            block.timestamp
+                < ossificationRequestedAt + OSSIFICATION_DELAY
+        ) {
+            revert OssificationDelayNotMet();
+        }
+        delete ossificationRequestedAt;
         _ossified = true;
         emit ContractOssified(address(this));
+        // solhint-disable-next-line not-rely-on-time
+        emit OssificationExecuted(block.timestamp);
     }
 
     /**

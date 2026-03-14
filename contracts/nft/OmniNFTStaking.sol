@@ -126,6 +126,16 @@ contract OmniNFTStaking is
     /// @notice Total weighted stakes per pool (for reward distribution).
     mapping(uint256 => uint256) public totalWeightedStakes;
 
+    /// @notice Per-pool actual reward token balance (M-01: prevents
+    ///         cross-pool commingling when multiple pools share a
+    ///         reward token).
+    /// @dev Incremented on createPool (deposit), decremented on
+    ///      reward payouts, unstake payouts, and
+    ///      withdrawRemainingRewards. Ensures each pool can only
+    ///      spend what it deposited, not tokens belonging to
+    ///      another pool.
+    mapping(uint256 => uint256) public poolRewardBalance;
+
     // ── Events ───────────────────────────────────────────────────────────
 
     /// @notice Emitted when a staking pool is created.
@@ -365,6 +375,10 @@ contract OmniNFTStaking is
         pools[poolId].totalReward = received;
         pools[poolId].remainingReward = received;
 
+        // M-01: Track per-pool deposited reward balance to prevent
+        // cross-pool commingling when multiple pools share a token.
+        poolRewardBalance[poolId] = received;
+
         emit PoolCreated(
             poolId,
             caller,
@@ -455,6 +469,9 @@ contract OmniNFTStaking is
             pool.remainingReward -= pending;
             s.accumulatedReward += pending;
 
+            // M-01: Decrement per-pool reward balance
+            poolRewardBalance[poolId] -= pending;
+
             // H-01: Wrap reward transfer in try/catch so NFT is always
             // returned even if the reward token reverts (e.g. paused
             // USDC, blocklisted address).
@@ -468,6 +485,7 @@ contract OmniNFTStaking is
                     // Transfer returned false -- restore remaining
                     pool.remainingReward += pending;
                     s.accumulatedReward -= pending;
+                    poolRewardBalance[poolId] += pending;
                     emit RewardTransferFailed(
                         poolId, caller, pending
                     );
@@ -476,6 +494,7 @@ contract OmniNFTStaking is
                 // Revert in transfer -- restore remaining
                 pool.remainingReward += pending;
                 s.accumulatedReward -= pending;
+                poolRewardBalance[poolId] += pending;
                 emit RewardTransferFailed(
                     poolId, caller, pending
                 );
@@ -525,6 +544,9 @@ contract OmniNFTStaking is
         s.lastClaimAt = uint64(block.timestamp);
         s.accumulatedReward += pending;
         pool.remainingReward -= pending;
+
+        // M-01: Decrement per-pool reward balance
+        poolRewardBalance[poolId] -= pending;
 
         IERC20(pool.rewardToken).safeTransfer(caller, pending);
 
@@ -587,6 +609,9 @@ contract OmniNFTStaking is
 
         pool.remainingReward = 0;
 
+        // M-01: Decrement per-pool reward balance
+        poolRewardBalance[poolId] -= amount;
+
         IERC20(pool.rewardToken).safeTransfer(caller, amount);
 
         emit RemainingRewardsWithdrawn(poolId, caller, amount);
@@ -637,6 +662,8 @@ contract OmniNFTStaking is
             s.lastClaimAt = uint64(block.timestamp);
             s.accumulatedReward += pending;
             pool.remainingReward -= pending;
+            // M-01: Decrement per-pool reward balance
+            poolRewardBalance[poolId] -= pending;
             IERC20(pool.rewardToken).safeTransfer(s.staker, pending);
         }
 

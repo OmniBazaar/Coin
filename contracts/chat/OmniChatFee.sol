@@ -32,6 +32,9 @@ error ZeroChatAddress();
 /// @notice Base fee cannot be zero (disables anti-spam)
 error ZeroBaseFee();
 
+/// @notice Base fee exceeds the maximum allowed value
+error FeeExceedsMaximum();
+
 /**
  * @title OmniChatFee
  * @author OmniBazaar Team
@@ -77,6 +80,10 @@ contract OmniChatFee is ReentrancyGuard, Ownable2Step, ERC2771Context {
     /// @notice Minimum fee per message (0.001 XOM = 1e15 wei)
     /// @dev Prevents fees rounding to zero
     uint256 public constant MIN_FEE = 1e15;
+
+    /// @notice Maximum base fee per message (1000 XOM)
+    /// @dev Prevents accidental or malicious fee escalation
+    uint256 public constant MAX_BASE_FEE = 1000e18;
 
     // ══════════════════════════════════════════════════════════════════
     //                          STATE VARIABLES
@@ -327,6 +334,7 @@ contract OmniChatFee is ReentrancyGuard, Ownable2Step, ERC2771Context {
      */
     function setBaseFee(uint256 newBaseFee) external onlyOwner {
         if (newBaseFee == 0) revert ZeroBaseFee();
+        if (newBaseFee > MAX_BASE_FEE) revert FeeExceedsMaximum();
         uint256 oldFee = baseFee;
         baseFee = newBaseFee;
         emit BaseFeeUpdated(oldFee, newBaseFee);

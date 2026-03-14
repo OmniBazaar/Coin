@@ -462,18 +462,16 @@ describe("PrivateDEX", function () {
             expect(await upgraded.totalOrders()).to.equal(0n);
         });
 
-        it("should allow re-requesting ossification (resets timer)", async function () {
+        it("should reject re-requesting ossification when already requested", async function () {
             const { dex, admin } = await loadFixture(deployFixture);
 
             await dex.connect(admin).requestOssification();
-            const firstTime = await dex.ossificationRequestTime();
 
-            // Advance 3 days then re-request
+            // Advance 3 days then re-request — should revert
             await time.increase(3 * 24 * 60 * 60);
-            await dex.connect(admin).requestOssification();
-            const secondTime = await dex.ossificationRequestTime();
-
-            expect(secondTime).to.be.gt(firstTime);
+            await expect(
+                dex.connect(admin).requestOssification()
+            ).to.be.revertedWithCustomError(dex, "OssificationAlreadyRequested");
         });
 
         it("should return false from isOssified before ossification", async function () {

@@ -219,6 +219,7 @@ contract FeeSwapAdapter is
         address _owner
     ) Ownable(_owner) {
         if (_router == address(0)) revert ZeroAddress();
+        if (_defaultSource == bytes32(0)) revert InvalidSource();
 
         router = IOmniSwapRouter(_router);
         defaultSource = _defaultSource;
@@ -402,7 +403,7 @@ contract FeeSwapAdapter is
         address token,
         address to,
         uint256 amount
-    ) external onlyOwner {
+    ) external onlyOwner nonReentrant {
         if (to == address(0)) revert ZeroAddress();
 
         IERC20(token).safeTransfer(to, amount);

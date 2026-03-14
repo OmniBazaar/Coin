@@ -184,17 +184,27 @@ contract PrivateUSDC is
     event BridgeBurn(address indexed from, uint256 amount);
 
     /// @notice Emitted when tokens converted to private mode
+    /// @dev AUDIT FIX (PRIV-H02): Plaintext amount replaced with a
+    ///      keyed hash to prevent leaking conversion amounts on-chain.
+    ///      Off-chain systems that know the amount can verify by
+    ///      recomputing: keccak256(abi.encode(amount, timestamp, user)).
     /// @param user User address
-    /// @param amount Amount converted (6-decimal USDC units)
+    /// @param amountHash keccak256(abi.encode(amount, block.timestamp,
+    ///        msg.sender)) -- opaque commitment hiding the real amount
     event ConvertedToPrivate(
-        address indexed user, uint256 amount
+        address indexed user, bytes32 amountHash
     );
 
     /// @notice Emitted when tokens converted back to public
+    /// @dev AUDIT FIX (PRIV-H02): Plaintext amount replaced with a
+    ///      keyed hash to prevent leaking conversion amounts on-chain.
+    ///      Off-chain systems that know the amount can verify by
+    ///      recomputing: keccak256(abi.encode(amount, timestamp, user)).
     /// @param user User address
-    /// @param amount Amount converted (6-decimal USDC units)
+    /// @param amountHash keccak256(abi.encode(amount, block.timestamp,
+    ///        msg.sender)) -- opaque commitment hiding the real amount
     event ConvertedToPublic(
-        address indexed user, uint256 amount
+        address indexed user, bytes32 amountHash
     );
 
     /// @notice Emitted on private transfer (amount hidden)
@@ -210,10 +220,15 @@ contract PrivateUSDC is
     event PrivacyStatusChanged(bool indexed enabled);
 
     /// @notice Emitted when an emergency private balance recovery occurs
+    /// @dev AUDIT FIX (PRIV-H02): Plaintext amount replaced with a
+    ///      keyed hash to prevent leaking recovered balance amounts.
+    ///      Admin can verify via: keccak256(abi.encode(amount,
+    ///      block.timestamp, user)).
     /// @param user Address whose private balance was recovered
-    /// @param amount Amount credited back to publicBalances
+    /// @param amountHash keccak256(abi.encode(amount, block.timestamp,
+    ///        user)) -- opaque commitment hiding the real amount
     event EmergencyPrivateRecovery(
-        address indexed user, uint256 amount
+        address indexed user, bytes32 amountHash
     );
 
     /// @notice Emitted when the contract is permanently ossified
@@ -403,7 +418,13 @@ contract PrivateUSDC is
         // Update shadow ledger for emergency recovery
         _shadowLedger[msg.sender] += amount;
 
-        emit ConvertedToPrivate(msg.sender, amount);
+        // PRIV-H02: Emit hash instead of plaintext amount
+        emit ConvertedToPrivate(
+            msg.sender,
+            keccak256(
+                abi.encode(amount, block.timestamp, msg.sender)
+            )
+        );
     }
 
     /**
@@ -448,7 +469,17 @@ contract PrivateUSDC is
             _shadowLedger[msg.sender] -= publicAmount;
         }
 
-        emit ConvertedToPublic(msg.sender, publicAmount);
+        // PRIV-H02: Emit hash instead of plaintext amount
+        emit ConvertedToPublic(
+            msg.sender,
+            keccak256(
+                abi.encode(
+                    publicAmount,
+                    block.timestamp,
+                    msg.sender
+                )
+            )
+        );
     }
 
     // ====================================================================
@@ -520,6 +551,7 @@ contract PrivateUSDC is
         external
         onlyRole(DEFAULT_ADMIN_ROLE)
     {
+        delete privacyDisableScheduledAt;
         privacyEnabled = true;
         emit PrivacyStatusChanged(true);
     }
@@ -592,7 +624,7 @@ contract PrivateUSDC is
      */
     function emergencyRecoverPrivateBalance(
         address user
-    ) external onlyRole(DEFAULT_ADMIN_ROLE) {
+    ) external onlyRole(DEFAULT_ADMIN_ROLE) whenNotPaused {
         if (privacyEnabled) revert PrivacyMustBeDisabled();
         if (user == address(0)) revert ZeroAddress();
 
@@ -606,7 +638,13 @@ contract PrivateUSDC is
         publicBalances[user] += balance;
         totalPublicSupply += balance;
 
-        emit EmergencyPrivateRecovery(user, balance);
+        // PRIV-H02: Emit hash instead of plaintext amount
+        emit EmergencyPrivateRecovery(
+            user,
+            keccak256(
+                abi.encode(balance, block.timestamp, user)
+            )
+        );
     }
 
     /**

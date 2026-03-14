@@ -67,6 +67,10 @@ error FeeOutOfBounds();
 /// @dev Only systemRegister() can register/renew these names
 error SystemReservedName(string name);
 
+/// @notice Commitment hash still has a valid (non-expired) entry
+/// @dev Prevents overwriting an active commitment
+error CommitmentStillValid();
+
 /**
  * @title OmniENS
  * @author OmniBazaar Team
@@ -313,6 +317,16 @@ contract OmniENS is ReentrancyGuard, Ownable2Step, ERC2771Context {
      * @param commitment Hash of (name, caller, secret)
      */
     function commit(bytes32 commitment) external {
+        // Prevent overwriting an active, non-expired commitment
+        // solhint-disable-next-line not-rely-on-time
+        if (
+            commitments[commitment] != 0
+                && block.timestamp
+                    < commitments[commitment] + MAX_COMMITMENT_AGE
+        ) {
+            revert CommitmentStillValid();
+        }
+
         // solhint-disable-next-line not-rely-on-time
         commitments[commitment] = block.timestamp;
 
@@ -394,6 +408,12 @@ contract OmniENS is ReentrancyGuard, Ownable2Step, ERC2771Context {
         }
 
         bytes32 nameHash = _nameHash(name);
+
+        // Block transfer of system-registered names
+        if (systemRegistered[nameHash]) {
+            revert SystemReservedName(name);
+        }
+
         Registration storage reg = registrations[nameHash];
 
         if (reg.owner != caller) revert NotNameOwner();
@@ -654,6 +674,10 @@ contract OmniENS is ReentrancyGuard, Ownable2Step, ERC2771Context {
         string calldata name
     ) external view returns (bool) {
         bytes32 nameHash = _nameHash(name);
+
+        // M-01: System-reserved names are never available
+        if (systemRegistered[nameHash]) return false;
+
         Registration storage reg = registrations[nameHash];
 
         if (reg.owner == address(0)) return true;

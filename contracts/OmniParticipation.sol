@@ -1356,13 +1356,14 @@ contract OmniParticipation is // solhint-disable-line max-states-count
     /**
      * @notice Check if user can be a validator
      * @dev L-01: Uses internal _calculateScore() for gas efficiency.
-     *      Requires both minimum score (50) and KYC Tier 3.
+     *      M-01: Requires both minimum score (50) and KYC Tier 4
+     *      (full verification) per validator qualification spec.
      * @param user Address to check
-     * @return True if score >= 50 AND has KYC Tier 3
+     * @return True if score >= 50 AND has KYC Tier 4
      */
     function canBeValidator(address user) external view returns (bool) {
         (uint256 score,,,,,,,,,) = _calculateScore(user);
-        bool hasRequiredKYC = registration.hasKycTier3(user);
+        bool hasRequiredKYC = registration.hasKycTier4(user);
         // solhint-disable-next-line gas-strict-inequalities
         return score >= MIN_VALIDATOR_SCORE && hasRequiredKYC;
     }

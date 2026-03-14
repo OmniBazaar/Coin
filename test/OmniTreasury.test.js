@@ -963,22 +963,18 @@ describe("OmniTreasury", function () {
       }
     );
 
-    it("should allow admin to renounce when not paused",
+    it("should block last admin from renouncing even when not paused",
       async function () {
         const DEFAULT_ADMIN_ROLE =
           "0x0000000000000000000000000000000000000000000000000000000000000000";
 
-        // Renouncing when not paused should work
-        // (but means no admin — risky, just testing it's allowed)
+        // Renouncing when not paused should now also be blocked
+        // (prevents accidental loss of all admin access)
         await expect(
           treasury.connect(admin).renounceRole(
             DEFAULT_ADMIN_ROLE, admin.address
           )
-        ).to.not.be.reverted;
-
-        expect(
-          await treasury.hasRole(DEFAULT_ADMIN_ROLE, admin.address)
-        ).to.be.false;
+        ).to.be.revertedWithCustomError(treasury, "CannotRemoveLastAdmin");
       }
     );
 

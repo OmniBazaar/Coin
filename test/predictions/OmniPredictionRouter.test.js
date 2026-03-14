@@ -426,62 +426,106 @@ describe("OmniPredictionRouter", function () {
   });
 
   // ---------------------------------------------------------------------------
-  // setFeeVault
+  // proposeFeeVault / acceptFeeVault (48h timelock)
   // ---------------------------------------------------------------------------
 
-  describe("setFeeVault", function () {
-    it("should allow owner to update the fee vault", async function () {
+  describe("proposeFeeVault / acceptFeeVault", function () {
+    /** @dev 48 hours in seconds — matches FEE_VAULT_DELAY in contract */
+    const FEE_VAULT_DELAY = 48 * 3600;
+
+    /** @dev Helper: propose + advance time + accept feeVault change */
+    async function proposeThenAcceptFeeVault(newVault) {
+      await router.connect(owner).proposeFeeVault(newVault);
+      await ethers.provider.send("evm_increaseTime", [FEE_VAULT_DELAY]);
+      await ethers.provider.send("evm_mine", []);
+      await router.connect(owner).acceptFeeVault();
+    }
+
+    it("should allow owner to update the fee vault via propose + accept", async function () {
       const signers = await ethers.getSigners();
       const newCollector = signers[5];
 
-      await router.connect(owner).setFeeVault(newCollector.address);
+      await proposeThenAcceptFeeVault(newCollector.address);
       expect(await router.feeVault()).to.equal(newCollector.address);
     });
 
-    it("should emit FeeVaultUpdated event", async function () {
+    it("should emit FeeVaultChangeProposed event on propose", async function () {
       const signers = await ethers.getSigners();
       const newCollector = signers[5];
 
       await expect(
-        router.connect(owner).setFeeVault(newCollector.address)
+        router.connect(owner).proposeFeeVault(newCollector.address)
+      ).to.emit(router, "FeeVaultChangeProposed");
+    });
+
+    it("should emit FeeVaultChangeAccepted event on accept", async function () {
+      const signers = await ethers.getSigners();
+      const newCollector = signers[5];
+
+      await router.connect(owner).proposeFeeVault(newCollector.address);
+      await ethers.provider.send("evm_increaseTime", [FEE_VAULT_DELAY]);
+      await ethers.provider.send("evm_mine", []);
+
+      await expect(
+        router.connect(owner).acceptFeeVault()
       )
-        .to.emit(router, "FeeVaultUpdated")
+        .to.emit(router, "FeeVaultChangeAccepted")
         .withArgs(feeVault.address, newCollector.address);
     });
 
-    it("should revert when called by non-owner", async function () {
+    it("should revert proposeFeeVault when called by non-owner", async function () {
       const signers = await ethers.getSigners();
       const newCollector = signers[5];
 
       await expect(
-        router.connect(user).setFeeVault(newCollector.address)
+        router.connect(user).proposeFeeVault(newCollector.address)
       ).to.be.revertedWithCustomError(router, "OwnableUnauthorizedAccount");
     });
 
-    it("should revert when called by attacker", async function () {
+    it("should revert proposeFeeVault when called by attacker", async function () {
       const signers = await ethers.getSigners();
       const newCollector = signers[5];
 
       await expect(
-        router.connect(attacker).setFeeVault(newCollector.address)
+        router.connect(attacker).proposeFeeVault(newCollector.address)
       ).to.be.revertedWithCustomError(router, "OwnableUnauthorizedAccount");
     });
 
-    it("should revert when setting fee vault to zero address", async function () {
+    it("should revert when proposing fee vault with zero address", async function () {
       await expect(
-        router.connect(owner).setFeeVault(ethers.ZeroAddress)
+        router.connect(owner).proposeFeeVault(ethers.ZeroAddress)
       ).to.be.revertedWithCustomError(router, "InvalidFeeVault");
     });
 
-    it("should allow multiple fee vault updates", async function () {
+    it("should reject acceptFeeVault before timelock elapses", async function () {
+      const signers = await ethers.getSigners();
+      const newCollector = signers[5];
+
+      await router.connect(owner).proposeFeeVault(newCollector.address);
+      // Only advance 1 hour — not enough
+      await ethers.provider.send("evm_increaseTime", [3600]);
+      await ethers.provider.send("evm_mine", []);
+
+      await expect(
+        router.connect(owner).acceptFeeVault()
+      ).to.be.revertedWithCustomError(router, "FeeVaultTimelockActive");
+    });
+
+    it("should reject acceptFeeVault without a proposal", async function () {
+      await expect(
+        router.connect(owner).acceptFeeVault()
+      ).to.be.revertedWithCustomError(router, "NoFeeVaultChangePending");
+    });
+
+    it("should allow multiple fee vault updates via sequential proposals", async function () {
       const signers = await ethers.getSigners();
       const collector1 = signers[5];
       const collector2 = signers[6];
 
-      await router.connect(owner).setFeeVault(collector1.address);
+      await proposeThenAcceptFeeVault(collector1.address);
       expect(await router.feeVault()).to.equal(collector1.address);
 
-      await router.connect(owner).setFeeVault(collector2.address);
+      await proposeThenAcceptFeeVault(collector2.address);
       expect(await router.feeVault()).to.equal(collector2.address);
     });
   });
@@ -1099,8 +1143,11 @@ describe("OmniPredictionRouter", function () {
       const signers = await ethers.getSigners();
       const newCollector = signers[5];
 
-      // Change fee vault
-      await router.connect(owner).setFeeVault(newCollector.address);
+      // Change fee vault via propose + timelock + accept
+      await router.connect(owner).proposeFeeVault(newCollector.address);
+      await ethers.provider.send("evm_increaseTime", [48 * 3600]);
+      await ethers.provider.send("evm_mine", []);
+      await router.connect(owner).acceptFeeVault();
 
       const rescueAmount = ethers.parseEther("10");
       const routerAddress = await router.getAddress();

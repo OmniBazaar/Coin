@@ -22,6 +22,25 @@ describe("OmniFeeRouter", function () {
   const MAX_FEE_BPS = 100;
   const BPS_DENOMINATOR = 10_000;
   const TOTAL_AMOUNT = ethers.parseEther("1000");
+  const ROUTER_ALLOWLIST_DELAY = 12 * 3600; // 12 hours in seconds
+
+  /**
+   * Helper: perform the full propose-wait-apply router allowlist change.
+   * 1. Call proposeRouterChange(router, allowed)
+   * 2. Advance time by ROUTER_ALLOWLIST_DELAY
+   * 3. Call applyRouterChange()
+   *
+   * @param {object} routerContract - The OmniFeeRouter contract instance
+   * @param {object} signer - The owner signer
+   * @param {string} routerAddr - The router address to allow/disallow
+   * @param {boolean} allowed - Whether to allow or disallow
+   */
+  async function allowRouterViaTimelock(routerContract, signer, routerAddr, allowed) {
+    await routerContract.connect(signer).proposeRouterChange(routerAddr, allowed);
+    await ethers.provider.send("evm_increaseTime", [ROUTER_ALLOWLIST_DELAY]);
+    await ethers.provider.send("evm_mine", []);
+    await routerContract.connect(signer).applyRouterChange();
+  }
 
   beforeEach(async function () {
     const signers = await ethers.getSigners();
@@ -42,8 +61,8 @@ describe("OmniFeeRouter", function () {
     const OmniFeeRouter = await ethers.getContractFactory("OmniFeeRouter");
     feeRouter = await OmniFeeRouter.deploy(feeCollector.address, MAX_FEE_BPS, ethers.ZeroAddress);
 
-    // R6 M-01: Allowlist the dummy router for swap tests
-    await feeRouter.connect(owner).setRouterAllowed(dummyRouter.target, true);
+    // R6 M-01: Allowlist the dummy router for swap tests (timelocked)
+    await allowRouterViaTimelock(feeRouter, owner, dummyRouter.target, true);
 
     // Give user some input tokens and approve the fee router
     await inputToken.mint(user.address, TOTAL_AMOUNT);
@@ -303,8 +322,8 @@ describe("OmniFeeRouter", function () {
       const MockDEXRouter = await ethers.getContractFactory("MockDEXRouterForFeeRouter");
       mockRouter = await MockDEXRouter.deploy(ethers.parseEther("1")); // 1:1 rate
 
-      // Allowlist the mock router
-      await feeRouter.connect(owner).setRouterAllowed(mockRouter.target, true);
+      // Allowlist the mock router (timelocked)
+      await allowRouterViaTimelock(feeRouter, owner, mockRouter.target, true);
 
       // Give user tokens and approve fee router
       await inputToken.mint(user.address, SWAP_AMOUNT);
@@ -508,7 +527,7 @@ describe("OmniFeeRouter", function () {
     beforeEach(async function () {
       const MockDEXRouter = await ethers.getContractFactory("MockDEXRouterForFeeRouter");
       mockRouter = await MockDEXRouter.deploy(ethers.parseEther("1"));
-      await feeRouter.connect(owner).setRouterAllowed(mockRouter.target, true);
+      await allowRouterViaTimelock(feeRouter, owner, mockRouter.target, true);
       await inputToken.mint(user.address, SWAP_AMOUNT);
       await inputToken.connect(user).approve(feeRouter.target, SWAP_AMOUNT);
     });
@@ -548,7 +567,7 @@ describe("OmniFeeRouter", function () {
 
       const MockDEXRouter = await ethers.getContractFactory("MockDEXRouterForFeeRouter");
       const router2 = await MockDEXRouter.deploy(ethers.parseEther("1"));
-      await highFeeRouter.connect(owner).setRouterAllowed(router2.target, true);
+      await allowRouterViaTimelock(highFeeRouter, owner, router2.target, true);
 
       // Fee = 5% of 100 = 5 tokens
       const feeAmount = (SWAP_AMOUNT * 500n) / 10000n;
@@ -658,7 +677,7 @@ describe("OmniFeeRouter", function () {
       const MockDEXRouter = await ethers.getContractFactory("MockDEXRouterForFeeRouter");
       mockRouter = await MockDEXRouter.deploy(ethers.parseEther("2")); // 2:1 rate
 
-      await feeRouter.connect(owner).setRouterAllowed(mockRouter.target, true);
+      await allowRouterViaTimelock(feeRouter, owner, mockRouter.target, true);
     });
 
     it("Should swap tokenA for tokenB with 2:1 exchange rate", async function () {
@@ -748,48 +767,119 @@ describe("OmniFeeRouter", function () {
   // Router Allowlist
   // ---------------------------------------------------------------------------
 
-  describe("setRouterAllowed", function () {
-    it("Should allow owner to add a router to the allowlist", async function () {
-      const newRouter = other.address; // will fail code check in swap, but allowlist set is fine
+  describe("proposeRouterChange / applyRouterChange / cancelRouterChange", function () {
+    it("Should allow owner to propose and apply adding a router to the allowlist", async function () {
       const MockERC20 = await ethers.getContractFactory("MockERC20");
       const contractRouter = await MockERC20.deploy("Router", "RTR");
 
-      await feeRouter.connect(owner).setRouterAllowed(contractRouter.target, true);
+      await allowRouterViaTimelock(feeRouter, owner, contractRouter.target, true);
       expect(await feeRouter.allowedRouters(contractRouter.target)).to.equal(true);
     });
 
-    it("Should allow owner to remove a router from the allowlist", async function () {
+    it("Should allow owner to propose and apply removing a router from the allowlist", async function () {
       // dummyRouter was added in beforeEach
       expect(await feeRouter.allowedRouters(dummyRouter.target)).to.equal(true);
 
-      await feeRouter.connect(owner).setRouterAllowed(dummyRouter.target, false);
+      await allowRouterViaTimelock(feeRouter, owner, dummyRouter.target, false);
       expect(await feeRouter.allowedRouters(dummyRouter.target)).to.equal(false);
     });
 
-    it("Should revert with OwnableUnauthorizedAccount when non-owner calls", async function () {
+    it("Should revert proposeRouterChange with OwnableUnauthorizedAccount when non-owner calls", async function () {
       const MockERC20 = await ethers.getContractFactory("MockERC20");
       const contractRouter = await MockERC20.deploy("Router", "RTR");
 
       await expect(
-        feeRouter.connect(user).setRouterAllowed(contractRouter.target, true)
+        feeRouter.connect(user).proposeRouterChange(contractRouter.target, true)
       ).to.be.revertedWithCustomError(feeRouter, "OwnableUnauthorizedAccount");
     });
 
-    it("Should revert with InvalidRouterAddress when router is zero address", async function () {
+    it("Should revert proposeRouterChange with InvalidRouterAddress when router is zero address", async function () {
       await expect(
-        feeRouter.connect(owner).setRouterAllowed(ethers.ZeroAddress, true)
+        feeRouter.connect(owner).proposeRouterChange(ethers.ZeroAddress, true)
       ).to.be.revertedWithCustomError(feeRouter, "InvalidRouterAddress");
     });
 
-    it("Should emit RouterAllowlistUpdated event", async function () {
+    it("Should emit RouterChangeProposed event on propose", async function () {
       const MockERC20 = await ethers.getContractFactory("MockERC20");
       const contractRouter = await MockERC20.deploy("Router", "RTR");
 
-      await expect(
-        feeRouter.connect(owner).setRouterAllowed(contractRouter.target, true)
-      )
+      const tx = await feeRouter.connect(owner).proposeRouterChange(contractRouter.target, true);
+      const receipt = await tx.wait();
+      const block = await ethers.provider.getBlock(receipt.blockNumber);
+      const expectedTime = block.timestamp + ROUTER_ALLOWLIST_DELAY;
+
+      await expect(tx)
+        .to.emit(feeRouter, "RouterChangeProposed")
+        .withArgs(contractRouter.target, true, expectedTime);
+    });
+
+    it("Should emit RouterAllowlistUpdated event on apply", async function () {
+      const MockERC20 = await ethers.getContractFactory("MockERC20");
+      const contractRouter = await MockERC20.deploy("Router", "RTR");
+
+      await feeRouter.connect(owner).proposeRouterChange(contractRouter.target, true);
+      await ethers.provider.send("evm_increaseTime", [ROUTER_ALLOWLIST_DELAY]);
+      await ethers.provider.send("evm_mine", []);
+
+      await expect(feeRouter.connect(owner).applyRouterChange())
         .to.emit(feeRouter, "RouterAllowlistUpdated")
         .withArgs(contractRouter.target, true);
+    });
+
+    it("Should revert applyRouterChange with RouterTimelockNotExpired before delay", async function () {
+      const MockERC20 = await ethers.getContractFactory("MockERC20");
+      const contractRouter = await MockERC20.deploy("Router", "RTR");
+
+      await feeRouter.connect(owner).proposeRouterChange(contractRouter.target, true);
+
+      // Try to apply immediately -- timelock not expired
+      await expect(
+        feeRouter.connect(owner).applyRouterChange()
+      ).to.be.revertedWithCustomError(feeRouter, "RouterTimelockNotExpired");
+    });
+
+    it("Should revert applyRouterChange with NoPendingRouterChange when nothing proposed", async function () {
+      await expect(
+        feeRouter.connect(owner).applyRouterChange()
+      ).to.be.revertedWithCustomError(feeRouter, "NoPendingRouterChange");
+    });
+
+    it("Should cancel a pending router change", async function () {
+      const MockERC20 = await ethers.getContractFactory("MockERC20");
+      const contractRouter = await MockERC20.deploy("Router", "RTR");
+
+      await feeRouter.connect(owner).proposeRouterChange(contractRouter.target, true);
+
+      await expect(feeRouter.connect(owner).cancelRouterChange())
+        .to.emit(feeRouter, "RouterChangeCancelled")
+        .withArgs(contractRouter.target);
+
+      // After cancel, applyRouterChange should revert
+      await expect(
+        feeRouter.connect(owner).applyRouterChange()
+      ).to.be.revertedWithCustomError(feeRouter, "NoPendingRouterChange");
+
+      // Router should NOT be allowlisted
+      expect(await feeRouter.allowedRouters(contractRouter.target)).to.equal(false);
+    });
+
+    it("Should revert cancelRouterChange with NoPendingRouterChange when nothing proposed", async function () {
+      await expect(
+        feeRouter.connect(owner).cancelRouterChange()
+      ).to.be.revertedWithCustomError(feeRouter, "NoPendingRouterChange");
+    });
+
+    it("Should revert applyRouterChange with OwnableUnauthorizedAccount when non-owner calls", async function () {
+      const MockERC20 = await ethers.getContractFactory("MockERC20");
+      const contractRouter = await MockERC20.deploy("Router", "RTR");
+
+      await feeRouter.connect(owner).proposeRouterChange(contractRouter.target, true);
+      await ethers.provider.send("evm_increaseTime", [ROUTER_ALLOWLIST_DELAY]);
+      await ethers.provider.send("evm_mine", []);
+
+      await expect(
+        feeRouter.connect(user).applyRouterChange()
+      ).to.be.revertedWithCustomError(feeRouter, "OwnableUnauthorizedAccount");
     });
 
     it("Should revert swap with RouterNotAllowed when router is not allowlisted", async function () {
@@ -818,6 +908,32 @@ describe("OmniFeeRouter", function () {
           deadline
         )
       ).to.be.revertedWithCustomError(feeRouter, "RouterNotAllowed");
+    });
+
+    it("Should store pending router state correctly", async function () {
+      const MockERC20 = await ethers.getContractFactory("MockERC20");
+      const contractRouter = await MockERC20.deploy("Router", "RTR");
+
+      await feeRouter.connect(owner).proposeRouterChange(contractRouter.target, true);
+
+      expect(await feeRouter.pendingRouter()).to.equal(contractRouter.target);
+      expect(await feeRouter.pendingRouterAllowed()).to.equal(true);
+      expect(await feeRouter.routerChangeTime()).to.be.gt(0);
+    });
+
+    it("Should clear pending state after apply", async function () {
+      const MockERC20 = await ethers.getContractFactory("MockERC20");
+      const contractRouter = await MockERC20.deploy("Router", "RTR");
+
+      await allowRouterViaTimelock(feeRouter, owner, contractRouter.target, true);
+
+      expect(await feeRouter.pendingRouter()).to.equal(ethers.ZeroAddress);
+      expect(await feeRouter.routerChangeTime()).to.equal(0);
+    });
+
+    it("Should return ROUTER_ALLOWLIST_DELAY of 12 hours", async function () {
+      const delay = await feeRouter.ROUTER_ALLOWLIST_DELAY();
+      expect(delay).to.equal(12 * 60 * 60); // 43200 seconds
     });
   });
 
@@ -965,7 +1081,7 @@ describe("OmniFeeRouter", function () {
     beforeEach(async function () {
       const MockDEXRouter = await ethers.getContractFactory("MockDEXRouterForFeeRouter");
       mockRouter = await MockDEXRouter.deploy(ethers.parseEther("1"));
-      await feeRouter.connect(owner).setRouterAllowed(mockRouter.target, true);
+      await allowRouterViaTimelock(feeRouter, owner, mockRouter.target, true);
       await inputToken.mint(user.address, SWAP_AMOUNT);
       await inputToken.connect(user).approve(feeRouter.target, SWAP_AMOUNT);
     });
@@ -1118,7 +1234,7 @@ describe("OmniFeeRouter", function () {
       const deadline = await farFutureDeadline();
 
       // Allowlist the EOA — it should still fail the code.length check
-      await feeRouter.connect(owner).setRouterAllowed(other.address, true);
+      await allowRouterViaTimelock(feeRouter, owner, other.address, true);
 
       await expect(
         feeRouter.connect(user).swapWithFee(
@@ -1258,7 +1374,7 @@ describe("OmniFeeRouter", function () {
     beforeEach(async function () {
       const MockDEXRouter = await ethers.getContractFactory("MockDEXRouterForFeeRouter");
       mockRouter = await MockDEXRouter.deploy(ethers.parseEther("1"));
-      await feeRouter.connect(owner).setRouterAllowed(mockRouter.target, true);
+      await allowRouterViaTimelock(feeRouter, owner, mockRouter.target, true);
     });
 
     it("Should accumulate fees across multiple swaps", async function () {
@@ -1331,6 +1447,129 @@ describe("OmniFeeRouter", function () {
       );
 
       expect(await feeRouter.totalFeesCollected()).to.equal(0);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Pausable (M-02 Audit Fix)
+  // ---------------------------------------------------------------------------
+
+  describe("Pausable", function () {
+    let mockRouter;
+    const SWAP_AMOUNT = ethers.parseEther("100");
+
+    async function farFutureDeadline() {
+      const block = await ethers.provider.getBlock("latest");
+      return block.timestamp + 86400 * 365;
+    }
+
+    beforeEach(async function () {
+      const MockDEXRouter = await ethers.getContractFactory("MockDEXRouterForFeeRouter");
+      mockRouter = await MockDEXRouter.deploy(ethers.parseEther("1"));
+      await allowRouterViaTimelock(feeRouter, owner, mockRouter.target, true);
+      await inputToken.mint(user.address, SWAP_AMOUNT);
+      await inputToken.connect(user).approve(feeRouter.target, SWAP_AMOUNT);
+    });
+
+    it("Should allow owner to pause", async function () {
+      await feeRouter.connect(owner).pause();
+      expect(await feeRouter.paused()).to.equal(true);
+    });
+
+    it("Should allow owner to unpause", async function () {
+      await feeRouter.connect(owner).pause();
+      await feeRouter.connect(owner).unpause();
+      expect(await feeRouter.paused()).to.equal(false);
+    });
+
+    it("Should revert pause when called by non-owner", async function () {
+      await expect(
+        feeRouter.connect(user).pause()
+      ).to.be.revertedWithCustomError(feeRouter, "OwnableUnauthorizedAccount");
+    });
+
+    it("Should revert unpause when called by non-owner", async function () {
+      await feeRouter.connect(owner).pause();
+      await expect(
+        feeRouter.connect(user).unpause()
+      ).to.be.revertedWithCustomError(feeRouter, "OwnableUnauthorizedAccount");
+    });
+
+    it("Should revert swapWithFee when paused", async function () {
+      const deadline = await farFutureDeadline();
+
+      const calldata = mockRouter.interface.encodeFunctionData("swap", [
+        inputToken.target,
+        outputToken.target,
+        SWAP_AMOUNT
+      ]);
+
+      await feeRouter.connect(owner).pause();
+
+      await expect(
+        feeRouter.connect(user).swapWithFee(
+          inputToken.target,
+          outputToken.target,
+          SWAP_AMOUNT,
+          0,
+          mockRouter.target,
+          calldata,
+          0,
+          deadline
+        )
+      ).to.be.revertedWithCustomError(feeRouter, "EnforcedPause");
+    });
+
+    it("Should allow swapWithFee after unpause", async function () {
+      const deadline = await farFutureDeadline();
+
+      const calldata = mockRouter.interface.encodeFunctionData("swap", [
+        inputToken.target,
+        outputToken.target,
+        SWAP_AMOUNT
+      ]);
+
+      await feeRouter.connect(owner).pause();
+      await feeRouter.connect(owner).unpause();
+
+      // Should succeed after unpause
+      await feeRouter.connect(user).swapWithFee(
+        inputToken.target,
+        outputToken.target,
+        SWAP_AMOUNT,
+        0,
+        mockRouter.target,
+        calldata,
+        0,
+        deadline
+      );
+
+      const userOutput = await outputToken.balanceOf(user.address);
+      expect(userOutput).to.equal(SWAP_AMOUNT);
+    });
+
+    it("Should still allow rescueTokens when paused", async function () {
+      const rescueAmount = ethers.parseEther("50");
+      await inputToken.mint(feeRouter.target, rescueAmount);
+
+      await feeRouter.connect(owner).pause();
+
+      // rescueTokens should still work when paused
+      await feeRouter.connect(owner).rescueTokens(inputToken.target);
+
+      const collectorBalance = await inputToken.balanceOf(feeCollector.address);
+      expect(collectorBalance).to.equal(rescueAmount);
+    });
+
+    it("Should still allow proposeRouterChange when paused", async function () {
+      const MockERC20 = await ethers.getContractFactory("MockERC20");
+      const newRouter = await MockERC20.deploy("New Router", "NR");
+
+      await feeRouter.connect(owner).pause();
+
+      // proposeRouterChange should still work when paused
+      await feeRouter.connect(owner).proposeRouterChange(newRouter.target, true);
+      expect(await feeRouter.pendingRouter()).to.equal(newRouter.target);
     });
   });
 });

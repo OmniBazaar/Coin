@@ -132,6 +132,22 @@ contract RWAComplianceOracle is IRWAComplianceOracle, ReentrancyGuard {
     /// @param token Token address
     event TokenDeregistered(address indexed token);
 
+    /// @notice Emitted when a compliance cache entry is invalidated
+    /// @param entity User address whose cache was invalidated
+    /// @param timestamp Block timestamp when invalidation occurred
+    event CacheInvalidated(
+        address indexed entity,
+        uint256 timestamp
+    );
+
+    /// @notice Emitted when a pending registrar transfer is cancelled
+    /// @param cancelledBy Address that cancelled the transfer
+    /// @param timestamp Block timestamp when cancellation occurred
+    event RegistrarTransferCancelled(
+        address indexed cancelledBy,
+        uint256 timestamp
+    );
+
     // ========================================================================
     // ERRORS (Additional)
     // ========================================================================
@@ -400,6 +416,8 @@ contract RWAComplianceOracle is IRWAComplianceOracle, ReentrancyGuard {
      */
     function cancelRegistrarTransfer() external onlyRegistrar {
         pendingRegistrar = address(0);
+        // solhint-disable-next-line not-rely-on-time
+        emit RegistrarTransferCancelled(msg.sender, block.timestamp);
     }
 
     // ========================================================================
@@ -518,6 +536,8 @@ contract RWAComplianceOracle is IRWAComplianceOracle, ReentrancyGuard {
         address token
     ) external onlyRegistrar {
         delete _complianceCache[user][token];
+        // solhint-disable-next-line not-rely-on-time
+        emit CacheInvalidated(user, block.timestamp);
     }
 
     /**

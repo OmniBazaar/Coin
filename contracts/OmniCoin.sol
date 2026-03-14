@@ -34,7 +34,7 @@ import {Context} from "@openzeppelin/contracts/utils/Context.sol";
  * - All ERC20 operations (transfer, approve, transferFrom) work through the forwarder
  *   because OZ ERC20 internally uses _msgSender() which ERC2771Context overrides
  * - batchTransfer also uses _msgSender() for gasless support
- * - Admin/minter functions deliberately use msg.sender (admin ops should NOT be relayed)
+ * - Admin/minter functions use _msgSender() via onlyRole (admin ops are relay-compatible)
  *
  * Governance:
  * - Token holders must call delegate(self) to activate voting power
@@ -89,6 +89,15 @@ contract OmniCoin is
     // solhint-disable-next-line immutable-vars-naming
     address private immutable _deployer;
 
+    // Public state variables
+    /// @notice Whether minting has been permanently disabled
+    /// @dev GOV-XSYS-06 FIX: Once set to true via lockMinting(),
+    ///      mint() will always revert regardless of role assignments.
+    ///      This is a one-way, irreversible operation that prevents
+    ///      governance from re-enabling minting after MINTER_ROLE
+    ///      revocation. Provides defense-in-depth beyond MAX_SUPPLY.
+    bool public mintingLocked;
+
     // Custom errors
     /// @notice Thrown when minting would exceed the maximum lifetime supply
     error ExceedsMaxSupply();
@@ -102,6 +111,15 @@ contract OmniCoin is
     error InvalidRecipient();
     /// @notice Thrown when a non-deployer calls initialize()
     error Unauthorized();
+    /// @notice Thrown when mint() is called after minting has been
+    ///         permanently locked via lockMinting()
+    error MintingPermanentlyLocked();
+
+    // Events
+    /// @notice Emitted when minting is permanently and irreversibly
+    ///         disabled
+    /// @param caller Address that invoked lockMinting()
+    event MintingLocked(address indexed caller);
 
     /**
      * @notice Constructor for OmniCoin
@@ -150,14 +168,51 @@ contract OmniCoin is
 
     /**
      * @notice Mint new tokens
-     * @dev Only MINTER_ROLE can mint. Enforces on-chain MAX_SUPPLY cap as
-     *      defense-in-depth against compromised minter keys (H-03 remediation).
+     * @dev Only MINTER_ROLE can mint. Enforces on-chain MAX_SUPPLY
+     *      cap as defense-in-depth against compromised minter keys
+     *      (H-03 remediation). Reverts if minting has been
+     *      permanently locked via lockMinting() (GOV-XSYS-06).
      * @param to Address to mint tokens to
      * @param amount Amount to mint
      */
-    function mint(address to, uint256 amount) external onlyRole(MINTER_ROLE) {
-        if (totalSupply() + amount > MAX_SUPPLY) revert ExceedsMaxSupply();
+    function mint(
+        address to,
+        uint256 amount
+    ) external onlyRole(MINTER_ROLE) {
+        if (mintingLocked) revert MintingPermanentlyLocked();
+        if (totalSupply() + amount > MAX_SUPPLY) {
+            revert ExceedsMaxSupply();
+        }
         _mint(to, amount);
+    }
+
+    /**
+     * @notice Permanently and irreversibly disable the mint()
+     *         function
+     * @dev GOV-XSYS-06 FIX: After MINTER_ROLE is revoked
+     *      post-deployment, governance could theoretically re-grant
+     *      it via a 7-day critical proposal and resume minting
+     *      (within the MAX_SUPPLY cap). This function eliminates
+     *      that vector entirely by making mint() permanently
+     *      inoperable, regardless of any future role assignments.
+     *
+     *      This operation is ONE-WAY and IRREVERSIBLE. Once called,
+     *      no tokens can ever be minted again. Only
+     *      DEFAULT_ADMIN_ROLE (TimelockController / multi-sig) can
+     *      invoke this.
+     *
+     *      Recommended deployment sequence:
+     *      1. initialize() - mints 16.6B XOM to deployer
+     *      2. Transfer tokens to pool contracts
+     *      3. revokeRole(MINTER_ROLE, deployer)
+     *      4. lockMinting() - permanent safety lock
+     */
+    function lockMinting()
+        external
+        onlyRole(DEFAULT_ADMIN_ROLE)
+    {
+        mintingLocked = true;
+        emit MintingLocked(_msgSender());
     }
 
     /**

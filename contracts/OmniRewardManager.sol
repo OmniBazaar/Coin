@@ -706,7 +706,7 @@ contract OmniRewardManager is
     function updateMerkleRoot(
         PoolType poolType,
         bytes32 newRoot
-    ) external onlyRole(BONUS_DISTRIBUTOR_ROLE) {
+    ) external onlyRole(BONUS_DISTRIBUTOR_ROLE) whenNotPaused {
         bytes32 oldRoot = _getMerkleRoot(poolType);
         _setMerkleRoot(poolType, newRoot);
         emit MerkleRootUpdated(poolType, oldRoot, newRoot);

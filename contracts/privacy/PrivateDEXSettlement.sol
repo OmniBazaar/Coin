@@ -144,26 +144,29 @@ contract PrivateDEXSettlement is
     /**
      * @notice Encrypted fee record for a single settlement
      * @dev Fee amounts are encrypted; recipients claim via claimFees().
-     * @param oddaoFee Encrypted ODDAO share (70%)
-     * @param stakingPoolFee Encrypted staking pool share (20%)
-     * @param protocolFee Encrypted protocol treasury share (10%)
+     *      M-01: Split matches non-private DEXSettlement: 70% LP Pool,
+     *      30% UnifiedFeeVault (vault handles ODDAO/Staking/Protocol
+     *      split internally).
+     * @param lpFee Encrypted LP pool share (70%)
+     * @param vaultFee Encrypted UnifiedFeeVault share (30%)
      */
     struct EncryptedFeeRecord {
-        ctUint64 oddaoFee;
-        ctUint64 stakingPoolFee;
-        ctUint64 protocolFee;
+        ctUint64 lpFee;
+        ctUint64 vaultFee;
     }
 
     /**
      * @notice Fee distribution addresses
-     * @param oddao ODDAO treasury (receives 70%)
-     * @param stakingPool Staking pool (receives 20%)
-     * @param protocolTreasury Protocol treasury (receives 10%)
+     * @dev M-01: Matches non-private DEXSettlement structure.
+     *      70% to LP Pool, 30% to UnifiedFeeVault (vault handles
+     *      the 70/20/10 ODDAO/Staking/Protocol split internally).
+     * @param liquidityPool LP pool address (receives 70% of net fees)
+     * @param feeVault UnifiedFeeVault address (receives 30% of net
+     *        fees; handles ODDAO/Staking/Protocol split internally)
      */
     struct FeeRecipients {
-        address oddao;
-        address stakingPool;
-        address protocolTreasury;
+        address liquidityPool;
+        address feeVault;
     }
 
     // ========================================================================
@@ -177,14 +180,15 @@ contract PrivateDEXSettlement is
     /// @notice Basis points divisor (100%)
     uint64 public constant BASIS_POINTS_DIVISOR = 10000;
 
-    /// @notice ODDAO fee share in basis points (70%)
-    uint64 public constant ODDAO_SHARE_BPS = 7000;
+    /// @notice LP pool fee share in basis points (70%)
+    /// @dev M-01: Matches non-private DEXSettlement LP_SHARE
+    uint64 public constant LP_SHARE_BPS = 7000;
 
-    /// @notice Staking pool fee share in basis points (20%)
-    uint64 public constant STAKING_POOL_SHARE_BPS = 2000;
-
-    /// @notice Protocol treasury fee share in basis points (10%)
-    uint64 public constant PROTOCOL_SHARE_BPS = 1000;
+    /// @notice UnifiedFeeVault fee share in basis points (30%)
+    /// @dev M-01: Matches non-private DEXSettlement VAULT_SHARE.
+    ///      Vault handles 70/20/10 ODDAO/Staking/Protocol split
+    ///      internally.
+    uint64 public constant VAULT_SHARE_BPS = 3000;
 
     /// @notice Trading fee in basis points (0.2%)
     uint64 public constant TRADING_FEE_BPS = 20;
@@ -300,13 +304,11 @@ contract PrivateDEXSettlement is
     );
 
     /// @notice Emitted when fee recipients are updated
-    /// @param oddao New ODDAO address
-    /// @param stakingPool New staking pool address
-    /// @param protocolTreasury New protocol treasury address
+    /// @param liquidityPool New liquidity pool address
+    /// @param feeVault New UnifiedFeeVault address
     event FeeRecipientsUpdated(
-        address indexed oddao,
-        address indexed stakingPool,
-        address protocolTreasury
+        address indexed liquidityPool,
+        address indexed feeVault
     );
 
     /// @notice Emitted when ossification is requested (starts delay)
@@ -402,22 +404,22 @@ contract PrivateDEXSettlement is
     /**
      * @notice Initialize the PrivateDEXSettlement contract
      * @dev Sets up roles, fee recipients, and inherited contracts.
+     *      M-01: Fee recipients match non-private DEXSettlement
+     *      (LP Pool + UnifiedFeeVault).
      * @param admin Admin address for role management
-     * @param oddao ODDAO treasury address (receives 70% of fees)
-     * @param stakingPool Staking pool address (receives 20% of fees)
-     * @param protocolTreasury Protocol treasury address (receives 10%
-     *        of fees)
+     * @param liquidityPool LP pool address (receives 70% of fees)
+     * @param feeVault UnifiedFeeVault address (receives 30% of
+     *        fees; vault handles ODDAO/Staking/Protocol split
+     *        internally)
      */
     function initialize(
         address admin,
-        address oddao,
-        address stakingPool,
-        address protocolTreasury
+        address liquidityPool,
+        address feeVault
     ) external initializer {
         if (admin == address(0)) revert InvalidAddress();
-        if (oddao == address(0)) revert InvalidAddress();
-        if (stakingPool == address(0)) revert InvalidAddress();
-        if (protocolTreasury == address(0)) revert InvalidAddress();
+        if (liquidityPool == address(0)) revert InvalidAddress();
+        if (feeVault == address(0)) revert InvalidAddress();
 
         __AccessControl_init();
         __Pausable_init();
@@ -428,9 +430,8 @@ contract PrivateDEXSettlement is
         _grantRole(SETTLER_ROLE, admin);
 
         feeRecipients = FeeRecipients({
-            oddao: oddao,
-            stakingPool: stakingPool,
-            protocolTreasury: protocolTreasury
+            liquidityPool: liquidityPool,
+            feeVault: feeVault
         });
     }
 
@@ -607,42 +608,28 @@ contract PrivateDEXSettlement is
         gtUint64 gtTotalFee =
             MpcCore.div(gtFeeProduct, gtBasis);
 
-        // --- 70/20/10 fee split (encrypted) ---
-        // oddaoFee = (totalFee * 7000) / 10000
-        gtUint64 gtOddaoShare =
-            MpcCore.setPublic64(ODDAO_SHARE_BPS);
-        gtUint64 gtOddaoProduct =
-            MpcCore.checkedMul(gtTotalFee, gtOddaoShare);
-        gtUint64 gtOddaoFee =
-            MpcCore.div(gtOddaoProduct, gtBasis);
+        // --- M-01: 70/30 fee split matching DEXSettlement ---
+        // lpFee = (totalFee * 7000) / 10000
+        gtUint64 gtLpShare =
+            MpcCore.setPublic64(LP_SHARE_BPS);
+        gtUint64 gtLpProduct =
+            MpcCore.checkedMul(gtTotalFee, gtLpShare);
+        gtUint64 gtLpFee =
+            MpcCore.div(gtLpProduct, gtBasis);
 
-        // stakingFee = (totalFee * 2000) / 10000
-        gtUint64 gtStakingShare =
-            MpcCore.setPublic64(STAKING_POOL_SHARE_BPS);
-        gtUint64 gtStakingProduct =
-            MpcCore.checkedMul(gtTotalFee, gtStakingShare);
-        gtUint64 gtStakingFee =
-            MpcCore.div(gtStakingProduct, gtBasis);
-
-        // protocolFee = totalFee - oddaoFee - stakingFee
-        gtUint64 gtPartialSum =
-            MpcCore.checkedAdd(gtOddaoFee, gtStakingFee);
-        gtUint64 gtProtocolFee =
-            MpcCore.checkedSub(gtTotalFee, gtPartialSum);
+        // vaultFee = totalFee - lpFee (remainder to avoid dust)
+        gtUint64 gtVaultFee =
+            MpcCore.checkedSub(gtTotalFee, gtLpFee);
 
         // Store encrypted fee record
         feeRecords[intentId] = EncryptedFeeRecord({
-            oddaoFee: MpcCore.offBoard(gtOddaoFee),
-            stakingPoolFee: MpcCore.offBoard(gtStakingFee),
-            protocolFee: MpcCore.offBoard(gtProtocolFee)
+            lpFee: MpcCore.offBoard(gtLpFee),
+            vaultFee: MpcCore.offBoard(gtVaultFee)
         });
 
         // Accumulate fees for each recipient
-        _accumulateFee(feeRecipients.oddao, gtOddaoFee);
-        _accumulateFee(feeRecipients.stakingPool, gtStakingFee);
-        _accumulateFee(
-            feeRecipients.protocolTreasury, gtProtocolFee
-        );
+        _accumulateFee(feeRecipients.liquidityPool, gtLpFee);
+        _accumulateFee(feeRecipients.feeVault, gtVaultFee);
 
         // Mark as settled
         col.status = SettlementStatus.SETTLED;
@@ -752,35 +739,28 @@ contract PrivateDEXSettlement is
      *      recipients before changing addresses, preventing fee
      *      orphaning. Old recipients' balances are migrated to the
      *      new addresses so no fees are stranded.
-     * @param oddao New ODDAO treasury address
-     * @param stakingPool New staking pool address
-     * @param protocolTreasury New protocol treasury address
+     * @param liquidityPool New liquidity pool address (70% of fees)
+     * @param feeVault New UnifiedFeeVault address (30% of fees)
      */
     function updateFeeRecipients(
-        address oddao,
-        address stakingPool,
-        address protocolTreasury
-    ) external onlyRole(DEFAULT_ADMIN_ROLE) {
-        if (oddao == address(0)) revert InvalidAddress();
-        if (stakingPool == address(0)) revert InvalidAddress();
-        if (protocolTreasury == address(0)) revert InvalidAddress();
+        address liquidityPool,
+        address feeVault
+    ) external onlyRole(DEFAULT_ADMIN_ROLE) nonReentrant {
+        if (liquidityPool == address(0)) revert InvalidAddress();
+        if (feeVault == address(0)) revert InvalidAddress();
 
         // H-01: Migrate accumulated fees from old to new addresses
-        _migrateFees(feeRecipients.oddao, oddao);
-        _migrateFees(feeRecipients.stakingPool, stakingPool);
         _migrateFees(
-            feeRecipients.protocolTreasury, protocolTreasury
+            feeRecipients.liquidityPool, liquidityPool
         );
+        _migrateFees(feeRecipients.feeVault, feeVault);
 
         feeRecipients = FeeRecipients({
-            oddao: oddao,
-            stakingPool: stakingPool,
-            protocolTreasury: protocolTreasury
+            liquidityPool: liquidityPool,
+            feeVault: feeVault
         });
 
-        emit FeeRecipientsUpdated(
-            oddao, stakingPool, protocolTreasury
-        );
+        emit FeeRecipientsUpdated(liquidityPool, feeVault);
     }
 
     /**

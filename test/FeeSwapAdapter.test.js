@@ -145,7 +145,7 @@ describe("FeeSwapAdapter", function () {
       ).to.be.revertedWithCustomError(Adapter, "ZeroAddress");
     });
 
-    it("should accept zero default source in constructor", async function () {
+    it("should reject zero default source in constructor", async function () {
       const [owner] = await ethers.getSigners();
       const MockRouter = await ethers.getContractFactory(
         "MockOmniSwapRouter"
@@ -153,12 +153,13 @@ describe("FeeSwapAdapter", function () {
       const router = await MockRouter.deploy(EXCHANGE_RATE);
 
       const Adapter = await ethers.getContractFactory("FeeSwapAdapter");
-      const adapter = await Adapter.deploy(
-        await router.getAddress(),
-        ethers.ZeroHash,
-        owner.address
-      );
-      expect(await adapter.defaultSource()).to.equal(ethers.ZeroHash);
+      await expect(
+        Adapter.deploy(
+          await router.getAddress(),
+          ethers.ZeroHash,
+          owner.address
+        )
+      ).to.be.revertedWithCustomError(Adapter, "InvalidSource");
     });
   });
 

@@ -287,6 +287,13 @@ contract OmniNFTLending is
     ///      be repaid (audit fix M-02). The lender may now liquidate.
     error LoanExpired();
 
+    /// @dev M-01: A collection address appears more than once in the
+    ///      offer's collections array.
+    error DuplicateCollection();
+
+    /// @dev Currency address is the zero address.
+    error InvalidCurrency();
+
     // ── Constructor ──────────────────────────────────────────────────────
 
     /**
@@ -333,6 +340,7 @@ contract OmniNFTLending is
         if (collections.length > MAX_COLLECTIONS_PER_OFFER) {
             revert TooManyCollections();
         }
+        if (currency == address(0)) revert InvalidCurrency();
         if (principal == 0) revert ZeroPrincipal();
         if (interestBps > MAX_INTEREST_BPS) revert InterestTooHigh();
         if (durationDays == 0 || durationDays > MAX_DURATION_DAYS) {
@@ -355,6 +363,10 @@ contract OmniNFTLending is
 
         uint256 colLen = collections.length;
         for (uint256 i; i < colLen; ++i) {
+            // M-01: Reject duplicate collection addresses
+            if (offerCollections[offerId][collections[i]]) {
+                revert DuplicateCollection();
+            }
             offerCollections[offerId][collections[i]] = true;
         }
 
@@ -569,7 +581,7 @@ contract OmniNFTLending is
         if (block.timestamp < gracePeriodEnd) {
             revert GracePeriodActive();
         }
-        if (msg.sender != loan.lender) revert NotLender();
+        if (_msgSender() != loan.lender) revert NotLender();
 
         loan.liquidated = true;
 

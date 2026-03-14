@@ -497,28 +497,76 @@ describe("OmniBridge", function () {
   });
   
   describe("Fee Vault Management", function () {
-    it("Should allow admin to set feeVault", async function () {
-      await bridge.connect(admin).setFeeVault(feeVaultAddr.address);
+    /** @dev 48 hours in seconds — matches FEE_VAULT_DELAY in contract */
+    const FEE_VAULT_DELAY = 48 * 3600;
+
+    /** @dev Helper: propose + advance time + accept feeVault change */
+    async function proposeThenAcceptFeeVault(caller, newVault) {
+      await bridge.connect(caller).proposeFeeVault(newVault);
+      await ethers.provider.send("evm_increaseTime", [FEE_VAULT_DELAY]);
+      await ethers.provider.send("evm_mine", []);
+      await bridge.connect(caller).acceptFeeVault();
+    }
+
+    it("Should allow admin to set feeVault via propose + accept timelock", async function () {
+      await proposeThenAcceptFeeVault(admin, feeVaultAddr.address);
       expect(await bridge.feeVault()).to.equal(feeVaultAddr.address);
     });
 
-    it("Should reject non-admin callers", async function () {
+    it("Should emit FeeVaultChangeProposed on propose", async function () {
       await expect(
-        bridge.connect(user1).setFeeVault(feeVaultAddr.address)
+        bridge.connect(admin).proposeFeeVault(feeVaultAddr.address)
+      ).to.emit(bridge, "FeeVaultChangeProposed");
+    });
+
+    it("Should emit FeeVaultChangeAccepted on accept", async function () {
+      await bridge.connect(admin).proposeFeeVault(feeVaultAddr.address);
+      await ethers.provider.send("evm_increaseTime", [FEE_VAULT_DELAY]);
+      await ethers.provider.send("evm_mine", []);
+
+      await expect(
+        bridge.connect(admin).acceptFeeVault()
+      ).to.emit(bridge, "FeeVaultChangeAccepted");
+    });
+
+    it("Should reject non-admin callers for proposeFeeVault", async function () {
+      await expect(
+        bridge.connect(user1).proposeFeeVault(feeVaultAddr.address)
       ).to.be.revertedWithCustomError(bridge, "InvalidRecipient");
     });
 
-    it("Should reject zero address", async function () {
+    it("Should reject zero address for proposeFeeVault", async function () {
       await expect(
-        bridge.connect(admin).setFeeVault(ethers.ZeroAddress)
+        bridge.connect(admin).proposeFeeVault(ethers.ZeroAddress)
       ).to.be.revertedWithCustomError(bridge, "InvalidRecipient");
+    });
+
+    it("Should reject acceptFeeVault before timelock elapses", async function () {
+      await bridge.connect(admin).proposeFeeVault(feeVaultAddr.address);
+      // Only advance 1 hour — not enough
+      await ethers.provider.send("evm_increaseTime", [3600]);
+      await ethers.provider.send("evm_mine", []);
+
+      await expect(
+        bridge.connect(admin).acceptFeeVault()
+      ).to.be.revertedWithCustomError(bridge, "FeeVaultTimelockActive");
+    });
+
+    it("Should reject acceptFeeVault without a proposal", async function () {
+      await expect(
+        bridge.connect(admin).acceptFeeVault()
+      ).to.be.revertedWithCustomError(bridge, "NoFeeVaultChangePending");
     });
   });
 
   describe("Fee Distribution", function () {
     it("Should distribute accumulated fees to feeVault", async function () {
       // Set feeVault first
-      await bridge.connect(admin).setFeeVault(feeVaultAddr.address);
+      // Propose + timelock + accept fee vault change
+      await bridge.connect(admin).proposeFeeVault(feeVaultAddr.address);
+      await ethers.provider.send("evm_increaseTime", [48 * 3600]);
+      await ethers.provider.send("evm_mine", []);
+      await bridge.connect(admin).acceptFeeVault();
 
       // Initiate a transfer to accumulate fees
       const amount = ethers.parseEther("1000");
@@ -560,7 +608,11 @@ describe("OmniBridge", function () {
 
     it("Should allow anyone to call distributeFees (permissionless)", async function () {
       // Set feeVault
-      await bridge.connect(admin).setFeeVault(feeVaultAddr.address);
+      // Propose + timelock + accept fee vault change
+      await bridge.connect(admin).proposeFeeVault(feeVaultAddr.address);
+      await ethers.provider.send("evm_increaseTime", [48 * 3600]);
+      await ethers.provider.send("evm_mine", []);
+      await bridge.connect(admin).acceptFeeVault();
 
       // Accumulate fees via transfer
       const amount = ethers.parseEther("500");
@@ -599,7 +651,11 @@ describe("OmniBridge", function () {
 
     it("Should revert when no fees are accumulated", async function () {
       // Set feeVault
-      await bridge.connect(admin).setFeeVault(feeVaultAddr.address);
+      // Propose + timelock + accept fee vault change
+      await bridge.connect(admin).proposeFeeVault(feeVaultAddr.address);
+      await ethers.provider.send("evm_increaseTime", [48 * 3600]);
+      await ethers.provider.send("evm_mine", []);
+      await bridge.connect(admin).acceptFeeVault();
 
       const tokenAddress = await core.connect(admin).getService(ethers.id("OMNICOIN"));
 
@@ -1165,7 +1221,11 @@ describe("OmniBridge", function () {
 
   describe("Fee Accumulation and Distribution Edge Cases", function () {
     it("Should accumulate fees from multiple transfers", async function () {
-      await bridge.connect(admin).setFeeVault(feeVaultAddr.address);
+      // Propose + timelock + accept fee vault change
+      await bridge.connect(admin).proposeFeeVault(feeVaultAddr.address);
+      await ethers.provider.send("evm_increaseTime", [48 * 3600]);
+      await ethers.provider.send("evm_mine", []);
+      await bridge.connect(admin).acceptFeeVault();
 
       const amount = ethers.parseEther("1000");
       const expectedFeePerTransfer = (amount * BigInt(TRANSFER_FEE)) / 10000n;
@@ -1201,7 +1261,11 @@ describe("OmniBridge", function () {
     });
 
     it("Should reset accumulated fees to zero after distribution", async function () {
-      await bridge.connect(admin).setFeeVault(feeVaultAddr.address);
+      // Propose + timelock + accept fee vault change
+      await bridge.connect(admin).proposeFeeVault(feeVaultAddr.address);
+      await ethers.provider.send("evm_increaseTime", [48 * 3600]);
+      await ethers.provider.send("evm_mine", []);
+      await bridge.connect(admin).acceptFeeVault();
 
       const amount = ethers.parseEther("500");
       await bridge.connect(user1).initiateTransfer(

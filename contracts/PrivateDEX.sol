@@ -319,6 +319,9 @@ contract PrivateDEX is
     /// @notice Thrown when ossification delay has not elapsed
     error OssificationDelayNotElapsed();
 
+    /// @notice Thrown when ossification has already been requested
+    error OssificationAlreadyRequested();
+
     // ====================================================================
     // CONSTRUCTOR & INITIALIZATION
     // ====================================================================
@@ -881,7 +884,7 @@ contract PrivateDEX is
      */
     function cleanupUserOrders(
         uint256 maxCleanup
-    ) external returns (uint256 removed) {
+    ) external whenNotPaused nonReentrant returns (uint256 removed) {
         address caller = _msgSender();
         bytes32[] storage arr = userOrders[caller];
         uint256 len = arr.length;
@@ -1012,6 +1015,9 @@ contract PrivateDEX is
         external
         onlyRole(DEFAULT_ADMIN_ROLE)
     {
+        if (ossificationRequestTime != 0) {
+            revert OssificationAlreadyRequested();
+        }
         // solhint-disable-next-line not-rely-on-time
         ossificationRequestTime = block.timestamp;
         emit OssificationRequested(

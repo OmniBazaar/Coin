@@ -90,7 +90,7 @@ contract OmniTimelockController is TimelockController {
     /// @dev GOV-ATK-H02: Classified as critical because ossification is
     ///      permanent and irreversible -- the most impactful action in the
     ///      protocol. Must require 7-day CRITICAL_DELAY, not 48h ROUTINE.
-    bytes4 public constant SEL_OSSIFY = 0x32e3a7b4;
+    bytes4 public constant SEL_OSSIFY = 0x7271518a;
 
     // State
     /// @notice Registry of additional critical selectors (admin-extensible)

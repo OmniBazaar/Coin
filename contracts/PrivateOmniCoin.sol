@@ -80,6 +80,22 @@ import {
  *      mitigated by the scaling factor which maps token amounts to the
  *      uint64 safe range. This is a fundamental constraint of the COTI
  *      V2 garbled circuits architecture and cannot be changed.
+ *
+ * @dev AUDIT ACCEPTED (PRIV-H03): ERC20 Transfer events leak plaintext
+ *      amounts during convertToPrivate (_burn) and convertToPublic
+ *      (_mint) operations. This is an architectural limitation of the
+ *      ERC20 standard -- the _update() hook in OpenZeppelin's
+ *      ERC20Upgradeable unconditionally emits Transfer(from, to, value)
+ *      on every mint/burn/transfer. Suppressing these events would
+ *      break ERC20 compatibility, preventing wallets, explorers, and
+ *      indexers from tracking token supply correctly. Overriding
+ *      _update() to omit the event is not viable because ERC-20
+ *      compliance requires Transfer events for mint (from=0x0) and
+ *      burn (to=0x0). This is a known trade-off: full ERC20 compliance
+ *      vs. amount privacy during public/private conversions. Users who
+ *      require amount privacy should convert in multiple smaller
+ *      transactions or use the relayer service to obscure the
+ *      relationship between conversion transactions.
  */
 contract PrivateOmniCoin is
     Initializable,
@@ -177,7 +193,12 @@ contract PrivateOmniCoin is
     ///      MPC-scaled units, i.e., 6-decimal precision). Used only
     ///      when MPC is unavailable and admin triggers
     ///      emergencyRecoverPrivateBalance.
-    mapping(address => uint256) public privateDepositLedger;
+    ///
+    ///      PRIV-C01 FIX: Changed from public to internal. A public
+    ///      mapping auto-getter would let anyone query any address's
+    ///      private balance, completely defeating privacy guarantees.
+    ///      Use getShadowLedgerBalance() which enforces access control.
+    mapping(address => uint256) internal privateDepositLedger;
 
     /// @notice Whether contract is ossified (permanently
     ///         non-upgradeable)
@@ -414,6 +435,12 @@ contract PrivateOmniCoin is
      * M-01 fix: Uses MpcCore.checkedAdd() instead of unchecked
      * MpcCore.add() to revert on overflow.
      *
+     * PRIV-H03 ACCEPTED: The _burn() call below emits a standard ERC20
+     * Transfer(msg.sender, address(0), actualBurnAmount) event with
+     * the plaintext amount. This is an architectural limitation of the
+     * ERC20 standard and cannot be suppressed without breaking ERC20
+     * compliance. See contract-level PRIV-H03 documentation.
+     *
      * @param amount Amount of public tokens to convert (18 decimals)
      */
     function convertToPrivate(
@@ -474,6 +501,12 @@ contract PrivateOmniCoin is
      *
      * L-01/L-02: Enforces MAX_SUPPLY on the mint path as
      * defense-in-depth.
+     *
+     * PRIV-H03 ACCEPTED: The _mint() call below emits a standard ERC20
+     * Transfer(address(0), msg.sender, publicAmount) event with the
+     * plaintext amount. This is an architectural limitation of the
+     * ERC20 standard and cannot be suppressed without breaking ERC20
+     * compliance. See contract-level PRIV-H03 documentation.
      *
      * @param encryptedAmount Encrypted amount to convert (6-decimal
      * scaled precision within MPC)
@@ -648,6 +681,7 @@ contract PrivateOmniCoin is
         external
         onlyRole(DEFAULT_ADMIN_ROLE)
     {
+        delete privacyDisableScheduledAt;
         privacyEnabled = true;
         emit PrivacyStatusChanged(true);
     }
@@ -708,7 +742,7 @@ contract PrivateOmniCoin is
      *         unavailable
      * @dev Only callable by admin when privacy is disabled. Uses
      * the shadow ledger to determine the user's recoverable balance.
-     * Mints the scaled-up public amount back to the user.
+     * Transfers the scaled-up public amount back to the user.
      *
      * L-01/L-02: Enforces MAX_SUPPLY cap on the mint as
      * defense-in-depth, even though the recovered amounts correspond
@@ -717,6 +751,11 @@ contract PrivateOmniCoin is
      * Limitations: Only deposits made via convertToPrivate are
      * recoverable. Amounts received via privateTransfer are NOT
      * tracked in the shadow ledger and cannot be recovered this way.
+     *
+     * PRIV-H03 ACCEPTED: The _mint() call below emits a standard ERC20
+     * Transfer(address(0), user, publicAmount) event with the plaintext
+     * recovered amount. This is an architectural limitation of the
+     * ERC20 standard. See contract-level PRIV-H03 documentation.
      *
      * @param user Address to recover balance for
      */
@@ -904,6 +943,33 @@ contract PrivateOmniCoin is
         returns (address recipient)
     {
         return feeRecipient;
+    }
+
+    /**
+     * @notice Get shadow ledger balance for an address
+     * @dev PRIV-C01 FIX: Access-controlled replacement for the
+     *      previously public privateDepositLedger mapping.
+     *      Only the account owner or DEFAULT_ADMIN_ROLE can query.
+     *      Admin access is needed for emergency recovery operations.
+     *      The value is in MPC-scaled units (6-decimal precision).
+     * @param account Address to query the shadow ledger balance for
+     * @return balance Shadow ledger balance in scaled (6-decimal)
+     *         units
+     */
+    function getShadowLedgerBalance(
+        address account
+    )
+        public
+        view
+        returns (uint256 balance)
+    {
+        if (
+            msg.sender != account &&
+            !hasRole(DEFAULT_ADMIN_ROLE, msg.sender)
+        ) {
+            revert Unauthorized();
+        }
+        return privateDepositLedger[account];
     }
 
     // ====================================================================

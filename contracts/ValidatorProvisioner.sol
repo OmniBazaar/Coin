@@ -279,6 +279,12 @@ contract ValidatorProvisioner is
     /// @notice Invalid KYC tier value (must be 0-4)
     error InvalidKYCTier();
 
+    /// @notice Participation score exceeds maximum possible value (100)
+    error InvalidParticipationScore();
+
+    /// @notice Stake amount cannot be zero
+    error ZeroStakeAmount();
+
     // ====================================================================
     // INITIALIZATION
     // ====================================================================
@@ -321,8 +327,11 @@ contract ValidatorProvisioner is
         omniValidatorRewards = _omniValidatorRewards;
 
         // Default qualification thresholds
+        // VP-M01 audit fix: KYC tier set to 4 (full verification)
+        // to match project design spec (CLAUDE.md: "Top-tier KYC
+        // (Level 4 - full verification)").
         minParticipationScore = 50;
-        minKYCTier = 3;
+        minKYCTier = 4;
         minStakeAmount = 1_000_000 ether; // 1M XOM (18 decimals)
     }
 
@@ -433,16 +442,24 @@ contract ValidatorProvisioner is
 
     /**
      * @notice Update qualification thresholds
+     * @dev VP-M02 audit fix: validates bounds on all parameters.
+     *      - _minParticipationScore must be <= 100 (max possible score)
+     *      - _minKYCTier must be <= 4 (max KYC tier)
+     *      - _minStakeAmount must be > 0 (prevents bypassing stake check)
      * @param _minParticipationScore Minimum participation score (0-100)
      * @param _minKYCTier Minimum KYC tier (0-4)
-     * @param _minStakeAmount Minimum stake amount (18 decimals)
+     * @param _minStakeAmount Minimum stake amount (18 decimals, non-zero)
      */
     function setThresholds(
         uint256 _minParticipationScore,
         uint8 _minKYCTier,
         uint256 _minStakeAmount
     ) external onlyOwner {
+        if (_minParticipationScore > 100) {
+            revert InvalidParticipationScore();
+        }
         if (_minKYCTier > 4) revert InvalidKYCTier();
+        if (_minStakeAmount == 0) revert ZeroStakeAmount();
 
         minParticipationScore = _minParticipationScore;
         minKYCTier = _minKYCTier;
@@ -457,8 +474,27 @@ contract ValidatorProvisioner is
 
     /**
      * @notice Update contract references
-     * @dev Used if contracts are redeployed. Does NOT re-provision
-     *      existing validators on the new contracts.
+     * @dev VP-M03 audit fix: documents migration procedure.
+     *      Used if target contracts are redeployed. Does NOT
+     *      re-provision existing validators on the new contracts
+     *      and does NOT revoke roles from old contracts.
+     *
+     *      MIGRATION PROCEDURE (must follow this order):
+     *      1. Call `forceDeprovision()` for every provisioned
+     *         validator BEFORE changing contract references. This
+     *         revokes roles on the current (old) contracts.
+     *      2. Call `setContracts()` to point to the new contracts.
+     *      3. Ensure this contract has PROVISIONER_ROLE (or
+     *         equivalent admin role) on each new target contract.
+     *      4. Call `forceProvision()` or let validators call
+     *         `provisionValidator()` to re-provision on the new
+     *         contracts.
+     *
+     *      WARNING: Skipping step 1 orphans roles on old contracts.
+     *      Validators would retain VALIDATOR_ROLE, KYC_ATTESTOR_ROLE,
+     *      VERIFIER_ROLE, and BLOCKCHAIN_ROLE on the old contracts
+     *      with no way to revoke them through this contract.
+     *
      * @param _omniRegistration New OmniRegistration address
      * @param _omniParticipation New OmniParticipation address
      * @param _omniCore New OmniCore address

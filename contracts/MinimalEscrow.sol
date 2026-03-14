@@ -380,6 +380,12 @@ contract MinimalEscrow is ReentrancyGuard, Pausable, ERC2771Context {
     error OnlyArbitrationContract();
     error NothingToClaim();
 
+    /// @notice A previous dispute commit has not been reclaimed; call reclaimExpiredStake() first
+    error PreviousCommitNotReclaimed();
+
+    /// @notice When an arbitration contract is set, internal vote resolution must defer to it
+    error UseArbitrationContract();
+
     /// @notice Restrict to admin only
     modifier onlyAdmin() {
         if (msg.sender != ADMIN) revert OnlyAdmin();
@@ -575,6 +581,16 @@ contract MinimalEscrow is ReentrancyGuard, Pausable, ERC2771Context {
         address caller = _msgSender();
         if (caller != escrow.buyer && caller != escrow.seller) revert NotParticipant();
 
+        // H-01 FIX: Prevent re-commit that would orphan previous dispute stake.
+        // If a previous commit exists and the caller still has an unreturned stake,
+        // they must call reclaimExpiredStake() first to recover it.
+        if (
+            disputeCommitments[escrowId].commitment != bytes32(0) &&
+            disputeStakes[escrowId][caller] > 0
+        ) {
+            revert PreviousCommitNotReclaimed();
+        }
+
         // Must wait minimum time before dispute
         uint256 disputeEarliest = escrow.createdAt + ARBITRATOR_DELAY;
         if (block.timestamp < disputeEarliest) revert DisputeTooEarly(); // solhint-disable-line not-rely-on-time
@@ -757,6 +773,12 @@ contract MinimalEscrow is ReentrancyGuard, Pausable, ERC2771Context {
      * @param voteForRelease True to release to seller, false to refund buyer
      */
     function vote(uint256 escrowId, bool voteForRelease) external nonReentrant whenNotPaused {
+        // M-03 FIX: If an arbitration contract is set, internal vote resolution
+        // must defer to it. This prevents dual resolution paths where both the
+        // internal 2-of-3 vote AND the external OmniArbitration could resolve
+        // the same escrow, risking double-resolution accounting issues.
+        if (arbitrationContract != address(0)) revert UseArbitrationContract();
+
         Escrow storage escrow = escrows[escrowId];
         address caller = _msgSender();
 
@@ -881,10 +903,23 @@ contract MinimalEscrow is ReentrancyGuard, Pausable, ERC2771Context {
         if (e.resolved) revert AlreadyResolved();
 
         e.resolved = true;
-        uint256 amount = e.amount;
-        e.amount = 0;
 
-        totalEscrowed[address(OMNI_COIN)] -= amount;
+        // M-02 FIX: For private escrows, e.amount is 0 (real amount is in
+        // privateEscrowAmounts). Determine the correct amount and token.
+        bool isPrivate = isPrivateEscrow[escrowId];
+        uint256 amount;
+        IERC20 token;
+        if (isPrivate) {
+            amount = privateEscrowAmounts[escrowId];
+            privateEscrowAmounts[escrowId] = 0;
+            token = PRIVATE_OMNI_COIN;
+        } else {
+            amount = e.amount;
+            e.amount = 0;
+            token = OMNI_COIN;
+        }
+
+        totalEscrowed[address(token)] -= amount;
 
         address recipient;
         uint256 recipientAmount = amount;
@@ -897,10 +932,8 @@ contract MinimalEscrow is ReentrancyGuard, Pausable, ERC2771Context {
             recipientAmount = amount - feeAmount;
 
             if (feeAmount > 0) {
-                OMNI_COIN.safeTransfer(
-                    FEE_VAULT, feeAmount
-                );
-                totalMarketplaceFees[address(OMNI_COIN)] +=
+                token.safeTransfer(FEE_VAULT, feeAmount);
+                totalMarketplaceFees[address(token)] +=
                     feeAmount;
                 emit MarketplaceFeeCollected(
                     escrowId, FEE_VAULT, feeAmount
@@ -911,7 +944,9 @@ contract MinimalEscrow is ReentrancyGuard, Pausable, ERC2771Context {
             recipient = e.buyer;
         }
 
-        // Deduct arbitration fee from dispute stakes if disputed
+        // Deduct arbitration fee from dispute stakes if disputed.
+        // Dispute stakes are always in XOM (OMNI_COIN), even for
+        // private escrows, so this logic uses OMNI_COIN directly.
         if (e.disputed) {
             uint256 arbitrationFee =
                 (amount * ARBITRATION_FEE_BPS) / BASIS_POINTS;
@@ -951,11 +986,11 @@ contract MinimalEscrow is ReentrancyGuard, Pausable, ERC2771Context {
         }
 
         // M-01: Use pull pattern for fund disbursement
-        claimable[address(OMNI_COIN)][recipient] +=
+        claimable[address(token)][recipient] +=
             recipientAmount;
-        totalClaimable[address(OMNI_COIN)] += recipientAmount;
+        totalClaimable[address(token)] += recipientAmount;
         emit FundsClaimable(
-            recipient, address(OMNI_COIN), recipientAmount
+            recipient, address(token), recipientAmount
         );
 
         // Return remaining dispute stakes to both parties
@@ -1145,6 +1180,10 @@ contract MinimalEscrow is ReentrancyGuard, Pausable, ERC2771Context {
     function setArbitrationContract(
         address _arbitrationContract
     ) external onlyAdmin {
+        // M-01 FIX: Guard against EOAs and zero-code addresses that would break
+        // dispute resolution. The arbitration contract must have deployed code.
+        if (_arbitrationContract.code.length == 0) revert InvalidAddress();
+
         address oldArbitration = arbitrationContract;
         arbitrationContract = _arbitrationContract;
 
@@ -1340,6 +1379,9 @@ contract MinimalEscrow is ReentrancyGuard, Pausable, ERC2771Context {
      * @param voteForRelease True to release to seller, false to refund buyer
      */
     function votePrivate(uint256 escrowId, bool voteForRelease) external nonReentrant {
+        // M-03 FIX: Defer to arbitration contract when set (same as public vote())
+        if (arbitrationContract != address(0)) revert UseArbitrationContract();
+
         Escrow storage escrow = escrows[escrowId];
 
         if (!isPrivateEscrow[escrowId]) revert CannotMixPrivacyModes();

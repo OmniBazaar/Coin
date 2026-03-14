@@ -85,8 +85,8 @@ contract OmniAccount is IAccount, Initializable, ReentrancyGuard {
     /// @notice Maximum number of active session keys
     uint256 internal constant MAX_SESSION_KEYS = 10;
 
-    /// @notice Recovery threshold: requires ceil(guardians / 2) + 1 approvals
-    /// @dev For 3 guardians = 2 approvals, 5 guardians = 3 approvals, 7 guardians = 4 approvals
+    /// @notice Time delay before a social recovery can be finalized
+    /// @dev Gives the account owner 2 days to cancel a malicious recovery attempt
     uint256 internal constant RECOVERY_DELAY = 2 days;
 
     /// @notice ERC-20 transfer(address,uint256) selector
@@ -344,6 +344,17 @@ contract OmniAccount is IAccount, Initializable, ReentrancyGuard {
             (bool success,) = payable(entryPoint).call{value: missingAccountFunds}("");
             // Ignore failure — EntryPoint will revert if underfunded
             (success);
+        }
+
+        // M-01: Reject malformed calldata that is too short to contain
+        // a valid function selector. Without this guard, an empty or
+        // sub-4-byte calldata would still pass owner validation (the
+        // EntryPoint would later revert on dispatch), wasting gas. For
+        // session keys the inner _validateSessionKeyCallData already
+        // checks length >= 100, but this early check prevents
+        // unnecessary signature recovery on clearly invalid UserOps.
+        if (userOp.callData.length < 4) {
+            return SIG_VALIDATION_FAILED;
         }
 
         // Recover signer from signature
@@ -626,6 +637,8 @@ contract OmniAccount is IAccount, Initializable, ReentrancyGuard {
         uint256 maxValue
     ) external onlyOwner {
         if (signer == address(0)) revert InvalidAddress();
+        // C-01 defense-in-depth: Prevent session keys scoped to self
+        if (allowedTarget == address(this)) revert InvalidAddress();
         // L-02: Reject past expiration (0 = no expiry, allowed)
         // solhint-disable-next-line not-rely-on-time
         if (validUntil != 0 && validUntil < block.timestamp) {
@@ -833,11 +846,16 @@ contract OmniAccount is IAccount, Initializable, ReentrancyGuard {
             return false;
         }
 
-        // Decode target and value from callData
-        (address target, uint256 value,) = abi.decode(
-            callData[4:],
-            (address, uint256, bytes)
-        );
+        // M-01 FIX: Decode only fixed-size parameters via raw slicing to
+        // avoid revert on malformed bytes encoding. We only need target and
+        // value; the inner bytes payload is not validated here.
+        address target = address(uint160(uint256(bytes32(callData[4:36]))));
+        uint256 value = uint256(bytes32(callData[36:68]));
+
+        // C-01 FIX: Block self-calls -- session keys must never target
+        // address(this) because onlyOwner accepts msg.sender == address(this),
+        // which would allow privilege escalation to owner-only functions.
+        if (target == address(this)) return false;
 
         // Validate target constraint (address(0) means any target is allowed)
         if (sk.allowedTarget != address(0) && target != sk.allowedTarget) {

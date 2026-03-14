@@ -1042,11 +1042,12 @@ describe("OmniENS", function () {
       ).to.be.revertedWithCustomError(ens, "SystemReservedName");
     });
 
-    it("should still allow isAvailable to return true for expired system name", async function () {
-      // isAvailable checks expiry only, not systemRegistered
-      // (the protection is in register(), not isAvailable())
+    it("should return false for isAvailable on expired system name", async function () {
+      // M-01: isAvailable now returns false for all system-registered names,
+      // regardless of expiry. This prevents UI from showing system-reserved
+      // names as available for registration.
       await time.increase(MIN_DURATION + 1);
-      expect(await ens.isAvailable("alice")).to.be.true;
+      expect(await ens.isAvailable("alice")).to.be.false;
     });
 
     it("should return zero address for expired system name via resolve", async function () {

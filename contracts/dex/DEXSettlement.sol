@@ -1276,6 +1276,15 @@ contract DEXSettlement is
      *      C-01: Fees are calculated and distributed via
      *      the standard fee split mechanism.
      *      M-05: CEI pattern - state updated before transfers.
+     *
+     *      M-02 WARNING (Two-Approval Requirement): The solver
+     *      MUST approve this contract for BOTH the net amount
+     *      (solverAmount - solverFee) transferred to the trader
+     *      AND the solverFee transferred to this contract. These
+     *      are two separate `safeTransferFrom` calls, so the total
+     *      approval needed is `solverAmount`. A single approval of
+     *      `solverAmount` covers both transfers. Solvers should
+     *      approve at least `coll.solverAmount` before settlement.
      */
     function settleIntent(
         bytes32 intentId
@@ -1345,12 +1354,24 @@ contract DEXSettlement is
         }
 
         // Solver fee: transfer from solver to contract
+        // M-01: Balance check for fee-on-transfer tokens
         if (solverFee > 0) {
+            uint256 feeBalBefore =
+                IERC20(coll.tokenOut).balanceOf(
+                    address(this)
+                );
             IERC20(coll.tokenOut).safeTransferFrom(
                 coll.solver,
                 address(this),
                 solverFee
             );
+            uint256 feeBalAfter =
+                IERC20(coll.tokenOut).balanceOf(
+                    address(this)
+                );
+            if (feeBalAfter - feeBalBefore != solverFee) {
+                revert FeeOnTransferNotSupported();
+            }
         }
 
         // Distribute solver fee with trader rebate
@@ -1409,6 +1430,7 @@ contract DEXSettlement is
         }
 
         coll.locked = false;
+        coll.settled = true;
 
         // H-03: Return escrowed tokens to trader
         IERC20(coll.tokenIn).safeTransfer(
