@@ -4,10 +4,10 @@
  *
  * Tests cover:
  * - Initialization and role setup
- * - Welcome bonus claims (with merkle proofs)
- * - Referral bonus distribution (two-level)
- * - First sale bonus claims
- * - Admin functions (merkle roots, pause/unpause)
+ * - Welcome bonus claims (gasless relay with EIP-712 signatures)
+ * - Referral bonus claims (gasless relay)
+ * - First sale bonus claims (gasless relay)
+ * - Admin functions (pause/unpause)
  * - Pool depletion scenarios
  * - Access control
  * - Upgrade functionality
@@ -16,8 +16,7 @@
 /* eslint-disable @typescript-eslint/no-var-requires */
 const { expect } = require('chai');
 const { ethers, upgrades } = require('hardhat');
-const { keccak256, solidityPacked, ZeroAddress } = require('ethers');
-const { MerkleTree } = require('merkletreejs');
+const { keccak256, ZeroAddress } = require('ethers');
 
 describe('OmniRewardManager', function () {
     // Contract instances
@@ -43,15 +42,8 @@ describe('OmniRewardManager', function () {
     const TOTAL_POOL_SIZE = WELCOME_BONUS_POOL + REFERRAL_BONUS_POOL +
                            FIRST_SALE_BONUS_POOL;
 
-    // Test amounts
-    const WELCOME_BONUS_AMOUNT = ethers.parseEther('10000');    // 10,000 XOM
-    const REFERRAL_PRIMARY = ethers.parseEther('2500');         // 2,500 XOM (70%)
-    const REFERRAL_SECONDARY = ethers.parseEther('714');        // ~714 XOM (20%)
-    const FIRST_SALE_AMOUNT = ethers.parseEther('500');         // 500 XOM
-
     // Role constants
     const DEFAULT_ADMIN_ROLE = ethers.ZeroHash;
-    const BONUS_DISTRIBUTOR_ROLE = keccak256(ethers.toUtf8Bytes('BONUS_DISTRIBUTOR_ROLE'));
     const UPGRADER_ROLE = keccak256(ethers.toUtf8Bytes('UPGRADER_ROLE'));
     const PAUSER_ROLE = keccak256(ethers.toUtf8Bytes('PAUSER_ROLE'));
 
@@ -62,51 +54,16 @@ describe('OmniRewardManager', function () {
         FirstSaleBonus: 2,
     };
 
-    /**
-     * Generate merkle tree and proof for a user/amount claim
-     */
-    function generateMerkleProof(
-        user: string,
-        amount: bigint,
-        additionalLeaves: string[] = []
-    ): { root: string; proof: string[] } {
-        // Create leaf for the target user
-        const leaf = keccak256(solidityPacked(['address', 'uint256'], [user, amount]));
-
-        // Create additional leaves for a valid tree
-        const leaves = [leaf, ...additionalLeaves.map((l: string) => keccak256(ethers.toUtf8Bytes(l)))];
-
-        // Build merkle tree
-        const tree = new MerkleTree(leaves, keccak256, { sortPairs: true });
-        const root = tree.getHexRoot();
-        const proof = tree.getHexProof(leaf);
-
-        return { root, proof };
-    }
-
-    /**
-     * Generate merkle proof for referral claims (4 parameters)
-     */
-    function generateReferralMerkleProof(
-        referrerAddr: string,
-        secondLevelAddr: string,
-        primaryAmt: bigint,
-        secondaryAmt: bigint,
-        additionalLeaves: string[] = []
-    ): { root: string; proof: string[] } {
-        const leaf = keccak256(solidityPacked(
-            ['address', 'address', 'uint256', 'uint256'],
-            [referrerAddr, secondLevelAddr, primaryAmt, secondaryAmt]
-        ));
-
-        const leaves = [leaf, ...additionalLeaves.map((l: string) => keccak256(ethers.toUtf8Bytes(l)))];
-        const tree = new MerkleTree(leaves, keccak256, { sortPairs: true });
-
-        return {
-            root: tree.getHexRoot(),
-            proof: tree.getHexProof(leaf),
-        };
-    }
+    // EIP-712 typehashes (must match contract constants)
+    const CLAIM_WELCOME_BONUS_TYPEHASH = keccak256(
+        ethers.toUtf8Bytes('ClaimWelcomeBonus(address user,uint256 nonce,uint256 deadline)')
+    );
+    const CLAIM_REFERRAL_BONUS_TYPEHASH = keccak256(
+        ethers.toUtf8Bytes('ClaimReferralBonus(address user,uint256 nonce,uint256 deadline)')
+    );
+    const CLAIM_FIRST_SALE_BONUS_TYPEHASH = keccak256(
+        ethers.toUtf8Bytes('ClaimFirstSaleBonus(address user,uint256 nonce,uint256 deadline)')
+    );
 
     beforeEach(async function () {
         // Get signers
@@ -145,7 +102,7 @@ describe('OmniRewardManager', function () {
 
         rewardManager = OmniRewardManagerFactory.attach(await proxy.getAddress());
 
-        // Transfer tokens to reward manager BEFORE initialization (M-02 audit fix)
+        // Transfer tokens to reward manager BEFORE initialization (M-02 balance check)
         await omniCoin.transfer(await rewardManager.getAddress(), TOTAL_POOL_SIZE);
 
         // Now initialize the proxy with the required parameters
@@ -157,8 +114,7 @@ describe('OmniRewardManager', function () {
             admin.address
         );
 
-        // Grant operational roles to admin (audit M-02 reduced _setupRoles to only DEFAULT_ADMIN_ROLE)
-        await rewardManager.connect(admin).grantRole(BONUS_DISTRIBUTOR_ROLE, admin.address);
+        // Grant operational roles to admin (audit reduced _setupRoles to DEFAULT_ADMIN_ROLE only)
         await rewardManager.connect(admin).grantRole(UPGRADER_ROLE, admin.address);
         await rewardManager.connect(admin).grantRole(PAUSER_ROLE, admin.address);
     });
@@ -177,9 +133,8 @@ describe('OmniRewardManager', function () {
             expect(firstSale).to.equal(FIRST_SALE_BONUS_POOL);
         });
 
-        it('should set up all roles correctly', async function () {
+        it('should set up roles correctly', async function () {
             expect(await rewardManager.hasRole(DEFAULT_ADMIN_ROLE, admin.address)).to.be.true;
-            expect(await rewardManager.hasRole(BONUS_DISTRIBUTOR_ROLE, admin.address)).to.be.true;
             expect(await rewardManager.hasRole(UPGRADER_ROLE, admin.address)).to.be.true;
             expect(await rewardManager.hasRole(PAUSER_ROLE, admin.address)).to.be.true;
         });
@@ -248,508 +203,10 @@ describe('OmniRewardManager', function () {
     });
 
     // ========================================
-    // Welcome Bonus Tests
-    // ========================================
-
-    describe('Welcome Bonus', function () {
-        let merkleRoot: string;
-        let merkleProof: string[];
-
-        beforeEach(async function () {
-            // Generate merkle tree for user1's welcome bonus
-            const result = generateMerkleProof(
-                user1.address,
-                WELCOME_BONUS_AMOUNT,
-                ['dummy1', 'dummy2']
-            );
-            merkleRoot = result.root;
-            merkleProof = result.proof;
-
-            // Set merkle root
-            await rewardManager.connect(admin).updateMerkleRoot(
-                PoolType.WelcomeBonus,
-                merkleRoot
-            );
-        });
-
-        it('should allow claiming with valid merkle proof', async function () {
-            const balanceBefore = await omniCoin.balanceOf(user1.address);
-
-            await rewardManager.connect(admin).claimWelcomeBonus(
-                user1.address,
-                WELCOME_BONUS_AMOUNT,
-                merkleProof
-            );
-
-            const balanceAfter = await omniCoin.balanceOf(user1.address);
-            expect(balanceAfter - balanceBefore).to.equal(WELCOME_BONUS_AMOUNT);
-        });
-
-        it('should emit WelcomeBonusClaimed event', async function () {
-            const expectedRemaining = WELCOME_BONUS_POOL - WELCOME_BONUS_AMOUNT;
-
-            await expect(
-                rewardManager.connect(admin).claimWelcomeBonus(
-                    user1.address,
-                    WELCOME_BONUS_AMOUNT,
-                    merkleProof
-                )
-            )
-                .to.emit(rewardManager, 'WelcomeBonusClaimed')
-                .withArgs(user1.address, WELCOME_BONUS_AMOUNT, expectedRemaining);
-        });
-
-        it('should mark user as claimed', async function () {
-            await rewardManager.connect(admin).claimWelcomeBonus(
-                user1.address,
-                WELCOME_BONUS_AMOUNT,
-                merkleProof
-            );
-
-            expect(await rewardManager.hasClaimedWelcomeBonus(user1.address)).to.be.true;
-        });
-
-        it('should reject double claims', async function () {
-            await rewardManager.connect(admin).claimWelcomeBonus(
-                user1.address,
-                WELCOME_BONUS_AMOUNT,
-                merkleProof
-            );
-
-            await expect(
-                rewardManager.connect(admin).claimWelcomeBonus(
-                    user1.address,
-                    WELCOME_BONUS_AMOUNT,
-                    merkleProof
-                )
-            )
-                .to.be.revertedWithCustomError(rewardManager, 'BonusAlreadyClaimed')
-                .withArgs(user1.address, PoolType.WelcomeBonus);
-        });
-
-        it('should reject invalid merkle proofs', async function () {
-            // First set a valid merkle root (for user2)
-            // When merkle root is 0x0, verification is skipped (open claims)
-            const user2Result = generateMerkleProof(
-                user2.address,
-                WELCOME_BONUS_AMOUNT,
-                ['dummy1', 'dummy2']
-            );
-
-            // Set the merkle root
-            await rewardManager.connect(admin).updateMerkleRoot(
-                PoolType.WelcomeBonus,
-                user2Result.root
-            );
-
-            // Try to claim for user1 using user2's proof - should fail
-            await expect(
-                rewardManager.connect(admin).claimWelcomeBonus(
-                    user1.address, // Trying to claim for user1 with user2's proof
-                    WELCOME_BONUS_AMOUNT,
-                    user2Result.proof
-                )
-            ).to.be.revertedWithCustomError(rewardManager, 'InvalidMerkleProof');
-        });
-
-        it('should reject zero user address', async function () {
-            await expect(
-                rewardManager.connect(admin).claimWelcomeBonus(
-                    ZeroAddress,
-                    WELCOME_BONUS_AMOUNT,
-                    merkleProof
-                )
-            ).to.be.revertedWithCustomError(rewardManager, 'ZeroAddressNotAllowed');
-        });
-
-        it('should reject zero amount', async function () {
-            await expect(
-                rewardManager.connect(admin).claimWelcomeBonus(
-                    user1.address,
-                    0,
-                    merkleProof
-                )
-            ).to.be.revertedWithCustomError(rewardManager, 'ZeroAmountNotAllowed');
-        });
-
-        it('should reject unauthorized callers', async function () {
-            await expect(
-                rewardManager.connect(unauthorized).claimWelcomeBonus(
-                    user1.address,
-                    WELCOME_BONUS_AMOUNT,
-                    merkleProof
-                )
-            ).to.be.revertedWithCustomError(rewardManager, 'AccessControlUnauthorizedAccount');
-        });
-
-        it('should work without merkle root (open claims)', async function () {
-            // Reset merkle root to zero (allow all claims)
-            await rewardManager.connect(admin).updateMerkleRoot(
-                PoolType.WelcomeBonus,
-                ethers.ZeroHash
-            );
-
-            // Should succeed with empty proof
-            await expect(
-                rewardManager.connect(admin).claimWelcomeBonus(
-                    user2.address,
-                    WELCOME_BONUS_AMOUNT,
-                    []
-                )
-            ).to.not.be.reverted;
-        });
-
-        it('should update pool statistics correctly', async function () {
-            await rewardManager.connect(admin).claimWelcomeBonus(
-                user1.address,
-                WELCOME_BONUS_AMOUNT,
-                merkleProof
-            );
-
-            const [initialAmounts, remainingAmounts, distributedAmounts] =
-                await rewardManager.getPoolStatistics();
-
-            expect(initialAmounts[0]).to.equal(WELCOME_BONUS_POOL);
-            expect(remainingAmounts[0]).to.equal(WELCOME_BONUS_POOL - WELCOME_BONUS_AMOUNT);
-            expect(distributedAmounts[0]).to.equal(WELCOME_BONUS_AMOUNT);
-        });
-    });
-
-    // ========================================
-    // Referral Bonus Tests
-    // ========================================
-
-    describe('Referral Bonus', function () {
-        let merkleRoot: string;
-        let merkleProof: string[];
-
-        beforeEach(async function () {
-            const result = generateReferralMerkleProof(
-                referrer.address,
-                secondLevelReferrer.address,
-                REFERRAL_PRIMARY,
-                REFERRAL_SECONDARY,
-                ['dummy1', 'dummy2']
-            );
-            merkleRoot = result.root;
-            merkleProof = result.proof;
-
-            await rewardManager.connect(admin).updateMerkleRoot(
-                PoolType.ReferralBonus,
-                merkleRoot
-            );
-        });
-
-        it('should distribute to both referrers', async function () {
-            const referrerBalanceBefore = await omniCoin.balanceOf(referrer.address);
-            const secondLevelBalanceBefore = await omniCoin.balanceOf(secondLevelReferrer.address);
-
-            await rewardManager.connect(admin).claimReferralBonus(
-                {
-                    referrer: referrer.address,
-                    secondLevelReferrer: secondLevelReferrer.address,
-                    primaryAmount: REFERRAL_PRIMARY,
-                    secondaryAmount: REFERRAL_SECONDARY,
-                },
-                merkleProof
-            );
-
-            const referrerBalanceAfter = await omniCoin.balanceOf(referrer.address);
-            const secondLevelBalanceAfter = await omniCoin.balanceOf(secondLevelReferrer.address);
-
-            expect(referrerBalanceAfter - referrerBalanceBefore).to.equal(REFERRAL_PRIMARY);
-            expect(secondLevelBalanceAfter - secondLevelBalanceBefore).to.equal(REFERRAL_SECONDARY);
-        });
-
-        it('should emit ReferralBonusClaimed event', async function () {
-            // Total includes ODDAO share: (referrerTotal * 10) / 90 when secondLevelReferrer != 0
-            const referrerTotal = REFERRAL_PRIMARY + REFERRAL_SECONDARY;
-            const oddaoShare = (referrerTotal * BigInt(10)) / BigInt(90);
-            const totalAmount = referrerTotal + oddaoShare;
-
-            await expect(
-                rewardManager.connect(admin).claimReferralBonus(
-                    {
-                        referrer: referrer.address,
-                        secondLevelReferrer: secondLevelReferrer.address,
-                        primaryAmount: REFERRAL_PRIMARY,
-                        secondaryAmount: REFERRAL_SECONDARY,
-                    },
-                    merkleProof
-                )
-            )
-                .to.emit(rewardManager, 'ReferralBonusClaimed')
-                .withArgs(referrer.address, secondLevelReferrer.address, totalAmount);
-        });
-
-        it('should handle missing second-level referrer', async function () {
-            // Generate proof with zero address for second level
-            const result = generateReferralMerkleProof(
-                referrer.address,
-                ZeroAddress,
-                REFERRAL_PRIMARY,
-                BigInt(0), // No secondary amount
-                ['dummy1', 'dummy2']
-            );
-
-            await rewardManager.connect(admin).updateMerkleRoot(
-                PoolType.ReferralBonus,
-                result.root
-            );
-
-            const referrerBalanceBefore = await omniCoin.balanceOf(referrer.address);
-
-            await rewardManager.connect(admin).claimReferralBonus(
-                {
-                    referrer: referrer.address,
-                    secondLevelReferrer: ZeroAddress,
-                    primaryAmount: REFERRAL_PRIMARY,
-                    secondaryAmount: BigInt(0),
-                },
-                result.proof
-            );
-
-            const referrerBalanceAfter = await omniCoin.balanceOf(referrer.address);
-            expect(referrerBalanceAfter - referrerBalanceBefore).to.equal(REFERRAL_PRIMARY);
-        });
-
-        it('should track cumulative earnings', async function () {
-            // First referral claim
-            await rewardManager.connect(admin).claimReferralBonus(
-                {
-                    referrer: referrer.address,
-                    secondLevelReferrer: secondLevelReferrer.address,
-                    primaryAmount: REFERRAL_PRIMARY,
-                    secondaryAmount: REFERRAL_SECONDARY,
-                },
-                merkleProof
-            );
-
-            expect(await rewardManager.getReferralBonusesEarned(referrer.address))
-                .to.equal(REFERRAL_PRIMARY);
-            expect(await rewardManager.getReferralBonusesEarned(secondLevelReferrer.address))
-                .to.equal(REFERRAL_SECONDARY);
-
-            // Second referral claim (new user)
-            const result2 = generateReferralMerkleProof(
-                referrer.address,
-                secondLevelReferrer.address,
-                REFERRAL_PRIMARY,
-                REFERRAL_SECONDARY,
-                ['dummy3', 'dummy4']
-            );
-
-            await rewardManager.connect(admin).updateMerkleRoot(
-                PoolType.ReferralBonus,
-                result2.root
-            );
-
-            await rewardManager.connect(admin).claimReferralBonus(
-                {
-                    referrer: referrer.address,
-                    secondLevelReferrer: secondLevelReferrer.address,
-                    primaryAmount: REFERRAL_PRIMARY,
-                    secondaryAmount: REFERRAL_SECONDARY,
-                },
-                result2.proof
-            );
-
-            expect(await rewardManager.getReferralBonusesEarned(referrer.address))
-                .to.equal(REFERRAL_PRIMARY * BigInt(2));
-            expect(await rewardManager.getReferralBonusesEarned(secondLevelReferrer.address))
-                .to.equal(REFERRAL_SECONDARY * BigInt(2));
-        });
-
-        it('should reject zero referrer address', async function () {
-            await expect(
-                rewardManager.connect(admin).claimReferralBonus(
-                    {
-                        referrer: ZeroAddress,
-                        secondLevelReferrer: secondLevelReferrer.address,
-                        primaryAmount: REFERRAL_PRIMARY,
-                        secondaryAmount: REFERRAL_SECONDARY,
-                    },
-                    merkleProof
-                )
-            ).to.be.revertedWithCustomError(rewardManager, 'ZeroAddressNotAllowed');
-        });
-
-        it('should reject zero total amount', async function () {
-            await expect(
-                rewardManager.connect(admin).claimReferralBonus(
-                    {
-                        referrer: referrer.address,
-                        secondLevelReferrer: secondLevelReferrer.address,
-                        primaryAmount: BigInt(0),
-                        secondaryAmount: BigInt(0),
-                    },
-                    merkleProof
-                )
-            ).to.be.revertedWithCustomError(rewardManager, 'ZeroAmountNotAllowed');
-        });
-    });
-
-    // ========================================
-    // First Sale Bonus Tests
-    // ========================================
-
-    describe('First Sale Bonus', function () {
-        let merkleRoot: string;
-        let merkleProof: string[];
-
-        beforeEach(async function () {
-            const result = generateMerkleProof(
-                user1.address,
-                FIRST_SALE_AMOUNT,
-                ['dummy1', 'dummy2']
-            );
-            merkleRoot = result.root;
-            merkleProof = result.proof;
-
-            await rewardManager.connect(admin).updateMerkleRoot(
-                PoolType.FirstSaleBonus,
-                merkleRoot
-            );
-        });
-
-        it('should allow claiming with valid proof', async function () {
-            const balanceBefore = await omniCoin.balanceOf(user1.address);
-
-            await rewardManager.connect(admin).claimFirstSaleBonus(
-                user1.address,
-                FIRST_SALE_AMOUNT,
-                merkleProof
-            );
-
-            const balanceAfter = await omniCoin.balanceOf(user1.address);
-            expect(balanceAfter - balanceBefore).to.equal(FIRST_SALE_AMOUNT);
-        });
-
-        it('should emit FirstSaleBonusClaimed event', async function () {
-            const expectedRemaining = FIRST_SALE_BONUS_POOL - FIRST_SALE_AMOUNT;
-
-            await expect(
-                rewardManager.connect(admin).claimFirstSaleBonus(
-                    user1.address,
-                    FIRST_SALE_AMOUNT,
-                    merkleProof
-                )
-            )
-                .to.emit(rewardManager, 'FirstSaleBonusClaimed')
-                .withArgs(user1.address, FIRST_SALE_AMOUNT, expectedRemaining);
-        });
-
-        it('should mark seller as claimed', async function () {
-            await rewardManager.connect(admin).claimFirstSaleBonus(
-                user1.address,
-                FIRST_SALE_AMOUNT,
-                merkleProof
-            );
-
-            expect(await rewardManager.hasClaimedFirstSaleBonus(user1.address)).to.be.true;
-        });
-
-        it('should reject double claims', async function () {
-            await rewardManager.connect(admin).claimFirstSaleBonus(
-                user1.address,
-                FIRST_SALE_AMOUNT,
-                merkleProof
-            );
-
-            await expect(
-                rewardManager.connect(admin).claimFirstSaleBonus(
-                    user1.address,
-                    FIRST_SALE_AMOUNT,
-                    merkleProof
-                )
-            )
-                .to.be.revertedWithCustomError(rewardManager, 'BonusAlreadyClaimed')
-                .withArgs(user1.address, PoolType.FirstSaleBonus);
-        });
-
-        it('should reject invalid merkle proofs', async function () {
-            // First set a valid merkle root (for user2)
-            // When merkle root is 0x0, verification is skipped (open claims)
-            const user2Result = generateMerkleProof(
-                user2.address,
-                FIRST_SALE_AMOUNT,
-                ['dummy1', 'dummy2']
-            );
-
-            // Set the merkle root
-            await rewardManager.connect(admin).updateMerkleRoot(
-                PoolType.FirstSaleBonus,
-                user2Result.root
-            );
-
-            // Try to claim for user1 using user2's proof - should fail
-            await expect(
-                rewardManager.connect(admin).claimFirstSaleBonus(
-                    user1.address,
-                    FIRST_SALE_AMOUNT,
-                    user2Result.proof
-                )
-            ).to.be.revertedWithCustomError(rewardManager, 'InvalidMerkleProof');
-        });
-    });
-
-    // ========================================
     // Admin Functions Tests
     // ========================================
 
     describe('Admin Functions', function () {
-        describe('Merkle Root Updates', function () {
-            it('should allow merkle root updates for welcome bonus', async function () {
-                const newRoot = keccak256(ethers.toUtf8Bytes('new-merkle-root'));
-
-                await expect(
-                    rewardManager.connect(admin).updateMerkleRoot(
-                        PoolType.WelcomeBonus,
-                        newRoot
-                    )
-                )
-                    .to.emit(rewardManager, 'MerkleRootUpdated')
-                    .withArgs(PoolType.WelcomeBonus, ethers.ZeroHash, newRoot);
-            });
-
-            it('should allow merkle root updates for referral bonus', async function () {
-                const newRoot = keccak256(ethers.toUtf8Bytes('new-merkle-root'));
-
-                await expect(
-                    rewardManager.connect(admin).updateMerkleRoot(
-                        PoolType.ReferralBonus,
-                        newRoot
-                    )
-                )
-                    .to.emit(rewardManager, 'MerkleRootUpdated')
-                    .withArgs(PoolType.ReferralBonus, ethers.ZeroHash, newRoot);
-            });
-
-            it('should allow merkle root updates for first sale bonus', async function () {
-                const newRoot = keccak256(ethers.toUtf8Bytes('new-merkle-root'));
-
-                await expect(
-                    rewardManager.connect(admin).updateMerkleRoot(
-                        PoolType.FirstSaleBonus,
-                        newRoot
-                    )
-                )
-                    .to.emit(rewardManager, 'MerkleRootUpdated')
-                    .withArgs(PoolType.FirstSaleBonus, ethers.ZeroHash, newRoot);
-            });
-
-            it('should reject unauthorized merkle root updates', async function () {
-                const newRoot = keccak256(ethers.toUtf8Bytes('new-merkle-root'));
-
-                await expect(
-                    rewardManager.connect(unauthorized).updateMerkleRoot(
-                        PoolType.WelcomeBonus,
-                        newRoot
-                    )
-                ).to.be.revertedWithCustomError(rewardManager, 'AccessControlUnauthorizedAccount');
-            });
-        });
-
         describe('Pause/Unpause', function () {
             it('should allow pausing by PAUSER_ROLE', async function () {
                 await rewardManager.connect(admin).pause();
@@ -760,25 +217,6 @@ describe('OmniRewardManager', function () {
                 await rewardManager.connect(admin).pause();
                 await rewardManager.connect(admin).unpause();
                 expect(await rewardManager.paused()).to.be.false;
-            });
-
-            it('should block claims when paused', async function () {
-                await rewardManager.connect(admin).pause();
-
-                // Set up valid merkle proof
-                const result = generateMerkleProof(
-                    user1.address,
-                    WELCOME_BONUS_AMOUNT,
-                    ['dummy1', 'dummy2']
-                );
-
-                await expect(
-                    rewardManager.connect(admin).claimWelcomeBonus(
-                        user1.address,
-                        WELCOME_BONUS_AMOUNT,
-                        result.proof
-                    )
-                ).to.be.revertedWithCustomError(rewardManager, 'EnforcedPause');
             });
 
             it('should reject unauthorized pause', async function () {
@@ -847,118 +285,6 @@ describe('OmniRewardManager', function () {
     });
 
     // ========================================
-    // Pool Depletion Tests
-    // ========================================
-
-    describe('Pool Depletion', function () {
-        it('should emit PoolLowWarning when threshold crossed', async function () {
-            // Create a new reward manager with small pool for testing threshold
-            const smallPool = ethers.parseEther('100'); // 100 XOM
-            const OmniRewardManagerFactory = await ethers.getContractFactory('OmniRewardManager');
-
-            const proxy = await upgrades.deployProxy(
-                OmniRewardManagerFactory,
-                [
-                    await omniCoin.getAddress(),
-                    smallPool,
-                    smallPool,
-                    smallPool,
-                    admin.address,
-                ],
-                { initializer: false, kind: 'uups', constructorArgs: [ethers.ZeroAddress] }
-            );
-            await proxy.waitForDeployment();
-
-            const smallRewardManager = OmniRewardManagerFactory.attach(await proxy.getAddress());
-
-            // Fund the contract before initialization (M-02 balance check)
-            const totalSmall = smallPool * BigInt(3);
-            await omniCoin.transfer(await smallRewardManager.getAddress(), totalSmall);
-
-            // Initialize after funding
-            await smallRewardManager.initialize(
-                await omniCoin.getAddress(), smallPool, smallPool, smallPool, admin.address
-            );
-            // Grant roles (audit reduced _setupRoles to DEFAULT_ADMIN_ROLE only)
-            await smallRewardManager.connect(admin).grantRole(BONUS_DISTRIBUTOR_ROLE, admin.address);
-
-            // Claim 99% of the pool (threshold is 1%)
-            const largeClaimAmount = ethers.parseEther('99'); // 99 XOM out of 100
-
-            // Set up merkle proof
-            const result = generateMerkleProof(
-                user1.address,
-                largeClaimAmount,
-                ['dummy1', 'dummy2']
-            );
-
-            await smallRewardManager.connect(admin).updateMerkleRoot(
-                PoolType.WelcomeBonus,
-                result.root
-            );
-
-            // This should emit PoolLowWarning since remaining (1 XOM) < threshold (1 XOM)
-            const threshold = smallPool / BigInt(100); // 1% = 1 XOM
-
-            await expect(
-                smallRewardManager.connect(admin).claimWelcomeBonus(
-                    user1.address,
-                    largeClaimAmount,
-                    result.proof
-                )
-            )
-                .to.emit(smallRewardManager, 'PoolLowWarning')
-                .withArgs(PoolType.WelcomeBonus, smallPool - largeClaimAmount, threshold);
-        });
-
-        it('should reject claims when pool depleted', async function () {
-            // Create reward manager with exact amount needed
-            const exactPool = WELCOME_BONUS_AMOUNT;
-            const OmniRewardManagerFactory = await ethers.getContractFactory('OmniRewardManager');
-
-            const proxy = await upgrades.deployProxy(
-                OmniRewardManagerFactory,
-                [
-                    await omniCoin.getAddress(),
-                    exactPool,
-                    exactPool,
-                    exactPool,
-                    admin.address,
-                ],
-                { initializer: false, kind: 'uups', constructorArgs: [ethers.ZeroAddress] }
-            );
-            await proxy.waitForDeployment();
-
-            const smallRewardManager = OmniRewardManagerFactory.attach(await proxy.getAddress());
-
-            // Fund before initialization (M-02 balance check)
-            await omniCoin.transfer(await smallRewardManager.getAddress(), exactPool * BigInt(3));
-
-            // Initialize after funding
-            await smallRewardManager.initialize(
-                await omniCoin.getAddress(), exactPool, exactPool, exactPool, admin.address
-            );
-            // Grant roles (audit reduced _setupRoles to DEFAULT_ADMIN_ROLE only)
-            await smallRewardManager.connect(admin).grantRole(BONUS_DISTRIBUTOR_ROLE, admin.address);
-
-            // First claim should succeed
-            const result1 = generateMerkleProof(user1.address, exactPool, ['d1', 'd2']);
-            await smallRewardManager.connect(admin).updateMerkleRoot(PoolType.WelcomeBonus, result1.root);
-            await smallRewardManager.connect(admin).claimWelcomeBonus(user1.address, exactPool, result1.proof);
-
-            // Second claim should fail (pool empty)
-            const result2 = generateMerkleProof(user2.address, exactPool, ['d3', 'd4']);
-            await smallRewardManager.connect(admin).updateMerkleRoot(PoolType.WelcomeBonus, result2.root);
-
-            await expect(
-                smallRewardManager.connect(admin).claimWelcomeBonus(user2.address, exactPool, result2.proof)
-            )
-                .to.be.revertedWithCustomError(smallRewardManager, 'InsufficientPoolBalance')
-                .withArgs(PoolType.WelcomeBonus, exactPool, 0);
-        });
-    });
-
-    // ========================================
     // Upgrade Tests
     // ========================================
 
@@ -985,13 +311,6 @@ describe('OmniRewardManager', function () {
         });
 
         it('should preserve state after upgrade', async function () {
-            // Distribute some rewards first (claim a welcome bonus)
-            const result = generateMerkleProof(user1.address, WELCOME_BONUS_AMOUNT, ['w1']);
-            await rewardManager.connect(admin).updateMerkleRoot(PoolType.WelcomeBonus, result.root);
-            await rewardManager.connect(admin).claimWelcomeBonus(
-                user1.address, WELCOME_BONUS_AMOUNT, result.proof
-            );
-
             const distributedBefore = await rewardManager.getTotalDistributed();
 
             // Upgrade
@@ -1004,7 +323,7 @@ describe('OmniRewardManager', function () {
 
             // Verify state preserved
             expect(await upgraded.getTotalDistributed()).to.equal(distributedBefore);
-            expect(await upgraded.hasClaimedWelcomeBonus(user1.address)).to.be.true;
+            expect(await upgraded.hasClaimedWelcomeBonus(user1.address)).to.be.false;
         });
     });
 
@@ -1015,35 +334,35 @@ describe('OmniRewardManager', function () {
     describe('Role Management', function () {
         it('should allow admin to grant roles', async function () {
             await rewardManager.connect(admin).grantRole(
-                BONUS_DISTRIBUTOR_ROLE,
+                UPGRADER_ROLE,
                 user1.address
             );
 
-            expect(await rewardManager.hasRole(BONUS_DISTRIBUTOR_ROLE, user1.address))
+            expect(await rewardManager.hasRole(UPGRADER_ROLE, user1.address))
                 .to.be.true;
         });
 
         it('should allow admin to revoke roles', async function () {
             // First grant
             await rewardManager.connect(admin).grantRole(
-                BONUS_DISTRIBUTOR_ROLE,
+                UPGRADER_ROLE,
                 user1.address
             );
 
             // Then revoke
             await rewardManager.connect(admin).revokeRole(
-                BONUS_DISTRIBUTOR_ROLE,
+                UPGRADER_ROLE,
                 user1.address
             );
 
-            expect(await rewardManager.hasRole(BONUS_DISTRIBUTOR_ROLE, user1.address))
+            expect(await rewardManager.hasRole(UPGRADER_ROLE, user1.address))
                 .to.be.false;
         });
 
         it('should reject role management from non-admin', async function () {
             await expect(
                 rewardManager.connect(unauthorized).grantRole(
-                    BONUS_DISTRIBUTOR_ROLE,
+                    UPGRADER_ROLE,
                     user1.address
                 )
             ).to.be.revertedWithCustomError(rewardManager, 'AccessControlUnauthorizedAccount');
@@ -1051,64 +370,10 @@ describe('OmniRewardManager', function () {
     });
 
     // ========================================
-    // Edge Cases and Security Tests
+    // Gasless Relay Welcome Bonus Tests
     // ========================================
 
-    describe('Edge Cases and Security', function () {
-        it('should handle multiple users claiming different bonuses', async function () {
-            // User1 claims welcome bonus
-            const welcome1 = generateMerkleProof(user1.address, WELCOME_BONUS_AMOUNT, ['w1']);
-            await rewardManager.connect(admin).updateMerkleRoot(PoolType.WelcomeBonus, welcome1.root);
-            await rewardManager.connect(admin).claimWelcomeBonus(user1.address, WELCOME_BONUS_AMOUNT, welcome1.proof);
-
-            // User2 claims first sale bonus
-            const firstSale2 = generateMerkleProof(user2.address, FIRST_SALE_AMOUNT, ['fs1']);
-            await rewardManager.connect(admin).updateMerkleRoot(PoolType.FirstSaleBonus, firstSale2.root);
-            await rewardManager.connect(admin).claimFirstSaleBonus(user2.address, FIRST_SALE_AMOUNT, firstSale2.proof);
-
-            // Verify balances
-            expect(await omniCoin.balanceOf(user1.address)).to.equal(WELCOME_BONUS_AMOUNT);
-            expect(await omniCoin.balanceOf(user2.address)).to.equal(FIRST_SALE_AMOUNT);
-        });
-
-        it('should handle same user claiming different bonus types', async function () {
-            // User1 claims welcome bonus
-            const welcome = generateMerkleProof(user1.address, WELCOME_BONUS_AMOUNT, ['w1']);
-            await rewardManager.connect(admin).updateMerkleRoot(PoolType.WelcomeBonus, welcome.root);
-            await rewardManager.connect(admin).claimWelcomeBonus(user1.address, WELCOME_BONUS_AMOUNT, welcome.proof);
-
-            // Same user claims first sale bonus
-            const firstSale = generateMerkleProof(user1.address, FIRST_SALE_AMOUNT, ['fs1']);
-            await rewardManager.connect(admin).updateMerkleRoot(PoolType.FirstSaleBonus, firstSale.root);
-            await rewardManager.connect(admin).claimFirstSaleBonus(user1.address, FIRST_SALE_AMOUNT, firstSale.proof);
-
-            // Verify total balance
-            expect(await omniCoin.balanceOf(user1.address))
-                .to.equal(WELCOME_BONUS_AMOUNT + FIRST_SALE_AMOUNT);
-        });
-
-        it('should correctly track distributed amounts across pools', async function () {
-            // Claim from multiple pools
-            const welcome = generateMerkleProof(user1.address, WELCOME_BONUS_AMOUNT, ['w1']);
-            await rewardManager.connect(admin).updateMerkleRoot(PoolType.WelcomeBonus, welcome.root);
-            await rewardManager.connect(admin).claimWelcomeBonus(user1.address, WELCOME_BONUS_AMOUNT, welcome.proof);
-
-            const firstSale = generateMerkleProof(user2.address, FIRST_SALE_AMOUNT, ['fs1']);
-            await rewardManager.connect(admin).updateMerkleRoot(PoolType.FirstSaleBonus, firstSale.root);
-            await rewardManager.connect(admin).claimFirstSaleBonus(user2.address, FIRST_SALE_AMOUNT, firstSale.proof);
-
-            const totalDistributed = await rewardManager.getTotalDistributed();
-            const expectedTotal = WELCOME_BONUS_AMOUNT + FIRST_SALE_AMOUNT;
-
-            expect(totalDistributed).to.equal(expectedTotal);
-        });
-    });
-
-    // ========================================
-    // Trustless Welcome Bonus Tests
-    // ========================================
-
-    describe('Trustless Welcome Bonus (claimWelcomeBonusTrustless)', function () {
+    describe('Welcome Bonus (claimWelcomeBonus - gasless relay)', function () {
         let omniRegistration: any;
         let verificationSigner: any;
 
@@ -1133,37 +398,6 @@ describe('OmniRewardManager', function () {
                 { name: 'deadline', type: 'uint256' },
             ],
         };
-
-        /**
-         * Generate phone verification signature
-         */
-        async function signPhoneVerification(
-            signer: any,
-            user: string,
-            phoneHash: string,
-            timestamp: number,
-            nonce: string,
-            deadline: number,
-            contractAddr: string,
-            chainId: bigint
-        ): Promise<string> {
-            const domain = {
-                name: 'OmniRegistration',
-                version: '1',
-                chainId: chainId,
-                verifyingContract: contractAddr,
-            };
-
-            const value = {
-                user,
-                phoneHash,
-                timestamp,
-                nonce,
-                deadline,
-            };
-
-            return signer.signTypedData(domain, PHONE_VERIFICATION_TYPES, value);
-        }
 
         /**
          * Generate social verification signature
@@ -1198,6 +432,101 @@ describe('OmniRewardManager', function () {
             return signer.signTypedData(domain, SOCIAL_VERIFICATION_TYPES, value);
         }
 
+        /**
+         * Sign a welcome bonus claim request (EIP-712)
+         */
+        async function signWelcomeBonusClaim(
+            signer: any,
+            user: string,
+            nonce: bigint,
+            deadline: number
+        ): Promise<string> {
+            const network = await ethers.provider.getNetwork();
+            const domain = {
+                name: 'OmniRewardManager',
+                version: '1',
+                chainId: network.chainId,
+                verifyingContract: await rewardManager.getAddress(),
+            };
+
+            const types = {
+                ClaimWelcomeBonus: [
+                    { name: 'user', type: 'address' },
+                    { name: 'nonce', type: 'uint256' },
+                    { name: 'deadline', type: 'uint256' },
+                ],
+            };
+
+            const value = { user, nonce, deadline };
+            return signer.signTypedData(domain, types, value);
+        }
+
+        /**
+         * Sign a referral bonus claim request (EIP-712)
+         */
+        async function signReferralBonusClaim(
+            signer: any,
+            user: string,
+            nonce: bigint,
+            deadline: number
+        ): Promise<string> {
+            const network = await ethers.provider.getNetwork();
+            const domain = {
+                name: 'OmniRewardManager',
+                version: '1',
+                chainId: network.chainId,
+                verifyingContract: await rewardManager.getAddress(),
+            };
+
+            const types = {
+                ClaimReferralBonus: [
+                    { name: 'user', type: 'address' },
+                    { name: 'nonce', type: 'uint256' },
+                    { name: 'deadline', type: 'uint256' },
+                ],
+            };
+
+            const value = { user, nonce, deadline };
+            return signer.signTypedData(domain, types, value);
+        }
+
+        /**
+         * Sign a first sale bonus claim request (EIP-712)
+         */
+        async function signFirstSaleBonusClaim(
+            signer: any,
+            user: string,
+            nonce: bigint,
+            deadline: number
+        ): Promise<string> {
+            const network = await ethers.provider.getNetwork();
+            const domain = {
+                name: 'OmniRewardManager',
+                version: '1',
+                chainId: network.chainId,
+                verifyingContract: await rewardManager.getAddress(),
+            };
+
+            const types = {
+                ClaimFirstSaleBonus: [
+                    { name: 'user', type: 'address' },
+                    { name: 'nonce', type: 'uint256' },
+                    { name: 'deadline', type: 'uint256' },
+                ],
+            };
+
+            const value = { user, nonce, deadline };
+            return signer.signTypedData(domain, types, value);
+        }
+
+        /**
+         * Get a future deadline timestamp
+         */
+        async function getFutureDeadline(): Promise<number> {
+            const latestBlock = await ethers.provider.getBlock('latest');
+            return latestBlock!.timestamp + 3600;
+        }
+
         beforeEach(async function () {
             // Create a verification signer (trusted verification key)
             verificationSigner = ethers.Wallet.createRandom().connect(ethers.provider);
@@ -1228,7 +557,6 @@ describe('OmniRewardManager', function () {
             await rewardManager.connect(admin).setRegistrationContract(await omniRegistration.getAddress());
 
             // Set reward manager address so it can mark bonuses as claimed
-            // (BONUS_MARKER_ROLE replaced by omniRewardManagerAddress)
             await omniRegistration.connect(owner).setOmniRewardManagerAddress(await rewardManager.getAddress());
         });
 
@@ -1282,7 +610,8 @@ describe('OmniRewardManager', function () {
 
             // Submit social verification (as the user)
             const userSigner = await ethers.getSigner(userAddr);
-            await omniRegistration.connect(userSigner).submitSocialVerification(
+            await omniRegistration.connect(userSigner).submitSocialVerificationFor(
+                userAddr,
                 socialHash,
                 platform,
                 socialTimestamp,
@@ -1322,16 +651,23 @@ describe('OmniRewardManager', function () {
             expect(hasKyc).to.be.false;
         });
 
-        it('should allow claiming after KYC Tier 1 completion', async function () {
+        it('should allow claiming after KYC Tier 1 completion (relayed)', async function () {
             // Register user with KYC Tier 1 using helper function
             await registerUserWithKycTier1(user1.address);
 
             // Verify KYC Tier 1 is complete
             expect(await omniRegistration.hasKycTier1(user1.address)).to.be.true;
 
-            // Claim trustless welcome bonus
+            // Create EIP-712 signed claim
+            const nonce = await rewardManager.getClaimNonce(user1.address);
+            const deadline = await getFutureDeadline();
+            const signature = await signWelcomeBonusClaim(user1, user1.address, nonce, deadline);
+
+            // Relay the claim (validator pays gas)
             const balanceBefore = await omniCoin.balanceOf(user1.address);
-            await rewardManager.connect(user1).claimWelcomeBonusTrustless();
+            await rewardManager.connect(validator).claimWelcomeBonus(
+                user1.address, nonce, deadline, signature
+            );
             const balanceAfter = await omniCoin.balanceOf(user1.address);
 
             // Verify user received tokens (10000 XOM for first 1000 users)
@@ -1340,11 +676,17 @@ describe('OmniRewardManager', function () {
             expect(received).to.equal(ethers.parseEther('10000'));
         });
 
-        it('should emit TrustlessWelcomeBonusClaimed event', async function () {
+        it('should emit WelcomeBonusClaimedRelayed event', async function () {
             await registerUserWithKycTier1(user1.address);
 
-            await expect(rewardManager.connect(user1).claimWelcomeBonusTrustless())
-                .to.emit(rewardManager, 'TrustlessWelcomeBonusClaimed');
+            const nonce = await rewardManager.getClaimNonce(user1.address);
+            const deadline = await getFutureDeadline();
+            const signature = await signWelcomeBonusClaim(user1, user1.address, nonce, deadline);
+
+            await expect(rewardManager.connect(validator).claimWelcomeBonus(
+                user1.address, nonce, deadline, signature
+            ))
+                .to.emit(rewardManager, 'WelcomeBonusClaimedRelayed');
         });
 
         it('should reject when user has not completed KYC Tier 1', async function () {
@@ -1363,15 +705,26 @@ describe('OmniRewardManager', function () {
             expect(await omniRegistration.isRegistered(user1.address)).to.be.true;
             expect(await omniRegistration.hasKycTier1(user1.address)).to.be.false;
 
-            // Try to claim without KYC Tier 1
-            await expect(rewardManager.connect(user1).claimWelcomeBonusTrustless())
+            // Try to claim via relay
+            const nonce = await rewardManager.getClaimNonce(user1.address);
+            const deadline = await getFutureDeadline();
+            const signature = await signWelcomeBonusClaim(user1, user1.address, nonce, deadline);
+
+            await expect(rewardManager.connect(validator).claimWelcomeBonus(
+                user1.address, nonce, deadline, signature
+            ))
                 .to.be.revertedWithCustomError(rewardManager, 'KycTier1Required')
                 .withArgs(user1.address);
         });
 
         it('should reject when user is not registered', async function () {
-            // Try to claim without registration
-            await expect(rewardManager.connect(user1).claimWelcomeBonusTrustless())
+            const nonce = await rewardManager.getClaimNonce(user1.address);
+            const deadline = await getFutureDeadline();
+            const signature = await signWelcomeBonusClaim(user1, user1.address, nonce, deadline);
+
+            await expect(rewardManager.connect(validator).claimWelcomeBonus(
+                user1.address, nonce, deadline, signature
+            ))
                 .to.be.revertedWithCustomError(rewardManager, 'UserNotRegistered')
                 .withArgs(user1.address);
         });
@@ -1403,8 +756,14 @@ describe('OmniRewardManager', function () {
                 admin.address
             );
 
-            // Don't set registration contract
-            await expect(newRewardManager.connect(user1).claimWelcomeBonusTrustless())
+            // Don't set registration contract — try to claim
+            const nonce = BigInt(0);
+            const deadline = await getFutureDeadline();
+            const signature = await signWelcomeBonusClaim(user1, user1.address, nonce, deadline);
+
+            await expect(newRewardManager.connect(validator).claimWelcomeBonus(
+                user1.address, nonce, deadline, signature
+            ))
                 .to.be.revertedWithCustomError(newRewardManager, 'RegistrationContractNotSet');
         });
 
@@ -1412,10 +771,19 @@ describe('OmniRewardManager', function () {
             await registerUserWithKycTier1(user1.address);
 
             // First claim should succeed
-            await rewardManager.connect(user1).claimWelcomeBonusTrustless();
+            const nonce1 = await rewardManager.getClaimNonce(user1.address);
+            const deadline = await getFutureDeadline();
+            const sig1 = await signWelcomeBonusClaim(user1, user1.address, nonce1, deadline);
+            await rewardManager.connect(validator).claimWelcomeBonus(
+                user1.address, nonce1, deadline, sig1
+            );
 
             // Second claim should fail
-            await expect(rewardManager.connect(user1).claimWelcomeBonusTrustless())
+            const nonce2 = await rewardManager.getClaimNonce(user1.address);
+            const sig2 = await signWelcomeBonusClaim(user1, user1.address, nonce2, deadline);
+            await expect(rewardManager.connect(validator).claimWelcomeBonus(
+                user1.address, nonce2, deadline, sig2
+            ))
                 .to.be.revertedWithCustomError(rewardManager, 'BonusAlreadyClaimed')
                 .withArgs(user1.address, PoolType.WelcomeBonus);
         });
@@ -1424,8 +792,54 @@ describe('OmniRewardManager', function () {
             await registerUserWithKycTier1(user1.address);
             await rewardManager.connect(admin).pause();
 
-            await expect(rewardManager.connect(user1).claimWelcomeBonusTrustless())
+            const nonce = await rewardManager.getClaimNonce(user1.address);
+            const deadline = await getFutureDeadline();
+            const signature = await signWelcomeBonusClaim(user1, user1.address, nonce, deadline);
+
+            await expect(rewardManager.connect(validator).claimWelcomeBonus(
+                user1.address, nonce, deadline, signature
+            ))
                 .to.be.revertedWithCustomError(rewardManager, 'EnforcedPause');
+        });
+
+        it('should reject expired deadline', async function () {
+            await registerUserWithKycTier1(user1.address);
+
+            const nonce = await rewardManager.getClaimNonce(user1.address);
+            const deadline = 1; // Expired timestamp
+            const signature = await signWelcomeBonusClaim(user1, user1.address, nonce, deadline);
+
+            await expect(rewardManager.connect(validator).claimWelcomeBonus(
+                user1.address, nonce, deadline, signature
+            ))
+                .to.be.revertedWithCustomError(rewardManager, 'ClaimDeadlineExpired');
+        });
+
+        it('should reject invalid nonce', async function () {
+            await registerUserWithKycTier1(user1.address);
+
+            const wrongNonce = BigInt(999);
+            const deadline = await getFutureDeadline();
+            const signature = await signWelcomeBonusClaim(user1, user1.address, wrongNonce, deadline);
+
+            await expect(rewardManager.connect(validator).claimWelcomeBonus(
+                user1.address, wrongNonce, deadline, signature
+            ))
+                .to.be.revertedWithCustomError(rewardManager, 'InvalidClaimNonce');
+        });
+
+        it('should reject wrong signer', async function () {
+            await registerUserWithKycTier1(user1.address);
+
+            const nonce = await rewardManager.getClaimNonce(user1.address);
+            const deadline = await getFutureDeadline();
+            // Sign with user2's key but claim for user1
+            const signature = await signWelcomeBonusClaim(user2, user1.address, nonce, deadline);
+
+            await expect(rewardManager.connect(validator).claimWelcomeBonus(
+                user1.address, nonce, deadline, signature
+            ))
+                .to.be.revertedWithCustomError(rewardManager, 'InvalidUserSignature');
         });
 
         it('should auto-trigger referral bonus if referrer exists', async function () {
@@ -1442,17 +856,29 @@ describe('OmniRewardManager', function () {
             const pendingBefore = await rewardManager.getPendingReferralBonus(referrer.address);
             expect(pendingBefore).to.equal(0);
 
-            // Claim welcome bonus (should auto-accumulate referral bonus)
-            await rewardManager.connect(user1).claimWelcomeBonusTrustless();
+            // Claim welcome bonus via relay
+            const nonce = await rewardManager.getClaimNonce(user1.address);
+            const deadline = await getFutureDeadline();
+            const signature = await signWelcomeBonusClaim(user1, user1.address, nonce, deadline);
+            await rewardManager.connect(validator).claimWelcomeBonus(
+                user1.address, nonce, deadline, signature
+            );
 
             // Referral bonus should be ACCUMULATED (not transferred immediately)
-            // This is the trustless design - referrer must claim via claimReferralBonusPermissionless()
             const pendingAfter = await rewardManager.getPendingReferralBonus(referrer.address);
             expect(pendingAfter).to.be.greaterThan(0);
 
-            // Verify referrer can claim the accumulated bonus
+            // Verify referrer can claim the accumulated bonus via relay
+            const referrerNonce = await rewardManager.getClaimNonce(referrer.address);
+            const referrerDeadline = await getFutureDeadline();
+            const referrerSig = await signReferralBonusClaim(
+                referrer, referrer.address, referrerNonce, referrerDeadline
+            );
+
             const referrerBalanceBefore = await omniCoin.balanceOf(referrer.address);
-            await rewardManager.connect(referrer).claimReferralBonusPermissionless();
+            await rewardManager.connect(validator).claimReferralBonus(
+                referrer.address, referrerNonce, referrerDeadline, referrerSig
+            );
             const referrerBalanceAfter = await omniCoin.balanceOf(referrer.address);
 
             // Referrer should have received the accumulated bonus (70% of referral amount)
@@ -1473,50 +899,7 @@ describe('OmniRewardManager', function () {
             // Verify referrer does NOT have KYC Tier 1
             expect(await omniRegistration.hasKycTier1(referrer.address)).to.be.false;
 
-            // Register user1 with KYC Tier 1 and referrer who lacks KYC Tier 1
-            // Note: registerUser now requires referrer KYC Tier 1 (SYBIL-H02),
-            // so we need to register user1 without referrer first, then the
-            // referral link would already be set. But actually, registering with
-            // a Tier 0 referrer will revert now. So let's test via a referrer
-            // who completes KYC Tier 1 AFTER registering, and use the legacy
-            // admin claim path for the test.
-            //
-            // Actually, _distributeAutoReferralBonus is called from
-            // claimWelcomeBonusTrustless, so we need a valid registration with
-            // a referrer. The referrer KYC check in registerUser blocks Tier 0
-            // referrers. For this test, we need to:
-            // 1. Register referrer with KYC Tier 1 (so registerUser passes)
-            // 2. Then somehow make them lose KYC Tier 1 OR
-            // 3. Use a mock registration
-            //
-            // Simpler approach: Register user1 before our new check was applied.
-            // Since we can't do that in the contract, we'll register user1 with
-            // referrer who HAS KYC Tier 1, then remove referrer's social hash
-            // via admin unregister + re-register without social.
-            //
-            // Simplest approach: use the admin claimWelcomeBonus which doesn't
-            // go through registerUser. We can set up the registration data
-            // manually by registering the referrer first, then the user.
-            // But claimWelcomeBonus (admin) doesn't call _distributeAutoReferralBonus.
-            // Only the trustless/permissionless paths do.
-            //
-            // Best approach: register referrer with full KYC, register user1
-            // with referrer, then admin-unregister referrer (removes kycTier1CompletedAt),
-            // then re-register referrer without social → kycTier1CompletedAt = 0.
-
-            // OK, let's take a different approach: register user1 without referrer
-            // via admin, then manually set the referrer in the registration contract.
-            // Actually, the referrer is immutable once set. Let's use the simplest
-            // possible approach:
-            //
-            // 1. Complete KYC Tier 1 for referrer (so registerUser doesn't revert)
-            // 2. Register user1 with referrer (passes KYC check)
-            // 3. Admin-unregister referrer (clears kycTier1CompletedAt)
-            // 4. Re-register referrer without social (no KYC Tier 1)
-            // 5. user1 claims welcome bonus → referral bonus should be SKIPPED
-
-            // Step: Complete KYC Tier 1 for referrer
-            // referrer already registered above, just needs social verification
+            // Complete KYC Tier 1 for referrer (needed to pass registerUser referrer check)
             const network = await ethers.provider.getNetwork();
             const chainId = network.chainId;
             const regAddr = await omniRegistration.getAddress();
@@ -1529,8 +912,8 @@ describe('OmniRewardManager', function () {
                 verificationSigner, referrer.address, socialHash1, 'twitter',
                 socialTimestamp1, socialNonce1, socialDeadline1, regAddr, chainId
             );
-            await omniRegistration.connect(referrer).submitSocialVerification(
-                socialHash1, 'twitter', socialTimestamp1, socialNonce1, socialDeadline1, socialSig1
+            await omniRegistration.connect(referrer).submitSocialVerificationFor(
+                referrer.address, socialHash1, 'twitter', socialTimestamp1, socialNonce1, socialDeadline1, socialSig1
             );
             expect(await omniRegistration.hasKycTier1(referrer.address)).to.be.true;
 
@@ -1551,11 +934,16 @@ describe('OmniRewardManager', function () {
             // Set ODDAO address
             await rewardManager.connect(admin).setOddaoAddress(oddao.address);
 
-            // user1 claims welcome bonus → referral bonus should be SKIPPED
+            // user1 claims welcome bonus via relay → referral bonus should be SKIPPED
             const pendingBefore = await rewardManager.getPendingReferralBonus(referrer.address);
             expect(pendingBefore).to.equal(0);
 
-            await rewardManager.connect(user1).claimWelcomeBonusTrustless();
+            const nonce = await rewardManager.getClaimNonce(user1.address);
+            const deadline = await getFutureDeadline();
+            const signature = await signWelcomeBonusClaim(user1, user1.address, nonce, deadline);
+            await rewardManager.connect(validator).claimWelcomeBonus(
+                user1.address, nonce, deadline, signature
+            );
 
             // Referral bonus should NOT have accumulated (referrer lacks KYC Tier 1)
             const pendingAfter = await rewardManager.getPendingReferralBonus(referrer.address);
@@ -1591,8 +979,13 @@ describe('OmniRewardManager', function () {
             // 6. Track ODDAO balance before
             const oddaoBalanceBefore = await omniCoin.balanceOf(oddao.address);
 
-            // 7. user1 claims welcome bonus
-            await rewardManager.connect(user1).claimWelcomeBonusTrustless();
+            // 7. user1 claims welcome bonus via relay
+            const nonce = await rewardManager.getClaimNonce(user1.address);
+            const deadline = await getFutureDeadline();
+            const signature = await signWelcomeBonusClaim(user1, user1.address, nonce, deadline);
+            await rewardManager.connect(validator).claimWelcomeBonus(
+                user1.address, nonce, deadline, signature
+            );
 
             // 8. Referrer should have accumulated bonus (has KYC Tier 1)
             const referrerPending = await rewardManager.getPendingReferralBonus(referrer.address);
@@ -1620,8 +1013,13 @@ describe('OmniRewardManager', function () {
             // Set ODDAO address
             await rewardManager.connect(admin).setOddaoAddress(oddao.address);
 
-            // user1 claims welcome bonus
-            await rewardManager.connect(user1).claimWelcomeBonusTrustless();
+            // user1 claims welcome bonus via relay
+            const nonce = await rewardManager.getClaimNonce(user1.address);
+            const deadline = await getFutureDeadline();
+            const signature = await signWelcomeBonusClaim(user1, user1.address, nonce, deadline);
+            await rewardManager.connect(validator).claimWelcomeBonus(
+                user1.address, nonce, deadline, signature
+            );
 
             // Both referrer and secondLevelReferrer should have accumulated bonuses
             const referrerPending = await rewardManager.getPendingReferralBonus(referrer.address);
@@ -1631,7 +1029,6 @@ describe('OmniRewardManager', function () {
             expect(l2Pending).to.be.greaterThan(0);
 
             // Verify the 70/20 split
-            // referrerPending should be 70% of total, l2Pending should be 20%
             // referrerPending / l2Pending ≈ 70/20 = 3.5
             const ratio = Number(referrerPending) / Number(l2Pending);
             expect(ratio).to.be.closeTo(3.5, 0.1);
@@ -1643,15 +1040,70 @@ describe('OmniRewardManager', function () {
 
             await registerUserWithKycTier1(user1.address);
 
+            const nonce = await rewardManager.getClaimNonce(user1.address);
+            const deadline = await getFutureDeadline();
+            const signature = await signWelcomeBonusClaim(user1, user1.address, nonce, deadline);
+
             const balanceBefore = await omniCoin.balanceOf(user1.address);
-            await rewardManager.connect(user1).claimWelcomeBonusTrustless();
+            await rewardManager.connect(validator).claimWelcomeBonus(
+                user1.address, nonce, deadline, signature
+            );
             const balanceAfter = await omniCoin.balanceOf(user1.address);
 
             const bonusReceived = balanceAfter - balanceBefore;
 
             // With ~3997 effective registrations, should be in tier 2 (5000 XOM)
-            // But the exact tier depends on totalRegistrations() + legacyCount
             expect(bonusReceived).to.equal(ethers.parseEther('5000'));
+        });
+
+        it('should increment nonce after claim', async function () {
+            await registerUserWithKycTier1(user1.address);
+
+            const nonceBefore = await rewardManager.getClaimNonce(user1.address);
+            expect(nonceBefore).to.equal(0);
+
+            const deadline = await getFutureDeadline();
+            const signature = await signWelcomeBonusClaim(user1, user1.address, nonceBefore, deadline);
+            await rewardManager.connect(validator).claimWelcomeBonus(
+                user1.address, nonceBefore, deadline, signature
+            );
+
+            const nonceAfter = await rewardManager.getClaimNonce(user1.address);
+            expect(nonceAfter).to.equal(1);
+        });
+
+        it('should mark user as claimed', async function () {
+            await registerUserWithKycTier1(user1.address);
+
+            expect(await rewardManager.hasClaimedWelcomeBonus(user1.address)).to.be.false;
+
+            const nonce = await rewardManager.getClaimNonce(user1.address);
+            const deadline = await getFutureDeadline();
+            const signature = await signWelcomeBonusClaim(user1, user1.address, nonce, deadline);
+            await rewardManager.connect(validator).claimWelcomeBonus(
+                user1.address, nonce, deadline, signature
+            );
+
+            expect(await rewardManager.hasClaimedWelcomeBonus(user1.address)).to.be.true;
+        });
+
+        it('should update pool statistics correctly', async function () {
+            await registerUserWithKycTier1(user1.address);
+
+            const nonce = await rewardManager.getClaimNonce(user1.address);
+            const deadline = await getFutureDeadline();
+            const signature = await signWelcomeBonusClaim(user1, user1.address, nonce, deadline);
+            await rewardManager.connect(validator).claimWelcomeBonus(
+                user1.address, nonce, deadline, signature
+            );
+
+            const [initialAmounts, remainingAmounts, distributedAmounts] =
+                await rewardManager.getPoolStatistics();
+
+            const bonusAmount = ethers.parseEther('10000'); // Tier 1 bonus
+            expect(initialAmounts[0]).to.equal(WELCOME_BONUS_POOL);
+            expect(remainingAmounts[0]).to.equal(WELCOME_BONUS_POOL - bonusAmount);
+            expect(distributedAmounts[0]).to.equal(bonusAmount);
         });
     });
 });

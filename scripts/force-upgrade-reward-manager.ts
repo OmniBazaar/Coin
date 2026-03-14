@@ -33,8 +33,7 @@ async function main(): Promise<void> {
     const selectors = [
         { name: 'registrationContract()', selector: ethers.id('registrationContract()').slice(2, 10) },
         { name: 'setRegistrationContract(address)', selector: ethers.id('setRegistrationContract(address)').slice(2, 10) },
-        { name: 'claimWelcomeBonusPermissionless()', selector: ethers.id('claimWelcomeBonusPermissionless()').slice(2, 10) },
-        { name: 'claimWelcomeBonusRelayed(address,uint256,uint256,bytes)', selector: ethers.id('claimWelcomeBonusRelayed(address,uint256,uint256,bytes)').slice(2, 10) },
+        { name: 'claimWelcomeBonus(address,uint256,uint256,bytes)', selector: ethers.id('claimWelcomeBonus(address,uint256,uint256,bytes)').slice(2, 10) },
         { name: 'getClaimNonce(address)', selector: ethers.id('getClaimNonce(address)').slice(2, 10) },
         { name: 'reinitializeV2()', selector: ethers.id('reinitializeV2()').slice(2, 10) }
     ];

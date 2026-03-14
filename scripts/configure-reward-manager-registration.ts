@@ -137,9 +137,9 @@ async function main(): Promise<void> {
     console.log('\n--- Next Steps ---');
     console.log('1. Grant VALIDATOR_ROLE on OmniRegistration to gateway validators');
     console.log('2. Grant REPORTER_ROLE on OmniSybilGuard to validators');
-    console.log('3. Test permissionless claiming flow:');
+    console.log('3. Test gasless relay claiming flow:');
     console.log('   a. Register user via validator (selfRegister)');
-    console.log('   b. User calls claimWelcomeBonusPermissionless() immediately');
+    console.log('   b. User signs EIP-712 claim intent, validator relays claimWelcomeBonus()');
     console.log('========================================\n');
 }
 

@@ -17,7 +17,7 @@ async function main() {
     { name: 'omniCoin()', selector: ethers.id('omniCoin()').slice(2, 10) },
     { name: 'paused()', selector: ethers.id('paused()').slice(2, 10) },
     { name: 'welcomeBonusPool()', selector: ethers.id('welcomeBonusPool()').slice(2, 10) },
-    { name: 'claimWelcomeBonusPermissionless()', selector: ethers.id('claimWelcomeBonusPermissionless()').slice(2, 10) },
+    { name: 'claimWelcomeBonus(address,uint256,uint256,bytes)', selector: ethers.id('claimWelcomeBonus(address,uint256,uint256,bytes)').slice(2, 10) },
     { name: 'setRegistrationContract(address)', selector: ethers.id('setRegistrationContract(address)').slice(2, 10) }
   ];
 

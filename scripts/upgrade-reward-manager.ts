@@ -4,7 +4,7 @@
  *
  * This script upgrades an existing OmniRewardManager proxy to a new implementation
  * that includes registration integration features (registrationContract, oddaoAddress,
- * claimWelcomeBonusPermissionless, etc.)
+ * claimWelcomeBonus gasless relay, etc.)
  *
  * Usage:
  *   npx hardhat run scripts/upgrade-reward-manager.ts --network fuji
@@ -16,7 +16,7 @@
  * Post-Upgrade:
  *   - Call setRegistrationContract to link with OmniRegistration
  *   - Call setOddaoAddress if needed
- *   - Test claimWelcomeBonusPermissionless
+ *   - Test claimWelcomeBonus (gasless relay)
  */
 
 import { ethers, upgrades } from 'hardhat';

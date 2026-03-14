@@ -3,7 +3,6 @@ pragma solidity 0.8.24;
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
-import {MerkleProof} from "@openzeppelin/contracts/utils/cryptography/MerkleProof.sol";
 import {ECDSA} from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 import {AccessControlUpgradeable} from
     "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
@@ -65,15 +64,6 @@ contract OmniRewardManager is
         uint256 initial;
         uint256 remaining;
         uint256 distributed;
-        bytes32 merkleRoot;
-    }
-
-    /// @notice Parameters for referral bonus distribution
-    struct ReferralParams {
-        address referrer;
-        address secondLevelReferrer;
-        uint256 primaryAmount;
-        uint256 secondaryAmount;
     }
 
     // ============ Constants ============
@@ -86,9 +76,6 @@ contract OmniRewardManager is
 
     /// @notice Effective total supply (actual tokens that will exist)
     uint256 public constant EFFECTIVE_TOTAL_SUPPLY = 16_600_000_000 * 10 ** 18;
-
-    /// @notice Role for distributing user bonuses (welcome, referral, first sale)
-    bytes32 public constant BONUS_DISTRIBUTOR_ROLE = keccak256("BONUS_DISTRIBUTOR_ROLE");
 
     /// @notice Role for upgrading the contract implementation
     bytes32 public constant UPGRADER_ROLE = keccak256("UPGRADER_ROLE");
@@ -231,12 +218,9 @@ contract OmniRewardManager is
     /// @custom:storage-preserved UUPS upgrade safety - do not remove or reorder
     uint256 private __gap_removed_lastRewardTimestamp; // solhint-disable-line var-name-mixedcase
 
-    /// @notice Whether merkle roots are required for role-based claims (M-04 R6)
-    /// @dev When true, BONUS_DISTRIBUTOR_ROLE claims revert if the pool's
-    ///      merkle root is bytes32(0). Provides defense-in-depth: even a
-    ///      compromised BONUS_DISTRIBUTOR_ROLE cannot claim arbitrary amounts
-    ///      without a valid merkle proof once this flag is set.
-    bool public merkleRootsRequired;
+    /// @dev Reserved storage gap for removed merkleRootsRequired (1 slot)
+    /// @custom:storage-preserved UUPS upgrade safety - do not remove or reorder
+    bool private __gap_removed_merkleRootsRequired; // solhint-disable-line var-name-mixedcase
 
     /// @notice SYBIL-AP-02: Per-referrer per-epoch referral bonus count
     /// @dev Maps referrer => epoch_number => count. Epoch = timestamp / REFERRAL_EPOCH_DURATION
@@ -288,15 +272,6 @@ contract OmniRewardManager is
         uint256 indexed threshold
     );
 
-    /// @notice Emitted when a merkle root is updated for a pool
-    /// @param poolType Type of pool whose merkle root was updated
-    /// @param oldRoot Previous merkle root
-    /// @param newRoot New merkle root
-    event MerkleRootUpdated(
-        PoolType indexed poolType,
-        bytes32 indexed oldRoot,
-        bytes32 indexed newRoot
-    );
 
     /// @notice Emitted when the contract is initialized
     /// @param omniCoinAddr Address of the OmniCoin token
@@ -324,16 +299,6 @@ contract OmniRewardManager is
     /// @param oddaoAddress Address of the ODDAO
     event OddaoAddressSet(address indexed oddaoAddress);
 
-    /// @notice Emitted when permissionless welcome bonus is claimed
-    /// @param user User who claimed
-    /// @param amount Amount claimed
-    /// @param referrer Referrer who will receive bonus (if any)
-    event PermissionlessWelcomeBonusClaimed(
-        address indexed user,
-        uint256 indexed amount,
-        address indexed referrer
-    );
-
     /// @notice Emitted when auto-referral bonus is distributed
     /// @param referrer Primary referrer
     /// @param secondLevelReferrer Second level referrer (if any)
@@ -354,16 +319,6 @@ contract OmniRewardManager is
         uint256 indexed oldCount,
         uint256 indexed newCount,
         uint256 effectiveRegistrations
-    );
-
-    /// @notice Emitted when trustless welcome bonus is claimed (requires KYC Tier 1)
-    /// @param user User who claimed via trustless verification
-    /// @param amount Amount claimed
-    /// @param referrer Referrer who will receive bonus (if any)
-    event TrustlessWelcomeBonusClaimed(
-        address indexed user,
-        uint256 indexed amount,
-        address indexed referrer
     );
 
     /// @notice Emitted when welcome bonus is claimed via trustless relay
@@ -400,14 +355,6 @@ contract OmniRewardManager is
         address indexed referrer,
         uint256 indexed epoch,
         uint256 indexed count
-    );
-
-    /// @notice Emitted when referrer claims their accumulated bonus
-    /// @param referrer Address who claimed the bonus
-    /// @param amount Amount transferred to referrer
-    event ReferralBonusClaimedPermissionless(
-        address indexed referrer,
-        uint256 indexed amount
     );
 
     /// @notice Emitted when referral bonus is claimed via relay (gasless)
@@ -452,17 +399,11 @@ contract OmniRewardManager is
     /// @notice Thrown when user has already claimed a one-time bonus
     error BonusAlreadyClaimed(address user, PoolType bonusType);
 
-    /// @notice Thrown when merkle proof verification fails
-    error InvalidMerkleProof(address user, PoolType poolType);
-
     /// @notice Thrown when zero address is provided
     error ZeroAddressNotAllowed();
 
     /// @notice Thrown when zero amount is provided
     error ZeroAmountNotAllowed();
-
-    /// @notice Thrown when invalid pool type is provided for merkle root update
-    error InvalidPoolTypeForMerkle();
 
     /// @notice Thrown when daily bonus rate limit is exceeded
     error DailyBonusLimitExceeded(PoolType poolType, uint256 limit);
@@ -524,10 +465,6 @@ contract OmniRewardManager is
 
     /// @notice Thrown when contract is ossified and upgrade attempted
     error ContractIsOssified();
-
-    /// @notice Thrown when merkle root is required but not set (M-04 R6)
-    /// @param poolType The pool type with missing merkle root
-    error MerkleRootRequired(PoolType poolType);
 
     // ============ Constructor ============
 
@@ -605,112 +542,7 @@ contract OmniRewardManager is
         __EIP712_init("OmniRewardManager", "1");
     }
 
-    // ============ External Functions - Bonus Distribution ============
-
-    /**
-     * @notice Claim welcome bonus for a user with merkle proof verification
-     * @dev Only callable by BONUS_DISTRIBUTOR_ROLE. Each user can only claim once.
-     * @param user Address of the user receiving the bonus
-     * @param amount Amount of XOM to transfer
-     * @param merkleProof Merkle proof verifying user eligibility
-     */
-    function claimWelcomeBonus(
-        address user,
-        uint256 amount,
-        bytes32[] calldata merkleProof
-    ) external onlyRole(BONUS_DISTRIBUTOR_ROLE) nonReentrant whenNotPaused {
-        _validateClaimParams(user, amount);
-        _validateNotClaimed(welcomeBonusClaimed[user], user, PoolType.WelcomeBonus);
-        _validatePoolBalance(welcomeBonusPool, PoolType.WelcomeBonus, amount);
-        _verifyMerkleProof(
-            welcomeBonusPool.merkleRoot, user, amount, merkleProof, PoolType.WelcomeBonus
-        );
-
-        welcomeBonusClaimed[user] = true;
-        _updatePoolAfterDistribution(welcomeBonusPool, amount);
-
-        omniCoin.safeTransfer(user, amount);
-
-        emit WelcomeBonusClaimed(user, amount, welcomeBonusPool.remaining);
-        _checkPoolThreshold(PoolType.WelcomeBonus, welcomeBonusPool);
-    }
-
-    /**
-     * @notice Claim referral bonus for referrer and optional second-level referrer
-     * @dev Only callable by BONUS_DISTRIBUTOR_ROLE. Referrers can earn multiple times.
-     * @param params Struct containing referral distribution parameters
-     * @param merkleProof Merkle proof verifying referral relationship
-     */
-    function claimReferralBonus(
-        ReferralParams calldata params,
-        bytes32[] calldata merkleProof
-    ) external onlyRole(BONUS_DISTRIBUTOR_ROLE) nonReentrant whenNotPaused {
-        uint256 referrerTotal = params.primaryAmount + params.secondaryAmount;
-        _validateReferralParams(params.referrer, referrerTotal);
-
-        // Calculate ODDAO share for full pool accounting
-        uint256 oddaoShare;
-        if (params.secondaryAmount != 0 && params.secondLevelReferrer != address(0)) {
-            oddaoShare = (referrerTotal * 10) / 90;
-        } else {
-            oddaoShare = (params.primaryAmount * 30) / 70;
-        }
-        uint256 totalWithOddao = referrerTotal + oddaoShare;
-
-        _validatePoolBalance(referralBonusPool, PoolType.ReferralBonus, totalWithOddao);
-        _verifyReferralMerkleProof(params, merkleProof);
-
-        _updatePoolAfterDistribution(referralBonusPool, totalWithOddao);
-        _distributeReferralRewards(params);
-
-        emit ReferralBonusClaimed(params.referrer, params.secondLevelReferrer, totalWithOddao);
-        _checkPoolThreshold(PoolType.ReferralBonus, referralBonusPool);
-    }
-
-    /**
-     * @notice Claim first sale bonus for a seller
-     * @dev Only callable by BONUS_DISTRIBUTOR_ROLE. Each seller can only claim once.
-     * @param seller Address of the seller receiving the bonus
-     * @param amount Amount of XOM to transfer
-     * @param merkleProof Merkle proof verifying first sale completion
-     */
-    function claimFirstSaleBonus(
-        address seller,
-        uint256 amount,
-        bytes32[] calldata merkleProof
-    ) external onlyRole(BONUS_DISTRIBUTOR_ROLE) nonReentrant whenNotPaused {
-        _validateClaimParams(seller, amount);
-        _validateNotClaimed(firstSaleBonusClaimed[seller], seller, PoolType.FirstSaleBonus);
-        _validatePoolBalance(firstSaleBonusPool, PoolType.FirstSaleBonus, amount);
-        _verifyMerkleProof(
-            firstSaleBonusPool.merkleRoot, seller, amount, merkleProof, PoolType.FirstSaleBonus
-        );
-
-        firstSaleBonusClaimed[seller] = true;
-        _updatePoolAfterDistribution(firstSaleBonusPool, amount);
-
-        omniCoin.safeTransfer(seller, amount);
-
-        emit FirstSaleBonusClaimed(seller, amount, firstSaleBonusPool.remaining);
-        _checkPoolThreshold(PoolType.FirstSaleBonus, firstSaleBonusPool);
-    }
-
     // ============ External Functions - Admin ============
-
-    /**
-     * @notice Update merkle root for a bonus pool
-     * @dev Only callable by BONUS_DISTRIBUTOR_ROLE
-     * @param poolType Type of pool to update
-     * @param newRoot New merkle root
-     */
-    function updateMerkleRoot(
-        PoolType poolType,
-        bytes32 newRoot
-    ) external onlyRole(BONUS_DISTRIBUTOR_ROLE) whenNotPaused {
-        bytes32 oldRoot = _getMerkleRoot(poolType);
-        _setMerkleRoot(poolType, newRoot);
-        emit MerkleRootUpdated(poolType, oldRoot, newRoot);
-    }
 
     /**
      * @notice Pause all distribution functions
@@ -824,7 +656,7 @@ contract OmniRewardManager is
      * @notice Migrate pending referral bonuses from off-chain database (ADMIN ONLY)
      * @dev Used for one-time migration of bonuses tracked in old database system.
      *      Sets pendingReferralBonuses for users who have accumulated bonuses off-chain.
-     *      These users can then claim via claimReferralBonusPermissionless().
+     *      These users can then claim via claimReferralBonus().
      *
      *      SECURITY: This function now properly accounts for pool balance changes.
      *      Increasing a pending bonus deducts from referralBonusPool.remaining.
@@ -869,196 +701,16 @@ contract OmniRewardManager is
         emit ReferralBonusMigrated(referrer, oldPending, amount);
     }
 
-    /**
-     * @notice Set whether merkle roots are required for role-based claims (M-04 R6)
-     * @dev When enabled, BONUS_DISTRIBUTOR_ROLE claims will revert if the pool's
-     *      merkle root is bytes32(0). This provides defense-in-depth against a
-     *      compromised BONUS_DISTRIBUTOR_ROLE: even with the role, arbitrary-amount
-     *      claims are impossible without a valid merkle proof.
-     *
-     *      Recommended to enable after setting initial merkle roots for all pools.
-     *      Once enabled, merkle roots must be set before any role-based claim can
-     *      succeed. Permissionless and relayed claims are unaffected (they use
-     *      on-chain registration data, not merkle proofs).
-     *
-     * @param required True to require merkle roots, false to allow claims without them
-     */
-    function setMerkleRootsRequired(
-        bool required
-    ) external onlyRole(DEFAULT_ADMIN_ROLE) {
-        merkleRootsRequired = required;
-    }
-
-    // ============ External Functions - Permissionless Claiming ============
+    // ============ External Functions - Bonus Claiming ============
 
     /**
-     * @notice Claim welcome bonus directly (permissionless)
-     * @dev Users call this directly after completing KYC Tier 1. No role required.
-     *      Validates eligibility via OmniRegistration contract.
-     *      Automatically triggers referral bonus accumulation for referrer.
-     *
-     * Security measures:
-     * - Must be registered in OmniRegistration contract
-     * - KYC Tier 1 required (phone + social media verified on-chain)
-     * - Daily rate limit enforced (MAX_DAILY_WELCOME_BONUSES per day)
-     * - Bonus amount calculated based on effective claim count
-     * - ODDAO address must be set (required for referral distribution)
-     */
-    function claimWelcomeBonusPermissionless() external nonReentrant whenNotPaused {
-        address caller = _msgSender();
-
-        if (address(registrationContract) == address(0)) {
-            revert RegistrationContractNotSet();
-        }
-
-        // Get registration data from OmniRegistration contract
-        IOmniRegistration.Registration memory reg = registrationContract.getRegistration(caller);
-
-        // Verify eligibility
-        if (reg.timestamp == 0) revert UserNotRegistered(caller);
-        if (reg.welcomeBonusClaimed) {
-            revert BonusAlreadyClaimed(caller, PoolType.WelcomeBonus);
-        }
-
-        // CRITICAL: Verify KYC Tier 1 completion (phone + social verified)
-        // This prevents Sybil attacks where bots register and immediately claim bonuses
-        // without completing any identity verification
-        if (!registrationContract.hasKycTier1(caller)) {
-            revert KycTier1Required(caller);
-        }
-
-        // Check daily rate limit
-        uint256 today = block.timestamp / 1 days;
-        if (dailyWelcomeBonusCount[today] >= MAX_DAILY_WELCOME_BONUSES) {
-            revert DailyBonusLimitExceeded(PoolType.WelcomeBonus, MAX_DAILY_WELCOME_BONUSES);
-        }
-        ++dailyWelcomeBonusCount[today];
-
-        // Calculate bonus based on effective CLAIM count (on-chain claims + legacy claims)
-        // Legacy users (~3996) already got their bonus in old OmniBazaar
-        // New users start at position ~3997+ (Tier 2: 5,000 XOM)
-        // NOTE: We use claim count, NOT registration count (not all users claim bonuses)
-        uint256 effectiveClaims = welcomeBonusClaimCount + legacyBonusClaimsCount;
-        if (effectiveClaims == 0) effectiveClaims = 1; // Minimum 1 to avoid edge cases
-        uint256 bonusAmount = _calculateWelcomeBonus(effectiveClaims);
-
-        // Validate pool balance
-        _validatePoolBalance(welcomeBonusPool, PoolType.WelcomeBonus, bonusAmount);
-
-        // Mark as claimed in registration contract
-        registrationContract.markWelcomeBonusClaimed(caller);
-
-        // Mark as claimed locally (for backward compatibility)
-        welcomeBonusClaimed[caller] = true;
-
-        // Increment claim count BEFORE transfer (for accurate tier calculation)
-        ++welcomeBonusClaimCount;
-
-        // Update pool and transfer
-        _updatePoolAfterDistribution(welcomeBonusPool, bonusAmount);
-        omniCoin.safeTransfer(caller, bonusAmount);
-
-        emit PermissionlessWelcomeBonusClaimed(caller, bonusAmount, reg.referrer);
-        emit WelcomeBonusClaimed(caller, bonusAmount, welcomeBonusPool.remaining);
-        _checkPoolThreshold(PoolType.WelcomeBonus, welcomeBonusPool);
-
-        // Auto-trigger referral bonus if referrer exists (use effectiveClaims for tier calc)
-        if (reg.referrer != address(0)) {
-            _distributeAutoReferralBonus(reg.referrer, caller, effectiveClaims);
-        }
-    }
-
-    /**
-     * @notice Claim welcome bonus using trustless on-chain verification
-     * @dev Users call this after completing KYC Tier 1 via on-chain verification.
-     *      Requires user to have:
-     *      1. Registered in OmniRegistration contract
-     *      2. Submitted phone verification proof on-chain
-     *      3. Submitted social verification proof on-chain
-     *      4. Achieved KYC Tier 1 status (hasKycTier1 returns true)
-     *
-     *      This is the TRUSTLESS version - no validator role required.
-     *      User must first submit verification proofs to OmniRegistration contract:
-     *      - registration.submitPhoneVerification(phoneHash, timestamp, nonce, deadline, signature)
-     *      - registration.submitSocialVerification(socialHash, platform, timestamp, nonce, deadline, signature)
-     *
-     * Security measures:
-     * - Requires hasKycTier1() to return true (on-chain verification)
-     * - No trusted roles involved in the verification
-     * - Daily rate limit enforced
-     * - Bonus amount calculated based on registration number
-     */
-    function claimWelcomeBonusTrustless() external nonReentrant whenNotPaused {
-        address caller = _msgSender();
-
-        if (address(registrationContract) == address(0)) {
-            revert RegistrationContractNotSet();
-        }
-
-        // Get registration data from OmniRegistration contract
-        IOmniRegistration.Registration memory reg = registrationContract.getRegistration(caller);
-
-        // Verify user is registered
-        if (reg.timestamp == 0) revert UserNotRegistered(caller);
-
-        // Verify welcome bonus not already claimed
-        if (reg.welcomeBonusClaimed) {
-            revert BonusAlreadyClaimed(caller, PoolType.WelcomeBonus);
-        }
-
-        // CRITICAL: Verify KYC Tier 1 completion via on-chain verification
-        // This checks that user has submitted phone AND social verification proofs on-chain
-        if (!registrationContract.hasKycTier1(caller)) {
-            revert KycTier1Required(caller);
-        }
-
-        // Check daily rate limit
-        uint256 today = block.timestamp / 1 days;
-        if (dailyWelcomeBonusCount[today] >= MAX_DAILY_WELCOME_BONUSES) {
-            revert DailyBonusLimitExceeded(PoolType.WelcomeBonus, MAX_DAILY_WELCOME_BONUSES);
-        }
-        ++dailyWelcomeBonusCount[today];
-
-        // Calculate bonus based on effective CLAIM count (on-chain claims + legacy claims)
-        // NOTE: We use claim count, NOT registration count (not all users claim bonuses)
-        uint256 effectiveClaims = welcomeBonusClaimCount + legacyBonusClaimsCount;
-        if (effectiveClaims == 0) effectiveClaims = 1; // Minimum 1 to avoid edge cases
-        uint256 bonusAmount = _calculateWelcomeBonus(effectiveClaims);
-
-        // Validate pool balance
-        _validatePoolBalance(welcomeBonusPool, PoolType.WelcomeBonus, bonusAmount);
-
-        // Mark as claimed in registration contract
-        registrationContract.markWelcomeBonusClaimed(caller);
-
-        // Mark as claimed locally (for backward compatibility)
-        welcomeBonusClaimed[caller] = true;
-
-        // Increment claim count BEFORE transfer (for accurate tier calculation)
-        ++welcomeBonusClaimCount;
-
-        // Update pool and transfer
-        _updatePoolAfterDistribution(welcomeBonusPool, bonusAmount);
-        omniCoin.safeTransfer(caller, bonusAmount);
-
-        emit TrustlessWelcomeBonusClaimed(caller, bonusAmount, reg.referrer);
-        emit WelcomeBonusClaimed(caller, bonusAmount, welcomeBonusPool.remaining);
-        _checkPoolThreshold(PoolType.WelcomeBonus, welcomeBonusPool);
-
-        // Auto-trigger referral bonus if referrer exists (use effectiveClaims for tier calc)
-        if (reg.referrer != address(0)) {
-            _distributeAutoReferralBonus(reg.referrer, caller, effectiveClaims);
-        }
-    }
-
-    /**
-     * @notice Claim welcome bonus with user signature (trustless relayable)
+     * @notice Claim welcome bonus with user signature (gasless relay)
      * @dev ANYONE can relay this - NO SPECIAL ROLES REQUIRED.
      *      Security comes from verifying the USER'S signature, not caller's role.
-     *      This is the GASLESS version - relayer pays gas, user receives bonus.
+     *      Relayer pays gas, user receives bonus.
      *
      *      The user signs an EIP-712 ClaimWelcomeBonus message with their wallet.
-     *      Any relayer can submit the signed message and pay gas.
+     *      Any relayer (typically a validator) submits the signed message and pays gas.
      *      The contract verifies the USER signed it, then transfers bonus to USER.
      *
      * @param user The address of the user claiming (must match signer)
@@ -1076,7 +728,7 @@ contract OmniRewardManager is
      * - Daily rate limit enforced
      * - NO ROLE CHECK - Relayer has NO attestation power
      */
-    function claimWelcomeBonusRelayed(
+    function claimWelcomeBonus(
         address user,
         uint256 nonce,
         uint256 deadline,
@@ -1211,54 +863,10 @@ contract OmniRewardManager is
     }
 
     /**
-     * @notice Claim accumulated referral bonuses (permissionless)
-     * @dev Referrers call this to claim their accumulated bonuses from successful referrals.
-     *      No role required - anyone can claim their own pending bonuses.
-     *      Bonuses accumulate when referees claim welcome bonuses.
-     *
-     * Security measures:
-     * - Can only claim own pending bonuses (msg.sender)
-     * - No validator involvement in distribution decision
-     * - Amount verified on-chain in pendingReferralBonuses mapping
-     * - Daily rate limit enforced
-     */
-    function claimReferralBonusPermissionless() external nonReentrant whenNotPaused {
-        address caller = _msgSender();
-
-        // SYBIL-AP-02: Require KYC Tier 1 for referral bonus claiming
-        if (address(registrationContract) == address(0)) revert RegistrationContractNotSet();
-        if (!registrationContract.hasKycTier1(caller)) revert KycTier1Required(caller);
-
-        uint256 pending = pendingReferralBonuses[caller];
-
-        // Check has pending bonus
-        if (pending == 0) {
-            revert NoPendingReferralBonus(caller);
-        }
-
-        // Check daily rate limit
-        uint256 today = block.timestamp / 1 days;
-        if (dailyReferralBonusCount[today] >= MAX_DAILY_REFERRAL_BONUSES) {
-            revert DailyBonusLimitExceeded(PoolType.ReferralBonus, MAX_DAILY_REFERRAL_BONUSES);
-        }
-        ++dailyReferralBonusCount[today];
-
-        // Clear pending bonus
-        pendingReferralBonuses[caller] = 0;
-
-        // Transfer bonus
-        omniCoin.safeTransfer(caller, pending);
-
-        emit ReferralBonusClaimedPermissionless(caller, pending);
-        emit ReferralBonusClaimed(caller, address(0), pending);
-        _checkPoolThreshold(PoolType.ReferralBonus, referralBonusPool);
-    }
-
-    /**
-     * @notice Claim referral bonus with user signature (trustless relayable)
+     * @notice Claim accumulated referral bonus with user signature (gasless relay)
      * @dev ANYONE can relay this - NO SPECIAL ROLES REQUIRED.
-     *      User signs claim request, relayer pays gas.
-     *      This is the GASLESS version of claimReferralBonusPermissionless.
+     *      User signs claim request, relayer (typically validator) pays gas.
+     *      Referral bonuses accumulate when referees claim welcome bonuses.
      *
      * @param user Address of referrer claiming (must match signer)
      * @param nonce User's current claim nonce
@@ -1270,8 +878,9 @@ contract OmniRewardManager is
      * - Nonce-based replay protection
      * - Time-bounded via deadline
      * - Relayer has NO control over eligibility or amount
+     * - Amount verified on-chain in pendingReferralBonuses mapping
      */
-    function claimReferralBonusRelayed(
+    function claimReferralBonus(
         address user,
         uint256 nonce,
         uint256 deadline,
@@ -1333,65 +942,10 @@ contract OmniRewardManager is
     }
 
     /**
-     * @notice Claim first sale bonus directly (permissionless)
-     * @dev Sellers call this after completing their first sale.
-     *      Requires that the user has actually completed a sale, as tracked
-     *      by OmniRegistration.firstSaleCompleted (set by marketplace/escrow).
-     */
-    function claimFirstSaleBonusPermissionless() external nonReentrant whenNotPaused {
-        address caller = _msgSender();
-
-        if (address(registrationContract) == address(0)) {
-            revert RegistrationContractNotSet();
-        }
-
-        // Get registration data
-        IOmniRegistration.Registration memory reg = registrationContract.getRegistration(caller);
-
-        // Verify eligibility
-        if (reg.timestamp == 0) revert UserNotRegistered(caller);
-        if (reg.firstSaleBonusClaimed) {
-            revert BonusAlreadyClaimed(caller, PoolType.FirstSaleBonus);
-        }
-
-        // Verify user has actually completed a first sale
-        if (!registrationContract.hasCompletedFirstSale(caller)) {
-            revert FirstSaleNotCompleted(caller);
-        }
-
-        // Check daily rate limit
-        uint256 today = block.timestamp / 1 days;
-        if (dailyFirstSaleBonusCount[today] >= MAX_DAILY_FIRST_SALE_BONUSES) {
-            revert DailyBonusLimitExceeded(PoolType.FirstSaleBonus, MAX_DAILY_FIRST_SALE_BONUSES);
-        }
-        ++dailyFirstSaleBonusCount[today];
-
-        // Calculate bonus based on effective registrations (on-chain + legacy claims)
-        uint256 totalRegs = registrationContract.totalRegistrations();
-        uint256 effectiveRegs = totalRegs + legacyBonusClaimsCount;
-        if (effectiveRegs == 0) effectiveRegs = 1; // Minimum 1 to avoid edge cases
-        uint256 bonusAmount = _calculateFirstSaleBonus(effectiveRegs);
-
-        // Validate pool balance
-        _validatePoolBalance(firstSaleBonusPool, PoolType.FirstSaleBonus, bonusAmount);
-
-        // Mark as claimed
-        registrationContract.markFirstSaleBonusClaimed(caller);
-        firstSaleBonusClaimed[caller] = true;
-
-        // Update pool and transfer
-        _updatePoolAfterDistribution(firstSaleBonusPool, bonusAmount);
-        omniCoin.safeTransfer(caller, bonusAmount);
-
-        emit FirstSaleBonusClaimed(caller, bonusAmount, firstSaleBonusPool.remaining);
-        _checkPoolThreshold(PoolType.FirstSaleBonus, firstSaleBonusPool);
-    }
-
-    /**
-     * @notice Claim first sale bonus with user signature (trustless relayable)
+     * @notice Claim first sale bonus with user signature (gasless relay)
      * @dev ANYONE can relay this - NO SPECIAL ROLES REQUIRED.
-     *      User signs claim request, relayer pays gas.
-     *      This is the GASLESS version of claimFirstSaleBonusPermissionless.
+     *      User signs claim request, relayer (typically validator) pays gas.
+     *      Requires user to have completed first sale via OmniRegistration.
      *
      * @param user Address of seller claiming (must match signer)
      * @param nonce User's current claim nonce
@@ -1405,7 +959,7 @@ contract OmniRewardManager is
      * - Time-bounded via deadline
      * - Relayer has NO control over eligibility or amount
      */
-    function claimFirstSaleBonusRelayed(
+    function claimFirstSaleBonus(
         address user,
         uint256 nonce,
         uint256 deadline,
@@ -1559,7 +1113,7 @@ contract OmniRewardManager is
     /**
      * @notice Get pending referral bonus ready to claim
      * @dev Returns amount accumulated but not yet claimed by the referrer.
-     *      User must call claimReferralBonusPermissionless() to receive these bonuses.
+     *      User must call claimReferralBonus() to receive these bonuses.
      * @param referrer Address to check
      * @return pending Pending referral bonus amount in wei
      */
@@ -1605,12 +1159,12 @@ contract OmniRewardManager is
     /**
      * @notice Get the expected first sale bonus amount for sellers
      * @dev M-04: Uses totalRegistrations + legacyBonusClaimsCount to match actual
-     *      claimFirstSaleBonusPermissionless() logic. First sale bonus tiers are
+     *      claimFirstSaleBonus() logic. First sale bonus tiers are
      *      based on total registrations, not welcome bonus claim count.
      * @return bonusAmount Expected bonus in wei (18 decimals)
      */
     function getExpectedFirstSaleBonus() external view returns (uint256 bonusAmount) {
-        // M-04: Match claimFirstSaleBonusPermissionless() which uses totalRegistrations
+        // M-04: Match claimFirstSaleBonus() which uses totalRegistrations
         uint256 effectiveRegs;
         if (address(registrationContract) != address(0)) {
             effectiveRegs = registrationContract.totalRegistrations() + legacyBonusClaimsCount;
@@ -1690,70 +1244,17 @@ contract OmniRewardManager is
     }
 
     /**
-     * @notice Set merkle root for a pool type
-     * @param poolType Type of pool
-     * @param newRoot New merkle root
-     */
-    function _setMerkleRoot(PoolType poolType, bytes32 newRoot) internal {
-        if (poolType == PoolType.WelcomeBonus) {
-            welcomeBonusPool.merkleRoot = newRoot;
-        } else if (poolType == PoolType.ReferralBonus) {
-            referralBonusPool.merkleRoot = newRoot;
-        } else if (poolType == PoolType.FirstSaleBonus) {
-            firstSaleBonusPool.merkleRoot = newRoot;
-        } else {
-            revert InvalidPoolTypeForMerkle();
-        }
-    }
-
-    /**
-     * @notice Distribute referral rewards to referrers and ODDAO
-     * @dev Enforces the 70/20/10 split by calculating the ODDAO share
-     *      on-chain from the total amount. The total pool deduction
-     *      (done by the caller) includes the ODDAO share.
-     *      Split: primaryAmount (70%) to referrer, secondaryAmount (20%)
-     *      to second-level referrer, remainder (10%) to ODDAO.
-     *      If no second-level referrer, their 20% goes to ODDAO (total 30%).
-     * @param params Referral distribution parameters
-     */
-    function _distributeReferralRewards(ReferralParams calldata params) internal {
-        referralBonusesEarned[params.referrer] += params.primaryAmount;
-
-        if (params.primaryAmount != 0) {
-            omniCoin.safeTransfer(params.referrer, params.primaryAmount);
-        }
-
-        uint256 oddaoShare;
-        if (params.secondaryAmount != 0 && params.secondLevelReferrer != address(0)) {
-            referralBonusesEarned[params.secondLevelReferrer] += params.secondaryAmount;
-            omniCoin.safeTransfer(params.secondLevelReferrer, params.secondaryAmount);
-            // ODDAO gets 10% of total (remainder after 70%+20%)
-            uint256 totalAmount = params.primaryAmount + params.secondaryAmount;
-            oddaoShare = (totalAmount * 10) / 90;
-        } else {
-            // No second-level referrer: ODDAO gets 30% of total (10% + unused 20%)
-            oddaoShare = (params.primaryAmount * 30) / 70;
-        }
-
-        // Send ODDAO share if oddaoAddress is set
-        if (oddaoShare != 0 && oddaoAddress != address(0)) {
-            omniCoin.safeTransfer(oddaoAddress, oddaoShare);
-        }
-    }
-
-    /**
      * @notice Setup initial admin role only
-     * @dev Only grants DEFAULT_ADMIN_ROLE. Other roles (BONUS_DISTRIBUTOR_ROLE,
-     *      UPGRADER_ROLE, PAUSER_ROLE) must be granted separately to distinct
+     * @dev Only grants DEFAULT_ADMIN_ROLE. Other roles (UPGRADER_ROLE, PAUSER_ROLE)
+     *      must be granted separately to distinct
      *      addresses via grantRole().
      *
      *      SECURITY: admin MUST be a multi-sig wallet (Gnosis Safe 3-of-5 minimum)
-     *      with TimelockController for all sensitive operations. Granting all four
+     *      with TimelockController for all sensitive operations. Granting all
      *      roles to a single EOA creates a single point of compromise. The admin
      *      should grant operational roles to separate, purpose-specific addresses:
-     *      - BONUS_DISTRIBUTOR_ROLE -> validator service account
-     *      - UPGRADER_ROLE          -> timelock-controlled upgrade multisig
-     *      - PAUSER_ROLE            -> emergency response multisig
+     *      - UPGRADER_ROLE -> timelock-controlled upgrade multisig
+     *      - PAUSER_ROLE   -> emergency response multisig
      *
      * @param admin Address to receive admin role (must be a multi-sig wallet)
      */
@@ -1840,7 +1341,7 @@ contract OmniRewardManager is
      * @notice Accumulate referral bonus when welcome bonus is claimed (TRUSTLESS)
      * @dev Called internally by welcome bonus claim functions.
      *      DOES NOT transfer - accumulates to pendingReferralBonuses mapping.
-     *      Referrer must manually claim via claimReferralBonusPermissionless().
+     *      Referrer must claim via claimReferralBonus() (relayed by validator).
      *      This removes validator control over bonus distribution.
      *
      * @param referrer Primary referrer address
@@ -1987,49 +1488,6 @@ contract OmniRewardManager is
         }
     }
 
-    /**
-     * @notice Verify merkle proof for referral claims
-     * @dev M-01: When merkleRoot is bytes32(0), the proof array MUST be empty.
-     *      M-04 R6: When merkleRootsRequired is true, reverts if root is unset.
-     * @param params Referral parameters
-     * @param proof Merkle proof
-     */
-    function _verifyReferralMerkleProof(
-        ReferralParams calldata params,
-        bytes32[] calldata proof
-    ) internal view {
-        if (referralBonusPool.merkleRoot == bytes32(0)) {
-            // M-04 R6: If merkle roots are required, revert when root is not set
-            if (merkleRootsRequired) revert MerkleRootRequired(PoolType.ReferralBonus);
-            // M-01: No root set - require empty proof (role-gated callers only)
-            if (proof.length != 0) {
-                revert InvalidMerkleProof(params.referrer, PoolType.ReferralBonus);
-            }
-            return;
-        }
-        bytes32 leaf = keccak256(abi.encodePacked(
-            params.referrer,
-            params.secondLevelReferrer,
-            params.primaryAmount,
-            params.secondaryAmount
-        ));
-        if (!MerkleProof.verify(proof, referralBonusPool.merkleRoot, leaf)) {
-            revert InvalidMerkleProof(params.referrer, PoolType.ReferralBonus);
-        }
-    }
-
-    /**
-     * @notice Get merkle root for a pool type
-     * @param poolType Type of pool
-     * @return Current merkle root
-     */
-    function _getMerkleRoot(PoolType poolType) internal view returns (bytes32) {
-        if (poolType == PoolType.WelcomeBonus) return welcomeBonusPool.merkleRoot;
-        if (poolType == PoolType.ReferralBonus) return referralBonusPool.merkleRoot;
-        if (poolType == PoolType.FirstSaleBonus) return firstSaleBonusPool.merkleRoot;
-        revert InvalidPoolTypeForMerkle();
-    }
-
     // ============ Internal Pure Functions ============
 
     /**
@@ -2040,69 +1498,6 @@ contract OmniRewardManager is
     function _validateInitParams(address _omniCoin, address _admin) internal pure {
         if (_omniCoin == address(0)) revert ZeroAddressNotAllowed();
         if (_admin == address(0)) revert ZeroAddressNotAllowed();
-    }
-
-    /**
-     * @notice Validate basic claim parameters
-     * @param recipient Address receiving the bonus
-     * @param amount Amount to transfer
-     */
-    function _validateClaimParams(address recipient, uint256 amount) internal pure {
-        if (recipient == address(0)) revert ZeroAddressNotAllowed();
-        if (amount == 0) revert ZeroAmountNotAllowed();
-    }
-
-    /**
-     * @notice Validate that bonus has not been claimed
-     * @param claimed Whether bonus was already claimed
-     * @param user User address for error reporting
-     * @param poolType Pool type for error reporting
-     */
-    function _validateNotClaimed(bool claimed, address user, PoolType poolType) internal pure {
-        if (claimed) revert BonusAlreadyClaimed(user, poolType);
-    }
-
-    /**
-     * @notice Validate referral bonus parameters
-     * @param referrer Primary referrer address
-     * @param totalAmount Total amount to distribute
-     */
-    function _validateReferralParams(address referrer, uint256 totalAmount) internal pure {
-        if (referrer == address(0)) revert ZeroAddressNotAllowed();
-        if (totalAmount == 0) revert ZeroAmountNotAllowed();
-    }
-
-    /**
-     * @notice Verify merkle proof for simple claims (user + amount)
-     * @dev M-01: When merkleRoot is bytes32(0), the proof array MUST be empty.
-     *      This allows initial operation before roots are set (role-gated callers only)
-     *      while preventing arbitrary amount claims with fabricated proofs.
-     *      Once a merkle root is set, proof verification is enforced.
-     *      M-04 R6: When merkleRootsRequired is true, reverts if root is unset.
-     * @param merkleRoot Root to verify against
-     * @param user User address
-     * @param amount Claim amount
-     * @param proof Merkle proof
-     * @param poolType Pool type for error reporting
-     */
-    function _verifyMerkleProof(
-        bytes32 merkleRoot,
-        address user,
-        uint256 amount,
-        bytes32[] calldata proof,
-        PoolType poolType
-    ) internal view {
-        if (merkleRoot == bytes32(0)) {
-            // M-04 R6: If merkle roots are required, revert when root is not set
-            if (merkleRootsRequired) revert MerkleRootRequired(poolType);
-            // M-01: No root set - require empty proof (role-gated callers only)
-            if (proof.length != 0) revert InvalidMerkleProof(user, poolType);
-            return;
-        }
-        bytes32 leaf = keccak256(abi.encodePacked(user, amount));
-        if (!MerkleProof.verify(proof, merkleRoot, leaf)) {
-            revert InvalidMerkleProof(user, poolType);
-        }
     }
 
     // ============ ERC-2771 Context Overrides ============

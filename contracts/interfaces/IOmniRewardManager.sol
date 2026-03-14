@@ -5,7 +5,9 @@ pragma solidity 0.8.24;
  * @title IOmniRewardManager
  * @author OmniCoin Development Team
  * @notice Interface for the OmniRewardManager contract
- * @dev Defines all external functions for interacting with the reward manager
+ * @dev Defines all external functions for interacting with the reward manager.
+ *      All bonus claims use the gasless relay pattern: user signs EIP-712 intent,
+ *      validator relays the transaction and pays gas.
  */
 interface IOmniRewardManager {
     // ============ Enums ============
@@ -15,16 +17,6 @@ interface IOmniRewardManager {
         WelcomeBonus,
         ReferralBonus,
         FirstSaleBonus
-    }
-
-    // ============ Structs ============
-
-    /// @notice Parameters for referral bonus distribution
-    struct ReferralParams {
-        address referrer;
-        address secondLevelReferrer;
-        uint256 primaryAmount;
-        uint256 secondaryAmount;
     }
 
     // ============ Events ============
@@ -69,14 +61,16 @@ interface IOmniRewardManager {
         uint256 indexed threshold
     );
 
-    /// @notice Emitted when a merkle root is updated
-    /// @param poolType Type of pool whose merkle root was updated
-    /// @param oldRoot Previous merkle root
-    /// @param newRoot New merkle root
-    event MerkleRootUpdated(
-        PoolType indexed poolType,
-        bytes32 indexed oldRoot,
-        bytes32 indexed newRoot
+    /// @notice Emitted when welcome bonus is claimed via relay
+    /// @param user User who received the bonus
+    /// @param amount Amount of XOM transferred
+    /// @param relayer Address that submitted the transaction (paid gas)
+    /// @param referrer Referrer who will receive referral bonus (if any)
+    event WelcomeBonusClaimedRelayed(
+        address indexed user,
+        uint256 indexed amount,
+        address relayer,
+        address referrer
     );
 
     // ============ Errors ============
@@ -86,9 +80,6 @@ interface IOmniRewardManager {
 
     /// @notice Thrown when user has already claimed a one-time bonus
     error BonusAlreadyClaimed(address user, PoolType bonusType);
-
-    /// @notice Thrown when merkle proof verification fails
-    error InvalidMerkleProof(address user, PoolType poolType);
 
     /// @notice Thrown when zero address is provided
     error ZeroAddressNotAllowed();
@@ -113,87 +104,44 @@ interface IOmniRewardManager {
     /// @param recoveredSigner Recovered signer from signature
     error InvalidUserSignature(address expectedUser, address recoveredSigner);
 
-    /// @notice Emitted when welcome bonus is claimed via trustless relay
-    /// @param user User who received the bonus
-    /// @param amount Amount of XOM transferred
-    /// @param relayer Address that submitted the transaction (paid gas)
-    /// @param referrer Referrer who will receive referral bonus (if any)
-    event WelcomeBonusClaimedRelayed(
-        address indexed user,
-        uint256 indexed amount,
-        address relayer,
-        address referrer
-    );
-
-    // ============ Bonus Distribution Functions ============
+    // ============ Bonus Claim Functions (Gasless Relay) ============
 
     /**
-     * @notice Claim welcome bonus for a user
-     * @param user Address of the user receiving the bonus
-     * @param amount Amount of XOM to transfer
-     * @param merkleProof Merkle proof verifying user eligibility
-     */
-    function claimWelcomeBonus(
-        address user,
-        uint256 amount,
-        bytes32[] calldata merkleProof
-    ) external;
-
-    /**
-     * @notice Claim referral bonus for referrers
-     * @param params Struct containing referral distribution parameters
-     * @param merkleProof Merkle proof verifying referral relationship
-     */
-    function claimReferralBonus(
-        ReferralParams calldata params,
-        bytes32[] calldata merkleProof
-    ) external;
-
-    /**
-     * @notice Claim first sale bonus for a seller
-     * @param seller Address of the seller receiving the bonus
-     * @param amount Amount of XOM to transfer
-     * @param merkleProof Merkle proof verifying first sale completion
-     */
-    function claimFirstSaleBonus(
-        address seller,
-        uint256 amount,
-        bytes32[] calldata merkleProof
-    ) external;
-
-    /**
-     * @notice Claim welcome bonus permissionlessly (requires registration)
-     * @dev Users call this directly after registration
-     */
-    function claimWelcomeBonusPermissionless() external;
-
-    /**
-     * @notice Claim welcome bonus using trustless on-chain verification
-     * @dev Users call this after completing KYC Tier 1 via on-chain verification.
-     *      Requires user to have:
-     *      1. Registered in OmniRegistration contract
-     *      2. Submitted phone verification proof on-chain
-     *      3. Submitted social verification proof on-chain
-     *      4. Achieved KYC Tier 1 status (hasKycTier1 returns true)
-     */
-    function claimWelcomeBonusTrustless() external;
-
-    /**
-     * @notice Claim welcome bonus with user signature (trustless relay)
-     * @dev ANYONE can relay this - NO SPECIAL ROLES REQUIRED.
-     *      Security comes from verifying the USER'S signature, not caller's role.
-     *      This is the GASLESS version - relayer pays gas, user receives bonus.
-     *
-     *      The user signs an EIP-712 ClaimWelcomeBonus message with their wallet.
-     *      Any relayer can submit the signed message and pay gas.
-     *      The contract verifies the USER signed it, then transfers bonus to USER.
-     *
+     * @notice Claim welcome bonus with user signature (gasless relay)
      * @param user The address of the user claiming (must match signer)
      * @param nonce User's current claim nonce (for replay protection)
      * @param deadline Claim request expiration timestamp
      * @param signature User's EIP-712 signature
      */
-    function claimWelcomeBonusRelayed(
+    function claimWelcomeBonus(
+        address user,
+        uint256 nonce,
+        uint256 deadline,
+        bytes calldata signature
+    ) external;
+
+    /**
+     * @notice Claim accumulated referral bonus with user signature (gasless relay)
+     * @param user Address of referrer claiming (must match signer)
+     * @param nonce User's current claim nonce
+     * @param deadline Claim request expiration
+     * @param signature User's EIP-712 signature
+     */
+    function claimReferralBonus(
+        address user,
+        uint256 nonce,
+        uint256 deadline,
+        bytes calldata signature
+    ) external;
+
+    /**
+     * @notice Claim first sale bonus with user signature (gasless relay)
+     * @param user Address of seller claiming (must match signer)
+     * @param nonce User's current claim nonce
+     * @param deadline Claim request expiration
+     * @param signature User's EIP-712 signature
+     */
+    function claimFirstSaleBonus(
         address user,
         uint256 nonce,
         uint256 deadline,
@@ -207,20 +155,7 @@ interface IOmniRewardManager {
      */
     function getClaimNonce(address user) external view returns (uint256);
 
-    /**
-     * @notice Claim first sale bonus permissionlessly
-     * @dev Sellers call this after completing their first sale
-     */
-    function claimFirstSaleBonusPermissionless() external;
-
     // ============ Admin Functions ============
-
-    /**
-     * @notice Update merkle root for a bonus pool
-     * @param poolType Type of pool to update
-     * @param newRoot New merkle root
-     */
-    function updateMerkleRoot(PoolType poolType, bytes32 newRoot) external;
 
     /**
      * @notice Pause all distribution functions
