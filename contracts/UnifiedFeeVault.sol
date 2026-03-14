@@ -297,17 +297,34 @@ contract UnifiedFeeVault is
     ///      Aggregates all fees across all tokens for a single total.
     uint256 public totalFeesCollected;
 
+    /// @notice Pending redirect: original claimant
+    /// @dev ADV-R8-05: Part of propose/apply redirect timelock
+    address public pendingRedirectClaimant;
+
+    /// @notice Pending redirect: new recipient
+    /// @dev ADV-R8-05: Part of propose/apply redirect timelock
+    address public pendingRedirectRecipient;
+
+    /// @notice Pending redirect: token address
+    /// @dev ADV-R8-05: Part of propose/apply redirect timelock
+    address public pendingRedirectToken;
+
+    /// @notice Pending redirect: timestamp when proposed
+    /// @dev ADV-R8-05: Apply allowed after RECIPIENT_CHANGE_DELAY
+    uint256 public pendingRedirectTimestamp;
+
     /// @notice Storage gap for future upgrades
     /// @dev Budget: 15 original + 4 new + 3 deprecated + 8 M-01-03
-    ///      + 1 totalFeesCollected = 31 slots used. Gap = 19.
-    ///      Total = 50 (standard OZ budget).
+    ///      + 1 totalFeesCollected + 4 redirect timelock = 35 slots
+    ///      used. Gap = 15. Total = 50 (standard OZ budget).
     ///      Pioneer Phase: 3 recipient-timelock state variables
     ///      were deprecated (not removed) to preserve UUPS storage
     ///      layout compatibility. See __deprecated_* above.
     ///      M-01/M-02/M-03 Round 6: 8 new state variables added.
     ///      FEE-AP-10 Round 6: 1 new state variable added.
+    ///      ADV-R8-05: 4 new state variables for redirect timelock.
     ///      Reduce gap by N when adding N new state variables.
-    uint256[19] private __gap;
+    uint256[15] private __gap;
 
     // ════════════════════════════════════════════════════════════════════
     //                             EVENTS
@@ -508,6 +525,24 @@ contract UnifiedFeeVault is
         address indexed newRecipient,
         address indexed token,
         uint256 amount
+    );
+
+    /// @notice Emitted when a stuck claim redirect is proposed
+    /// @param originalClaimant Address that currently holds the claim
+    /// @param newRecipient Proposed new recipient
+    /// @param token ERC20 token of the claim
+    /// @param effectiveAt Timestamp when redirect can be applied
+    event RedirectStuckClaimProposed(
+        address indexed originalClaimant,
+        address indexed newRecipient,
+        address indexed token,
+        uint256 effectiveAt
+    );
+
+    /// @notice Emitted when a pending redirect proposal is cancelled
+    /// @param originalClaimant Claimant whose redirect was cancelled
+    event RedirectStuckClaimCancelled(
+        address indexed originalClaimant
     );
 
     // ════════════════════════════════════════════════════════════════════
@@ -1490,33 +1525,110 @@ contract UnifiedFeeVault is
     }
 
     /**
-     * @notice Redirect a stuck pending claim to a new recipient
-     * @dev L-04 audit fix: if a claimant is blacklisted by a token
+     * @notice Propose redirecting a stuck pending claim (step 1 of 2)
+     * @dev ADV-R8-05 remediation: adds a RECIPIENT_CHANGE_DELAY
+     *      timelock before the redirect is applied. This prevents a
+     *      compromised admin from instantly redirecting all stuck claims
+     *      to an attacker-controlled address.
+     *      L-04 audit fix: if a claimant is blacklisted by a token
      *      (e.g., USDC) and cannot receive transfers, an admin can
      *      redirect the claim to a new address so the funds are not
      *      permanently stuck.
      *      Only DEFAULT_ADMIN_ROLE can call.
+     *      Emits {RedirectStuckClaimProposed}.
      * @param originalClaimant Address that currently holds the claim
      * @param newRecipient Address to receive the redirected claim
      * @param token ERC20 token address of the claim
      */
-    function redirectStuckClaim(
+    function proposeRedirectStuckClaim(
         address originalClaimant,
         address newRecipient,
         address token
     ) external onlyRole(DEFAULT_ADMIN_ROLE) {
         if (newRecipient == address(0)) revert ZeroAddress();
+        if (pendingClaims[originalClaimant][token] == 0) {
+            revert NoPendingClaim();
+        }
 
-        uint256 amount =
-            pendingClaims[originalClaimant][token];
+        pendingRedirectClaimant = originalClaimant;
+        pendingRedirectRecipient = newRecipient;
+        pendingRedirectToken = token;
+        // solhint-disable-next-line not-rely-on-time
+        pendingRedirectTimestamp = block.timestamp;
+
+        emit RedirectStuckClaimProposed(
+            originalClaimant,
+            newRecipient,
+            token,
+            block.timestamp + RECIPIENT_CHANGE_DELAY // solhint-disable-line not-rely-on-time
+        );
+    }
+
+    /**
+     * @notice Apply the proposed stuck claim redirect (step 2 of 2)
+     * @dev ADV-R8-05: can only be called after RECIPIENT_CHANGE_DELAY
+     *      has elapsed since the proposal. Clears pending state after
+     *      applying the redirect.
+     *      Only DEFAULT_ADMIN_ROLE can call.
+     *      Emits {ClaimRedirected}.
+     */
+    function applyRedirectStuckClaim()
+        external
+        onlyRole(DEFAULT_ADMIN_ROLE)
+    {
+        if (pendingRedirectClaimant == address(0)) {
+            revert NoPendingClaim();
+        }
+        // solhint-disable-next-line not-rely-on-time
+        if (
+            block.timestamp
+                < pendingRedirectTimestamp + RECIPIENT_CHANGE_DELAY
+        ) {
+            revert TimelockNotExpired();
+        }
+
+        address claimant = pendingRedirectClaimant;
+        address recipient = pendingRedirectRecipient;
+        address token = pendingRedirectToken;
+
+        uint256 amount = pendingClaims[claimant][token];
         if (amount == 0) revert NoPendingClaim();
 
-        pendingClaims[originalClaimant][token] = 0;
-        pendingClaims[newRecipient][token] += amount;
+        pendingClaims[claimant][token] = 0;
+        pendingClaims[recipient][token] += amount;
 
-        emit ClaimRedirected(
-            originalClaimant, newRecipient, token, amount
-        );
+        // Clear pending state
+        pendingRedirectClaimant = address(0);
+        pendingRedirectRecipient = address(0);
+        pendingRedirectToken = address(0);
+        pendingRedirectTimestamp = 0;
+
+        emit ClaimRedirected(claimant, recipient, token, amount);
+    }
+
+    /**
+     * @notice Cancel a pending stuck claim redirect
+     * @dev ADV-R8-05: allows admin to cancel a pending redirect
+     *      during the timelock window.
+     *      Only DEFAULT_ADMIN_ROLE can call.
+     *      Emits {RedirectStuckClaimCancelled}.
+     */
+    function cancelRedirectStuckClaim()
+        external
+        onlyRole(DEFAULT_ADMIN_ROLE)
+    {
+        if (pendingRedirectClaimant == address(0)) {
+            revert NoPendingClaim();
+        }
+
+        address claimant = pendingRedirectClaimant;
+
+        pendingRedirectClaimant = address(0);
+        pendingRedirectRecipient = address(0);
+        pendingRedirectToken = address(0);
+        pendingRedirectTimestamp = 0;
+
+        emit RedirectStuckClaimCancelled(claimant);
     }
 
     // ════════════════════════════════════════════════════════════════════

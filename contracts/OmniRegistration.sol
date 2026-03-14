@@ -1823,12 +1823,26 @@ contract OmniRegistration is
         // (strong indicator of wash trading between sybil accounts)
         if (buyer != address(0)) {
             Registration storage buyerReg = registrations[buyer];
-            if (
-                buyerReg.referrer != address(0) &&
-                reg.referrer != address(0) &&
-                buyerReg.referrer == reg.referrer
-            ) {
-                revert FirstSaleRequirementsNotMet();
+            if (buyerReg.timestamp != 0) {
+                // Case 1: Both have matching non-zero referrers
+                if (
+                    buyerReg.referrer != address(0) &&
+                    reg.referrer != address(0) &&
+                    buyerReg.referrer == reg.referrer
+                ) {
+                    revert FirstSaleRequirementsNotMet();
+                }
+                // ADV-R8-03: When both parties have no referrer,
+                // require buyer to have at least KYC Tier 1 as
+                // additional Sybil protection (referrer-based
+                // detection is unavailable for zero-referrer pairs)
+                if (
+                    buyerReg.referrer == address(0) &&
+                    reg.referrer == address(0) &&
+                    buyerReg.kycTier < 1
+                ) {
+                    revert FirstSaleRequirementsNotMet();
+                }
             }
         }
 
@@ -2700,8 +2714,9 @@ contract OmniRegistration is
      *      Reduced from 50 to 49 to accommodate _ossified.
      *      Reduced from 49 to 48 to accommodate omniRewardManagerAddress.
      *      Reduced from 48 to 47 to accommodate ossificationRequestedAt.
-     *      (authorizedRecorders is a mapping and does not consume a
-     *      sequential slot.)
+     *      ADV-R8-04: Reduced from 47 to 46 to accommodate
+     *      authorizedRecorders (mappings DO consume a sequential slot
+     *      for their position in the storage layout).
      */
-    uint256[47] private __gap;
+    uint256[46] private __gap;
 }

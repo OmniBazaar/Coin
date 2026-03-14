@@ -390,6 +390,10 @@ contract OmniBridge is
         address indexed newVault
     );
 
+    /// @notice Emitted when a pending fee vault change is cancelled
+    /// @param cancelled Address that was proposed but cancelled
+    event FeeVaultChangeCancelled(address indexed cancelled);
+
     // Custom errors
     /// @notice Thrown when amount is zero or insufficient balance
     error InvalidAmount();
@@ -597,16 +601,15 @@ contract OmniBridge is
         if (processedMessages[messageHash]) revert AlreadyProcessed();
         processedMessages[messageHash] = true;
 
-        // H-01 Round 6: prevent completion if this transfer was already
-        // refunded or completed (guards against cross-chain race condition)
-        // M-01: Differentiate refunded vs completed for clearer revert reasons
-        if (transferStatus[transferId] == TransferStatus.REFUNDED) {
-            revert TransferAlreadyRefunded();
-        }
-        if (transferStatus[transferId] != TransferStatus.PENDING) {
-            revert TransferAlreadyCompleted();
-        }
-        transferStatus[transferId] = TransferStatus.COMPLETED;
+        // ADV-R8-01: transferStatus is scoped to LOCAL outbound transfer IDs.
+        // The transferId decoded from the Warp message belongs to the REMOTE
+        // chain's outbound sequence and must NOT be checked against the local
+        // transferStatus mapping — doing so causes a namespace collision
+        // (e.g., a refunded local transfer #N would block an unrelated
+        // inbound transfer #N from the remote chain).
+        // Replay protection for inbound transfers is fully handled by the
+        // processedMessages[messageHash] check above, which is keyed on
+        // (sourceChainID, transferId) and is therefore collision-free.
 
         // H-04: Enforce independent inbound rate limiting
         uint256 sourceChainId = blockchainToChainId[
@@ -817,6 +820,29 @@ contract OmniBridge is
         feeVaultChangeTimestamp = 0;
 
         emit FeeVaultChangeAccepted(oldVault, feeVault);
+    }
+
+    /**
+     * @notice Cancel a pending fee vault change before it is accepted
+     * @dev ADV-R8-02 remediation: allows admin to cancel a pending fee vault
+     *      change during the timelock window. Without this, a miskeyed or
+     *      compromised proposal has no recourse other than waiting and
+     *      refusing to call acceptFeeVault().
+     *      Emits {FeeVaultChangeCancelled}.
+     */
+    function cancelFeeVault() external {
+        if (!core.hasRole(core.ADMIN_ROLE(), msg.sender)) {
+            revert InvalidRecipient();
+        }
+        if (pendingFeeVault == address(0)) {
+            revert NoFeeVaultChangePending();
+        }
+
+        address cancelled = pendingFeeVault;
+        pendingFeeVault = address(0);
+        feeVaultChangeTimestamp = 0;
+
+        emit FeeVaultChangeCancelled(cancelled);
     }
 
     /**

@@ -167,6 +167,11 @@ contract OmniRewardManager is
     mapping(uint256 => uint256) public dailyFirstSaleBonusCount;
 
     /// @notice Claim nonces for replay protection (user => nonce)
+    /// @dev M-01: Intentionally shared across all 3 claim types (welcome, referral, first sale).
+    ///      Sequential nonces prevent parallel replay. If two claims for different bonus types
+    ///      are signed with the same nonce, only the first submitted succeeds; the user must
+    ///      re-sign with the updated nonce. This is mitigated by natural claim ordering
+    ///      (welcome -> referral -> first sale).
     mapping(address => uint256) public claimNonces;
 
     /// @notice ODDAO address for referral fee distribution
@@ -226,9 +231,25 @@ contract OmniRewardManager is
     /// @dev Maps referrer => epoch_number => count. Epoch = timestamp / REFERRAL_EPOCH_DURATION
     mapping(address => mapping(uint256 => uint256)) public epochReferralCount;
 
+    /// @notice Pending ODDAO address for timelock (R8-M02)
+    address public pendingOddaoAddress;
+
+    /// @notice Timestamp when pending ODDAO address can be applied (R8-M02)
+    uint256 public oddaoAddressTimelockEnd;
+
+    /// @notice Pending legacy bonus claims count for timelock (R8-M02)
+    uint256 public pendingLegacyClaims;
+
+    /// @notice Timestamp when pending legacy claims count can be applied (R8-M02)
+    uint256 public legacyClaimsTimelockEnd;
+
+    /// @notice Whether referral bonus migration from off-chain DB is finalized (R8-M02)
+    /// @dev When true, setPendingReferralBonus() is permanently disabled
+    bool public migrationFinalized;
+
     /// @dev Reserved storage gap for future upgrades
-    /// @custom:storage-preserved Size reduced from 26 to 25 for epochReferralCount mapping
-    uint256[25] private __gap;
+    /// @custom:storage-preserved Size reduced from 25 to 20 for R8 audit fix state variables
+    uint256[20] private __gap;
 
     // ============ Events ============
 
@@ -391,6 +412,35 @@ contract OmniRewardManager is
     /// @param contractAddress Address of this contract
     event ContractOssified(address indexed contractAddress);
 
+    /// @notice R8-M02: Emitted when ODDAO address change is queued
+    /// @param newAddress Proposed new ODDAO address
+    /// @param effectiveTime Timestamp when change can be applied
+    event OddaoAddressChangeQueued(
+        address indexed newAddress,
+        uint256 indexed effectiveTime
+    );
+
+    /// @notice R8-M02: Emitted when legacy claims count change is queued
+    /// @param newCount Proposed new legacy claims count
+    /// @param effectiveTime Timestamp when change can be applied
+    event LegacyClaimsCountChangeQueued(
+        uint256 indexed newCount,
+        uint256 indexed effectiveTime
+    );
+
+    /// @notice R8-M02: Emitted when referral bonus migration is permanently finalized
+    event MigrationFinalized();
+
+    /// @notice Emitted when auto-referral bonus is skipped due to rate limit or eligibility
+    /// @param referrer Referrer who would have received the bonus
+    /// @param referee User whose welcome bonus triggered this
+    /// @param reason Code indicating why the bonus was skipped
+    event ReferralBonusSkipped(
+        address indexed referrer,
+        address indexed referee,
+        string reason
+    );
+
     // ============ Custom Errors ============
 
     /// @notice Thrown when pool has insufficient funds for distribution
@@ -465,6 +515,45 @@ contract OmniRewardManager is
 
     /// @notice Thrown when contract is ossified and upgrade attempted
     error ContractIsOssified();
+
+    /// @notice R8-M02: Thrown when ODDAO address timelock has not elapsed
+    error OddaoTimelockActive();
+
+    /// @notice R8-M02: Thrown when no pending ODDAO address change exists
+    error NoPendingOddaoChange();
+
+    /// @notice R8-M02: Thrown when legacy claims count timelock has not elapsed
+    error LegacyClaimsTimelockActive();
+
+    /// @notice R8-M02: Thrown when no pending legacy claims count change exists
+    error NoPendingLegacyClaimsChange();
+
+    /// @notice R8-M02: Thrown when migration is already finalized
+    error MigrationAlreadyFinalized();
+
+    /// @notice R8-L04: Thrown when legacy claims count would decrease
+    error LegacyClaimsCountCannotDecrease();
+
+    /// @notice R8-L03: Thrown when address does not contain contract code
+    error NotAContract(address account);
+
+    /// @notice R8-H02: Thrown when sensitive admin function called via forwarder
+    /// @param caller The actual msg.sender (forwarder, not real admin)
+    /// @param role The required role
+    error DirectCallRequired(address caller, bytes32 role);
+
+    // ============ Modifiers ============
+
+    /// @notice R8-H02: Requires caller to hold role via direct msg.sender
+    /// @dev Bypasses ERC-2771 _msgSender() to prevent trusted forwarder impersonation
+    ///      on sensitive admin functions. Applied to functions that can redirect funds
+    ///      or modify critical protocol parameters.
+    modifier onlyDirectRole(bytes32 role) {
+        if (!hasRole(role, msg.sender)) {
+            revert DirectCallRequired(msg.sender, role);
+        }
+        _;
+    }
 
     // ============ Constructor ============
 
@@ -568,8 +657,12 @@ contract OmniRewardManager is
      */
     function setRegistrationContract(
         address _registrationContract
-    ) external onlyRole(DEFAULT_ADMIN_ROLE) {
+    ) external onlyDirectRole(DEFAULT_ADMIN_ROLE) {
         if (_registrationContract == address(0)) revert ZeroAddressNotAllowed();
+        // R8-L03: Verify address contains contract code
+        if (_registrationContract.code.length == 0) {
+            revert NotAContract(_registrationContract);
+        }
 
         // First-time setup: apply immediately (no timelock needed)
         if (address(registrationContract) == address(0)) {
@@ -591,7 +684,7 @@ contract OmniRewardManager is
      * @notice Apply a queued registration contract change after timelock expires
      * @dev Only callable by DEFAULT_ADMIN_ROLE after the timelock period.
      */
-    function applyRegistrationContract() external onlyRole(DEFAULT_ADMIN_ROLE) {
+    function applyRegistrationContract() external onlyDirectRole(DEFAULT_ADMIN_ROLE) {
         if (pendingRegistrationContract == address(0)) revert NoPendingRegistrationChange();
         // solhint-disable-next-line not-rely-on-time
         if (block.timestamp < registrationContractTimelockEnd) revert RegistrationTimelockActive();
@@ -605,16 +698,46 @@ contract OmniRewardManager is
     }
 
     /**
-     * @notice Set the ODDAO address for referral fee distribution
-     * @dev Only callable by DEFAULT_ADMIN_ROLE
-     * @param _oddaoAddress Address of the ODDAO
+     * @notice Queue an ODDAO address change (R8-M02: 48-hour timelock)
+     * @dev Only callable by DEFAULT_ADMIN_ROLE via direct call (not forwarder).
+     *      If no ODDAO address is set yet (initial setup), applies immediately.
+     * @param _oddaoAddress Address of the new ODDAO
      */
     function setOddaoAddress(
         address _oddaoAddress
-    ) external onlyRole(DEFAULT_ADMIN_ROLE) {
+    ) external onlyDirectRole(DEFAULT_ADMIN_ROLE) {
         if (_oddaoAddress == address(0)) revert ZeroAddressNotAllowed();
-        oddaoAddress = _oddaoAddress;
-        emit OddaoAddressSet(_oddaoAddress);
+
+        // First-time setup: apply immediately
+        if (oddaoAddress == address(0)) {
+            oddaoAddress = _oddaoAddress;
+            emit OddaoAddressSet(_oddaoAddress);
+            return;
+        }
+
+        // R8-M02: Subsequent changes require 48-hour timelock
+        pendingOddaoAddress = _oddaoAddress;
+        // solhint-disable-next-line not-rely-on-time
+        oddaoAddressTimelockEnd = block.timestamp + REGISTRATION_TIMELOCK_DELAY;
+        // solhint-disable-next-line not-rely-on-time
+        emit OddaoAddressChangeQueued(_oddaoAddress, oddaoAddressTimelockEnd);
+    }
+
+    /**
+     * @notice Apply a queued ODDAO address change after timelock expires (R8-M02)
+     * @dev Only callable by DEFAULT_ADMIN_ROLE after the timelock period.
+     */
+    function applyOddaoAddress() external onlyDirectRole(DEFAULT_ADMIN_ROLE) {
+        if (pendingOddaoAddress == address(0)) revert NoPendingOddaoChange();
+        // solhint-disable-next-line not-rely-on-time
+        if (block.timestamp < oddaoAddressTimelockEnd) revert OddaoTimelockActive();
+
+        oddaoAddress = pendingOddaoAddress;
+        emit OddaoAddressSet(pendingOddaoAddress);
+
+        // Clear pending state
+        pendingOddaoAddress = address(0);
+        oddaoAddressTimelockEnd = 0;
     }
 
     /**
@@ -633,23 +756,60 @@ contract OmniRewardManager is
      */
     function setLegacyBonusClaimsCount(
         uint256 _count
-    ) external onlyRole(DEFAULT_ADMIN_ROLE) {
+    ) external onlyDirectRole(DEFAULT_ADMIN_ROLE) {
         // M-06: Prevent manipulation by enforcing upper bound
         if (_count > MAX_LEGACY_CLAIMS_COUNT) {
             revert LegacyClaimsCountTooHigh(_count, MAX_LEGACY_CLAIMS_COUNT);
         }
-
-        uint256 oldCount = legacyBonusClaimsCount;
-        legacyBonusClaimsCount = _count;
-
-        // Calculate effective registrations for the event
-        uint256 effectiveRegs = _count;
-        if (address(registrationContract) != address(0)) {
-            uint256 totalRegs = registrationContract.totalRegistrations();
-            effectiveRegs = totalRegs + _count;
+        // R8-L04: Can only increase (monotonicity constraint for migration safety)
+        if (_count < legacyBonusClaimsCount) {
+            revert LegacyClaimsCountCannotDecrease();
         }
 
-        emit LegacyBonusClaimsCountUpdated(oldCount, _count, effectiveRegs);
+        // First-time setup: apply immediately
+        if (legacyBonusClaimsCount == 0) {
+            uint256 oldCount = legacyBonusClaimsCount;
+            legacyBonusClaimsCount = _count;
+            uint256 effectiveRegs = _count;
+            if (address(registrationContract) != address(0)) {
+                effectiveRegs = registrationContract.totalRegistrations() + _count;
+            }
+            emit LegacyBonusClaimsCountUpdated(oldCount, _count, effectiveRegs);
+            return;
+        }
+
+        // R8-M02: Subsequent changes require 48-hour timelock
+        pendingLegacyClaims = _count;
+        // solhint-disable-next-line not-rely-on-time
+        legacyClaimsTimelockEnd = block.timestamp + REGISTRATION_TIMELOCK_DELAY;
+        // solhint-disable-next-line not-rely-on-time
+        emit LegacyClaimsCountChangeQueued(_count, legacyClaimsTimelockEnd);
+    }
+
+    /**
+     * @notice Apply a queued legacy claims count change after timelock expires (R8-M02)
+     * @dev Only callable by DEFAULT_ADMIN_ROLE after the timelock period.
+     */
+    function applyLegacyBonusClaimsCount() external onlyDirectRole(DEFAULT_ADMIN_ROLE) {
+        if (pendingLegacyClaims == 0) revert NoPendingLegacyClaimsChange();
+        // solhint-disable-next-line not-rely-on-time
+        if (block.timestamp < legacyClaimsTimelockEnd) revert LegacyClaimsTimelockActive();
+        // Re-validate monotonicity at apply time (state may have changed during timelock)
+        if (pendingLegacyClaims < legacyBonusClaimsCount) {
+            revert LegacyClaimsCountCannotDecrease();
+        }
+
+        uint256 oldCount = legacyBonusClaimsCount;
+        legacyBonusClaimsCount = pendingLegacyClaims;
+        uint256 effectiveRegs = pendingLegacyClaims;
+        if (address(registrationContract) != address(0)) {
+            effectiveRegs = registrationContract.totalRegistrations() + pendingLegacyClaims;
+        }
+        emit LegacyBonusClaimsCountUpdated(oldCount, pendingLegacyClaims, effectiveRegs);
+
+        // Clear pending state
+        pendingLegacyClaims = 0;
+        legacyClaimsTimelockEnd = 0;
     }
 
     /**
@@ -674,7 +834,9 @@ contract OmniRewardManager is
     function setPendingReferralBonus(
         address referrer,
         uint256 amount
-    ) external onlyRole(DEFAULT_ADMIN_ROLE) {
+    ) external onlyDirectRole(DEFAULT_ADMIN_ROLE) {
+        // R8-M02: Prevent calls after migration is finalized
+        if (migrationFinalized) revert MigrationAlreadyFinalized();
         if (referrer == address(0)) revert ZeroAddressNotAllowed();
 
         uint256 oldPending = pendingReferralBonuses[referrer];
@@ -699,6 +861,17 @@ contract OmniRewardManager is
         pendingReferralBonuses[referrer] = amount;
 
         emit ReferralBonusMigrated(referrer, oldPending, amount);
+    }
+
+    /**
+     * @notice Permanently finalize referral bonus migration (R8-M02)
+     * @dev Once called, setPendingReferralBonus() is permanently disabled.
+     *      Call this after all legacy bonuses have been migrated from the off-chain DB.
+     */
+    function finalizeMigration() external onlyDirectRole(DEFAULT_ADMIN_ROLE) {
+        if (migrationFinalized) revert MigrationAlreadyFinalized();
+        migrationFinalized = true;
+        emit MigrationFinalized();
     }
 
     // ============ External Functions - Bonus Claiming ============
@@ -771,6 +944,10 @@ contract OmniRewardManager is
         if (reg.timestamp == 0) revert UserNotRegistered(user);
 
         // 7. Verify welcome bonus not already claimed
+        // R8-C01: Check LOCAL mapping first (survives unregister/re-register cycle)
+        if (welcomeBonusClaimed[user]) {
+            revert BonusAlreadyClaimed(user, PoolType.WelcomeBonus);
+        }
         if (reg.welcomeBonusClaimed) {
             revert BonusAlreadyClaimed(user, PoolType.WelcomeBonus);
         }
@@ -965,6 +1142,9 @@ contract OmniRewardManager is
         uint256 deadline,
         bytes calldata signature
     ) external nonReentrant whenNotPaused {
+        // R8-L01: Check zero address (match welcome/referral bonus checks)
+        if (user == address(0)) revert ZeroAddressNotAllowed();
+
         // 1. Check registration contract is set
         if (address(registrationContract) == address(0)) {
             revert RegistrationContractNotSet();
@@ -997,6 +1177,10 @@ contract OmniRewardManager is
 
         // 6. Verify eligibility
         if (reg.timestamp == 0) revert UserNotRegistered(user);
+        // R8-C01: Check LOCAL mapping first (survives unregister/re-register cycle)
+        if (firstSaleBonusClaimed[user]) {
+            revert BonusAlreadyClaimed(user, PoolType.FirstSaleBonus);
+        }
         if (reg.firstSaleBonusClaimed) {
             revert BonusAlreadyClaimed(user, PoolType.FirstSaleBonus);
         }
@@ -1315,7 +1499,10 @@ contract OmniRewardManager is
 
     /**
      * @notice Calculate first sale bonus amount based on registration number
-     * @dev Incentivizes early sellers
+     * @dev Incentivizes early sellers.
+     *      M-03: Uses totalRegistrations (not welcomeBonusClaimCount) because first sale
+     *      bonus tiers track total platform growth. Welcome bonus tiers track actual
+     *      bonus payouts. These diverge because not all registered users claim bonuses.
      * @param registrationNumber Current total registration count
      * @return Bonus amount in wei
      *
@@ -1369,6 +1556,7 @@ contract OmniRewardManager is
         uint256 today = block.timestamp / 1 days;
         if (dailyAutoReferralCount[today] >= MAX_DAILY_REFERRAL_BONUSES) {
             // Skip referral bonus if daily limit exceeded (don't revert - welcome bonus already claimed)
+            emit ReferralBonusSkipped(referrer, referee, "DAILY_LIMIT");
             return;
         }
         ++dailyAutoReferralCount[today];
@@ -1378,6 +1566,7 @@ contract OmniRewardManager is
         uint256 epoch = block.timestamp / REFERRAL_EPOCH_DURATION;
         if (epochReferralCount[referrer][epoch] >= MAX_REFERRAL_BONUSES_PER_EPOCH) {
             // Skip if referrer hit epoch limit (don't revert - welcome bonus already claimed)
+            emit ReferralBonusSkipped(referrer, referee, "EPOCH_LIMIT");
             return;
         }
         ++epochReferralCount[referrer][epoch];
@@ -1386,7 +1575,8 @@ contract OmniRewardManager is
 
         // SYBIL-H02: Referrer must have KYC Tier 1 to receive bonus
         if (!registrationContract.hasKycTier1(referrer)) {
-            // Skip accumulation (don't revert — welcome bonus already claimed)
+            // Skip accumulation (don't revert - welcome bonus already claimed)
+            emit ReferralBonusSkipped(referrer, referee, "KYC_MISSING");
             return;
         }
 
@@ -1396,6 +1586,7 @@ contract OmniRewardManager is
         // Validate pool balance
         if (referralBonusPool.remaining < referralAmount) {
             // Skip if pool exhausted (don't revert)
+            emit ReferralBonusSkipped(referrer, referee, "POOL_EXHAUSTED");
             return;
         }
 
@@ -1445,8 +1636,10 @@ contract OmniRewardManager is
      * @dev Can only be called by UPGRADER_ROLE (through timelock). Once ossified,
      *      the contract can never be upgraded again.
      */
-    function ossify() external onlyRole(UPGRADER_ROLE) {
+    function ossify() external onlyDirectRole(UPGRADER_ROLE) {
         _ossified = true;
+        // R8-H01: Renounce UPGRADER_ROLE to prevent post-ossification escalation
+        _revokeRole(UPGRADER_ROLE, msg.sender);
         emit ContractOssified(address(this));
     }
 
@@ -1466,7 +1659,7 @@ contract OmniRewardManager is
      */
     function _authorizeUpgrade(
         address newImplementation
-    ) internal override onlyRole(UPGRADER_ROLE) {
+    ) internal override onlyDirectRole(UPGRADER_ROLE) {
         if (_ossified) revert ContractIsOssified();
     }
 
