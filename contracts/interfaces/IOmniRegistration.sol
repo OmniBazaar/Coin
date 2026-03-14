@@ -287,14 +287,16 @@ interface IOmniRegistration {
     function kycTier1CompletedAt(address user) external view returns (uint256);
 
     /**
-     * @notice Submit phone verification proof
+     * @notice Submit phone verification on behalf of a user (relay pattern)
+     * @param user Address of the user being verified
      * @param phoneHash Keccak256 of normalized phone number
      * @param timestamp When verification was performed
      * @param nonce Unique nonce for replay protection
      * @param deadline Proof expiration time
      * @param signature EIP-712 signature from trustedVerificationKey
      */
-    function submitPhoneVerification(
+    function submitPhoneVerificationFor(
+        address user,
         bytes32 phoneHash,
         uint256 timestamp,
         bytes32 nonce,
@@ -303,7 +305,8 @@ interface IOmniRegistration {
     ) external;
 
     /**
-     * @notice Submit social media verification proof
+     * @notice Submit social verification on behalf of a user (relay pattern)
+     * @param user Address of the user being verified
      * @param socialHash Keccak256 of "platform:handle"
      * @param platform Platform name ("twitter" or "telegram")
      * @param timestamp When verification was performed
@@ -311,7 +314,8 @@ interface IOmniRegistration {
      * @param deadline Proof expiration time
      * @param signature EIP-712 signature from trustedVerificationKey
      */
-    function submitSocialVerification(
+    function submitSocialVerificationFor(
+        address user,
         bytes32 socialHash,
         string calldata platform,
         uint256 timestamp,

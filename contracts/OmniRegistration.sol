@@ -598,6 +598,10 @@ contract OmniRegistration is
     /// @param executedAt Timestamp when ossification was executed
     event OssificationExecuted(uint256 indexed executedAt);
 
+    /// @notice Emitted when a pending ossification request is cancelled
+    /// @param cancelledBy Admin who cancelled the request
+    event OssificationCancelled(address indexed cancelledBy);
+
     // ═══════════════════════════════════════════════════════════════════════
     //                              ERRORS
     // ═══════════════════════════════════════════════════════════════════════
@@ -607,6 +611,9 @@ contract OmniRegistration is
 
     /// @notice Phone number hash has already been used
     error PhoneAlreadyUsed();
+
+    /// @notice User already has a verified phone number (M-03)
+    error PhoneAlreadyVerified();
 
     /// @notice Email hash has already been used
     error EmailAlreadyUsed();
@@ -649,6 +656,9 @@ contract OmniRegistration is
 
     /// @notice Social hash has already been used by another user
     error SocialAlreadyUsed();
+
+    /// @notice User already has a verified social account (M-02)
+    error SocialAlreadyVerified();
 
     /// @notice Verification proof signature is invalid (not from trusted key)
     error InvalidVerificationProof();
@@ -827,8 +837,9 @@ contract OmniRegistration is
         if (registrations[user].timestamp != 0) revert AlreadyRegistered();
 
         // Check phone/email uniqueness (Sybil protection)
-        if (usedPhoneHashes[phoneHash]) revert PhoneAlreadyUsed();
-        if (usedEmailHashes[emailHash]) revert EmailAlreadyUsed();
+        // Skip zero-hash checks (trustless flow may set phone/email later)
+        if (phoneHash != bytes32(0) && usedPhoneHashes[phoneHash]) revert PhoneAlreadyUsed();
+        if (emailHash != bytes32(0) && usedEmailHashes[emailHash]) revert EmailAlreadyUsed();
 
         // Validate referrer
         if (referrer != address(0)) {
@@ -863,9 +874,9 @@ contract OmniRegistration is
             firstSaleBonusClaimed: false
         });
 
-        // Mark phone/email as used
-        usedPhoneHashes[phoneHash] = true;
-        usedEmailHashes[emailHash] = true;
+        // Mark phone/email as used (skip zero-hash to allow trustless verification flow)
+        if (phoneHash != bytes32(0)) usedPhoneHashes[phoneHash] = true;
+        if (emailHash != bytes32(0)) usedEmailHashes[emailHash] = true;
 
         // Update counters
         ++dailyRegistrationCount[today];
@@ -1157,90 +1168,12 @@ contract OmniRegistration is
     // ═══════════════════════════════════════════════════════════════════════
 
     /**
-     * @notice Submit phone verification proof (signed by trustedVerificationKey)
-     * @param phoneHash Keccak256 of normalized phone number
-     * @param timestamp When verification was performed by the verification service
-     * @param nonce Unique nonce for replay protection
-     * @param deadline Proof expiration time (block.timestamp)
-     * @param signature EIP-712 signature from trustedVerificationKey
-     * @dev User calls this after completing phone verification off-chain.
-     *      The verification service signs the proof, user submits it on-chain.
-     *
-     * Security Properties:
-     * - Only trustedVerificationKey can sign valid proofs
-     * - Each nonce can only be used once (replay protection)
-     * - Phone hash can only be used by one user (Sybil protection)
-     * - Proof expires after deadline (prevents hoarding)
-     * - Updates KYC Tier 1 status if requirements met
-     */
-    function submitPhoneVerification(
-        bytes32 phoneHash,
-        uint256 timestamp,
-        bytes32 nonce,
-        uint256 deadline,
-        bytes calldata signature
-    ) external nonReentrant {
-        address caller = _msgSender();
-        if (registrations[caller].timestamp == 0) revert NotRegistered();
-        if (usedPhoneHashes[phoneHash]) revert PhoneAlreadyUsed();
-
-        _verifyAttestation(
-            keccak256(abi.encode(
-                PHONE_VERIFICATION_TYPEHASH, caller, phoneHash,
-                timestamp, nonce, deadline
-            )),
-            nonce, deadline, signature
-        );
-
-        Registration storage reg = registrations[caller];
-        if (reg.timestamp != 0 && reg.phoneHash == bytes32(0)) {
-            reg.phoneHash = phoneHash;
-        }
-        usedPhoneHashes[phoneHash] = true;
-        _checkAndUpdateKycTier1(caller);
-        emit PhoneVerified(caller, phoneHash, timestamp); // solhint-disable-line not-rely-on-time
-    }
-
-    /// @notice Submit social media verification proof
-    /// @param socialHash Keccak256 of "platform:handle"
-    /// @param platform Platform name ("twitter" or "telegram")
-    /// @param timestamp When verification was performed
-    /// @param nonce Unique nonce for replay protection
-    /// @param deadline Proof expiration time
-    /// @param signature EIP-712 signature from trustedVerificationKey
-    function submitSocialVerification(
-        bytes32 socialHash,
-        string calldata platform,
-        uint256 timestamp,
-        bytes32 nonce,
-        uint256 deadline,
-        bytes calldata signature
-    ) external nonReentrant {
-        address caller = _msgSender();
-        if (registrations[caller].timestamp == 0) revert NotRegistered();
-        if (usedSocialHashes[socialHash]) revert SocialAlreadyUsed();
-
-        _verifyAttestation(
-            keccak256(abi.encode(
-                SOCIAL_VERIFICATION_TYPEHASH, caller, socialHash,
-                keccak256(bytes(platform)), timestamp, nonce, deadline
-            )),
-            nonce, deadline, signature
-        );
-
-        userSocialHashes[caller] = socialHash;
-        usedSocialHashes[socialHash] = true;
-        _checkAndUpdateKycTier1(caller);
-        emit SocialVerified(caller, socialHash, platform, timestamp); // solhint-disable-line not-rely-on-time
-    }
-
-    /**
      * @notice Check if user has completed KYC Tier 1
      * @param user Address to check
      * @return True if KYC Tier 1 is complete (registered + phone + social verified)
      * @dev KYC Tier 1 requires:
      *      1. User is registered (registrations[user].timestamp != 0)
-     *      2. Phone is verified (usedPhoneHashes[reg.phoneHash] == true OR phone via submitPhoneVerification)
+     *      2. Phone is verified (usedPhoneHashes[reg.phoneHash] == true)
      *      3. Social is verified (userSocialHashes[user] != bytes32(0))
      */
     function hasKycTier1(address user) external view returns (bool) {
@@ -1252,7 +1185,14 @@ contract OmniRegistration is
     // ═══════════════════════════════════════════════════════════════════════
 
     /// @notice Submit phone verification on behalf of a user (relay pattern)
-    /// @dev ANYONE can relay. User address is verified in signature.
+    /// @dev ANYONE can relay. User address is verified in EIP-712 signature.
+    ///      Validators call this to pay gas for users.
+    /// @param user Address of the user being verified
+    /// @param phoneHash Keccak256 of normalized phone number
+    /// @param timestamp When verification was performed
+    /// @param nonce Unique nonce for replay protection
+    /// @param deadline Proof expiration time
+    /// @param signature EIP-712 signature from trustedVerificationKey
     function submitPhoneVerificationFor(
         address user,
         bytes32 phoneHash,
@@ -1261,28 +1201,18 @@ contract OmniRegistration is
         uint256 deadline,
         bytes calldata signature
     ) external nonReentrant {
-        if (registrations[user].timestamp == 0) revert NotRegistered();
-        if (usedPhoneHashes[phoneHash]) revert PhoneAlreadyUsed();
-
-        _verifyAttestation(
-            keccak256(abi.encode(
-                PHONE_VERIFICATION_TYPEHASH, user, phoneHash,
-                timestamp, nonce, deadline
-            )),
-            nonce, deadline, signature
-        );
-
-        Registration storage reg = registrations[user];
-        if (reg.timestamp != 0 && reg.phoneHash == bytes32(0)) {
-            reg.phoneHash = phoneHash;
-        }
-        usedPhoneHashes[phoneHash] = true;
-        _checkAndUpdateKycTier1(user);
-        emit PhoneVerified(user, phoneHash, timestamp); // solhint-disable-line not-rely-on-time
+        _submitPhoneInternal(user, phoneHash, timestamp, nonce, deadline, signature);
     }
 
     /// @notice Submit social verification on behalf of a user (relay pattern)
-    /// @dev ANYONE can relay. User address is verified in signature.
+    /// @dev ANYONE can relay. User address is verified in EIP-712 signature.
+    /// @param user Address of the user being verified
+    /// @param socialHash Keccak256 of "platform:handle"
+    /// @param platform Platform name ("twitter" or "telegram")
+    /// @param timestamp When verification was performed
+    /// @param nonce Unique nonce for replay protection
+    /// @param deadline Proof expiration time
+    /// @param signature EIP-712 signature from trustedVerificationKey
     function submitSocialVerificationFor(
         address user,
         bytes32 socialHash,
@@ -1292,9 +1222,57 @@ contract OmniRegistration is
         uint256 deadline,
         bytes calldata signature
     ) external nonReentrant {
-        if (registrations[user].timestamp == 0) revert NotRegistered();
-        if (usedSocialHashes[socialHash]) revert SocialAlreadyUsed();
+        _submitSocialInternal(user, socialHash, platform, timestamp, nonce, deadline, signature);
+    }
 
+    // ═══════════════════════════════════════════════════════════════════════
+    //           INTERNAL VERIFICATION IMPLEMENTATIONS (SHARED LOGIC)
+    // ═══════════════════════════════════════════════════════════════════════
+
+    /// @dev Shared phone verification logic for both direct and relay paths
+    function _submitPhoneInternal(
+        address user,
+        bytes32 phoneHash,
+        uint256 timestamp,
+        bytes32 nonce,
+        uint256 deadline,
+        bytes calldata signature
+    ) internal {
+        if (registrations[user].timestamp == 0) revert NotRegistered();
+        // M-03: Prevent re-verification if user already has a phone hash
+        // (avoids permanently locking the new phoneHash in usedPhoneHashes)
+        Registration storage reg = registrations[user];
+        if (reg.phoneHash != bytes32(0)) revert PhoneAlreadyVerified();
+        if (usedPhoneHashes[phoneHash]) revert PhoneAlreadyUsed();
+        _verifyAttestation(
+            keccak256(abi.encode(
+                PHONE_VERIFICATION_TYPEHASH, user, phoneHash,
+                timestamp, nonce, deadline
+            )),
+            nonce, deadline, signature
+        );
+        reg.phoneHash = phoneHash;
+        usedPhoneHashes[phoneHash] = true;
+        _checkAndUpdateKycTier1(user);
+        // solhint-disable-next-line not-rely-on-time
+        emit PhoneVerified(user, phoneHash, timestamp);
+    }
+
+    /// @dev Shared social verification logic for both direct and relay paths
+    function _submitSocialInternal(
+        address user,
+        bytes32 socialHash,
+        string calldata platform,
+        uint256 timestamp,
+        bytes32 nonce,
+        uint256 deadline,
+        bytes calldata signature
+    ) internal {
+        if (registrations[user].timestamp == 0) revert NotRegistered();
+        // M-02: Prevent re-verification if user already has a social hash
+        // (avoids permanently locking the old socialHash in usedSocialHashes)
+        if (userSocialHashes[user] != bytes32(0)) revert SocialAlreadyVerified();
+        if (usedSocialHashes[socialHash]) revert SocialAlreadyUsed();
         _verifyAttestation(
             keccak256(abi.encode(
                 SOCIAL_VERIFICATION_TYPEHASH, user, socialHash,
@@ -1302,12 +1280,154 @@ contract OmniRegistration is
             )),
             nonce, deadline, signature
         );
-
         userSocialHashes[user] = socialHash;
         usedSocialHashes[socialHash] = true;
         _checkAndUpdateKycTier1(user);
-        emit SocialVerified(user, socialHash, platform, timestamp); // solhint-disable-line not-rely-on-time
+        // solhint-disable-next-line not-rely-on-time
+        emit SocialVerified(user, socialHash, platform, timestamp);
     }
+
+    /// @dev Shared ID verification logic for both direct and relay paths
+    function _submitIDInternal(
+        address user,
+        bytes32 idHash,
+        string calldata country,
+        uint256 timestamp,
+        bytes32 nonce,
+        uint256 deadline,
+        bytes calldata signature
+    ) internal {
+        if (registrations[user].timestamp == 0) revert NotRegistered();
+        if (usedIDHashes[idHash]) revert IDAlreadyUsed();
+        if (kycTier1CompletedAt[user] == 0) revert PreviousTierRequired();
+        _verifyAttestation(
+            keccak256(abi.encode(
+                ID_VERIFICATION_TYPEHASH, user, idHash,
+                keccak256(bytes(country)), timestamp, nonce, deadline
+            )),
+            nonce, deadline, signature
+        );
+        userIDHashes[user] = idHash;
+        usedIDHashes[idHash] = true;
+        userCountries[user] = country;
+        _checkAndUpdateKycTier2(user);
+        emit IDVerified(user, idHash, country, timestamp);
+    }
+
+    /// @dev Shared address verification logic for both direct and relay paths
+    function _submitAddressInternal(
+        address user,
+        bytes32 addressHash,
+        string calldata country,
+        bytes32 documentType,
+        uint256 timestamp,
+        bytes32 nonce,
+        uint256 deadline,
+        bytes calldata signature
+    ) internal {
+        if (registrations[user].timestamp == 0) revert NotRegistered();
+        if (usedAddressHashes[addressHash]) revert AddressAlreadyUsed();
+        if (kycTier1CompletedAt[user] == 0) revert PreviousTierRequired();
+        _verifyAttestation(
+            keccak256(abi.encode(
+                ADDRESS_VERIFICATION_TYPEHASH, user, addressHash,
+                keccak256(bytes(country)), documentType,
+                timestamp, nonce, deadline
+            )),
+            nonce, deadline, signature
+        );
+        userAddressHashes[user] = addressHash;
+        usedAddressHashes[addressHash] = true;
+        _checkAndUpdateKycTier2(user);
+        // solhint-disable-next-line not-rely-on-time
+        emit AddressVerified(user, addressHash, country, documentType, timestamp);
+    }
+
+    /// @dev Shared selfie verification logic for both direct and relay paths
+    function _submitSelfieInternal(
+        address user,
+        bytes32 selfieHash,
+        uint256 similarity,
+        uint256 timestamp,
+        bytes32 nonce,
+        uint256 deadline,
+        bytes calldata signature
+    ) internal {
+        if (registrations[user].timestamp == 0) revert NotRegistered();
+        if (userIDHashes[user] == bytes32(0)) revert IDVerificationRequired();
+        if (similarity < 85) revert InsufficientSimilarity();
+        _verifyAttestation(
+            keccak256(abi.encode(
+                SELFIE_VERIFICATION_TYPEHASH, user, selfieHash,
+                similarity, timestamp, nonce, deadline
+            )),
+            nonce, deadline, signature
+        );
+        selfieVerified[user] = true;
+        _checkAndUpdateKycTier2(user);
+        // solhint-disable-next-line not-rely-on-time
+        emit SelfieVerified(user, selfieHash, similarity, timestamp);
+    }
+
+    /// @dev Shared Persona verification logic for both direct and relay paths
+    function _submitPersonaInternal(
+        address user,
+        bytes32 verificationHash,
+        uint256 timestamp,
+        bytes32 nonce,
+        uint256 deadline,
+        bytes calldata signature
+    ) internal {
+        // L-05: Defense-in-depth registration check
+        if (registrations[user].timestamp == 0) revert NotRegistered();
+        if (kycTier2CompletedAt[user] == 0) revert PreviousTierRequired();
+        _verifyAttestation(
+            keccak256(abi.encode(
+                PERSONA_VERIFICATION_TYPEHASH, user, verificationHash,
+                timestamp, nonce, deadline
+            )),
+            nonce, deadline, signature
+        );
+        personaVerificationHashes[user] = verificationHash;
+        emit PersonaVerified(user, verificationHash, timestamp);
+        _checkAndUpdateKycTier3(user);
+    }
+
+    /// @dev Shared third-party KYC logic for both direct and relay paths
+    function _submitThirdPartyKYCInternal(
+        address user,
+        address kycProvider,
+        uint256 timestamp,
+        bytes32 nonce,
+        uint256 deadline,
+        bytes calldata signature
+    ) internal {
+        // L-06: Defense-in-depth registration check
+        if (registrations[user].timestamp == 0) revert NotRegistered();
+        if (kycTier3CompletedAt[user] == 0) revert PreviousTierRequired();
+        _verifyKYCProviderAttestation(
+            kycProvider,
+            keccak256(abi.encode(
+                THIRD_PARTY_KYC_TYPEHASH, user, kycProvider,
+                timestamp, nonce, deadline
+            )),
+            nonce, deadline, signature
+        );
+        kycTier4CompletedAt[user] = block.timestamp; // solhint-disable-line not-rely-on-time
+        userKYCProvider[user] = kycProvider;
+        Registration storage reg = registrations[user];
+        if (reg.kycTier < 4) {
+            uint8 oldTier = reg.kycTier;
+            reg.kycTier = 4;
+            emit KYCUpgraded(user, oldTier, 4);
+        }
+        // solhint-disable-next-line not-rely-on-time
+        emit KycTier4Completed(user, kycProvider, block.timestamp);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    //                    ATTESTATION VERIFICATION HELPERS
+    // ═══════════════════════════════════════════════════════════════════════
 
     /// @notice Verify an EIP-712 attestation signed by trustedVerificationKey
     /// @dev Consolidates deadline, nonce, digest, and signature checks used
@@ -1402,37 +1522,9 @@ contract OmniRegistration is
     //                    KYC TIER 2/3/4 VERIFICATION (Added v2)
     // ═══════════════════════════════════════════════════════════════════════
 
-    /// @notice Submit ID verification proof (KYC Tier 2, requires Tier 1)
-    function submitIDVerification(
-        bytes32 idHash,
-        string calldata country,
-        uint256 timestamp,
-        bytes32 nonce,
-        uint256 deadline,
-        bytes calldata signature
-    ) external nonReentrant {
-        address caller = _msgSender();
-        if (registrations[caller].timestamp == 0) revert NotRegistered();
-        if (usedIDHashes[idHash]) revert IDAlreadyUsed();
-        if (kycTier1CompletedAt[caller] == 0) revert PreviousTierRequired();
-
-        _verifyAttestation(
-            keccak256(abi.encode(
-                ID_VERIFICATION_TYPEHASH, caller, idHash,
-                keccak256(bytes(country)), timestamp, nonce, deadline
-            )),
-            nonce, deadline, signature
-        );
-
-        userIDHashes[caller] = idHash;
-        usedIDHashes[idHash] = true;
-        userCountries[caller] = country;
-        _checkAndUpdateKycTier2(caller);
-        emit IDVerified(caller, idHash, country, timestamp); // solhint-disable-line not-rely-on-time
-    }
-
     /// @notice Submit ID verification on behalf of a user (relay pattern)
-    /// @dev ANYONE can relay. User address is verified in signature.
+    /// @dev ANYONE can relay. User address is verified in EIP-712 signature.
+    ///      Requires KYC Tier 1 completed.
     function submitIDVerificationFor(
         address user,
         bytes32 idHash,
@@ -1442,85 +1534,12 @@ contract OmniRegistration is
         uint256 deadline,
         bytes calldata signature
     ) external nonReentrant {
-        if (registrations[user].timestamp == 0) revert NotRegistered();
-        if (usedIDHashes[idHash]) revert IDAlreadyUsed();
-        if (kycTier1CompletedAt[user] == 0) revert PreviousTierRequired();
-
-        _verifyAttestation(
-            keccak256(abi.encode(
-                ID_VERIFICATION_TYPEHASH, user, idHash,
-                keccak256(bytes(country)), timestamp, nonce, deadline
-            )),
-            nonce, deadline, signature
-        );
-
-        userIDHashes[user] = idHash;
-        usedIDHashes[idHash] = true;
-        userCountries[user] = country;
-        _checkAndUpdateKycTier2(user);
-        emit IDVerified(user, idHash, country, timestamp); // solhint-disable-line not-rely-on-time
-    }
-
-    /// @notice Submit address verification proof (KYC Tier 2, requires Tier 1)
-    function submitAddressVerification(
-        bytes32 addressHash,
-        string calldata country,
-        bytes32 documentType,
-        uint256 timestamp,
-        bytes32 nonce,
-        uint256 deadline,
-        bytes calldata signature
-    ) external nonReentrant {
-        address caller = _msgSender();
-        if (registrations[caller].timestamp == 0) revert NotRegistered();
-        if (usedAddressHashes[addressHash]) revert AddressAlreadyUsed();
-        if (kycTier1CompletedAt[caller] == 0) revert PreviousTierRequired();
-
-        _verifyAttestation(
-            keccak256(abi.encode(
-                ADDRESS_VERIFICATION_TYPEHASH, caller, addressHash,
-                keccak256(bytes(country)), documentType,
-                timestamp, nonce, deadline
-            )),
-            nonce, deadline, signature
-        );
-
-        userAddressHashes[caller] = addressHash;
-        usedAddressHashes[addressHash] = true;
-        _checkAndUpdateKycTier2(caller);
-        emit AddressVerified(caller, addressHash, country, documentType, timestamp); // solhint-disable-line not-rely-on-time
-    }
-
-    /// @notice Submit selfie verification proof (KYC Tier 2, requires ID)
-    /// @dev Similarity must be >= 85. Completes Tier 2 with ID + address.
-    function submitSelfieVerification(
-        bytes32 selfieHash,
-        uint256 similarity,
-        uint256 timestamp,
-        bytes32 nonce,
-        uint256 deadline,
-        bytes calldata signature
-    ) external nonReentrant {
-        address caller = _msgSender();
-        if (registrations[caller].timestamp == 0) revert NotRegistered();
-        if (userIDHashes[caller] == bytes32(0)) revert IDVerificationRequired();
-        if (similarity < 85) revert InsufficientSimilarity();
-
-        _verifyAttestation(
-            keccak256(abi.encode(
-                SELFIE_VERIFICATION_TYPEHASH, caller, selfieHash,
-                similarity, timestamp, nonce, deadline
-            )),
-            nonce, deadline, signature
-        );
-
-        selfieVerified[caller] = true;
-        _checkAndUpdateKycTier2(caller);
-        emit SelfieVerified(caller, selfieHash, similarity, timestamp); // solhint-disable-line not-rely-on-time
+        _submitIDInternal(user, idHash, country, timestamp, nonce, deadline, signature);
     }
 
     /// @notice Submit address verification on behalf of a user (relay pattern)
-    /// @dev ANYONE can relay. User address is verified in signature.
+    /// @dev ANYONE can relay. User address is verified in EIP-712 signature.
+    ///      Requires KYC Tier 1 completed.
     function submitAddressVerificationFor(
         address user,
         bytes32 addressHash,
@@ -1531,27 +1550,13 @@ contract OmniRegistration is
         uint256 deadline,
         bytes calldata signature
     ) external nonReentrant {
-        if (registrations[user].timestamp == 0) revert NotRegistered();
-        if (usedAddressHashes[addressHash]) revert AddressAlreadyUsed();
-        if (kycTier1CompletedAt[user] == 0) revert PreviousTierRequired();
-
-        _verifyAttestation(
-            keccak256(abi.encode(
-                ADDRESS_VERIFICATION_TYPEHASH, user, addressHash,
-                keccak256(bytes(country)), documentType,
-                timestamp, nonce, deadline
-            )),
-            nonce, deadline, signature
+        _submitAddressInternal(
+            user, addressHash, country, documentType, timestamp, nonce, deadline, signature
         );
-
-        userAddressHashes[user] = addressHash;
-        usedAddressHashes[addressHash] = true;
-        _checkAndUpdateKycTier2(user);
-        emit AddressVerified(user, addressHash, country, documentType, timestamp); // solhint-disable-line not-rely-on-time
     }
 
     /// @notice Submit selfie verification on behalf of a user (relay pattern)
-    /// @dev ANYONE can relay. Similarity must be >= 85.
+    /// @dev ANYONE can relay. Similarity must be >= 85. Requires ID verification.
     function submitSelfieVerificationFor(
         address user,
         bytes32 selfieHash,
@@ -1561,66 +1566,18 @@ contract OmniRegistration is
         uint256 deadline,
         bytes calldata signature
     ) external nonReentrant {
-        if (registrations[user].timestamp == 0) revert NotRegistered();
-        if (userIDHashes[user] == bytes32(0)) revert IDVerificationRequired();
-        if (similarity < 85) revert InsufficientSimilarity();
-
-        _verifyAttestation(
-            keccak256(abi.encode(
-                SELFIE_VERIFICATION_TYPEHASH, user, selfieHash,
-                similarity, timestamp, nonce, deadline
-            )),
-            nonce, deadline, signature
+        _submitSelfieInternal(
+            user, selfieHash, similarity, timestamp, nonce, deadline, signature
         );
-
-        selfieVerified[user] = true;
-        _checkAndUpdateKycTier2(user);
-        emit SelfieVerified(user, selfieHash, similarity, timestamp); // solhint-disable-line not-rely-on-time
     }
 
     // ═══════════════════════════════════════════════════════════════════════
     //                    PERSONA VERIFICATION (KYC TIER 3)
     // ═══════════════════════════════════════════════════════════════════════
 
-    /// @notice Submit Persona identity verification result (KYC Tier 3 step 1)
-    /// @dev Requires Tier 2 completed. Stores the Persona verification hash.
-    ///      Tier 3 also requires AML clearance (via submitAMLClearance).
-    /// @param verificationHash Keccak256 hash of Persona inquiry ID + result
-    /// @param timestamp Off-chain timestamp of Persona verification completion
-    /// @param nonce Unique nonce to prevent replay attacks
-    /// @param deadline EIP-712 deadline for signature validity
-    /// @param signature EIP-712 signature from trusted verification key
-    function submitPersonaVerification(
-        bytes32 verificationHash,
-        uint256 timestamp,
-        bytes32 nonce,
-        uint256 deadline,
-        bytes calldata signature
-    ) external nonReentrant {
-        address caller = _msgSender();
-        if (kycTier2CompletedAt[caller] == 0) revert PreviousTierRequired();
-
-        _verifyAttestation(
-            keccak256(abi.encode(
-                PERSONA_VERIFICATION_TYPEHASH, caller, verificationHash,
-                timestamp, nonce, deadline
-            )),
-            nonce, deadline, signature
-        );
-
-        personaVerificationHashes[caller] = verificationHash;
-        emit PersonaVerified(caller, verificationHash, timestamp);
-        _checkAndUpdateKycTier3(caller);
-    }
-
     /// @notice Submit Persona verification on behalf of a user (relay pattern)
-    /// @dev ANYONE can relay. User address is verified in signature.
-    /// @param user Address of the user being verified
-    /// @param verificationHash Keccak256 hash of Persona inquiry ID + result
-    /// @param timestamp Off-chain timestamp of Persona verification completion
-    /// @param nonce Unique nonce to prevent replay attacks
-    /// @param deadline EIP-712 deadline for signature validity
-    /// @param signature EIP-712 signature from trusted verification key
+    /// @dev ANYONE can relay. Requires Tier 2 completed.
+    ///      Tier 3 also requires AML clearance (via submitAMLClearance).
     function submitPersonaVerificationFor(
         address user,
         bytes32 verificationHash,
@@ -1629,19 +1586,7 @@ contract OmniRegistration is
         uint256 deadline,
         bytes calldata signature
     ) external nonReentrant {
-        if (kycTier2CompletedAt[user] == 0) revert PreviousTierRequired();
-
-        _verifyAttestation(
-            keccak256(abi.encode(
-                PERSONA_VERIFICATION_TYPEHASH, user, verificationHash,
-                timestamp, nonce, deadline
-            )),
-            nonce, deadline, signature
-        );
-
-        personaVerificationHashes[user] = verificationHash;
-        emit PersonaVerified(user, verificationHash, timestamp);
-        _checkAndUpdateKycTier3(user);
+        _submitPersonaInternal(user, verificationHash, timestamp, nonce, deadline, signature);
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -1689,17 +1634,20 @@ contract OmniRegistration is
     //                ACCREDITED INVESTOR CERTIFICATION (OPTIONAL)
     // ═══════════════════════════════════════════════════════════════════════
 
-    /// @notice Submit accredited investor self-certification (optional, Tier 3+)
-    /// @dev Requires Persona verification completed. User can certify as
-    ///      accredited or explicitly as NOT accredited. The accredited flag
+    /// @notice Submit accredited investor certification on behalf of a user
+    /// @dev H-02: Converted to relay pattern for consistency. ANYONE can relay.
+    ///      User address is verified in EIP-712 signature.
+    ///      Requires Persona verification completed. The accredited flag
     ///      is NOT required for Tier 3 completion.
+    /// @param user Address of the user being certified
     /// @param criteria Bitmask of SEC Rule 501(a) criteria met by user
     /// @param certified Whether the user certifies as accredited investor
     /// @param timestamp Off-chain timestamp of certification
     /// @param nonce Unique nonce to prevent replay attacks
     /// @param deadline EIP-712 deadline for signature validity
     /// @param signature EIP-712 signature from trusted verification key
-    function submitAccreditedInvestorCertification(
+    function submitAccreditedInvestorCertificationFor(
+        address user,
         uint8 criteria,
         bool certified,
         uint256 timestamp,
@@ -1707,60 +1655,27 @@ contract OmniRegistration is
         uint256 deadline,
         bytes calldata signature
     ) external nonReentrant {
-        address caller = _msgSender();
-        if (personaVerificationHashes[caller] == bytes32(0)) {
+        if (personaVerificationHashes[user] == bytes32(0)) {
             revert PreviousTierRequired();
         }
 
         _verifyAttestation(
             keccak256(abi.encode(
-                ACCREDITED_INVESTOR_TYPEHASH, caller, criteria,
+                ACCREDITED_INVESTOR_TYPEHASH, user, criteria,
                 certified, timestamp, nonce, deadline
             )),
             nonce, deadline, signature
         );
 
-        isAccreditedInvestor[caller] = certified;
-        accreditedInvestorCriteria[caller] = criteria;
-        accreditedInvestorCertifiedAt[caller] = block.timestamp; // solhint-disable-line not-rely-on-time
-        emit AccreditedInvestorCertified(caller, criteria, certified, block.timestamp);
-    }
-
-    /// @notice Submit third-party KYC proof (KYC Tier 4, requires Tier 3)
-    /// @dev KYC provider must be in trustedKYCProviders.
-    function submitThirdPartyKYC(
-        address kycProvider,
-        uint256 timestamp,
-        bytes32 nonce,
-        uint256 deadline,
-        bytes calldata signature
-    ) external nonReentrant {
-        address caller = _msgSender();
-        if (kycTier3CompletedAt[caller] == 0) revert PreviousTierRequired();
-
-        _verifyKYCProviderAttestation(
-            kycProvider,
-            keccak256(abi.encode(
-                THIRD_PARTY_KYC_TYPEHASH, caller, kycProvider,
-                timestamp, nonce, deadline
-            )),
-            nonce, deadline, signature
-        );
-
-        kycTier4CompletedAt[caller] = block.timestamp; // solhint-disable-line not-rely-on-time
-        userKYCProvider[caller] = kycProvider;
-
-        Registration storage reg = registrations[caller];
-        if (reg.kycTier < 4) {
-            uint8 oldTier = reg.kycTier;
-            reg.kycTier = 4;
-            emit KYCUpgraded(caller, oldTier, 4);
-        }
-        emit KycTier4Completed(caller, kycProvider, block.timestamp); // solhint-disable-line not-rely-on-time
+        isAccreditedInvestor[user] = certified;
+        accreditedInvestorCriteria[user] = criteria;
+        accreditedInvestorCertifiedAt[user] = block.timestamp; // solhint-disable-line not-rely-on-time
+        emit AccreditedInvestorCertified(user, criteria, certified, block.timestamp);
     }
 
     /// @notice Submit third-party KYC on behalf of a user (relay pattern)
-    /// @dev ANYONE can relay. User address is verified in signature.
+    /// @dev ANYONE can relay. Requires Tier 3 completed.
+    ///      KYC provider must be in trustedKYCProviders.
     function submitThirdPartyKYCFor(
         address user,
         address kycProvider,
@@ -1769,29 +1684,9 @@ contract OmniRegistration is
         uint256 deadline,
         bytes calldata signature
     ) external nonReentrant {
-        if (kycTier3CompletedAt[user] == 0) revert PreviousTierRequired();
-
-        _verifyKYCProviderAttestation(
-            kycProvider,
-            keccak256(abi.encode(
-                THIRD_PARTY_KYC_TYPEHASH, user, kycProvider,
-                timestamp, nonce, deadline
-            )),
-            nonce, deadline, signature
+        _submitThirdPartyKYCInternal(
+            user, kycProvider, timestamp, nonce, deadline, signature
         );
-
-        kycTier4CompletedAt[user] = block.timestamp; // solhint-disable-line not-rely-on-time
-        userKYCProvider[user] = kycProvider;
-
-        Registration storage reg = registrations[user];
-        if (reg.kycTier < 4) {
-            uint8 oldTier = reg.kycTier;
-            reg.kycTier = 4;
-            emit KYCUpgraded(user, oldTier, 4);
-        }
-
-        // solhint-disable-next-line not-rely-on-time
-        emit KycTier4Completed(user, kycProvider, block.timestamp);
     }
 
     /**
@@ -2593,6 +2488,20 @@ contract OmniRegistration is
         emit OssificationRequested(block.timestamp);
     }
 
+    /// @notice Cancel a pending ossification request
+    /// @dev L-04: Allows admin to cancel if they change their mind.
+    ///      Resets `ossificationRequestedAt` so a new request can be made later.
+    function cancelOssification()
+        external
+        onlyRole(DEFAULT_ADMIN_ROLE)
+    {
+        if (ossificationRequestedAt == 0) {
+            revert OssificationNotRequested();
+        }
+        delete ossificationRequestedAt;
+        emit OssificationCancelled(_msgSender());
+    }
+
     /**
      * @notice Confirm and execute ossification after delay
      * @dev Requires OSSIFICATION_DELAY (48 hours) to have elapsed
@@ -2619,8 +2528,9 @@ contract OmniRegistration is
         ) {
             revert OssificationDelayNotMet();
         }
-        delete ossificationRequestedAt;
+        // L-03: Set _ossified before clearing request for defense in depth
         _ossified = true;
+        delete ossificationRequestedAt;
         emit ContractOssified(address(this));
         // solhint-disable-next-line not-rely-on-time
         emit OssificationExecuted(block.timestamp);

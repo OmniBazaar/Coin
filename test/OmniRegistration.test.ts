@@ -142,8 +142,8 @@ describe('OmniRegistration', function () {
             topLevelVerificationKey, referrer.address,
             socialHashVal, 'twitter', currentTime, nonce, deadline
         );
-        await registration.connect(referrer).submitSocialVerification(
-            socialHashVal, 'twitter', currentTime, nonce, deadline, sig
+        await registration.connect(referrer).submitSocialVerificationFor(
+            referrer.address, socialHashVal, 'twitter', currentTime, nonce, deadline, sig
         );
     });
 
@@ -310,11 +310,11 @@ describe('OmniRegistration', function () {
 
     describe('KYC Attestation', function () {
         beforeEach(async function () {
-            // Register user1 first
+            // Register user1 without phone hash (trustless flow sets phone via verification)
             await registration.connect(validator1).registerUser(
                 user1.address,
                 ZeroAddress,
-                phoneHash('+1-555-2000'),
+                ethers.ZeroHash,
                 emailHash('kyc-user@test.com'),
             );
 
@@ -354,8 +354,8 @@ describe('OmniRegistration', function () {
                 nonce: phoneNonce,
                 deadline,
             });
-            await registration.connect(user1).submitPhoneVerification(
-                verifyPhoneHash, currentTime, phoneNonce, deadline, phoneSig
+            await registration.connect(user1).submitPhoneVerificationFor(
+                user1.address, verifyPhoneHash, currentTime, phoneNonce, deadline, phoneSig
             );
 
             // Social verification
@@ -378,8 +378,8 @@ describe('OmniRegistration', function () {
                 nonce: socialNonce,
                 deadline,
             });
-            await registration.connect(user1).submitSocialVerification(
-                verifySocialHash, 'twitter', currentTime, socialNonce, deadline, socialSig
+            await registration.connect(user1).submitSocialVerificationFor(
+                user1.address, verifySocialHash, 'twitter', currentTime, socialNonce, deadline, socialSig
             );
         });
 
@@ -662,11 +662,11 @@ describe('OmniRegistration', function () {
             // Set trusted verification key
             await registration.connect(owner).setTrustedVerificationKey(verificationKey.address);
 
-            // Register user1 first so they can use verification functions
+            // Register user1 without phone hash so trustless phone verification can be tested
             await registration.connect(validator1).registerUser(
                 user1.address,
                 ZeroAddress,
-                phoneHash('+1-555-7000'),
+                ethers.ZeroHash,
                 emailHash('trustless-user@test.com')
             );
         });
@@ -715,7 +715,8 @@ describe('OmniRegistration', function () {
                     deadline
                 );
 
-                const tx = await registration.connect(user2).submitPhoneVerification(
+                const tx = await registration.connect(user2).submitPhoneVerificationFor(
+                    user2.address,
                     newPhoneHash,
                     timestamp,
                     nonce,
@@ -747,7 +748,8 @@ describe('OmniRegistration', function () {
                 await time.increase(2);
 
                 await expect(
-                    registration.connect(user1).submitPhoneVerification(
+                    registration.connect(user1).submitPhoneVerificationFor(
+                        user1.address,
                         newPhoneHash,
                         timestamp,
                         nonce,
@@ -780,7 +782,8 @@ describe('OmniRegistration', function () {
                 );
 
                 // First submission succeeds
-                await registration.connect(user2).submitPhoneVerification(
+                await registration.connect(user2).submitPhoneVerificationFor(
+                    user2.address,
                     newPhoneHash,
                     timestamp,
                     nonce,
@@ -800,7 +803,8 @@ describe('OmniRegistration', function () {
                 );
 
                 await expect(
-                    registration.connect(user1).submitPhoneVerification(
+                    registration.connect(user1).submitPhoneVerificationFor(
+                        user1.address,
                         newPhoneHash2,
                         timestamp,
                         nonce,
@@ -827,7 +831,8 @@ describe('OmniRegistration', function () {
                 );
 
                 await expect(
-                    registration.connect(user1).submitPhoneVerification(
+                    registration.connect(user1).submitPhoneVerificationFor(
+                        user1.address,
                         newPhoneHash,
                         timestamp,
                         nonce,
@@ -853,7 +858,7 @@ describe('OmniRegistration', function () {
                 await freshRegistration.connect(validator1).registerUser(
                     user1.address,
                     ZeroAddress,
-                    phoneHash('+1-555-7006-reg'),
+                    ethers.ZeroHash,
                     emailHash('fresh-user@test.com')
                 );
 
@@ -872,7 +877,8 @@ describe('OmniRegistration', function () {
                 );
 
                 await expect(
-                    freshRegistration.connect(user1).submitPhoneVerification(
+                    freshRegistration.connect(user1).submitPhoneVerificationFor(
+                        user1.address,
                         newPhoneHash,
                         timestamp,
                         nonce,
@@ -883,9 +889,29 @@ describe('OmniRegistration', function () {
             });
 
             it('should reject phone hash already used', async function () {
-                // user1 already has phone verified from beforeEach
-                const existingPhoneHash = phoneHash('+1-555-7000'); // Same as user1's phone
+                // First verify user1's phone so the hash is marked as used
+                const existingPhoneHash = phoneHash('+1-555-7000');
+                const ts1 = await time.latest();
+                const nonce1 = generateNonce();
+                const deadline1 = ts1 + 3600;
+                const sig1 = await createPhoneVerificationSignature(
+                    verificationKey,
+                    user1.address,
+                    existingPhoneHash,
+                    ts1,
+                    nonce1,
+                    deadline1
+                );
+                await registration.connect(user1).submitPhoneVerificationFor(
+                    user1.address,
+                    existingPhoneHash,
+                    ts1,
+                    nonce1,
+                    deadline1,
+                    sig1
+                );
 
+                // Now try to reuse the same phone hash for user2
                 const timestamp = await time.latest();
                 const nonce = generateNonce();
                 const deadline = timestamp + 3600;
@@ -908,7 +934,8 @@ describe('OmniRegistration', function () {
                 );
 
                 await expect(
-                    registration.connect(user2).submitPhoneVerification(
+                    registration.connect(user2).submitPhoneVerificationFor(
+                        user2.address,
                         existingPhoneHash,
                         timestamp,
                         nonce,
@@ -937,7 +964,8 @@ describe('OmniRegistration', function () {
                     deadline
                 );
 
-                const tx = await registration.connect(user1).submitSocialVerification(
+                const tx = await registration.connect(user1).submitSocialVerificationFor(
+                    user1.address,
                     socialHashVal,
                     platform,
                     timestamp,
@@ -973,7 +1001,8 @@ describe('OmniRegistration', function () {
                 await time.increase(2);
 
                 await expect(
-                    registration.connect(user1).submitSocialVerification(
+                    registration.connect(user1).submitSocialVerificationFor(
+                        user1.address,
                         socialHashVal,
                         platform,
                         timestamp,
@@ -1002,7 +1031,8 @@ describe('OmniRegistration', function () {
                 );
 
                 // First submission
-                await registration.connect(user1).submitSocialVerification(
+                await registration.connect(user1).submitSocialVerificationFor(
+                    user1.address,
                     socialHashVal,
                     platform,
                     timestamp,
@@ -1031,7 +1061,8 @@ describe('OmniRegistration', function () {
                 );
 
                 await expect(
-                    registration.connect(user2).submitSocialVerification(
+                    registration.connect(user2).submitSocialVerificationFor(
+                        user2.address,
                         socialHashVal2,
                         platform,
                         timestamp,
@@ -1060,7 +1091,8 @@ describe('OmniRegistration', function () {
                 );
 
                 await expect(
-                    registration.connect(user1).submitSocialVerification(
+                    registration.connect(user1).submitSocialVerificationFor(
+                        user1.address,
                         socialHashVal,
                         platform,
                         timestamp,
@@ -1089,7 +1121,8 @@ describe('OmniRegistration', function () {
                     deadline
                 );
 
-                await registration.connect(user1).submitSocialVerification(
+                await registration.connect(user1).submitSocialVerificationFor(
+                    user1.address,
                     socialHashVal,
                     platform,
                     timestamp,
@@ -1118,7 +1151,8 @@ describe('OmniRegistration', function () {
                 );
 
                 await expect(
-                    registration.connect(user2).submitSocialVerification(
+                    registration.connect(user2).submitSocialVerificationFor(
+                        user2.address,
                         socialHashVal,
                         platform,
                         timestamp,
@@ -1146,7 +1180,8 @@ describe('OmniRegistration', function () {
                     deadline
                 );
 
-                const tx = await registration.connect(user1).submitSocialVerification(
+                const tx = await registration.connect(user1).submitSocialVerificationFor(
+                    user1.address,
                     socialHashVal,
                     platform,
                     timestamp,
@@ -1198,7 +1233,8 @@ describe('OmniRegistration', function () {
                     deadline
                 );
 
-                await registration.connect(user2).submitPhoneVerification(
+                await registration.connect(user2).submitPhoneVerificationFor(
+                    user2.address,
                     newPhoneHash,
                     timestamp,
                     nonce,
@@ -1236,7 +1272,8 @@ describe('OmniRegistration', function () {
                     deadline
                 );
 
-                await registration.connect(user2).submitSocialVerification(
+                await registration.connect(user2).submitSocialVerificationFor(
+                    user2.address,
                     socialHashVal,
                     platform,
                     timestamp,
@@ -1273,7 +1310,8 @@ describe('OmniRegistration', function () {
                     deadline1
                 );
 
-                await registration.connect(user2).submitPhoneVerification(
+                await registration.connect(user2).submitPhoneVerificationFor(
+                    user2.address,
                     newPhoneHash,
                     timestamp1,
                     nonce1,
@@ -1298,7 +1336,8 @@ describe('OmniRegistration', function () {
                     deadline2
                 );
 
-                const tx = await registration.connect(user2).submitSocialVerification(
+                const tx = await registration.connect(user2).submitSocialVerificationFor(
+                    user2.address,
                     socialHashVal,
                     platform,
                     timestamp2,
@@ -1318,9 +1357,16 @@ describe('OmniRegistration', function () {
             });
 
             it('should complete KYC Tier 1 for user with existing phone from registration', async function () {
-                // user1 already registered with phone hash in beforeEach
-                // Just need social verification
+                // Register user2 WITH a phone hash (validator-assisted path)
+                const existPhone = phoneHash('+1-555-existing-phone');
+                await registration.connect(validator1).registerUser(
+                    user2.address,
+                    ZeroAddress,
+                    existPhone,
+                    emailHash('existing-phone@test.com')
+                );
 
+                // user2 has phone from registration, just needs social verification
                 const socialHashVal = socialHash('twitter', 'existingphone');
                 const platform = 'twitter';
                 const timestamp = await time.latest();
@@ -1329,7 +1375,7 @@ describe('OmniRegistration', function () {
 
                 const signature = await createSocialVerificationSignature(
                     verificationKey,
-                    user1.address,
+                    user2.address,
                     socialHashVal,
                     platform,
                     timestamp,
@@ -1337,7 +1383,8 @@ describe('OmniRegistration', function () {
                     deadline
                 );
 
-                const tx = await registration.connect(user1).submitSocialVerification(
+                const tx = await registration.connect(user2).submitSocialVerificationFor(
+                    user2.address,
                     socialHashVal,
                     platform,
                     timestamp,
@@ -1346,12 +1393,12 @@ describe('OmniRegistration', function () {
                     signature
                 );
 
-                // Should emit KycTier1Completed since user1 already has phone verified
+                // Should emit KycTier1Completed since user2 already has phone verified
                 await expect(tx)
                     .to.emit(registration, 'KycTier1Completed')
-                    .withArgs(user1.address, await time.latest());
+                    .withArgs(user2.address, await time.latest());
 
-                expect(await registration.hasKycTier1(user1.address)).to.be.true;
+                expect(await registration.hasKycTier1(user2.address)).to.be.true;
             });
 
             it('should return false for unregistered user', async function () {
@@ -1771,7 +1818,6 @@ describe('OmniRegistration', function () {
 
     describe('KYC Tier 2 - ID Verification', function () {
         let trustedKey: any;
-        let tier2Phone: string;
         let tier2Email: string;
 
         /**
@@ -1823,14 +1869,13 @@ describe('OmniRegistration', function () {
 
             // Generate truly unique identifiers
             const uniqueId = Date.now().toString() + Math.random().toString().slice(2, 8);
-            tier2Phone = `+1-TIER2-${uniqueId}`;
             tier2Email = `kyc-tier2-${uniqueId}@test.com`;
 
-            // Register user1
+            // Register user1 without phone hash (trustless flow sets phone via verification)
             await registration.connect(validator1).registerUser(
                 user1.address,
                 referrer.address,
-                phoneHash(tier2Phone),
+                ethers.ZeroHash,
                 emailHash(tier2Email)
             );
 
@@ -1848,7 +1893,8 @@ describe('OmniRegistration', function () {
                 phoneNonce,
                 deadline
             );
-            await registration.connect(user1).submitPhoneVerification(
+            await registration.connect(user1).submitPhoneVerificationFor(
+                user1.address,
                 phoneHash(verificationPhone),
                 currentTime,
                 phoneNonce,
@@ -1883,7 +1929,8 @@ describe('OmniRegistration', function () {
                 nonce: socialNonce,
                 deadline,
             });
-            await registration.connect(user1).submitSocialVerification(
+            await registration.connect(user1).submitSocialVerificationFor(
+                user1.address,
                 socialHash,
                 'twitter',
                 currentTime,
@@ -1949,7 +1996,8 @@ describe('OmniRegistration', function () {
                 deadline
             );
 
-            const tx = await registration.connect(user1).submitIDVerification(
+            const tx = await registration.connect(user1).submitIDVerificationFor(
+                user1.address,
                 idHash,
                 country,
                 currentTime,
@@ -1995,7 +2043,8 @@ describe('OmniRegistration', function () {
             );
 
             await expect(
-                registration.connect(user2).submitIDVerification(
+                registration.connect(user2).submitIDVerificationFor(
+                    user2.address,
                     idHash,
                     country,
                     currentTime,
@@ -2024,7 +2073,8 @@ describe('OmniRegistration', function () {
             );
 
             await expect(
-                registration.connect(user1).submitIDVerification(
+                registration.connect(user1).submitIDVerificationFor(
+                    user1.address,
                     idHash,
                     country,
                     currentTime,
@@ -2053,7 +2103,8 @@ describe('OmniRegistration', function () {
                 deadline
             );
 
-            await registration.connect(user1).submitIDVerification(
+            await registration.connect(user1).submitIDVerificationFor(
+                user1.address,
                 idHash,
                 country,
                 currentTime,
@@ -2064,13 +2115,12 @@ describe('OmniRegistration', function () {
 
             // Register and setup user2 for KYC tier 1 (unique identifiers)
             const dupIdUnique = Date.now().toString() + Math.random().toString().slice(2, 8);
-            const dupRegPhone = `+1-DUP-REG-${dupIdUnique}`;
             const dupVerifyPhone = `+1-DUP-VERIFY-${dupIdUnique}`;
 
             await registration.connect(validator1).registerUser(
                 user2.address,
                 ZeroAddress,
-                phoneHash(dupRegPhone),
+                ethers.ZeroHash,
                 emailHash(`kyc-dupid-user2-${dupIdUnique}@test.com`)
             );
 
@@ -2084,7 +2134,8 @@ describe('OmniRegistration', function () {
                 deadline
             );
 
-            await registration.connect(user2).submitPhoneVerification(
+            await registration.connect(user2).submitPhoneVerificationFor(
+                user2.address,
                 phoneHash(dupVerifyPhone),
                 currentTime,
                 nonce2,
@@ -2119,7 +2170,8 @@ describe('OmniRegistration', function () {
                 nonce: socialNonce,
                 deadline: deadline,
             });
-            await registration.connect(user2).submitSocialVerification(
+            await registration.connect(user2).submitSocialVerificationFor(
+                user2.address,
                 socialHash,
                 'twitter',
                 currentTime,
@@ -2141,7 +2193,8 @@ describe('OmniRegistration', function () {
             );
 
             await expect(
-                registration.connect(user2).submitIDVerification(
+                registration.connect(user2).submitIDVerificationFor(
+                    user2.address,
                     idHash,
                     country,
                     currentTime,
@@ -2367,15 +2420,14 @@ describe('OmniRegistration', function () {
 
             // Generate truly unique identifiers
             const uniqueId = Date.now().toString() + Math.random().toString().slice(2, 8);
-            const regPhone = `+1-TIER3-REG-${uniqueId}`;
             const regEmail = `kyc-tier3-${uniqueId}@test.com`;
             const verifyPhone = `+1-TIER3-VERIFY-${uniqueId}`;
 
-            // Register user1
+            // Register user1 without phone hash (trustless flow sets phone via verification)
             await registration.connect(validator1).registerUser(
                 user1.address,
                 referrer.address,
-                phoneHash(regPhone),
+                ethers.ZeroHash,
                 emailHash(regEmail)
             );
 
@@ -2399,7 +2451,8 @@ describe('OmniRegistration', function () {
                 phoneNonce,
                 deadline
             );
-            await registration.connect(user1).submitPhoneVerification(
+            await registration.connect(user1).submitPhoneVerificationFor(
+                user1.address,
                 phoneHash(verifyPhone),
                 currentTime,
                 phoneNonce,
@@ -2428,7 +2481,8 @@ describe('OmniRegistration', function () {
                 nonce: socialNonce,
                 deadline,
             });
-            await registration.connect(user1).submitSocialVerification(
+            await registration.connect(user1).submitSocialVerificationFor(
+                user1.address,
                 socialHash,
                 'twitter',
                 currentTime,
@@ -2449,7 +2503,8 @@ describe('OmniRegistration', function () {
                 idNonce,
                 deadline
             );
-            await registration.connect(user1).submitIDVerification(
+            await registration.connect(user1).submitIDVerificationFor(
+                user1.address,
                 idHash,
                 'US',
                 currentTime,
@@ -2481,7 +2536,8 @@ describe('OmniRegistration', function () {
                 nonce: addressNonce,
                 deadline,
             });
-            await registration.connect(user1).submitAddressVerification(
+            await registration.connect(user1).submitAddressVerificationFor(
+                user1.address,
                 addressHash,
                 'US',
                 keccak256(toUtf8Bytes('utility')),
@@ -2509,7 +2565,8 @@ describe('OmniRegistration', function () {
                 deadline
             );
 
-            const tx = await registration.connect(user1).submitPersonaVerification(
+            const tx = await registration.connect(user1).submitPersonaVerificationFor(
+                user1.address,
                 verificationHash,
                 currentTime,
                 nonce,
@@ -2579,7 +2636,8 @@ describe('OmniRegistration', function () {
                 deadline
             );
 
-            await registration.connect(user1).submitPersonaVerification(
+            await registration.connect(user1).submitPersonaVerificationFor(
+                user1.address,
                 verificationHash,
                 currentTime,
                 personaNonce,
@@ -2638,7 +2696,8 @@ describe('OmniRegistration', function () {
                 deadline
             );
 
-            await registration.connect(user1).submitPersonaVerification(
+            await registration.connect(user1).submitPersonaVerificationFor(
+                user1.address,
                 verificationHash,
                 currentTime,
                 nonce,
@@ -2685,13 +2744,12 @@ describe('OmniRegistration', function () {
         it('should reject Persona verification without Tier 2', async function () {
             // Register user2 with only Tier 1 (unique identifiers)
             const noTier2Unique = Date.now().toString() + Math.random().toString().slice(2, 8);
-            const noTier2RegPhone = `+1-NOTIER2-REG-${noTier2Unique}`;
             const noTier2VerifyPhone = `+1-NOTIER2-VERIFY-${noTier2Unique}`;
 
             await registration.connect(validator1).registerUser(
                 user2.address,
                 ZeroAddress,
-                phoneHash(noTier2RegPhone),
+                ethers.ZeroHash,
                 emailHash(`kyc-notier2-user2-${noTier2Unique}@test.com`)
             );
 
@@ -2706,7 +2764,8 @@ describe('OmniRegistration', function () {
                 phoneNonce,
                 deadline
             );
-            await registration.connect(user2).submitPhoneVerification(
+            await registration.connect(user2).submitPhoneVerificationFor(
+                user2.address,
                 phoneHash(noTier2VerifyPhone),
                 currentTime,
                 phoneNonce,
@@ -2741,7 +2800,8 @@ describe('OmniRegistration', function () {
                 nonce: socialNonce,
                 deadline: deadline,
             });
-            await registration.connect(user2).submitSocialVerification(
+            await registration.connect(user2).submitSocialVerificationFor(
+                user2.address,
                 socialHash,
                 'twitter',
                 currentTime,
@@ -2763,7 +2823,8 @@ describe('OmniRegistration', function () {
             );
 
             await expect(
-                registration.connect(user2).submitPersonaVerification(
+                registration.connect(user2).submitPersonaVerificationFor(
+                    user2.address,
                     verificationHash,
                     currentTime,
                     nonce,
@@ -2848,7 +2909,8 @@ describe('OmniRegistration', function () {
                 personaNonce,
                 deadline
             );
-            await registration.connect(user1).submitPersonaVerification(
+            await registration.connect(user1).submitPersonaVerificationFor(
+                user1.address,
                 verificationHash,
                 currentTime,
                 personaNonce,
@@ -2875,7 +2937,8 @@ describe('OmniRegistration', function () {
                 personaNonce,
                 deadline
             );
-            await registration.connect(user1).submitPersonaVerification(
+            await registration.connect(user1).submitPersonaVerificationFor(
+                user1.address,
                 verificationHash,
                 currentTime,
                 personaNonce,
@@ -2896,7 +2959,8 @@ describe('OmniRegistration', function () {
                 deadline
             );
 
-            const tx = await registration.connect(user1).submitAccreditedInvestorCertification(
+            const tx = await registration.connect(user1).submitAccreditedInvestorCertificationFor(
+                    user1.address,
                 criteria,
                 true,
                 currentTime,
@@ -2926,7 +2990,8 @@ describe('OmniRegistration', function () {
                 personaNonce,
                 deadline
             );
-            await registration.connect(user1).submitPersonaVerification(
+            await registration.connect(user1).submitPersonaVerificationFor(
+                user1.address,
                 verificationHash,
                 currentTime,
                 personaNonce,
@@ -2946,7 +3011,8 @@ describe('OmniRegistration', function () {
                 deadline
             );
 
-            await registration.connect(user1).submitAccreditedInvestorCertification(
+            await registration.connect(user1).submitAccreditedInvestorCertificationFor(
+                    user1.address,
                 0,
                 false,
                 currentTime,
@@ -2976,7 +3042,8 @@ describe('OmniRegistration', function () {
             );
 
             await expect(
-                registration.connect(user1).submitAccreditedInvestorCertification(
+                registration.connect(user1).submitAccreditedInvestorCertificationFor(
+                    user1.address,
                     0x03,
                     true,
                     currentTime,
@@ -3002,7 +3069,8 @@ describe('OmniRegistration', function () {
                 personaNonce,
                 deadline
             );
-            await registration.connect(user1).submitPersonaVerification(
+            await registration.connect(user1).submitPersonaVerificationFor(
+                user1.address,
                 verificationHash,
                 currentTime,
                 personaNonce,
@@ -3063,7 +3131,8 @@ describe('OmniRegistration', function () {
                 personaNonce,
                 deadline
             );
-            await registration.connect(user1).submitPersonaVerification(
+            await registration.connect(user1).submitPersonaVerificationFor(
+                user1.address,
                 verificationHash,
                 currentTime,
                 personaNonce,
@@ -3115,7 +3184,8 @@ describe('OmniRegistration', function () {
                 nonce: kycNonce,
                 deadline,
             });
-            await registration.connect(user1).submitThirdPartyKYC(
+            await registration.connect(user1).submitThirdPartyKYCFor(
+                user1.address,
                 validator4.address,
                 currentTime,
                 kycNonce,
@@ -3201,18 +3271,17 @@ describe('OmniRegistration', function () {
         async function setupUserWithTier3(user: any): Promise<void> {
             // Generate truly unique identifiers
             const uniqueId = Date.now().toString() + Math.random().toString().slice(2, 8);
-            const regPhone = `+1-TIER4-REG-${uniqueId}`;
             const regEmail = `kyc-tier4-${uniqueId}@test.com`;
             const verifyPhone = `+1-TIER4-VERIFY-${uniqueId}`;
 
             const currentTime = await time.latest();
             const deadline = currentTime + 3600;
 
-            // Register
+            // Register without phone hash (trustless flow sets phone via verification)
             await registration.connect(validator1).registerUser(
                 user.address,
                 ZeroAddress,
-                phoneHash(regPhone),
+                ethers.ZeroHash,
                 emailHash(regEmail)
             );
 
@@ -3241,7 +3310,8 @@ describe('OmniRegistration', function () {
                 nonce: phoneNonce,
                 deadline,
             });
-            await registration.connect(user).submitPhoneVerification(
+            await registration.connect(user).submitPhoneVerificationFor(
+                user.address,
                 phoneHash(verifyPhone),
                 currentTime,
                 phoneNonce,
@@ -3270,7 +3340,8 @@ describe('OmniRegistration', function () {
                 nonce: socialNonce,
                 deadline,
             });
-            await registration.connect(user).submitSocialVerification(
+            await registration.connect(user).submitSocialVerificationFor(
+                user.address,
                 socialHash,
                 'twitter',
                 currentTime,
@@ -3300,7 +3371,8 @@ describe('OmniRegistration', function () {
                 nonce: idNonce,
                 deadline,
             });
-            await registration.connect(user).submitIDVerification(
+            await registration.connect(user).submitIDVerificationFor(
+                user.address,
                 idHash,
                 'US',
                 currentTime,
@@ -3332,7 +3404,8 @@ describe('OmniRegistration', function () {
                 nonce: addressNonce,
                 deadline,
             });
-            await registration.connect(user).submitAddressVerification(
+            await registration.connect(user).submitAddressVerificationFor(
+                user.address,
                 addressHash,
                 'US',
                 keccak256(toUtf8Bytes('utility')),
@@ -3363,7 +3436,8 @@ describe('OmniRegistration', function () {
                 nonce: personaNonce,
                 deadline,
             });
-            await registration.connect(user).submitPersonaVerification(
+            await registration.connect(user).submitPersonaVerificationFor(
+                user.address,
                 personaHash,
                 currentTime,
                 personaNonce,
@@ -3426,7 +3500,8 @@ describe('OmniRegistration', function () {
                 deadline
             );
 
-            const tx = await registration.connect(user1).submitThirdPartyKYC(
+            const tx = await registration.connect(user1).submitThirdPartyKYCFor(
+                user1.address,
                 kycProvider.address,
                 currentTime,
                 nonce,
@@ -3455,7 +3530,8 @@ describe('OmniRegistration', function () {
             );
 
             await expect(
-                registration.connect(user1).submitThirdPartyKYC(
+                registration.connect(user1).submitThirdPartyKYCFor(
+                    user1.address,
                     unauthorized.address,
                     currentTime,
                     nonce,
@@ -3488,7 +3564,8 @@ describe('OmniRegistration', function () {
             );
 
             await expect(
-                registration.connect(user2).submitThirdPartyKYC(
+                registration.connect(user2).submitThirdPartyKYCFor(
+                    user2.address,
                     kycProvider.address,
                     currentTime,
                     nonce,
@@ -3540,7 +3617,6 @@ describe('OmniRegistration', function () {
     describe('Relay Pattern Tests', function () {
         let trustedKey: any;
         let kycProvider: any;
-        let relayRegPhone: string;
         let relayVerifyPhone: string;
         let relayEmail: string;
 
@@ -3552,15 +3628,14 @@ describe('OmniRegistration', function () {
 
             // Generate truly unique identifiers
             const uniqueId = Date.now().toString() + Math.random().toString().slice(2, 8);
-            relayRegPhone = `+1-RELAY-REG-${uniqueId}`;
             relayVerifyPhone = `+1-RELAY-VERIFY-${uniqueId}`;
             relayEmail = `relay-test-${uniqueId}@test.com`;
 
-            // Register user1
+            // Register user1 without phone hash (trustless flow sets phone via verification)
             await registration.connect(validator1).registerUser(
                 user1.address,
                 referrer.address,
-                phoneHash(relayRegPhone),
+                ethers.ZeroHash,
                 emailHash(relayEmail)
             );
         });
@@ -3598,7 +3673,8 @@ describe('OmniRegistration', function () {
                 deadline,
             });
 
-            await registration.connect(user1).submitPhoneVerification(
+            await registration.connect(user1).submitPhoneVerificationFor(
+                user1.address,
                 phoneHash(relayVerifyPhone),
                 currentTime,
                 phoneNonce,
@@ -3627,7 +3703,8 @@ describe('OmniRegistration', function () {
                 nonce: socialNonce,
                 deadline,
             });
-            await registration.connect(user1).submitSocialVerification(
+            await registration.connect(user1).submitSocialVerificationFor(
+                user1.address,
                 socialHash,
                 'twitter',
                 currentTime,
