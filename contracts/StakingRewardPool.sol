@@ -249,9 +249,10 @@ contract StakingRewardPool is
     bool private _ossified;
 
     /// @notice Storage gap for future upgrades
-    /// @dev Total reserved slots = 50. Used slots: 15 (state variables above).
-    ///      Gap = 50 - 15 = 35. Adjust if adding new state variables.
-    uint256[35] private __gap;
+    /// @dev 15 slots used. Pre-mainnet: gap set to 50 for ample
+    ///      future upgrade room. Reduce gap by N when adding N
+    ///      new state variables.
+    uint256[50] private __gap;
 
     // ════════════════════════════════════════════════════════════════════
     //                              EVENTS

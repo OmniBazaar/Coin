@@ -2714,9 +2714,8 @@ contract OmniRegistration is
      *      Reduced from 50 to 49 to accommodate _ossified.
      *      Reduced from 49 to 48 to accommodate omniRewardManagerAddress.
      *      Reduced from 48 to 47 to accommodate ossificationRequestedAt.
-     *      ADV-R8-04: Reduced from 47 to 46 to accommodate
-     *      authorizedRecorders (mappings DO consume a sequential slot
-     *      for their position in the storage layout).
+     *      Pre-mainnet: gap set to 50 for ample future upgrade room.
+     *      Reduce gap by N when adding N new state variables.
      */
-    uint256[46] private __gap;
+    uint256[50] private __gap;
 }

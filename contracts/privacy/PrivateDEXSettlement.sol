@@ -251,10 +251,9 @@ contract PrivateDEXSettlement is
      * Mappings (privateCollateral, feeRecords, accumulatedFees, nonces)
      * do not occupy sequential slots.
      *
-     * Gap = 50 - 6 named sequential variables = 44 slots reserved
-     * (conservative; mappings excluded from count per OZ convention).
+     * Pre-mainnet: gap set to 50. Reduce by N when adding N new state variables.
      */
-    uint256[44] private __gap;
+    uint256[50] private __gap;
 
     // ========================================================================
     // EVENTS

@@ -247,9 +247,10 @@ contract OmniRewardManager is
     /// @dev When true, setPendingReferralBonus() is permanently disabled
     bool public migrationFinalized;
 
-    /// @dev Reserved storage gap for future upgrades
-    /// @custom:storage-preserved Size reduced from 25 to 20 for R8 audit fix state variables
-    uint256[20] private __gap;
+    /// @dev Reserved storage gap for future upgrades.
+    ///      Pre-mainnet: gap set to 50 for ample future upgrade room.
+    ///      Reduce gap by N when adding N new state variables.
+    uint256[50] private __gap;
 
     // ============ Events ============
 

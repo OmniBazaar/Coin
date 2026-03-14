@@ -175,11 +175,11 @@ contract PrivateWETH is
     /// Current state variables: 10 (underlyingToken, encryptedBalances,
     /// totalPublicSupply, publicBalances, _shadowLedger, dustBalances,
     /// privacyEnabled, _ossified, privacyDisableScheduledAt, + inherited).
-    /// Gap size: 50 - 10 = 40 slots reserved.
+    /// Pre-mainnet: gap set to 50 for ample future upgrade room.
     /// When adding new state variables, decrease __gap by the same
     /// count. Track gap changes independently from sibling contracts
     /// (PrivateUSDC, PrivateWBTC).
-    uint256[40] private __gap;
+    uint256[50] private __gap;
 
     // ====================================================================
     // EVENTS

@@ -273,9 +273,9 @@ contract OmniBridge is
     uint256 public feeVaultChangeTimestamp;
 
     /// @notice Storage gap for future upgrades
-    /// @dev Reduced by 2 slots to account for pendingFeeVault and
-    ///      feeVaultChangeTimestamp added above (42 - 2 = 40).
-    uint256[40] private __gap;
+    /// @dev Pre-mainnet: gap set to 50 for ample future upgrade room.
+    ///      Reduce gap by N when adding N new state variables.
+    uint256[50] private __gap;
 
     // Events
     /// @notice Emitted when transfer is initiated

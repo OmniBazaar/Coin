@@ -225,10 +225,9 @@ contract PrivateOmniCoin is
      *   - privacyDisableScheduledAt (1 slot)
      *
      * Sequential slots used: 5
-     * Gap = 50 - 5 = 45 slots reserved
-     * (mappings excluded per OZ convention)
+     * Pre-mainnet: gap set to 50. Reduce by N when adding N new state variables.
      */
-    uint256[45] private __gap;
+    uint256[50] private __gap;
 
     // ====================================================================
     // EVENTS

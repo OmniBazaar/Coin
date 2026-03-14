@@ -164,9 +164,10 @@ contract OmniPrivacyBridge is
      *         bridgeMintedPXOM, totalFeesCollected, dailyVolumeLimit,
      *         currentDayVolume, currentDayStart, _ossified,
      *         ossificationRequestedAt)
-     *         Gap size: 50 - 13 = 37 slots reserved
+     *         Pre-mainnet: gap set to 50 for ample future upgrade room.
+     *         Reduce gap by N when adding N new state variables.
      */
-    uint256[37] private __gap;
+    uint256[50] private __gap;
 
     // ========================================================================
     // EVENTS

@@ -184,7 +184,8 @@ contract OmniGovernance is
     bool private _ossified;
 
     /// @notice Storage gap for future upgrades
-    uint256[44] private __gap;
+    /// @dev Pre-mainnet: gap set to 50. Reduce by N when adding N new state variables.
+    uint256[50] private __gap;
 
     // =========================================================================
     // Events

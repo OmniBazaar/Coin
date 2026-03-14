@@ -315,16 +315,10 @@ contract UnifiedFeeVault is
 
     /// @notice Storage gap for future upgrades
     /// @dev Budget: 15 original + 4 new + 3 deprecated + 8 M-01-03
-    ///      + 1 totalFeesCollected + 4 redirect timelock = 35 slots
-    ///      used. Gap = 15. Total = 50 (standard OZ budget).
-    ///      Pioneer Phase: 3 recipient-timelock state variables
-    ///      were deprecated (not removed) to preserve UUPS storage
-    ///      layout compatibility. See __deprecated_* above.
-    ///      M-01/M-02/M-03 Round 6: 8 new state variables added.
-    ///      FEE-AP-10 Round 6: 1 new state variable added.
-    ///      ADV-R8-05: 4 new state variables for redirect timelock.
+    ///      35 slots used + 50 gap = 85 total budget.
+    ///      Pre-mainnet: gap set to 50 for ample future upgrade room.
     ///      Reduce gap by N when adding N new state variables.
-    uint256[15] private __gap;
+    uint256[50] private __gap;
 
     // ════════════════════════════════════════════════════════════════════
     //                             EVENTS

@@ -497,18 +497,10 @@ contract OmniValidatorRewards is
     uint256 public totalDistributed;
 
     /// @dev Storage gap for future upgrades.
-    ///      ADV-R8-06: Corrected slot count comment (was "25 + 11").
-    ///      Actual explicit slots: 6 scalars + 4 (PendingContractsUpdate)
-    ///      + 2 (PendingUpgrade) + 7 more scalars = 19 explicit slots.
-    ///      Mappings (12 slot headers): accumulatedRewards, totalClaimed,
-    ///      lastHeartbeat, transactionsProcessed, epochTotalTransactions,
-    ///      epochActiveValidators, rewardMultiplier, roleMultiplier,
-    ///      penaltyExpiresAt, __removed_epochTxnCount, stakeExempt,
-    ///      lastHeartbeatEpoch.
-    ///      Total = 19 + 12 = 31 slots. Gap = 23.
-    ///      Grand total = 54 (slightly above standard 50; acceptable
-    ///      as gap is only reduced, never expanded).
-    uint256[23] private __gap;
+    ///      31 slots used (19 explicit + 12 mapping headers).
+    ///      Pre-mainnet: gap set to 50 for ample future upgrade room.
+    ///      Reduce gap by N when adding N new state variables.
+    uint256[50] private __gap;
 
     // ══════════════════════════════════════════════════════════════════
     //                              EVENTS

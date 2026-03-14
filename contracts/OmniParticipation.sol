@@ -1788,5 +1788,6 @@ contract OmniParticipation is // solhint-disable-line max-states-count
      *      - _globalDailyChanges (mapping, 1 slot) [M-02]
      *      - _epochScoreIncrease (mapping, 1 slot) [SYBIL]
      */
-    uint256[46] private __gap;
+    /// @dev Pre-mainnet: gap set to 50. Reduce by N when adding N new state variables.
+    uint256[50] private __gap;
 }

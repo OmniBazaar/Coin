@@ -472,8 +472,9 @@ contract OmniArbitration is
     uint256 public feeVaultChangeTimestamp;
 
     /// @notice Reserved storage gap for future upgradeable variables
-    /// @dev 50 - 9 new state variables = 41 slots reserved
-    uint256[41] private __gap;
+    /// @dev Pre-mainnet: gap set to 50 for ample future upgrade room.
+    ///      Reduce gap by N when adding N new state variables.
+    uint256[50] private __gap;
 
     // ══════════════════════════════════════════════════════════════════
     //                              EVENTS

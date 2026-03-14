@@ -194,10 +194,9 @@ contract OmniMarketplace is
      *   nonces, cidToListingId, dailyListingCount
      *   — do not consume sequential slots per OZ convention
      *
-     * Gap = 50 - 4 = 46 reserved slots
-     * (Reduced from original 43 estimate after final slot audit)
+     * Pre-mainnet: gap set to 50. Reduce by N when adding N new state variables.
      */
-    uint256[46] private __gap;
+    uint256[50] private __gap;
 
     // ══════════════════════════════════════════════════════════════════
     //                              EVENTS

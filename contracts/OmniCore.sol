@@ -219,9 +219,10 @@ contract OmniCore is
     ///      functions revert with DEXSettlementDisabled(). Cannot be unset.
     bool public dexSettlementDisabled;
 
-    /// @notice Storage gap for future upgrades (reserve 40 slots)
-    /// @dev Reduced from 41 to 40: added dexSettlementDisabled
-    uint256[40] private __gap;
+    /// @notice Storage gap for future upgrades
+    /// @dev Pre-mainnet: gap set to 50 for ample future upgrade room.
+    ///      Reduce gap by N when adding N new state variables.
+    uint256[50] private __gap;
 
     // Events
     /// @notice Emitted when a service is registered or updated

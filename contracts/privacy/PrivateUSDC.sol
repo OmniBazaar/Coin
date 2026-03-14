@@ -164,8 +164,9 @@ contract PrivateUSDC is
     /// Current state variables: 8 (underlyingToken, encryptedBalances,
     /// totalPublicSupply, publicBalances, _shadowLedger,
     /// privacyEnabled, _ossified, privacyDisableScheduledAt).
-    /// Gap size: 50 - 8 = 42 slots reserved.
-    uint256[42] private __gap;
+    /// Pre-mainnet: gap set to 50 for ample future upgrade room.
+    /// Reduce gap by N when adding N new state variables.
+    uint256[50] private __gap;
 
     // ====================================================================
     // EVENTS

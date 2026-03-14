@@ -368,7 +368,8 @@ contract OmniPriceOracle is
     uint256 public minimumSources;
 
     /// @notice Storage gap for future upgrades
-    uint256[49] private __gap;
+    /// @dev Pre-mainnet: gap set to 50. Reduce by N when adding N new state variables.
+    uint256[50] private __gap;
 
     // ══════════════════════════════════════════════════════════════════
     //                              EVENTS

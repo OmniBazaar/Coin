@@ -197,11 +197,12 @@ contract ValidatorProvisioner is
     uint256 public provisionedCount;
 
     /**
-     * @dev Storage gap for future upgrades.
+     * @dev Pre-mainnet: gap set to 50 for ample future upgrade room.
      * @notice Reserves storage slots for adding new variables in
      *         upgrades without shifting inherited contract storage.
+     *         Reduce gap by N when adding N new state variables.
      */
-    uint256[40] private __gap;
+    uint256[50] private __gap;
 
     // ====================================================================
     // EVENTS

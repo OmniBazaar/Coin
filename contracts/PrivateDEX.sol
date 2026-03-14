@@ -206,9 +206,9 @@ contract PrivateDEX is
      * Mappings (orders, userOrders, activeOrderCount, userOrderCount)
      * do not consume sequential slots.
      *
-     * Gap = 50 - 6 = 44 slots reserved
+     * Pre-mainnet: gap set to 50. Reduce by N when adding N new state variables.
      */
-    uint256[44] private __gap;
+    uint256[50] private __gap;
 
     // ====================================================================
     // EVENTS
