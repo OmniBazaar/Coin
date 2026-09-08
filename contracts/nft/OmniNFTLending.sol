@@ -1,0 +1,872 @@
+// SPDX-License-Identifier: MIT
+pragma solidity 0.8.24;
+
+import {IERC721} from "@openzeppelin/contracts/token/ERC721/IERC721.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {SafeERC20} from
+    "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import {ERC721Holder} from
+    "@openzeppelin/contracts/token/ERC721/utils/ERC721Holder.sol";
+import {ReentrancyGuard} from
+    "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import {Ownable2Step, Ownable} from
+    "@openzeppelin/contracts/access/Ownable2Step.sol";
+import {ERC2771Context} from
+    "@openzeppelin/contracts/metatx/ERC2771Context.sol";
+import {Context} from
+    "@openzeppelin/contracts/utils/Context.sol";
+
+/**
+ * @title OmniNFTLending
+ * @author OmniBazaar Development Team
+ * @notice P2P NFT lending: lenders post offers, borrowers accept with
+ *         NFT collateral.
+ * @dev Uses escrow pattern -- NFT held by contract during active loan,
+ *      principal deposited by lender on offer creation and released to
+ *      borrower on acceptance. Platform fee (percentage of interest)
+ *      collected on repayment and sent 100% to the UnifiedFeeVault,
+ *      which handles the OmniBazaar 70/20/10 distribution on-chain.
+ *
+ *      Security notes:
+ *        - Interest is annualized and pro-rated by loan duration (H-01).
+ *        - Platform fee is snapshotted at loan creation (H-02).
+ *        - NFT transfer failure during repayment does not block the
+ *          financial settlement; borrower can claim the NFT later via
+ *          claimNFT() (H-03).
+ */
+contract OmniNFTLending is
+    ERC721Holder,
+    ReentrancyGuard,
+    Ownable2Step,
+    ERC2771Context
+{
+    using SafeERC20 for IERC20;
+
+    // ── Structs ──────────────────────────────────────────────────────────
+
+    /// @notice On-chain lending offer.
+    /// @dev Struct packing: lender (20) + currency (20) occupy two
+    ///      slots; principal (32) one slot; the uint16 pair + bool fit
+    ///      into a single slot.
+    // solhint-disable-next-line gas-struct-packing
+    struct Offer {
+        address lender;
+        address currency;
+        uint256 principal;
+        uint16 interestBps;
+        uint16 durationDays;
+        bool active;
+    }
+
+    /// @notice Active loan backed by an NFT.
+    /// @dev H-02: platformFeeBps is snapshotted at loan creation so
+    ///      admin fee changes never affect active loans.
+    // solhint-disable-next-line gas-struct-packing
+    struct Loan {
+        uint256 offerId;
+        address borrower;
+        address lender;
+        address collection;
+        uint256 tokenId;
+        address currency;
+        uint256 principal;
+        uint256 interest;
+        uint64 startTime;
+        uint64 dueTime;
+        uint16 platformFeeBps;
+        bool repaid;
+        bool liquidated;
+    }
+
+    // ── Constants ────────────────────────────────────────────────────────
+
+    /// @notice 100 % in basis points.
+    uint16 public constant BPS_DENOMINATOR = 10000;
+
+    /// @notice Maximum interest rate: 50 % annual (5000 bps).
+    uint16 public constant MAX_INTEREST_BPS = 5000;
+
+    /// @notice Maximum loan duration: 365 days.
+    uint16 public constant MAX_DURATION_DAYS = 365;
+
+    /// @notice Maximum platform fee: 20 % of interest (2000 bps).
+    uint16 public constant MAX_PLATFORM_FEE_BPS = 2000;
+
+    /// @notice Number of days in a year for interest pro-rating.
+    uint256 public constant DAYS_PER_YEAR = 365;
+
+    /// @notice Grace period after loan due time before liquidation (24h).
+    /// @dev M-01 (NFTSuite): Borrower has 24 hours after dueTime to repay
+    ///      before the lender can liquidate.
+    uint256 public constant LIQUIDATION_GRACE_PERIOD = 1 days;
+
+    /// @notice Maximum number of accepted collections per offer (M-05).
+    uint256 public constant MAX_COLLECTIONS_PER_OFFER = 50;
+
+    // ── Storage ──────────────────────────────────────────────────────────
+
+    /// @notice Platform fee in bps of interest (default 10 % = 1000).
+    uint16 public platformFeeBps;
+
+    /// @notice UnifiedFeeVault address that receives 100% of platform fees
+    /// @dev The UnifiedFeeVault handles the OmniBazaar 70/20/10 on-chain
+    ///      fee distribution. This address MUST point to a deployed
+    ///      UnifiedFeeVault instance.
+    address public feeVault;
+
+    /// @notice Pending fee vault for 2-step transfer (AC-01).
+    /// @dev Set by setFeeVault(), cleared by acceptFeeVault().
+    address public pendingFeeVault;
+
+    /// @notice Next offer ID.
+    uint256 public nextOfferId;
+
+    /// @notice Next loan ID.
+    uint256 public nextLoanId;
+
+    /// @notice Offer by ID.
+    mapping(uint256 => Offer) public offers;
+
+    /// @notice Accepted collections per offer.
+    mapping(uint256 => mapping(address => bool))
+        public offerCollections;
+
+    /// @notice Loan by ID.
+    mapping(uint256 => Loan) public loans;
+
+    /// @notice Whether an NFT is claimable after a failed transfer.
+    /// @dev H-03: set to true when NFT safeTransferFrom fails in
+    ///      repay(), allowing the borrower to retry via claimNFT().
+    mapping(uint256 => bool) public nftClaimable;
+
+    // ── Events ───────────────────────────────────────────────────────────
+
+    /// @notice Emitted when a lending offer is created.
+    /// @param offerId Unique offer identifier.
+    /// @param lender Address of the lender.
+    /// @param principal Amount of currency offered.
+    /// @param interestBps Annual interest rate in basis points.
+    /// @param durationDays Loan duration in days.
+    event OfferCreated(
+        uint256 indexed offerId,
+        address indexed lender,
+        uint256 indexed principal,
+        uint16 interestBps,
+        uint16 durationDays
+    );
+
+    /// @notice Emitted when a loan begins.
+    /// @param loanId Unique loan identifier.
+    /// @param offerId Associated offer.
+    /// @param borrower Address of the borrower.
+    /// @param collection NFT collection address.
+    /// @param tokenId NFT token ID used as collateral.
+    event LoanStarted(
+        uint256 indexed loanId,
+        uint256 indexed offerId,
+        address indexed borrower,
+        address collection,
+        uint256 tokenId
+    );
+
+    /// @notice Emitted when a loan is repaid.
+    /// @param loanId Loan that was repaid.
+    /// @param borrower Address of the borrower.
+    /// @param totalRepaid Principal plus interest.
+    /// @param platformFee Fee collected by platform.
+    event LoanRepaid(
+        uint256 indexed loanId,
+        address indexed borrower,
+        uint256 indexed totalRepaid,
+        uint256 platformFee
+    );
+
+    /// @notice Emitted when a defaulted loan is liquidated.
+    /// @param loanId Loan that was liquidated.
+    /// @param lender Lender who received the NFT.
+    event LoanLiquidated(
+        uint256 indexed loanId,
+        address indexed lender
+    );
+
+    /// @notice Emitted when an offer is cancelled.
+    /// @param offerId Cancelled offer.
+    /// @param lender Lender who cancelled.
+    event OfferCancelled(
+        uint256 indexed offerId,
+        address indexed lender
+    );
+
+    /// @notice Emitted when an NFT transfer fails during repayment.
+    /// @param loanId Loan whose NFT transfer failed.
+    /// @param borrower Borrower who will need to call claimNFT().
+    event NFTClaimReady(
+        uint256 indexed loanId,
+        address indexed borrower
+    );
+
+    /// @notice Emitted when a borrower claims an NFT after a failed
+    ///         transfer during repayment.
+    /// @param loanId Loan whose NFT was claimed.
+    /// @param borrower Borrower who claimed.
+    event NFTClaimed(
+        uint256 indexed loanId,
+        address indexed borrower
+    );
+
+    /// @notice Emitted when the platform fee is updated.
+    /// @param oldFeeBps Previous fee in basis points.
+    /// @param newFeeBps New fee in basis points.
+    event PlatformFeeUpdated(
+        uint16 indexed oldFeeBps,
+        uint16 indexed newFeeBps
+    );
+
+    /// @notice Emitted when the UnifiedFeeVault address is updated.
+    /// @param oldVault Previous UnifiedFeeVault address.
+    /// @param newVault New UnifiedFeeVault address.
+    event FeeVaultUpdated(
+        address indexed oldVault,
+        address indexed newVault
+    );
+
+    /// @notice Emitted when a fee vault change is proposed (AC-01).
+    /// @param previousVault Current UnifiedFeeVault address.
+    /// @param newVault Proposed new UnifiedFeeVault address.
+    event FeeVaultTransferStarted(
+        address indexed previousVault,
+        address indexed newVault
+    );
+
+    // ── Custom errors ────────────────────────────────────────────────────
+
+    /// @dev Offer does not exist.
+    error OfferNotFound();
+
+    /// @dev Offer is not in the expected status.
+    error OfferNotActive();
+
+    /// @dev Loan does not exist.
+    error LoanNotFound();
+
+    /// @dev Loan is not in the expected status.
+    error LoanNotActive();
+
+    /// @dev Caller is not the lender for this offer.
+    error NotLender();
+
+    /// @dev Caller is not the borrower for this loan.
+    error NotBorrower();
+
+    /// @dev Collection is not accepted by this offer.
+    error CollectionNotAccepted();
+
+    /// @dev Loan is not yet past its due time.
+    error LoanNotExpired();
+
+    /// @dev Interest rate exceeds maximum (50 %).
+    error InterestTooHigh();
+
+    /// @dev Duration is zero or exceeds maximum (365 days).
+    error InvalidDuration();
+
+    /// @dev Principal is zero.
+    error ZeroPrincipal();
+
+    /// @dev No accepted collections provided.
+    error NoCollections();
+
+    /// @dev Platform fee basis points exceed maximum.
+    error FeeTooHigh();
+
+    /// @dev NFT is not claimable for this loan.
+    error NFTNotClaimable();
+
+    /// @dev Address is the zero address (M-01).
+    error ZeroAddress();
+
+    /// @dev AC-01: No fee vault change is pending to accept.
+    error NoFeeVaultChangePending();
+
+    /// @dev Too many collections in a single offer (M-05).
+    error TooManyCollections();
+
+    /// @dev Loan is still within the grace period (M-01 NFTSuite).
+    error GracePeriodActive();
+
+    /// @dev C-02: Actual transfer amount differs from expected
+    ///      (fee-on-transfer token protection).
+    error TransferAmountMismatch();
+
+    /// @dev Loan has expired past the grace period and can no longer
+    ///      be repaid (audit fix M-02). The lender may now liquidate.
+    error LoanExpired();
+    error LiquidationTransferFailed(uint256 loanId);
+
+    /// @dev M-01: A collection address appears more than once in the
+    ///      offer's collections array.
+    error DuplicateCollection();
+
+    /// @dev Currency address is the zero address.
+    error InvalidCurrency();
+
+    // ── Constructor ──────────────────────────────────────────────────────
+
+    /**
+     * @notice Deploy the lending contract.
+     * @param initialFeeVault UnifiedFeeVault address that receives platform
+     *        fees for on-chain 70/20/10 distribution.
+     * @param initialFeeBps Platform fee in bps of interest
+     *        (e.g. 1000 = 10 %).
+     * @param trustedForwarder_ Trusted ERC-2771 forwarder address.
+     */
+    constructor(
+        address initialFeeVault,
+        uint16 initialFeeBps,
+        address trustedForwarder_
+    ) Ownable(msg.sender) ERC2771Context(trustedForwarder_) {
+        // M-01: Validate fee vault is non-zero
+        if (initialFeeVault == address(0)) revert ZeroAddress();
+        if (initialFeeBps > MAX_PLATFORM_FEE_BPS) revert FeeTooHigh();
+        feeVault = initialFeeVault;
+        platformFeeBps = initialFeeBps;
+    }
+
+    // ── External functions ───────────────────────────────────────────────
+
+    /**
+     * @notice Create a lending offer. Lender deposits principal into
+     *         the contract.
+     * @param collections Accepted NFT collection addresses.
+     * @param currency ERC-20 token used for the loan.
+     * @param principal Loan amount in currency wei.
+     * @param interestBps Annual interest rate in basis points.
+     * @param durationDays Loan duration in days.
+     * @return offerId The newly created offer ID.
+     */
+    function createOffer(
+        address[] calldata collections,
+        address currency,
+        uint256 principal,
+        uint16 interestBps,
+        uint16 durationDays
+    ) external nonReentrant returns (uint256 offerId) {
+        if (collections.length == 0) revert NoCollections();
+        // M-05: Bound collections array to prevent gas DoS
+        if (collections.length > MAX_COLLECTIONS_PER_OFFER) {
+            revert TooManyCollections();
+        }
+        if (currency == address(0)) revert InvalidCurrency();
+        if (principal == 0) revert ZeroPrincipal();
+        if (interestBps > MAX_INTEREST_BPS) revert InterestTooHigh();
+        if (durationDays == 0 || durationDays > MAX_DURATION_DAYS) {
+            revert InvalidDuration();
+        }
+
+        address caller = _msgSender();
+
+        offerId = nextOfferId;
+        ++nextOfferId;
+
+        offers[offerId] = Offer({
+            lender: caller,
+            currency: currency,
+            principal: principal,
+            interestBps: interestBps,
+            durationDays: durationDays,
+            active: true
+        });
+
+        uint256 colLen = collections.length;
+        for (uint256 i; i < colLen; ++i) {
+            // M-01: Reject duplicate collection addresses
+            if (offerCollections[offerId][collections[i]]) {
+                revert DuplicateCollection();
+            }
+            offerCollections[offerId][collections[i]] = true;
+        }
+
+        // C-02: Balance-before/after for fee-on-transfer protection
+        _safeTransferInWithBalanceCheck(
+            currency, caller, principal
+        );
+
+        emit OfferCreated(
+            offerId, caller, principal,
+            interestBps, durationDays
+        );
+    }
+
+    /**
+     * @notice Accept an offer by providing an NFT as collateral.
+     * @dev H-01: Interest is calculated as an annual rate pro-rated
+     *      by the loan's duration in days.
+     *      H-02: The current platformFeeBps is snapshotted into the
+     *      Loan struct so future admin changes do not affect this loan.
+     * @param offerId The offer to accept.
+     * @param collection NFT collection address.
+     * @param tokenId Token ID to use as collateral.
+     * @return loanId The newly created loan ID.
+     */
+    function acceptOffer(
+        uint256 offerId,
+        address collection,
+        uint256 tokenId
+    ) external nonReentrant returns (uint256 loanId) {
+        Offer storage offer = offers[offerId];
+        if (offer.lender == address(0)) revert OfferNotFound();
+        if (!offer.active) revert OfferNotActive();
+        if (!offerCollections[offerId][collection]) {
+            revert CollectionNotAccepted();
+        }
+
+        address caller = _msgSender();
+        offer.active = false;
+
+        // H-01: Pro-rate annual interest by loan duration.
+        // interest = principal * interestBps * durationDays
+        //          / (BPS_DENOMINATOR * 365)
+        uint256 interest = (
+            uint256(offer.principal)
+                * uint256(offer.interestBps)
+                * uint256(offer.durationDays)
+        ) / (uint256(BPS_DENOMINATOR) * DAYS_PER_YEAR);
+
+        if (interest == 0) revert ZeroPrincipal();
+
+        // solhint-disable-next-line not-rely-on-time
+        uint256 nowTs = block.timestamp;
+        uint64 dueTime = uint64(
+            nowTs + (uint256(offer.durationDays) * 1 days)
+        );
+
+        loanId = nextLoanId;
+        ++nextLoanId;
+
+        loans[loanId] = Loan({
+            offerId: offerId,
+            borrower: caller,
+            lender: offer.lender,
+            collection: collection,
+            tokenId: tokenId,
+            currency: offer.currency,
+            principal: offer.principal,
+            interest: interest,
+            // solhint-disable-next-line not-rely-on-time
+            startTime: uint64(block.timestamp),
+            dueTime: dueTime,
+            // H-02: Snapshot fee at loan creation
+            platformFeeBps: platformFeeBps,
+            repaid: false,
+            liquidated: false
+        });
+
+        // Transfer NFT from borrower to contract
+        IERC721(collection).safeTransferFrom(
+            caller,
+            address(this),
+            tokenId
+        );
+        // Transfer principal from contract to borrower
+        IERC20(offer.currency).safeTransfer(
+            caller, offer.principal
+        );
+
+        emit LoanStarted(
+            loanId, offerId, caller, collection, tokenId
+        );
+    }
+
+    /**
+     * @notice Repay a loan. Borrower pays principal + interest, gets
+     *         NFT back.
+     * @dev H-02: Uses the snapshotted platformFeeBps stored in the
+     *      loan, not the current global value.
+     *      H-03: If the NFT transfer back to the borrower fails (e.g.
+     *      paused or malicious collection), the financial settlement
+     *      still completes and the NFT is marked claimable via
+     *      claimNFT().
+     * @param loanId The loan to repay.
+     */
+    function repay(uint256 loanId) external nonReentrant {
+        Loan storage loan = loans[loanId];
+        if (loan.borrower == address(0)) revert LoanNotFound();
+        if (loan.repaid || loan.liquidated) revert LoanNotActive();
+        address caller = _msgSender();
+        if (caller != loan.borrower) revert NotBorrower();
+
+        // Audit fix M-02 / SL-01: Block repayment at the grace-period
+        // boundary. liquidate() permits liquidation at exactly
+        // dueTime + LIQUIDATION_GRACE_PERIOD, so repay() must reject
+        // there to close the repay/liquidate race.
+        // solhint-disable-next-line not-rely-on-time
+        if (
+            block.timestamp
+                >= loan.dueTime + LIQUIDATION_GRACE_PERIOD
+        ) {
+            revert LoanExpired();
+        }
+
+        loan.repaid = true;
+
+        // H-02: Use snapshotted fee, not current global value
+        uint256 platformFee = (loan.interest * loan.platformFeeBps)
+            / BPS_DENOMINATOR;
+        if (loan.platformFeeBps > 0 && platformFee == 0) {
+            revert FeeTooHigh();
+        }
+        uint256 lenderAmount = loan.principal + loan.interest
+            - platformFee;
+        uint256 totalFromBorrower = loan.principal + loan.interest;
+
+        // C-02: Balance-before/after for fee-on-transfer protection
+        _safeTransferInWithBalanceCheck(
+            loan.currency, caller, totalFromBorrower
+        );
+
+        // Lender receives principal + interest - platform fee
+        IERC20(loan.currency).safeTransfer(
+            loan.lender, lenderAmount
+        );
+        // Platform fee to UnifiedFeeVault
+        if (platformFee > 0) {
+            IERC20(loan.currency).safeTransfer(
+                feeVault, platformFee
+            );
+        }
+
+        // H-03: Try to return NFT. If it fails (paused/blocklisted
+        // collection), mark NFT as claimable so the borrower can
+        // retrieve it later via claimNFT(). The financial settlement
+        // is NOT blocked.
+        // solhint-disable-next-line no-empty-blocks
+        try IERC721(loan.collection).safeTransferFrom(
+            address(this),
+            caller,
+            loan.tokenId
+        ) {
+            // NFT returned successfully
+        } catch {
+            // NFT transfer failed -- mark for manual claim
+            nftClaimable[loanId] = true;
+            emit NFTClaimReady(loanId, caller);
+        }
+
+        emit LoanRepaid(
+            loanId, caller, totalFromBorrower, platformFee
+        );
+    }
+
+    /**
+     * @notice Claim an NFT that could not be transferred during
+     *         repayment.
+     * @dev H-03: Provides a fallback for borrowers whose NFT transfer
+     *      failed in repay() due to a paused or malicious collection.
+     *      The loan must already be marked repaid and the NFT marked
+     *      claimable.
+     * @param loanId The loan whose NFT to claim.
+     */
+    function claimNFT(uint256 loanId) external nonReentrant {
+        if (!nftClaimable[loanId]) revert NFTNotClaimable();
+        Loan storage loan = loans[loanId];
+        address caller = _msgSender();
+        if (caller != loan.borrower) revert NotBorrower();
+
+        nftClaimable[loanId] = false;
+
+        IERC721(loan.collection).safeTransferFrom(
+            address(this),
+            caller,
+            loan.tokenId
+        );
+
+        emit NFTClaimed(loanId, caller);
+    }
+
+    /**
+     * @notice Liquidate a defaulted loan. Lender claims the NFT.
+     * @dev M-01 (NFTSuite): Liquidation is only permitted after
+     *      dueTime + LIQUIDATION_GRACE_PERIOD, giving the borrower
+     *      24 hours to repay after the loan expires.
+     * @param loanId The loan to liquidate.
+     */
+    function liquidate(uint256 loanId) external nonReentrant {
+        Loan storage loan = loans[loanId];
+        if (loan.borrower == address(0)) revert LoanNotFound();
+        if (loan.repaid || loan.liquidated) revert LoanNotActive();
+        // solhint-disable-next-line not-rely-on-time
+        if (block.timestamp < loan.dueTime) revert LoanNotExpired();
+        // M-01 (NFTSuite): Enforce grace period before liquidation
+        uint256 gracePeriodEnd =
+            loan.dueTime + LIQUIDATION_GRACE_PERIOD;
+        // solhint-disable-next-line not-rely-on-time
+        if (block.timestamp < gracePeriodEnd) {
+            revert GracePeriodActive();
+        }
+        if (_msgSender() != loan.lender) revert NotLender();
+
+        loan.liquidated = true;
+
+        // Transfer NFT to lender — try/catch guards against malicious NFTs
+        // that revert in onERC721Received, which would permanently block liquidation
+        try IERC721(loan.collection).safeTransferFrom(
+            address(this),
+            loan.lender,
+            loan.tokenId
+        ) {
+            emit LoanLiquidated(loanId, loan.lender);
+        } catch {
+            loan.liquidated = false;
+            revert LiquidationTransferFailed(loanId);
+        }
+    }
+
+    /**
+     * @notice Cancel an unfilled offer. Lender gets principal back.
+     * @param offerId The offer to cancel.
+     */
+    function cancelOffer(uint256 offerId) external nonReentrant {
+        Offer storage offer = offers[offerId];
+        if (offer.lender == address(0)) revert OfferNotFound();
+        if (!offer.active) revert OfferNotActive();
+        address caller = _msgSender();
+        if (caller != offer.lender) revert NotLender();
+
+        offer.active = false;
+
+        IERC20(offer.currency).safeTransfer(
+            caller, offer.principal
+        );
+
+        emit OfferCancelled(offerId, caller);
+    }
+
+    // ── Admin functions ──────────────────────────────────────────────────
+
+    /**
+     * @notice Update the platform fee percentage.
+     * @dev Only affects future loans. Active loans use the fee
+     *      snapshotted at loan creation (H-02).
+     * @param newFeeBps New fee in basis points of interest.
+     */
+    function setPlatformFee(uint16 newFeeBps) external onlyOwner {
+        if (newFeeBps > MAX_PLATFORM_FEE_BPS) revert FeeTooHigh();
+        uint16 oldFeeBps = platformFeeBps;
+        platformFeeBps = newFeeBps;
+        emit PlatformFeeUpdated(oldFeeBps, newFeeBps);
+    }
+
+    /**
+     * @notice Propose a new UnifiedFeeVault address (AC-01, 2-step).
+     * @dev The change takes effect only after the owner accepts it via
+     *      {acceptFeeVault}. Matches the codebase propose/accept convention
+     *      (e.g. OmniSwapRouter) and gives a post-Pioneer hook for the
+     *      governance timelock. Pioneer-compliant: no built-in delay.
+     * @param newVault Proposed UnifiedFeeVault address.
+     */
+    function setFeeVault(address newVault) external onlyOwner {
+        // M-01: Validate new vault is non-zero
+        if (newVault == address(0)) revert ZeroAddress();
+        pendingFeeVault = newVault;
+        emit FeeVaultTransferStarted(feeVault, newVault);
+    }
+
+    /**
+     * @notice Accept a proposed fee vault change (AC-01, 2-step).
+     * @dev Completes the transfer initiated by {setFeeVault}. Owner-gated so
+     *      the destination vault does not need an accept hook.
+     */
+    function acceptFeeVault() external onlyOwner {
+        if (pendingFeeVault == address(0)) revert NoFeeVaultChangePending();
+        address oldVault = feeVault;
+        feeVault = pendingFeeVault;
+        pendingFeeVault = address(0);
+        emit FeeVaultUpdated(oldVault, feeVault);
+    }
+
+    // ── View functions ───────────────────────────────────────────────────
+
+    /**
+     * @notice Get full offer details.
+     * @param offerId The offer to query.
+     * @return lender Lender address.
+     * @return currency Currency address.
+     * @return principal Loan amount.
+     * @return interestBps Annual interest rate in bps.
+     * @return durationDays Duration.
+     * @return active Whether the offer is active.
+     */
+    function getOffer(uint256 offerId)
+        external
+        view
+        returns (
+            address lender,
+            address currency,
+            uint256 principal,
+            uint16 interestBps,
+            uint16 durationDays,
+            bool active
+        )
+    {
+        Offer storage offer = offers[offerId];
+        return (
+            offer.lender,
+            offer.currency,
+            offer.principal,
+            offer.interestBps,
+            offer.durationDays,
+            offer.active
+        );
+    }
+
+    /**
+     * @notice Check if a collection is accepted by an offer.
+     * @param offerId The offer to check.
+     * @param collection The collection address.
+     * @return accepted True if collection is accepted.
+     */
+    function isCollectionAccepted(
+        uint256 offerId,
+        address collection
+    ) external view returns (bool accepted) {
+        return offerCollections[offerId][collection];
+    }
+
+    /**
+     * @notice Get full loan details.
+     * @param loanId The loan to query.
+     * @return borrower Borrower address.
+     * @return lender Lender address.
+     * @return collection NFT collection.
+     * @return tokenId Token ID.
+     * @return principal Principal amount.
+     * @return interest Interest amount.
+     * @return dueTime Loan due timestamp.
+     * @return snapshotFeeBps Platform fee in bps snapshotted at loan
+     *         creation (H-02).
+     * @return repaid Whether the loan is repaid.
+     * @return liquidated Whether the loan is liquidated.
+     */
+    function getLoan(uint256 loanId)
+        external
+        view
+        returns (
+            address borrower,
+            address lender,
+            address collection,
+            uint256 tokenId,
+            uint256 principal,
+            uint256 interest,
+            uint64 dueTime,
+            uint16 snapshotFeeBps,
+            bool repaid,
+            bool liquidated
+        )
+    {
+        Loan storage loanData = loans[loanId];
+        return (
+            loanData.borrower,
+            loanData.lender,
+            loanData.collection,
+            loanData.tokenId,
+            loanData.principal,
+            loanData.interest,
+            loanData.dueTime,
+            loanData.platformFeeBps,
+            loanData.repaid,
+            loanData.liquidated
+        );
+    }
+
+    // ── Pure functions ──────────────────────────────────────────────────
+
+    /**
+     * @notice Disable renounceOwnership to prevent accidental lockout.
+     * @dev M-04: Always reverts to protect contract administration.
+     */
+    function renounceOwnership() public pure override {
+        revert ZeroAddress();
+    }
+
+    // ── Internal functions ────────────────────────────────────────────────
+
+    /**
+     * @notice Transfer tokens in with fee-on-transfer protection
+     * @dev C-02: Verifies actual received amount matches expected.
+     *      Reverts with TransferAmountMismatch if a fee-on-transfer token
+     *      causes less than the expected amount to arrive.
+     *
+     *      Audit M-01: Fee-on-transfer (FOT) tokens are intentionally NOT
+     *      supported. The strict equality check is a deliberate design
+     *      choice: in a lending protocol, FOT tokens create complex
+     *      accounting issues where the principal returned on repayment
+     *      does not match the principal deposited, potentially causing
+     *      insolvency. Tokens such as PAXG or STA will revert at offer
+     *      creation. This is the safest approach for a lending protocol.
+     * @param token ERC-20 token to transfer
+     * @param from Sender address
+     * @param amount Expected transfer amount
+     */
+    function _safeTransferInWithBalanceCheck(
+        address token,
+        address from,
+        uint256 amount
+    ) internal {
+        uint256 balBefore = IERC20(token).balanceOf(address(this));
+        IERC20(token).safeTransferFrom(from, address(this), amount);
+        uint256 balAfter = IERC20(token).balanceOf(address(this));
+        if (balAfter - balBefore != amount) {
+            revert TransferAmountMismatch();
+        }
+    }
+
+    // ── ERC-2771 overrides (Context diamond resolution) ────────────
+
+    /**
+     * @notice Return the sender of the call, accounting for
+     *         ERC-2771 meta-transactions.
+     * @dev Delegates to ERC2771Context to extract the original
+     *      sender when the call comes from the trusted forwarder.
+     * @return The resolved sender address.
+     */
+    function _msgSender()
+        internal
+        view
+        override(Context, ERC2771Context)
+        returns (address)
+    {
+        return ERC2771Context._msgSender();
+    }
+
+    /**
+     * @notice Return the calldata of the call, accounting for
+     *         ERC-2771 meta-transactions.
+     * @dev Delegates to ERC2771Context to strip the appended
+     *      sender address when the call comes from the trusted
+     *      forwarder.
+     * @return The resolved calldata.
+     */
+    function _msgData()
+        internal
+        view
+        override(Context, ERC2771Context)
+        returns (bytes calldata)
+    {
+        return ERC2771Context._msgData();
+    }
+
+    /**
+     * @notice Return the context suffix length for ERC-2771.
+     * @dev ERC-2771 appends 20 bytes (the sender address) to
+     *      the calldata.
+     * @return Length of the context suffix (20).
+     */
+    function _contextSuffixLength()
+        internal
+        view
+        override(Context, ERC2771Context)
+        returns (uint256)
+    {
+        return ERC2771Context._contextSuffixLength();
+    }
+}

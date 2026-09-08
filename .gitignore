@@ -1,0 +1,90 @@
+# Dependencies
+node_modules/
+package-lock.json
+yarn.lock
+
+# Environment variables
+.env
+.env.gpg*
+.env.local
+.env.*.local
+.env.bak*
+.env.plaintext*
+
+# Hardhat files
+cache/
+artifacts/
+ignition/deployments/
+typechain/
+typechain-types/
+
+# Coverage
+coverage/
+coverage.json
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Build output
+dist/
+build/
+
+# Hardhat Ignition deployments
+ignition/deployments/chain-31337/
+
+# Local Hardhat node
+hardhat-node/
+
+# Gas reporter files
+gas-report.txt
+
+# Solidity coverage
+coverage/
+coverage.json
+
+# Temporary files
+*.tmp
+*.temp
+
+# Security — never commit private keys or secrets
+*.key
+*.pem
+*.pk
+*.p12
+*.keystore
+*.jks
+secrets/
+private/
+# Test-only validator keys for COTI testnet integration; deterministically regeneratable
+deployments/coti-testnet-validator-keys.json
+deployments/mainnet-validator-keys.json
+deployments/coti-mainnet-validator-keys.json
+deployments/bridge-validators.json
+deployments/fork.json
+
+# graphify knowledge-graph output (local tool artifact, never commit)
+graphify-out/
+
+# OpenZeppelin upgrade metadata (deployer/proxy admin state — never commit)
+.openzeppelin/
+
+# Internal agent/ops tooling and local scratch (not part of the public repo)
+.claude/
+deploy-prep/
+slither-results/
+signatures/
+bin/

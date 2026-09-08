@@ -1,0 +1,23 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "strict": true,
+    "noEmit": true,
+    "moduleDetection": "force",
+    "typeRoots": [
+      "../node_modules/@types",
+      "./node_modules/@types"
+    ]
+  },
+  "include": [
+    "test/**/*",
+    "scripts/lib/**/*",
+    "scripts/utils/**/*"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist",
+    "artifacts",
+    "cache"
+  ]
+}

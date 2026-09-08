@@ -1,0 +1,640 @@
+// SPDX-License-Identifier: MIT
+pragma solidity 0.8.24;
+
+import {ERC721} from
+    "@openzeppelin/contracts/token/ERC721/ERC721.sol";
+import {ERC2981} from
+    "@openzeppelin/contracts/token/common/ERC2981.sol";
+import {MerkleProof} from
+    "@openzeppelin/contracts/utils/cryptography/MerkleProof.sol";
+import {Strings} from
+    "@openzeppelin/contracts/utils/Strings.sol";
+import {ReentrancyGuard} from
+    "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import {ERC2771Context} from
+    "@openzeppelin/contracts/metatx/ERC2771Context.sol";
+import {Context} from
+    "@openzeppelin/contracts/utils/Context.sol";
+
+/**
+ * @title OmniNFTCollection
+ * @author OmniBazaar Development Team
+ * @notice ERC-721 collection deployed via OmniNFTFactory (ERC-1167).
+ * @dev Supports multi-phase minting (whitelist + public), per-wallet
+ *      limits, batch minting (with MAX_BATCH_SIZE), deferred reveal,
+ *      ERC-2981 royalties, creator withdrawals, and per-clone
+ *      name/symbol overrides. Uses an initializer for the clone
+ *      pattern.
+ */
+contract OmniNFTCollection is
+    ERC721,
+    ERC2981,
+    ERC2771Context,
+    ReentrancyGuard
+{
+    using Strings for uint256;
+
+    // ── Structs ──────────────────────────────────────────────────────
+    /**
+     * @notice Configuration for a single minting phase.
+     * @param price Mint price in wei per token.
+     * @param merkleRoot Merkle root for whitelist (bytes32(0) = public).
+     * @param maxPerWallet Maximum tokens per wallet in this phase.
+     * @param active Whether this phase is currently accepting mints.
+     */
+    struct PhaseConfig {
+        uint256 price;
+        bytes32 merkleRoot;
+        uint16 maxPerWallet;
+        bool active;
+    }
+
+    // ── Constants ────────────────────────────────────────────────────
+    /// @notice Maximum royalty: 25 % (2500 basis points).
+    uint16 public constant MAX_ROYALTY_BPS = 2500;
+    /// @notice Maximum tokens per batch mint call.
+    uint256 public constant MAX_BATCH_SIZE = 100;
+    /// @notice Maximum tokens per public mint call (SL-02).
+    uint256 public constant MAX_MINT_BATCH_SIZE = 50;
+    /// @notice Upper bound on a phase's per-token price (1e30 wei =
+    ///         1e12 XOM, i.e. 1 trillion XOM). Keeps `price * quantity`
+    ///         far from uint256 overflow so a misconfigured price can
+    ///         never wrap into a near-free mint.
+    uint256 public constant MAX_PHASE_PRICE = 1e30;
+
+    // ── Storage ──────────────────────────────────────────────────────
+    /// @notice Collection owner / creator address.
+    address public owner;
+    /// @notice Whether the contract has been initialized.
+    bool public initialized;
+    /// @notice Maximum number of tokens that can ever exist.
+    uint256 public maxSupply;
+    /// @notice Counter tracking the next token ID to mint.
+    uint256 public nextTokenId;
+    /// @notice Whether the collection art has been revealed.
+    bool public revealed;
+    /// @notice Base URI for revealed metadata.
+    string private _revealedBaseURI;
+    /// @notice URI returned for all tokens before reveal.
+    string public unrevealedURI;
+    /// @notice Clone-specific collection name.
+    string private _collectionName;
+    /// @notice Clone-specific collection symbol.
+    string private _collectionSymbol;
+
+    /// @notice Pending owner for 2-step transfer (audit fix M-01).
+    /// @dev Set by transferOwnership(), cleared by acceptOwnership().
+    address public pendingOwner;
+
+    /// @notice Currently active minting phase (0 = paused).
+    uint8 public activePhase;
+
+    /// @notice Phase configs keyed by phase ID (1-indexed).
+    mapping(uint8 => PhaseConfig) public phases;
+    /// @notice Number of configured phases.
+    uint8 public phaseCount;
+    /// @notice Whether each phase ID has actually been configured via
+    ///         setPhase(). Guards setActivePhase against activating a
+    ///         never-configured (zero-price, public, no-limit) phase.
+    mapping(uint8 => bool) public configuredPhases;
+    /// @notice Per-wallet mint counts: phase => wallet => count.
+    mapping(uint8 => mapping(address => uint256))
+        public mintedPerPhase;
+
+    // ── Events ───────────────────────────────────────────────────────
+    /// @notice Emitted when one or more tokens are minted.
+    /// @param to Recipient address.
+    /// @param startTokenId First token ID in the batch.
+    /// @param quantity Number of tokens minted.
+    event Minted(
+        address indexed to,
+        uint256 indexed startTokenId,
+        uint256 indexed quantity
+    );
+
+    /// @notice Emitted when the collection metadata is revealed.
+    /// @param baseURI The revealed IPFS base URI.
+    event Revealed(string baseURI);
+
+    /// @notice Emitted when the active phase changes.
+    /// @param phaseId New active phase ID.
+    event PhaseChanged(uint8 indexed phaseId);
+
+    /// @notice Emitted when the creator withdraws revenue.
+    /// @param to Recipient of the withdrawal.
+    /// @param amount ETH amount withdrawn.
+    event Withdrawn(
+        address indexed to,
+        uint256 indexed amount
+    );
+
+    // ── Custom errors ────────────────────────────────────────────────
+    /// @dev Thrown when a non-owner calls an owner-only function.
+    error NotOwner();
+    /// @dev Thrown when initialize is called more than once.
+    error AlreadyInitialized();
+    /// @dev Thrown when minting would exceed max supply.
+    error MaxSupplyExceeded();
+    /// @dev Thrown when the caller exceeds per-wallet mint limit.
+    error WalletLimitExceeded();
+    /// @dev Thrown when the wrong ETH value is sent for minting.
+    error IncorrectPayment();
+    /// @dev Thrown when minting while the phase is inactive.
+    error PhaseNotActive();
+    /// @dev Thrown when a whitelist proof is invalid.
+    error InvalidProof();
+    /// @dev Thrown when a quantity of zero is passed.
+    error ZeroQuantity();
+    /// @dev Thrown when the royalty basis points exceed 25 %.
+    error RoyaltyTooHigh();
+    /// @dev Thrown when an ETH transfer fails.
+    error TransferFailed();
+    /// @dev Thrown when the collection has already been revealed.
+    error AlreadyRevealed();
+    /// @dev Thrown when the phase is already the requested value.
+    error PhaseAlreadySet();
+    error PhaseNotConfigured();
+    /// @dev Thrown when reconfiguring the currently active phase.
+    error PhaseActive();
+    /// @dev Thrown when reveal is called with an empty base URI.
+    error EmptyBaseURI();
+    /// @dev Thrown when batch quantity exceeds MAX_BATCH_SIZE.
+    error BatchSizeExceeded();
+    /// @dev Thrown when a phase price exceeds MAX_PHASE_PRICE.
+    error InvalidPhaseConfig();
+    /// @dev Thrown when the owner address is zero (M-04).
+    error ZeroAddress();
+    /// @dev Thrown when the caller is not the pending owner (M-01).
+    error NotPendingOwner();
+    /// @dev Thrown when royalty bps > 0 but recipient is zero address.
+    error InvalidRoyaltyConfig();
+
+    /// @notice Emitted when a 2-step ownership transfer is initiated.
+    /// @param previousOwner Current owner who initiated transfer.
+    /// @param newOwner Proposed new owner who must call acceptOwnership.
+    event OwnershipTransferStarted(
+        address indexed previousOwner,
+        address indexed newOwner
+    );
+
+    // ── Modifiers ────────────────────────────────────────────────────
+    /// @dev Restricts to the collection owner. Uses _msgSender() for
+    ///      ERC-2771 meta-transaction compatibility (audit fix M-02).
+    modifier onlyOwner() {
+        if (_msgSender() != owner) revert NotOwner();
+        _;
+    }
+
+    // ── Constructor (disabled for clone pattern) ─────────────────────
+    /**
+     * @notice Deploy the implementation contract (disabled for clones).
+     * @dev Constructor sets the ERC721 name/symbol for the
+     *      implementation contract. Clones call `initialize()`.
+     *      The trusted forwarder is baked into implementation
+     *      bytecode and inherited by ERC-1167 clones.
+     * @param trustedForwarder_ Trusted ERC-2771 forwarder address.
+     */
+    constructor(
+        address trustedForwarder_
+    )
+        ERC721("OmniNFT", "ONFT")
+        ERC2771Context(trustedForwarder_)
+    {
+        initialized = true;
+    }
+
+    // ── Initializer ──────────────────────────────────────────────────
+    /**
+     * @notice Initialize a freshly cloned collection.
+     * @param _owner Creator / owner address.
+     * @param _name  Collection name.
+     * @param _symbol Collection symbol.
+     * @param _maxSupply Maximum mintable tokens.
+     * @param _royaltyBps Royalty in basis points (0-2500).
+     * @param _royaltyRecipient Address that receives royalties.
+     * @param _unrevealedURI URI shown before reveal.
+     */
+    function initialize(
+        address _owner,
+        string calldata _name,
+        string calldata _symbol,
+        uint256 _maxSupply,
+        uint96 _royaltyBps,
+        address _royaltyRecipient,
+        string calldata _unrevealedURI
+    ) external {
+        if (initialized) revert AlreadyInitialized();
+        initialized = true;
+
+        // M-04: Validate owner is non-zero
+        if (_owner == address(0)) revert ZeroAddress();
+        if (_royaltyBps > MAX_ROYALTY_BPS) revert RoyaltyTooHigh();
+        // Prevent silently setting royalties that can never be paid
+        if (_royaltyBps > 0 && _royaltyRecipient == address(0)) {
+            revert InvalidRoyaltyConfig();
+        }
+
+        owner = _owner;
+        maxSupply = _maxSupply;
+        unrevealedURI = _unrevealedURI;
+
+        // H-02: Store per-clone name and symbol
+        _collectionName = _name;
+        _collectionSymbol = _symbol;
+
+        // ERC-2981 default royalty
+        if (_royaltyBps > 0) {
+            _setDefaultRoyalty(_royaltyRecipient, _royaltyBps);
+        }
+    }
+
+    // ── Phase management ─────────────────────────────────────────────
+    /**
+     * @notice Configure a minting phase.
+     * @param phaseId      Phase identifier (1-indexed).
+     * @param price        Price per mint in wei.
+     * @param maxPerWallet Max mints per wallet in this phase.
+     * @param merkleRoot   Merkle root for whitelist.
+     */
+    function setPhase(
+        uint8 phaseId,
+        uint256 price,
+        uint16 maxPerWallet,
+        bytes32 merkleRoot
+    ) external onlyOwner {
+        if (phaseId == 0) revert ZeroQuantity();
+        // Bound the price so mint's `price * quantity` can never overflow
+        // into a near-free totalCost (quantity is capped at 50).
+        if (price > MAX_PHASE_PRICE) revert InvalidPhaseConfig();
+        // E-01: Lock the active phase against mid-mint reconfiguration.
+        // Changing price/limits while minters are purchasing in the live
+        // phase would grief in-flight mints.
+        if (phaseId == activePhase) revert PhaseActive();
+        phases[phaseId] = PhaseConfig({
+            price: price,
+            merkleRoot: merkleRoot,
+            maxPerWallet: maxPerWallet,
+            active: false
+        });
+        configuredPhases[phaseId] = true;
+        if (phaseId > phaseCount) {
+            phaseCount = phaseId;
+        }
+    }
+
+    /**
+     * @notice Activate a specific phase; deactivate the previous one.
+     * @param phaseId Phase to activate (0 to pause all minting).
+     */
+    function setActivePhase(uint8 phaseId) external onlyOwner {
+        if (phaseId == activePhase) revert PhaseAlreadySet();
+        if (phaseId > phaseCount) revert PhaseNotConfigured();
+        // Reject a phase ID that was never configured via setPhase()
+        // (e.g. a gap left by non-contiguous IDs). Such a phase would
+        // carry an all-zero config — price 0, public, no wallet limit —
+        // and activate a free-for-all mint.
+        if (phaseId > 0 && !configuredPhases[phaseId]) {
+            revert PhaseNotConfigured();
+        }
+        if (activePhase > 0) {
+            phases[activePhase].active = false;
+        }
+        if (phaseId > 0) {
+            phases[phaseId].active = true;
+        }
+        activePhase = phaseId;
+        emit PhaseChanged(phaseId);
+    }
+
+    // ── Minting ──────────────────────────────────────────────────────
+    /**
+     * @notice Mint tokens in the active phase.
+     * @param quantity Number of tokens to mint.
+     * @param proof    Merkle proof for whitelist (empty for public).
+     */
+    function mint(
+        uint256 quantity,
+        bytes32[] calldata proof
+    ) external payable nonReentrant {
+        if (quantity == 0) revert ZeroQuantity();
+        if (quantity > MAX_MINT_BATCH_SIZE) revert BatchSizeExceeded();
+        _validateMintPhase();
+
+        address caller = _msgSender();
+        PhaseConfig storage phase = phases[activePhase];
+
+        _validateWhitelist(phase, proof, caller);
+        _validateWalletLimit(phase, quantity, caller);
+
+        // Supply check
+        if (nextTokenId + quantity > maxSupply) {
+            revert MaxSupplyExceeded();
+        }
+
+        // Payment check
+        uint256 totalCost = phase.price * quantity;
+        if (msg.value != totalCost) revert IncorrectPayment();
+
+        // Mint
+        uint256 startId = nextTokenId;
+        for (uint256 i = 0; i < quantity; ++i) {
+            _safeMint(caller, nextTokenId);
+            ++nextTokenId;
+        }
+        mintedPerPhase[activePhase][caller] += quantity;
+
+        emit Minted(caller, startId, quantity);
+    }
+
+    /**
+     * @notice Owner-only batch mint (airdrops, reserves).
+     * @dev Added nonReentrant and MAX_BATCH_SIZE (H-01 fix).
+     * @param to       Recipient address.
+     * @param quantity Number of tokens to mint (max 100).
+     */
+    function batchMint(
+        address to,
+        uint256 quantity
+    ) external onlyOwner nonReentrant {
+        if (quantity == 0) revert ZeroQuantity();
+        if (quantity > MAX_BATCH_SIZE) revert BatchSizeExceeded();
+        if (nextTokenId + quantity > maxSupply) {
+            revert MaxSupplyExceeded();
+        }
+
+        uint256 startId = nextTokenId;
+        for (uint256 i = 0; i < quantity; ++i) {
+            _safeMint(to, nextTokenId);
+            ++nextTokenId;
+        }
+        emit Minted(to, startId, quantity);
+    }
+
+    // ── Reveal ───────────────────────────────────────────────────────
+    /**
+     * @notice Reveal the collection by setting the real base URI.
+     * @param baseURI The IPFS base URI for revealed metadata.
+     */
+    function reveal(string calldata baseURI) external onlyOwner {
+        if (revealed) revert AlreadyRevealed();
+        // SL-09: Reject an empty base URI, which would break all token
+        // metadata.
+        if (bytes(baseURI).length == 0) revert EmptyBaseURI();
+        revealed = true;
+        _revealedBaseURI = baseURI;
+        emit Revealed(baseURI);
+    }
+
+    // ── Withdrawal ───────────────────────────────────────────────────
+    /**
+     * @notice Withdraw all contract revenue to the owner.
+     */
+    function withdraw() external onlyOwner nonReentrant {
+        uint256 balance = address(this).balance;
+        if (balance == 0) revert TransferFailed();
+
+        // solhint-disable-next-line avoid-low-level-calls
+        (bool ok, ) = payable(owner).call{value: balance}("");
+        if (!ok) revert TransferFailed();
+
+        emit Withdrawn(owner, balance);
+    }
+
+    /**
+     * @notice Initiate a 2-step ownership transfer (audit fix M-01).
+     * @dev Sets `pendingOwner`; the new owner must call
+     *      `acceptOwnership()` to complete the transfer. This
+     *      prevents accidental loss of ownership due to typos.
+     * @param newOwner The proposed new owner address.
+     */
+    function transferOwnership(
+        address newOwner
+    ) external onlyOwner {
+        if (newOwner == address(0)) revert ZeroAddress();
+        pendingOwner = newOwner;
+        emit OwnershipTransferStarted(owner, newOwner);
+    }
+
+    /**
+     * @notice Accept ownership of the collection (audit fix M-01).
+     * @dev Completes the 2-step transfer. Only the address set via
+     *      `transferOwnership()` may call this.
+     */
+    function acceptOwnership() external {
+        if (_msgSender() != pendingOwner) revert NotPendingOwner();
+        owner = pendingOwner;
+        pendingOwner = address(0);
+    }
+
+    // ── External view helpers ──────────────────────────────────────
+    /**
+     * @notice Total tokens minted so far.
+     * @return Number of minted tokens.
+     */
+    function totalMinted() external view returns (uint256) {
+        return nextTokenId;
+    }
+
+    /**
+     * @notice Remaining mintable supply.
+     * @return Tokens left to mint.
+     */
+    function remainingSupply() external view returns (uint256) {
+        return maxSupply - nextTokenId;
+    }
+
+    // ── Name / symbol overrides (per-clone values) ───────────────────
+    /**
+     * @notice Returns the per-clone collection name.
+     * @dev Overrides ERC721.name(). Before initialization returns
+     *      the default "OmniNFT".
+     * @return The collection name.
+     */
+    function name()
+        public
+        view
+        override
+        returns (string memory)
+    {
+        if (bytes(_collectionName).length > 0) {
+            return _collectionName;
+        }
+        return super.name();
+    }
+
+    /**
+     * @notice Returns the per-clone collection symbol.
+     * @dev Overrides ERC721.symbol(). Before initialization returns
+     *      the default "ONFT".
+     * @return The collection symbol.
+     */
+    function symbol()
+        public
+        view
+        override
+        returns (string memory)
+    {
+        if (bytes(_collectionSymbol).length > 0) {
+            return _collectionSymbol;
+        }
+        return super.symbol();
+    }
+
+    // ── URI overrides ────────────────────────────────────────────────
+    /**
+     * @notice Returns the token URI.
+     * @dev Before reveal, returns unrevealedURI for all tokens.
+     * @param tokenId Token to query.
+     * @return URI string.
+     */
+    function tokenURI(
+        uint256 tokenId
+    ) public view override returns (string memory) {
+        _requireOwned(tokenId);
+        if (!revealed) {
+            return unrevealedURI;
+        }
+        return string.concat(
+            _revealedBaseURI,
+            tokenId.toString(),
+            ".json"
+        );
+    }
+
+    // ── ERC-165 ──────────────────────────────────────────────────────
+    /**
+     * @notice Check if this contract supports a given interface.
+     * @dev Supports ERC721 and ERC2981 interfaces.
+     * @param interfaceId The interface identifier to check.
+     * @return supported True if the interface is supported.
+     */
+    function supportsInterface(
+        bytes4 interfaceId
+    )
+        public
+        view
+        override(ERC721, ERC2981)
+        returns (bool supported)
+    {
+        return super.supportsInterface(interfaceId);
+    }
+
+    // ── Internal helpers ─────────────────────────────────────────────
+
+    /**
+     * @dev Validate that a minting phase is active.
+     */
+    function _validateMintPhase() internal view {
+        if (activePhase == 0) revert PhaseNotActive();
+        if (!phases[activePhase].active) revert PhaseNotActive();
+    }
+
+    /**
+     * @notice Validate whitelist proof if the phase requires one.
+     * @dev Reverts with InvalidProof if the proof is invalid.
+     *      M-03: Merkle leaf includes block.chainid, contract address,
+     *      and active phase ID to prevent cross-chain and cross-
+     *      collection proof replay attacks.
+     * @param phase The active phase config.
+     * @param proof Merkle proof array.
+     * @param caller The resolved caller address (via _msgSender).
+     */
+    function _validateWhitelist(
+        PhaseConfig storage phase,
+        bytes32[] calldata proof,
+        address caller
+    ) internal view {
+        if (phase.merkleRoot != bytes32(0)) {
+            // M-03: Include chainId, contract address, and phase in
+            // the leaf to prevent cross-chain / cross-collection /
+            // cross-phase proof reuse.
+            bytes32 leaf = keccak256(
+                abi.encodePacked(
+                    block.chainid,
+                    address(this),
+                    activePhase,
+                    caller
+                )
+            );
+            if (
+                !MerkleProof.verify(
+                    proof,
+                    phase.merkleRoot,
+                    leaf
+                )
+            ) {
+                revert InvalidProof();
+            }
+        }
+    }
+
+    /**
+     * @notice Validate per-wallet mint limit for the active phase.
+     * @dev Reverts with WalletLimitExceeded if over limit.
+     * @param phase The active phase config.
+     * @param quantity Number of tokens being minted.
+     * @param caller The resolved caller address (via _msgSender).
+     */
+    function _validateWalletLimit(
+        PhaseConfig storage phase,
+        uint256 quantity,
+        address caller
+    ) internal view {
+        if (phase.maxPerWallet > 0) {
+            uint256 minted =
+                mintedPerPhase[activePhase][caller];
+            if (minted + quantity > phase.maxPerWallet) {
+                revert WalletLimitExceeded();
+            }
+        }
+    }
+
+    // ── ERC-2771 overrides (Context diamond resolution) ────────
+    /**
+     * @notice Return the sender of the call, accounting for
+     *         ERC-2771 meta-transactions.
+     * @dev Delegates to ERC2771Context to extract the original
+     *      sender when the call comes from the trusted forwarder.
+     * @return The resolved sender address.
+     */
+    function _msgSender()
+        internal
+        view
+        override(Context, ERC2771Context)
+        returns (address)
+    {
+        return ERC2771Context._msgSender();
+    }
+
+    /**
+     * @notice Return the calldata of the call, accounting for
+     *         ERC-2771 meta-transactions.
+     * @dev Delegates to ERC2771Context to strip the appended
+     *      sender address when the call comes from the trusted
+     *      forwarder.
+     * @return The resolved calldata.
+     */
+    function _msgData()
+        internal
+        view
+        override(Context, ERC2771Context)
+        returns (bytes calldata)
+    {
+        return ERC2771Context._msgData();
+    }
+
+    /**
+     * @notice Return the context suffix length for ERC-2771.
+     * @dev ERC-2771 appends 20 bytes (the sender address) to
+     *      the calldata.
+     * @return Length of the context suffix (20).
+     */
+    function _contextSuffixLength()
+        internal
+        view
+        override(Context, ERC2771Context)
+        returns (uint256)
+    {
+        return ERC2771Context._contextSuffixLength();
+    }
+}

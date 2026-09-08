@@ -1,0 +1,14 @@
+title = "gitleaks config"
+
+# OmniCoin is a Solidity/smart-contract repository. The default
+# `generic-api-key` rule produces false positives on on-chain addresses,
+# transaction hashes, and hex literals that appear throughout the contracts,
+# deployment manifests, and test fixtures. Those are public data, not
+# secrets. The high-signal rules (private keys, cloud credentials, access
+# tokens, and payment-card/mnemonic patterns) remain enabled.
+
+minVersion = "v8.25.0"
+
+[extend]
+useDefault = true
+disabledRules = ["generic-api-key"]

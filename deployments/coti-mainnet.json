@@ -1,0 +1,318 @@
+{
+  "network": "coti-mainnet",
+  "chainId": 2632500,
+  "rpcUrl": "https://mainnet.coti.io/rpc",
+  "explorer": "https://mainnet.cotiscan.io",
+  "deployer": "0x021868f2E3D49C059EF52B539AAa933B437e0321",
+  "deployedAt": "2026-03-21T21:05:28.279Z",
+  "contracts": {
+    "PrivateOmniCoin": {
+      "proxy": "0x958b07d5C302338C8302c6b5a1Bff49bbF9aa934",
+      "legacyProxy": "0x9338B9eF1291b0266D28E520797eD57020A84D3B",
+      "legacyImplementation": "0x9CB1124388Bd749887dd89cA47E5E82c5E95416e",
+      "legacyPreviousImplementation": "0xb3E389014B2A2cDB18EB8AfB9353129c24559b76",
+      "note": "CANONICAL = pXOM V2 (`proxy` field above), a non-pausable PrivateERC20 256-bit token — NON-proxy direct deploy, so EIP-1967 impl slot is empty; the `proxy` field simply carries the canonical token address that sync-contract-addresses reads. Matches privacyV2.PrivateOmniCoin. The LEGACY OZ-Pausable token (legacyProxy, paused 2026-05-09) blocked shield mints (EnforcedPause) and was superseded 2026-06-02 — kept here for history only; do NOT wire it. OmniPrivacyShield re-deployed 2026-06-17 at 0x7208B56f3B6aF20FA1817f460D5eFcaA217f09a6 (push-model unshield via pXOM.transferAndCall->onTokenReceived; deferred burnPending; audited clean; funded COTI round-trip proven, unshield tx 0x004525df) — it holds MINTER_ROLE on V2 pXOM. Prior shields 0x184E4BA49986Be4dF1aA2831c790013c83576106 and 0x8968a41ee5208eAF6E9fe290558BcCD1D0A482c3 were MINTER-revoked + retired. (Was previously a STALE Phase-1 entry pointing at legacyProxy, which made `sync coti-mainnet` overwrite the correct TS pXOM address with the paused contract — fixed 2026-06-18.)"
+    },
+    "OmniPrivacyBridge": {
+      "status": "RETIRED",
+      "legacyProxy": "0x0D6bD1C10EDae3DEC57F426760686130759c84AB",
+      "legacyImplementation": "0xfF92309d8C06B4A09F1EacECB280E5e011D5ba1e",
+      "note": "RETIRED — bespoke COTI privacy bridge, superseded by Hyperlane (decision_privacy_bridge_hyperlane_2026-05-30); the OmniPrivacyBridge_L1/COTI contracts were removed in Coin 391d7cf. legacyProxy kept for forensic history only; not wired in any TS config (sync intentionally does not manage it)."
+    },
+    "PrivateDEX": {
+      "status": "RETIRED",
+      "legacyProxy": "0xf20765a9Eb38a4753c5774c86677251cfbEcc690",
+      "legacyImplementation": "0x8d7fAf49544308B231182A1cD452F52D8B21E222",
+      "note": "RETIRED — PrivateDEXSimple, superseded by PrivateDEXSettlement (canonical 0x1CF276D04257785062A6C7A99897F4913386E486). legacyProxy kept for history only; not wired in any TS config."
+    },
+    "PrivateDEXSettlement": {
+      "proxy": "0x1CF276D04257785062A6C7A99897F4913386E486",
+      "implementation": "0x4F4a9DB86E998e7BA736e8867d20d69f009dd306",
+      "legacyProxy": "0xc2468BA2F42b5ea9095B43E68F39c366730B84B4",
+      "legacyImplementation": "0x4804Aad1469aEC8cf4C1DBeD84e8075d135079E8",
+      "note": "CANONICAL = escrow/swap/refund (impl 0xFBdaE37196EC2E2b1da53da5539B2FCa47ca936A, upgrade tx 0x5eb929e72d9bf4afff8b3a9499571501676b6a665fb991752f204a4920dc9a22 block 8069961; requestUpgrade tx 0x5e3e7d5831863c8d01b941a3c71eeaf19e44cad4d8b78d4190ba279de07c6743). 2026-07-02: lockPrivateCollateralWithCommittee now escrows tokenIn via transferFromGT; _settleOne pays net→counterparty + lpFee/vaultFee→recipients via transferGT (conservation exact); cancelPrivateIntent refunds; 3 SETTLER_ROLE fund paths revert DeprecatedUseCommitteePath. Storage byte-identical to prior impl 0x2546534823da329Ba678b81832420D69D57E5508 (verified). Audited 0 C/H/M (PrivateDEXSettlement-escrow-upgrade-audit-2026-07-02.md). F1 solvency gate PASSED (0 open LOCKED). Prior impl 0x2546534823da329Ba678b81832420D69D57E5508 = V1.3 itUint256 (2026-06-19). 🛑 CLIENTS MUST broadcast lock/settle DIRECTLY with fixed gasLimit (validateCiphertext false-negatives under staticCall). Funded balance-movement E2E deferred (backed-shield funding — TODO DEX-D13-FUNDED-E2E)."
+    },
+    "PrivateUSDC": {
+      "proxy": "0x4F1CbE46d42e2F880aE1aE8c091c9BA365bC0B33",
+      "legacyProxy": "0x031f1761e2163b7f0eD47EdD17D7E110D4411b37",
+      "legacyImplementation": "0x1cc9FF243A3e76A6c122aa708bB3Fd375a97c7d6",
+      "note": "CANONICAL = V2 (non-proxy PrivateERC20; impl slot empty — `proxy` carries the token address sync reads). Matches privacyV2.PrivateUSDC. legacyProxy = retired Phase-1."
+    },
+    "PrivateWBTC": {
+      "proxy": "0xF701F221Cbc7601e9AEdD822DA44217b0E53E8eE",
+      "legacyProxy": "0xD95a682e06A618a1c1a5e2AEb2086AeD87140e0f",
+      "legacyImplementation": "0x3997Ca13d4bfb33c38629778a55f7eBE57B12935",
+      "note": "CANONICAL = V2 (non-proxy PrivateERC20; impl slot empty). Matches privacyV2.PrivateWBTC. legacyProxy = retired Phase-1."
+    },
+    "PrivateWETH": {
+      "proxy": "0x39bF69ba95a4dA34508799B949454D548E18F970",
+      "legacyProxy": "0xaE3D9bDf72a7160712cb99f01E937Ee2F5AF339c",
+      "legacyImplementation": "0x4b9DbBD359A7c0A5B0893Be532b634e9cB99543D",
+      "note": "CANONICAL = V2 (non-proxy PrivateERC20; impl slot empty). Matches privacyV2.PrivateWETH. legacyProxy = retired Phase-1."
+    },
+    "PrivateLimitDEXSettlement": "0xCCe8f6b93d2aDa98eA0a66C8230BCf1B6FFa8A5C",
+    "PrivateLimitDEXSettlementImplementation": "0xd7F3fd4102e50242BD6505f8714854182BAada06",
+    "PrivatePredictionMath": "0xA4A5a06e82F2fD3f2C76456AfAfB46aeCec2669f",
+    "CommitteeAttestorLib": "0x782fB33b895B229AcCB34970E73840DcF07f4108"
+  },
+  "underlyingTokens": {
+    "USDC": "0xf1Feebc4376c68B7003450ae66343Ae59AB37D3C",
+    "WBTC": "0x8C39B1fD0e6260fdf20652Fc436d25026832bfEA",
+    "WETH": "0x639aCc80569c5FC83c6FBf2319A6Cc38bBfe26d1"
+  },
+  "cotiInfo": {
+    "privacyLayer": "COTI V2 MPC",
+    "mpcPrecompile": "0x0000000000000000000000000000000000000064",
+    "accountOnboard": "0x536A67f0cc46513E7d27a370ed1aF9FDcC7A5095",
+    "garbledCircuits": true
+  },
+  "notes": [
+    "COTI V2 Mainnet deployment for 7 privacy contracts",
+    "All contracts use UUPS proxy pattern with MpcCore precompile",
+    "Underlying token addresses (USDC, WBTC, WETH) are official COTI mainnet bridged tokens",
+    "Deployer account must be onboarded to COTI network before deployment",
+    "Deploy with: npx hardhat run scripts/deploy-coti-mainnet.js --network cotiMainnet",
+    "6 privacy contracts deployed on COTI V2 mainnet (direct deploy, no OZ Upgrades). ERC1967Proxy + implementation pattern. Admin: deployer (Pioneer Phase). Date: 2026-03-21T21:05:28.279Z",
+    "PrivateLimitDEXSettlement deployed at 2026-08-08T16:01:38.984Z",
+    "VT-27 broadcast 2026-08-26: 6 privacy contracts upgraded (recordDisputeEquivocation + expireCommitteeDispute); CommitteeAttestorLib 0x782fB33b895B229AcCB34970E73840DcF07f4108 linked; PrivatePredictionMath relinked 0xA4A5a06e82F2fD3f2C76456AfAfB46aeCec2669f; PrivateLimitDEXSettlement stale upgradeRequested cleared via cancelUpgrade tx 0xa63bd2e2f575e6215be5e7d1ffe802958b15ca46ff8caefeed4f28b6aa73a8a4."
+  ],
+  "upgradedAt": "2026-08-26T18:54:18.598Z",
+  "upgradeNote": "Added _safeOnboard() to fix MpcCore.onBoard(0) revert for first-time users",
+  "privacyV2": {
+    "deployedAt": "2026-05-09T18:40:20.161Z",
+    "deployer": "0x021868f2E3D49C059EF52B539AAa933B437e0321",
+    "chainId": 2632500,
+    "verifier": "0xD499123C47fA216F23BaEC9B26cd46854aE5F274",
+    "validators": [
+      "0x1eba49E6dD1D52663339aB071BF770F97fFd8a3C",
+      "0x70578755D55734155720295D89E5d5B8a0cB1e53",
+      "0xA1E8114f119568F544b17E971B8E385D51e6Ec94",
+      "0xde1292e1d0dA189B97E5dcBfa030A5E402748C3A",
+      "0xE7CDD15C675594C0B21f9E50C73E6D33288A90d1"
+    ],
+    "validatorsNote": "Corrected 2026-06-01 to the canonical live set (matches L1 RandomCommitteeVerifier @398944 + live PrivateYieldVault seq 2 + .env.validator ATTESTER keys). Prior values (0x11A6…) were a stale bootstrap set never updated after the live snapshot advanced; they had leaked into committee-ism-config.yaml and the Action-3 ISM deploy, which were corrected via adminBootstrapSnapshot.",
+    "bridge_COTI": "0x43401C7BF0D397D206F3B5Df894A719116d58e2e",
+    "l1Bridge": "0x56b44EB5CB56128ce1F26Aa964e98eE03D2DCB55",
+    "PrivateOmniCoin": "0x958b07d5C302338C8302c6b5a1Bff49bbF9aa934",
+    "PrivateUSDC": "0x4F1CbE46d42e2F880aE1aE8c091c9BA365bC0B33",
+    "PrivateWBTC": "0xF701F221Cbc7601e9AEdD822DA44217b0E53E8eE",
+    "PrivateWETH": "0x39bF69ba95a4dA34508799B949454D548E18F970",
+    "tierConfig": {
+      "tierAThreshold": "50000000000000000000000",
+      "tierBThreshold": "5000000000000000000000000",
+      "tierBChallengeWindow": 86400,
+      "tierCChallengeWindow": 259200
+    },
+    "notes": "Phase 1 mainnet COTI side. Deployed 2026-05-09. Mid-deploy nonce-bump moved bridge from predicted nonce 13 to actual nonce 14, but l1Bridge immutable was set to the original predicted L1 addr (0x56b4...). L1 deploy must use nonce 174 (verifier) + 175 (bridge) so L1 bridge addr matches.",
+    "PrivateDEXSettlement": {
+      "proxy": "0x1CF276D04257785062A6C7A99897F4913386E486",
+      "implementation": "0x4F4a9DB86E998e7BA736e8867d20d69f009dd306",
+      "previousImplementation": "0xB90F80cf19797F7b30760A237b406B6715047B0f",
+      "previousProxy": "0xC82D5E339fc4357c139F93b53f313A095b6234D2",
+      "deployedAt": "2026-05-28T02:13:05.918Z",
+      "deployer": "0x021868f2E3D49C059EF52B539AAa933B437e0321",
+      "replacementReason": "Privacy V1.2 + V1.2.1 fresh deploy — CommitteeAttestor inheritance + TIMELOCK_DELAY=0 per Pioneer-Phase rule; prior proxy had zero state",
+      "upgradeReason": "VT-27 dispute-equivocation hardening: CommitteeAttestor.recordDisputeEquivocation + PrivateMarketplaceEscrow.expireCommitteeDispute; full CommitteeAttestorLib base extraction (EIP-170 size fix)",
+      "upgrades": [
+        {
+          "from": "0xFBdaE37196EC2E2b1da53da5539B2FCa47ca936A",
+          "to": "0x8aA439b38027A8b4661aD21942113c0c36982036",
+          "reason": "COMMITTEE-GRINDING fix: CommitteeSeedPinningLib + requireCommitteeSeedPinning() setter (Coin 471f81b + follow-on) — latch left OFF",
+          "upgradedAt": "2026-08-10T18:31:08.731Z",
+          "requestUpgradeTx": "0xb6735c535eab8612242ef953b678f1101849f38760d37a27e1f530996e6ed88c",
+          "upgradeTx": "0x65747ad9231f6d04d24c4166f7754baf8360aafdb28f130295240362cee11778",
+          "implDeployTx": "0xd3b73c7959d0454f0b2b4eec7a1bdaa23d6cbf2ec1f41acce8a20c39830f9e2a"
+        },
+        {
+          "from": "0x8aA439b38027A8b4661aD21942113c0c36982036",
+          "to": "0xB90F80cf19797F7b30760A237b406B6715047B0f",
+          "reason": "2026-08-20 red-team remediation: H-02 CommitteeAttestor MIN_COMMITTEE_SIZE floor (shared base)",
+          "upgradedAt": "2026-08-20T00:00:00.000Z"
+        },
+        {
+          "from": "0xB90F80cf19797F7b30760A237b406B6715047B0f",
+          "to": "0x4F4a9DB86E998e7BA736e8867d20d69f009dd306",
+          "reason": "VT-27 dispute-equivocation hardening: CommitteeAttestor.recordDisputeEquivocation + PrivateMarketplaceEscrow.expireCommitteeDispute; full CommitteeAttestorLib base extraction (EIP-170 size fix)",
+          "upgradedAt": "2026-08-26T18:54:18.598Z",
+          "requestUpgradeTx": "0xe4a632e43e3b0c29a1760496dd0cd2ae0133f6ec0faa97d74b02ed40a7a5455f",
+          "upgradeToAndCallTx": "0xc4a6d0ea336816d79314e440b4301b14c6a5b07aba1a045ac204d0435261765d"
+        }
+      ]
+    },
+    "PrivateMarketplaceEscrow": {
+      "proxy": "0x43d216073D3c7B494FA3626C0607FfF14758A670",
+      "implementation": "0xB55e9DAc3BE928b492f6BFe1Fc481ee15d1E28a9",
+      "previousProxy": "0xf26a5828b2D9c2a23E9b03eD6322991ef3C22c0D",
+      "deployedAt": "2026-05-28T02:13:24.930Z",
+      "deployer": "0x021868f2E3D49C059EF52B539AAa933B437e0321",
+      "replacementReason": "Privacy V1.2 + V1.2.1 fresh deploy — CommitteeAttestor inheritance + TIMELOCK_DELAY=0 per Pioneer-Phase rule; prior proxy had zero state",
+      "previousImplementation": "0xEa0373159d40b9DCE3E341ECfBeA9be98205EF84",
+      "upgradedAt": "2026-07-04T17:28:25.363Z",
+      "upgradeReason": "VT-27 dispute-equivocation hardening: CommitteeAttestor.recordDisputeEquivocation + PrivateMarketplaceEscrow.expireCommitteeDispute; full CommitteeAttestorLib base extraction (EIP-170 size fix)",
+      "upgradeTxRequest": "0x5c7eeb26f3aad2d84befd70c170d6e59a9770e97c9c4b47ce0fa0d8554598746",
+      "upgradeTxApply": "0x77279ef70504e16104fec369d9cc5b70d840c8efcf90a60cc480fe1607390e24",
+      "implDeployTx": "0x02b80108145ee0fe71662daf085e16c6636006e5c42ee59e6f5e4e036068ef8b",
+      "upgrades": [
+        {
+          "from": "0x9b28115D42AACEc27054470C290B9b521588A420",
+          "to": "0x07579B8e28CD1f5faf5c8b5744654a3f667ff2C5",
+          "reason": "COMMITTEE-GRINDING fix: CommitteeSeedPinningLib + requireCommitteeSeedPinning() setter — latch left OFF",
+          "upgradedAt": "2026-08-10T18:50:54.409Z",
+          "requestUpgradeTx": "0x42db2e6578d82eef406fa4dc3f65e50db33af734ddba927bed0513fae42f2f51",
+          "upgradeTx": "0x4845bddc42b5e1fcb5d7d054915b53f0733bc27ab4cab55403932725c1d3617b",
+          "implDeployTx": "0x0fe7583c73b7be75b1ad566e318e6300539959524bbb3a18b3130ad01d8e98c6"
+        },
+        {
+          "from": "0x07579B8e28CD1f5faf5c8b5744654a3f667ff2C5",
+          "to": "0xB78EEe75913F438B96078B2C5853E3f202ec4A95",
+          "reason": "Added requireCommitteeSeedPinning() public wrapper",
+          "upgradedAt": "2026-08-10T20:12:14.147Z",
+          "requestUpgradeTx": "0x984285e118160d8635749a0fa251d86505904a339a90b994d9bf06c2dadc8dd4",
+          "upgradeTx": "0x8fd6443b2d64134906ad2ee5e9853636e70bf2089123a2664b8935be4c2ce164",
+          "implDeployTx": "0x751b5ce80749a008b1aac177de55017c8234d602f5fdbe7a92ed45b516fa09e5"
+        },
+        {
+          "from": "0xB78EEe75913F438B96078B2C5853E3f202ec4A95",
+          "to": "0xEa0373159d40b9DCE3E341ECfBeA9be98205EF84",
+          "reason": "2026-08-20 red-team remediation: H-02 CommitteeAttestor MIN_COMMITTEE_SIZE floor (shared base)",
+          "upgradedAt": "2026-08-20T00:00:00.000Z"
+        },
+        {
+          "from": "0xEa0373159d40b9DCE3E341ECfBeA9be98205EF84",
+          "to": "0xB55e9DAc3BE928b492f6BFe1Fc481ee15d1E28a9",
+          "reason": "VT-27 dispute-equivocation hardening: CommitteeAttestor.recordDisputeEquivocation + PrivateMarketplaceEscrow.expireCommitteeDispute; full CommitteeAttestorLib base extraction (EIP-170 size fix)",
+          "upgradedAt": "2026-08-26T18:54:18.598Z",
+          "requestUpgradeTx": "0x3947b41b6029e2b9194a94155c452a727c8ec598b02292c404307799820e2cc6",
+          "upgradeToAndCallTx": "0x72e50ee42c13100c2575c255a7c335ab4192ffb107b2c062d420ad25bb51828b"
+        }
+      ]
+    },
+    "PrivateYieldVault": {
+      "proxy": "0x95e461f65157D7B1504B6c7901aEb01f34f29DCf",
+      "implementation": "0x2727aBD17B3ab4277E2889132474d1EB64d682a4",
+      "previousImplementation": "0x04c58347ef1Dc9bf932D6a741945d257155bC2e4",
+      "previousProxy": "0x98E41345f3dEcA076711cfc30Cc53e1b466514be",
+      "deployedAt": "2026-05-28T02:12:20.369Z",
+      "deployer": "0x021868f2E3D49C059EF52B539AAa933B437e0321",
+      "replacementReason": "Privacy V1.2 + V1.2.1 fresh deploy — CommitteeAttestor inheritance + TIMELOCK_DELAY=0 per Pioneer-Phase rule; prior proxy had zero state",
+      "note": "2026-06-30 FOLLOWON-2 settlement-direct pXOM escrow upgrade (G6): impl 0x258Fc94d (upgrade tx 0xea757a0f, block 8035626; prior live impl was 0x37BDA564, deployments record had a stale 0x9B0aaD07). initializeV3 bound privateToken=pXOM V2 0x958b07d5 atomically. _executeStake now pulls principal via IPrivateERC20.transferFromGT; unstake releases via transferGT; legacy pre-V3 stakes carry escrowed=false (verified on-chain) and keep the accumulator path. Audited (0 Crit/High; 2 Lows fixed); 16 Hardhat tests. Clients MUST approveGT(vault, amount) before stake (approvePxomForStake).",
+      "upgrades": [
+        {
+          "from": "0x258Fc94d69Cd21c049B93e21650987aE39052Ed3",
+          "to": "0x4f660D6e837e8A616aF871d9A5157fc02e04C48c",
+          "reason": "COMMITTEE-GRINDING fix: CommitteeSeedPinningLib + requireCommitteeSeedPinning() setter (Coin 471f81b + follow-on) — latch left OFF, no behavior change until a separate deliberate call enables it",
+          "upgradedAt": "2026-08-10T01:23:04.659Z",
+          "requestUpgradeTx": "0xa62cf1d21b34332369845ebe0e133ca91e27338c8b0b7df6eed42749317707fb",
+          "upgradeTx": "0x26828be00e41374270b9838b4476016a26032f6a0f2157848128720e97b8caa9",
+          "implDeployTx": "0xd9ae7f9f151c47f2f325abc2eb275372e7b8396c6bdebc8017bb0d47528d3ead"
+        },
+        {
+          "from": "0x4f660D6e837e8A616aF871d9A5157fc02e04C48c",
+          "to": "0xA51198cc9a3FaFFf7d6A3056eaf2D52D7f150180",
+          "reason": "Added requireCommitteeSeedPinning() public wrapper",
+          "upgradedAt": "2026-08-10T20:11:44.243Z",
+          "requestUpgradeTx": "0x734e919d2be086d775d73f6873d6f45830f0dc964ed57e39b18496879446e64f",
+          "upgradeTx": "0x1d721031f3d78a28a4f5085df9ad2c1d9b54df66a9f4608f55b5225836dd5c79",
+          "implDeployTx": "0xb6f1a7679cc103fb1ab55bd3524d271bf6fa4353c726e7df88d09b1a74de3b9f"
+        },
+        {
+          "from": "0xA51198cc9a3FaFFf7d6A3056eaf2D52D7f150180",
+          "to": "0x04c58347ef1Dc9bf932D6a741945d257155bC2e4",
+          "reason": "2026-08-20 red-team remediation: H-02 CommitteeAttestor MIN_COMMITTEE_SIZE floor (shared base)",
+          "upgradedAt": "2026-08-20T00:00:00.000Z"
+        },
+        {
+          "from": "0x04c58347ef1Dc9bf932D6a741945d257155bC2e4",
+          "to": "0x2727aBD17B3ab4277E2889132474d1EB64d682a4",
+          "reason": "VT-27 dispute-equivocation hardening: CommitteeAttestor.recordDisputeEquivocation + PrivateMarketplaceEscrow.expireCommitteeDispute; full CommitteeAttestorLib base extraction (EIP-170 size fix)",
+          "upgradedAt": "2026-08-26T18:54:18.598Z",
+          "requestUpgradeTx": "0xf2c3227091c8e7304f0775e0156ea976077dd7a52f1991b971b9eea162279bbe",
+          "upgradeToAndCallTx": "0xd451e89a8b93b9ca581215e3841261a5479fa64e640a89aad27770ad522bbb00"
+        }
+      ],
+      "upgradeReason": "VT-27 dispute-equivocation hardening: CommitteeAttestor.recordDisputeEquivocation + PrivateMarketplaceEscrow.expireCommitteeDispute; full CommitteeAttestorLib base extraction (EIP-170 size fix)"
+    },
+    "PrivateRWAAMM": {
+      "proxy": "0xe6380a2A3e548150c37505237Fe1203eC6905fa2",
+      "implementation": "0x3585d53ABa9872a49fdd3eb49D5CFC35CFe08364",
+      "previousProxy": "0x45D0D34097E7D4c7017a82887a50b8e8C0fD4Ddd",
+      "deployedAt": "2026-05-28T02:12:35.631Z",
+      "deployer": "0x021868f2E3D49C059EF52B539AAa933B437e0321",
+      "replacementReason": "Privacy V1.2 + V1.2.1 fresh deploy — CommitteeAttestor inheritance + TIMELOCK_DELAY=0 per Pioneer-Phase rule; prior proxy had zero state",
+      "previousImplementation": "0x266747f8b617fdAE4aad1A494508ab02BE5E8e0c",
+      "upgrades": [
+        {
+          "from": "0x13033eD9261e391599b23255afFB1efDcfDCbF87",
+          "to": "0x52E1cbAF69DFC9b433077B69D009282eE71e79B7",
+          "reason": "COMMITTEE-GRINDING fix: seed-pinning — latch OFF",
+          "upgradedAt": "2026-08-10T19:06:14.271Z",
+          "requestUpgradeTx": "0xe6cf398d0c3b9eb7e8c71eb01fceba45f37d3410b1fdada8947da6ea4a570664",
+          "upgradeTx": "0xf3e4039979fa175bd29cb99ed7acd4d3ca394dc1c49058db2105ba45343d6319",
+          "implDeployTx": "0xd9de3daea995a17f9871ef4413c1908fedf6231dac8258b361d206e3b540a027"
+        },
+        {
+          "from": "0x52E1cbAF69DFC9b433077B69D009282eE71e79B7",
+          "to": "0x66d6FB3bCeF550205A39B68f55F43011B98c6BEa",
+          "reason": "Added requireCommitteeSeedPinning() public wrapper",
+          "upgradedAt": "2026-08-10T20:11:59.192Z",
+          "requestUpgradeTx": "0x75098ecd449b8026a3ca0022bcb72c7df5133a900fc96363483b1fd94fe380d2",
+          "upgradeTx": "0x18855f62af6558ea85a74a115cc1e5694d0f4c50bedf13486d0c55ff1d321664",
+          "implDeployTx": "0x00615d252a09537ff4c6f8e37c2db890a079a6da8a1fb083754e59e75e855f63"
+        },
+        {
+          "from": "0x66d6FB3bCeF550205A39B68f55F43011B98c6BEa",
+          "to": "0x266747f8b617fdAE4aad1A494508ab02BE5E8e0c",
+          "reason": "2026-08-20 red-team remediation: H-02 CommitteeAttestor MIN_COMMITTEE_SIZE floor (shared base)",
+          "upgradedAt": "2026-08-20T00:00:00.000Z"
+        },
+        {
+          "from": "0x266747f8b617fdAE4aad1A494508ab02BE5E8e0c",
+          "to": "0x3585d53ABa9872a49fdd3eb49D5CFC35CFe08364",
+          "reason": "VT-27 dispute-equivocation hardening: CommitteeAttestor.recordDisputeEquivocation + PrivateMarketplaceEscrow.expireCommitteeDispute; full CommitteeAttestorLib base extraction (EIP-170 size fix)",
+          "upgradedAt": "2026-08-26T18:54:18.598Z",
+          "requestUpgradeTx": "0xe7c48fa8da9b007c923bde39f3fb35475e86e683c6f2df2da6b2d1211e204b1b",
+          "upgradeToAndCallTx": "0x0edf1eccffcdcc001bd6303a62ed65ba5ea7dfb6051932ba9c4d02d29ec3d788"
+        }
+      ],
+      "upgradeReason": "VT-27 dispute-equivocation hardening: CommitteeAttestor.recordDisputeEquivocation + PrivateMarketplaceEscrow.expireCommitteeDispute; full CommitteeAttestorLib base extraction (EIP-170 size fix)"
+    },
+    "PrivatePredictionMarket": {
+      "proxy": "0xFcC6Cda5784D1532704ACBc0ec555b10Cb96BD28",
+      "implementation": "0x392c5741f87CD71fC105E9b7204Df2DFf74Fc443",
+      "previousProxy": "0xf671221EeA4bBf7c72b16E9328594040f7f4F628",
+      "deployedAt": "2026-05-28T02:12:50.051Z",
+      "deployer": "0x021868f2E3D49C059EF52B539AAa933B437e0321",
+      "replacementReason": "Privacy V1.2 + V1.2.1 fresh deploy — CommitteeAttestor inheritance + TIMELOCK_DELAY=0 per Pioneer-Phase rule; prior proxy had zero state",
+      "previousImplementation": "0x373B51041496e219b0999f3B2e01c4077f12d85b",
+      "upgrades": [
+        {
+          "from": "0xF144F7329284b35c0fA80815ff8b97672d896c17",
+          "to": "0x6D320D7DD53Cd0D1CBB4dd330E13f5552ef2dd87",
+          "reason": "COMMITTEE-GRINDING fix: seed-pinning — latch OFF",
+          "upgradedAt": "2026-08-10T19:05:58.980Z",
+          "requestUpgradeTx": "0x3205bd0d72879f128b365818716a79a432863278c5e5b2c4bc1476d8a20db0dc",
+          "upgradeTx": "0xe17c3f15e13bef4231463ef599572e8dfb83f65bf4ad791ef23c738ca93e90fa",
+          "implDeployTx": "0xdc655d2f0153a43a1d1be7ce804599a87aba06033d5b061ebde8bcf0a42a2816"
+        },
+        {
+          "from": "0x6D320D7DD53Cd0D1CBB4dd330E13f5552ef2dd87",
+          "to": "0x373B51041496e219b0999f3B2e01c4077f12d85b",
+          "reason": "2026-08-20 red-team remediation: H-02 CommitteeAttestor MIN_COMMITTEE_SIZE floor (shared base)",
+          "upgradedAt": "2026-08-20T00:00:00.000Z"
+        },
+        {
+          "from": "0x373B51041496e219b0999f3B2e01c4077f12d85b",
+          "to": "0x392c5741f87CD71fC105E9b7204Df2DFf74Fc443",
+          "reason": "VT-27 dispute-equivocation hardening: CommitteeAttestor.recordDisputeEquivocation + PrivateMarketplaceEscrow.expireCommitteeDispute; full CommitteeAttestorLib base extraction (EIP-170 size fix)",
+          "upgradedAt": "2026-08-26T18:54:18.598Z",
+          "requestUpgradeTx": "0x60644805ccf4eb32f593bbe84ec84fd87c1900e6aa752fb7e9aefc633f32975f",
+          "upgradeToAndCallTx": "0x45e2a942be4b59d2d968049c16adce060c25c21c5bd6a8c97f825a8234042a87"
+        }
+      ],
+      "upgradeReason": "VT-27 dispute-equivocation hardening: CommitteeAttestor.recordDisputeEquivocation + PrivateMarketplaceEscrow.expireCommitteeDispute; full CommitteeAttestorLib base extraction (EIP-170 size fix)",
+      "PrivatePredictionMath": "0xA4A5a06e82F2fD3f2C76456AfAfB46aeCec2669f"
+    },
+    "CommitteeAttestorLib": "0x782fB33b895B229AcCB34970E73840DcF07f4108",
+    "CommitteeAttestorLibNote": "VT-27 EIP-170 full base extraction: committee-verification chain (verifyCommittee/committeeFor) lives in this DELEGATECALL-linked library, read via the ERC-7201 omnibazaar.privacy.CommitteeAttestor slot."
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "OmniBazaarResolver": "0xe55b5be90960558663179D2f74b797A834cE0B92",
+  "contracts": {
+    "BridgedFeeCollector": "0x85A978c95E6eb5eD69d7bc082947bDD0B1eC8Ab5",
+    "CrossChainNFTMarketplaceEscrow": "0x10F816Dfc0a2B7Cf7dd6940fE5525e0a028CcFcA",
+    "OmniConduit": "0x44942a17299E11d9362dA437B16144bF050D8Ee3",
+    "NFTExchange": "0xCB9695361ea70E8F478a88B33919d2693A63B311"
+  },
+  "OmniBazaarResolverPrevious": "0x5d1F5F81e96071c784eE1A6D684b0333eFA865BE"
+}

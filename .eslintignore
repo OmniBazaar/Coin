@@ -1,0 +1,18 @@
+# External / legacy / COTI directories not part of the core OmniCoin TypeScript project
+coti-contracts/
+coti-ethers/
+coti-hardhat-template/
+frontend/
+
+# Deployment & utility scripts (use hardhat ts-node, not the project tsconfig)
+scripts/
+
+# All test files — Coin is a Solidity project; TS test files use hardhat
+# typechain-types and COTI MPC infrastructure not available in local compilation.
+test/
+
+# Build artifacts
+artifacts/
+cache/
+dist/
+node_modules/

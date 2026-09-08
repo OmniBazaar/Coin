@@ -1,0 +1,29 @@
+{
+  "network": "ethereum-mainnet",
+  "chainId": 1,
+  "deployer": "0x021868f2E3D49C059EF52B539AAa933B437e0321",
+  "deployedAt": "2026-08-17T15:14:01.263Z",
+  "contracts": {
+    "XOMOft": "0x2E37f5a6D09D575e287A742062DAfEeb1A0721a2",
+    "PermissionlessGuardian": "0xc7d3628B980D486EA758152E83060C6c12F5e7B4",
+    "AMMPermissionless": "0x958b07d5C302338C8302c6b5a1Bff49bbF9aa934",
+    "RouterPermissionless": "0x19c650a1F505D98710bAD4e282f221d52C2603Cb",
+    "LiquidityOverflowPoolPermissionless": "0x4F1CbE46d42e2F880aE1aE8c091c9BA365bC0B33",
+    "XomUsdcPool": "0x425DF6b845F24f96CBAf308B167A1a458102F648",
+    "LPZapPermissionless": "0xbc12B6D606FB53311290F38B76B4780f4324E41B",
+    "DEXSettlement": "0xF144F7329284b35c0fA80815ff8b97672d896c17",
+    "VolumeDiscountOracle": "0x39cb04E2Be89539d848084bc06690a20A2cF1207",
+    "OmniFeeRouter": "0xf26a5828b2D9c2a23E9b03eD6322991ef3C22c0D",
+    "OverflowOFTReceiver": "0x4f49eaba5bd7b3317e21e2ff5d99d9bf570d76fa",
+    "OmniSdaiAdapter": "0x24293Ae28652938C65f1De7Ff9790dD530713BEF",
+    "OmniAaveAdapter": "0x13033eD9261e391599b23255afFB1efDcfDCbF87",
+    "OmniTimelockController": "0x95e461f65157D7B1504B6c7901aEb01f34f29DCf",
+    "OmniAaveAdapter_Old_RedTeamRemediation": "0x869409772dA8b7f1479Aac21cECE04E68A766F68",
+    "OmniSdaiAdapter_Old_RedTeamRemediation": "0xAF72f6caF76775DaEAbAf5C82Ce05D97359C8Fa1",
+    "DEXSettlement_Old_PreVT04": "0x218D21AC7d25136Dc16B1daDA608bd2B964e517f"
+  },
+  "notes": [
+    "LIQ-Q-3-LP5 Path A (2026-05-23): OverflowOFTReceiver deployed at 0x4f49eaba5bd7b3317e21e2ff5d99d9bf570d76fa. Receives XOM via LayerZero V2 OFT from the Avalanche C-Chain OverflowOFTSender (0xC59029fb6Fa509624A958734c4B2F3D006922bcb). Permissionless flush() forwards balance to local LiquidityOverflowPoolPermissionless. Whitelisted as rewardSource on the local pool same day. Immutables: xomToken=XOMOft, localPool=LiquidityOverflowPoolPermissionless, srcEid=30106 (Avalanche LZ V2 mainnet). Owner=deployer (Pioneer Phase). XOM strict-locked-to-flush.",
+    "DEXSettlement VT-04 redeploy (zero-output fill guard) 2026-08-26 — Ethereum: 0x218D21AC7d25136Dc16B1daDA608bd2B964e517f -> 0xF144F7329284b35c0fA80815ff8b97672d896c17. Old archived as DEXSettlement_Old_PreVT04."
+  ]
+}
