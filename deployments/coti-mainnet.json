@@ -74,8 +74,31 @@
     "Deploy with: npx hardhat run scripts/deploy-coti-mainnet.js --network cotiMainnet",
     "6 privacy contracts deployed on COTI V2 mainnet (direct deploy, no OZ Upgrades). ERC1967Proxy + implementation pattern. Admin: deployer (Pioneer Phase). Date: 2026-03-21T21:05:28.279Z",
     "PrivateLimitDEXSettlement deployed at 2026-08-08T16:01:38.984Z",
-    "VT-27 broadcast 2026-08-26: 6 privacy contracts upgraded (recordDisputeEquivocation + expireCommitteeDispute); CommitteeAttestorLib 0x782fB33b895B229AcCB34970E73840DcF07f4108 linked; PrivatePredictionMath relinked 0xA4A5a06e82F2fD3f2C76456AfAfB46aeCec2669f; PrivateLimitDEXSettlement stale upgradeRequested cleared via cancelUpgrade tx 0xa63bd2e2f575e6215be5e7d1ffe802958b15ca46ff8caefeed4f28b6aa73a8a4."
+    "VT-27 broadcast 2026-08-26: 6 privacy contracts upgraded (recordDisputeEquivocation + expireCommitteeDispute); CommitteeAttestorLib 0x782fB33b895B229AcCB34970E73840DcF07f4108 linked; PrivatePredictionMath relinked 0xA4A5a06e82F2fD3f2C76456AfAfB46aeCec2669f; PrivateLimitDEXSettlement stale upgradeRequested cleared via cancelUpgrade tx 0xa63bd2e2f575e6215be5e7d1ffe802958b15ca46ff8caefeed4f28b6aa73a8a4.",
+    "🛑 DEPRECATED 2026-09-21 — the bespoke privacy crossing (OmniPrivacyBridge_L1/COTI + Ecdsa5of5AttestationVerifier) and the non-XOM private tokens (pUSDC/pWBTC/pWETH) are RETIRED. The crossing is Hyperlane; only XOM is shielded (pXOM V2). Do NOT build a bridge/shield/mint path or re-point a minter for any non-XOM private token; do NOT revive OmniPrivacyBridge*. See memory 'deprecated_coti_privacy_contracts_2026-09-21'. The 5 privacy contracts + pXOM V2 + OmniPrivacyShield remain CURRENT."
   ],
+  "deprecations": {
+    "asOf": "2026-09-21",
+    "memory": "deprecated_coti_privacy_contracts_2026-09-21",
+    "rule": "The privacy crossing is Hyperlane; only XOM is shielded. Never build/finish a bridge, shield, or mint path for pUSDC/pWBTC/pWETH; never revive OmniPrivacyBridge*; never re-point a private token minter.",
+    "retired": {
+      "OmniPrivacyBridge_L1": "0x56b44EB5CB56128ce1F26Aa964e98eE03D2DCB55 (L1 88008; paused; source removed Coin 391d7cf)",
+      "OmniPrivacyBridge_COTI": "0x43401C7BF0D397D206F3B5Df894A719116d58e2e (paused()==true; source removed Coin 391d7cf; leftover MINTER on pUSDC/pWBTC/pWETH)",
+      "Ecdsa5of5AttestationVerifier": "source removed Coin 391d7cf",
+      "legacyOmniPrivacyBridge": "0x0D6bD1C10EDae3DEC57F426760686130759c84AB (retired)",
+      "PrivateUSDC_V2_orphaned": "0x4F1CbE46d42e2F880aE1aE8c091c9BA365bC0B33 (no backing path; minter = paused bespoke bridge)",
+      "PrivateWBTC_V2_orphaned": "0xF701F221Cbc7601e9AEdD822DA44217b0E53E8eE",
+      "PrivateWETH_V2_orphaned": "0x39bF69ba95a4dA34508799B949454D548E18F970",
+      "legacyPrivateOmniCoin": "0x9338B9eF1291b0266D28E520797eD57020A84D3B (paused; superseded by V2)"
+    },
+    "notDeprecated": [
+      "PrivateOmniCoin V2 0x958b07d5C302338C8302c6b5a1Bff49bbF9aa934 (pXOM)",
+      "OmniPrivacyShield 0x7208B56f3B6aF20FA1817f460D5eFcaA217f09a6",
+      "PrivateDEXSettlement / PrivateLimitDEXSettlement / PrivateMarketplaceEscrow / PrivateYieldVault / PrivateRWAAMM / PrivatePredictionMarket (current; contract kept)",
+      "Private marketplace escrow fee (0.25% seller-side, pXOM-based) — reachable"
+    ],
+    "privateDexLaunchSurface": "GATED OFF 2026-09-21 (VITE_ENABLE_PRIVATE_DEX_ORDERS=false in WebApp/Wallet; PRIVATE_DEX_ORDERS_ENABLED=false in Mobile). Unreachable: only pXOM is backed and same-token swaps are rejected. Contract kept. The XOM<->pXOM shield is a separate live flow."
+  },
   "upgradedAt": "2026-08-26T18:54:18.598Z",
   "upgradeNote": "Added _safeOnboard() to fix MpcCore.onBoard(0) revert for first-time users",
   "privacyV2": {
