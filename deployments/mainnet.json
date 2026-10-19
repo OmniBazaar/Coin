@@ -122,6 +122,12 @@
     "ValidatorActivityLedger": "0xd87a8673f95a2ED17e13Ade4D4F88CE73b0A439e",
     "BridgeDestinationLib": "0x6dDB9Dbc9B005c06a513549c5629985523fd6Af5",
     "NftSellerConsent": "0xF91aC67690B044d87dc95D2d3dAb9893497f5DC1",
-    "OmniAgentPermissions": "0x48432398102d3e64cd03b55975A48b905ce97649"
+    "OmniAgentPermissions": "0x48432398102d3e64cd03b55975A48b905ce97649",
+    "EscrowV2": "0x07aE62cFfe705e004bAbdECE2a336b0F548f230b"
+  },
+  "escrowV2": {
+    "address": "0x07aE62cFfe705e004bAbdECE2a336b0F548f230b",
+    "EscrowV2DeployedAt": "2026-10-19T23:14:59.330Z",
+    "EscrowV2DeployTx": "0x3a0feb1fe28831551b91b112af08f0f111df02f5e510423b8855556dd413aeb1"
   }
 }
