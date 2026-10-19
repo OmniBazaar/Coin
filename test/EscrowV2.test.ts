@@ -9,9 +9,10 @@
  * 2. a token the fee vault will not settle is refused at creation, so no
  *    escrow can be funded that could never be released with the fee paid;
  * 3. the marketplace fee is collected in the escrow's own token;
- * 4. dispute stakes STAY in XOM even for a non-XOM escrow (anti-spam
- *    collateral, not sale proceeds) — and the XOM-denominated first-sale
- *    bonus is not credited for a non-XOM sale.
+ * 4. dispute stakes are denominated in the escrow's own token (2.5% of the
+ *    principal must be 2.5% of the principal's value); private pXOM escrows
+ *    keep XOM stakes, and the XOM-denominated first-sale bonus is not
+ *    credited for a non-XOM sale.
  *
  * Uses the REAL UnifiedFeeVault (UUPS proxy, linked libraries) so the
  * allowlist read and the referral-aware fee split are the production ones.
@@ -53,6 +54,28 @@ describe('EscrowV2 — per-escrow settlement token', function () {
     await lib.waitForDeployment();
     return lib.getAddress();
   };
+
+  /**
+   * Call the token-taking `createEscrow` overload explicitly. EscrowV2 keeps the
+   * legacy 3-argument XOM signature, which makes the bare name ambiguous in
+   * ethers v6 — exactly the ambiguity a client must resolve by full signature.
+   * @param token - ERC-20 to escrow.
+   * @param amount - Amount in the token's smallest unit.
+   * @param duration - Escrow duration in seconds.
+   * @returns The create transaction.
+   */
+  const createInToken = (
+    token: string,
+    amount: bigint,
+    duration: number
+  ): Promise<any> =>
+    escrow
+      .connect(buyer)
+      ['createEscrow(address,address,uint256,uint256)'](seller.address, token, amount, duration);
+
+  /** Call the legacy XOM-only createEscrow overload. */
+  const createLegacyXom = (amount: bigint, duration: number): Promise<any> =>
+    escrow.connect(buyer)['createEscrow(address,uint256,uint256)'](seller.address, amount, duration);
 
   beforeEach(async function () {
     [owner, buyer, seller, arbitrator, stakingPool, protocolTreasury] =
@@ -146,7 +169,7 @@ describe('EscrowV2 — per-escrow settlement token', function () {
   });
 
   it('records the token and escrows exactly that token', async function () {
-    await escrow.connect(buyer).createEscrow(seller.address, await usdc.getAddress(), USDC(100), 7 * DAY);
+    await createInToken(await usdc.getAddress(), USDC(100), 7 * DAY);
     const id = await escrow.escrowCounter();
 
     expect(await escrow.getToken(id)).to.equal(await usdc.getAddress());
@@ -158,23 +181,30 @@ describe('EscrowV2 — per-escrow settlement token', function () {
 
   it('refuses a token the fee vault will not settle', async function () {
     await expect(
-      escrow.connect(buyer).createEscrow(seller.address, await other.getAddress(), USDC(10), 7 * DAY)
+      createInToken(await other.getAddress(), USDC(10), 7 * DAY)
     ).to.be.revertedWithCustomError(escrow, 'TokenNotSupported');
   });
 
   it('refuses the zero address and a token without code', async function () {
     await expect(
-      escrow.connect(buyer).createEscrow(seller.address, ethers.ZeroAddress, 1000, 7 * DAY)
+      createInToken(ethers.ZeroAddress, 1000n, 7 * DAY)
     ).to.be.revertedWithCustomError(escrow, 'InvalidAddress');
     await expect(
-      escrow.connect(buyer).createEscrow(seller.address, seller.address, 1000, 7 * DAY)
+      createInToken(seller.address, 1000n, 7 * DAY)
     ).to.be.revertedWithCustomError(escrow, 'InvalidAddress');
   });
 
   it('releases in the escrow token and takes the 1% fee in that token', async function () {
     await escrow
       .connect(buyer)
-      .createEscrowWithReferrers(seller.address, await usdc.getAddress(), USDC(100), 7 * DAY, ethers.ZeroAddress, ethers.ZeroAddress);
+      ['createEscrowWithReferrers(address,address,uint256,uint256,address,address)'](
+        seller.address,
+        await usdc.getAddress(),
+        USDC(100),
+        7 * DAY,
+        ethers.ZeroAddress,
+        ethers.ZeroAddress
+      );
     const id = await escrow.escrowCounter();
 
     const before = await usdc.balanceOf(seller.address);
@@ -191,7 +221,7 @@ describe('EscrowV2 — per-escrow settlement token', function () {
   });
 
   it('refunds in the escrow token', async function () {
-    await escrow.connect(buyer).createEscrow(seller.address, await usdc.getAddress(), USDC(50), 7 * DAY);
+    await createInToken(await usdc.getAddress(), USDC(50), 7 * DAY);
     const id = await escrow.escrowCounter();
     const before = await usdc.balanceOf(buyer.address);
 
@@ -201,8 +231,9 @@ describe('EscrowV2 — per-escrow settlement token', function () {
     expect(await escrow.totalEscrowed(await usdc.getAddress())).to.equal(0n);
   });
 
-  it('keeps dispute stakes in XOM for a USDC escrow', async function () {
-    await escrow.connect(buyer).createEscrow(seller.address, await usdc.getAddress(), USDC(100), 7 * DAY);
+  it('denominates the dispute stake in the escrow token', async function () {
+    // 2.5% of a 100 USDC principal must be 2.5 USDC, not 2.5e6 wei of XOM.
+    await createInToken(await usdc.getAddress(), USDC(100), 7 * DAY);
     const id = await escrow.escrowCounter();
     await time.increase(25 * 60 * 60);
 
@@ -213,16 +244,14 @@ describe('EscrowV2 — per-escrow settlement token', function () {
     const xomBefore = await xom.balanceOf(buyer.address);
     const usdcBefore = await usdc.balanceOf(buyer.address);
     await escrow.connect(buyer).commitDispute(id, commitment);
-
-    // Stake came out of XOM, not out of the escrowed USDC.
-    expect(await xom.balanceOf(buyer.address)).to.be.lt(xomBefore);
-    expect(await usdc.balanceOf(buyer.address)).to.equal(usdcBefore);
-    expect(await escrow.totalEscrowed(await xom.getAddress())).to.be.gt(0n);
+    expect(await xom.balanceOf(buyer.address)).to.equal(xomBefore);
+    expect(await usdc.balanceOf(buyer.address)).to.equal(usdcBefore - 2_500_000n);
+    expect(await escrow.totalEscrowed(await usdc.getAddress())).to.equal(USDC(100) + 2_500_000n);
   });
 
   it('still settles a plain XOM escrow end to end', async function () {
     const amount = ethers.parseEther('100');
-    await escrow.connect(buyer).createEscrow(seller.address, await xom.getAddress(), amount, 7 * DAY);
+    await createInToken(await xom.getAddress(), amount, 7 * DAY);
     const id = await escrow.escrowCounter();
 
     const before = await xom.balanceOf(seller.address);
@@ -234,19 +263,111 @@ describe('EscrowV2 — per-escrow settlement token', function () {
 
   it('records the first-sale bonus for XOM sales only', async function () {
     // XOM: recorded.
-    await escrow
-      .connect(buyer)
-      .createEscrow(seller.address, await xom.getAddress(), ethers.parseEther('10'), 7 * DAY);
+    await createInToken(await xom.getAddress(), ethers.parseEther('10'), 7 * DAY);
     await escrow.connect(buyer).releaseFunds(await escrow.escrowCounter());
     expect(await registry.callCount()).to.equal(1n);
 
     // USDC: the registry's anti-Sybil minimum is an XOM figure, so a USDC
     // sale is deliberately NOT recorded.
-    await escrow
-      .connect(buyer)
-      .createEscrow(seller.address, await usdc.getAddress(), USDC(10), 7 * DAY);
+    await createInToken(await usdc.getAddress(), USDC(10), 7 * DAY);
     await escrow.connect(buyer).releaseFunds(await escrow.escrowCounter());
     expect(await registry.callCount()).to.equal(1n);
+  });
+
+  it('keeps the legacy XOM signature working', async function () {
+    // A client that still encodes createEscrow(address,uint256,uint256) must
+    // not be forced to upgrade the moment EscrowV2 goes live.
+    await createLegacyXom(ethers.parseEther('5'), 7 * DAY);
+    const id = await escrow.escrowCounter();
+    expect(await escrow.getToken(id)).to.equal(await xom.getAddress());
+    expect((await escrow.getEscrow(id)).amount).to.equal(ethers.parseEther('5'));
+  });
+
+  it('refuses a fee-on-transfer token instead of recording more than it holds', async function () {
+    const FoT = await ethers.getContractFactory('MockFeeOnTransferToken');
+    const fot = await FoT.deploy('Fee Token', 'FEE', 100); // 1% tax
+    await fot.waitForDeployment();
+    await vault.proposeSupportedPaymentToken(await fot.getAddress(), true);
+    await time.increase(48 * 60 * 60 + 1);
+    await vault.applySupportedPaymentToken();
+    await fot.mint(buyer.address, USDC(100));
+    await fot.connect(buyer).approve(await escrow.getAddress(), ethers.MaxUint256);
+
+    await expect(
+      createInToken(await fot.getAddress(), USDC(100), 7 * DAY)
+    ).to.be.revertedWithCustomError(escrow, 'TokenTransferMismatch');
+  });
+
+  it('resolves a non-XOM dispute through the internal vote even when the panel is wired', async function () {
+    // The judge panel prices a dispute deposit in XOM from getAmount(); a USDC
+    // amount read as XOM would be dust. Non-XOM escrows therefore stay on the
+    // internal 2-of-3 vote — and that vote must actually be reachable, or the
+    // buyer would be the only party who could ever exit (claimDisputeTimeout).
+    await escrow.connect(owner).setArbitrationContract(await registry.getAddress());
+
+    await createInToken(await usdc.getAddress(), USDC(100), 7 * DAY);
+    const usdcId = await escrow.escrowCounter();
+    await createInToken(await xom.getAddress(), ethers.parseEther('100'), 7 * DAY);
+    const xomId = await escrow.escrowCounter();
+    await time.increase(25 * 60 * 60);
+
+    const nonce = 12345n;
+    const commitment = (id: bigint): string =>
+      ethers.solidityPackedKeccak256(['uint256', 'uint256', 'address'], [id, nonce, buyer.address]);
+
+    // Non-XOM: commit + reveal are allowed, and the internal vote resolves it.
+    await escrow.connect(buyer).commitDispute(usdcId, commitment(usdcId));
+    await escrow.connect(buyer).revealDispute(usdcId, nonce);
+    await escrow.connect(buyer).vote(usdcId, true);
+    const sellerBefore = await usdc.balanceOf(seller.address);
+    await escrow.connect(seller).vote(usdcId, true);
+
+    // Seller paid 99 USDC from claimable, dispute resolved.
+    expect((await escrow.getEscrow(usdcId)).resolved).to.equal(true);
+    await escrow.connect(seller).withdrawClaimable(await usdc.getAddress());
+    expect(await usdc.balanceOf(seller.address)).to.equal(sellerBefore + USDC(99));
+
+    // XOM: still defers to the panel.
+    await expect(escrow.connect(buyer).commitDispute(xomId, commitment(xomId)))
+      .to.be.revertedWithCustomError(escrow, 'UseArbitrationContract');
+  });
+
+  it('cannot reveal a dispute after the escrow has settled', async function () {
+    // A commitment is not a dispute until it is revealed. If the parties settle
+    // in between, revealing would flip `disputed` on a resolved escrow and
+    // strand the committer's stake.
+    await createInToken(await usdc.getAddress(), USDC(100), 7 * DAY);
+    const id = await escrow.escrowCounter();
+    await time.increase(25 * 60 * 60);
+    const nonce = 777n;
+    const commitment = ethers.solidityPackedKeccak256(
+      ['uint256', 'uint256', 'address'],
+      [id, nonce, buyer.address]
+    );
+    await escrow.connect(buyer).commitDispute(id, commitment);
+    await escrow.connect(seller).refundBuyer(id);
+    await expect(escrow.connect(buyer).revealDispute(id, nonce))
+      .to.be.revertedWithCustomError(escrow, 'AlreadyResolved');
+  });
+
+  it('returns an unrevealed dispute stake after the grace period', async function () {
+    await createInToken(await usdc.getAddress(), USDC(100), 7 * DAY);
+    const id = await escrow.escrowCounter();
+    await time.increase(25 * 60 * 60);
+    const commitment = ethers.solidityPackedKeccak256(
+      ['uint256', 'uint256', 'address'],
+      [id, 999n, buyer.address]
+    );
+    const before = await usdc.balanceOf(buyer.address);
+    await escrow.connect(buyer).commitDispute(id, commitment);
+    await time.increase(60 * 60 + 24 * 60 * 60 + 1); // reveal deadline + grace
+    await escrow.connect(buyer).reclaimExpiredStake(id);
+    expect(await usdc.balanceOf(buyer.address)).to.equal(before);
+  });
+
+  it('refuses an escrow too small to yield any marketplace fee', async function () {
+    await expect(createInToken(await usdc.getAddress(), 99n, 7 * DAY))
+      .to.be.revertedWithCustomError(escrow, 'InvalidAmount');
   });
 
   it('does not let the private entry point run on a non-COTI chain', async function () {

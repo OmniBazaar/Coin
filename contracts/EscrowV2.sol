@@ -96,7 +96,8 @@ interface IFeeVaultTokenAllowlist {
  * V2 (2026-06-12, founder-approved redeploy — EIP-712 domain version "2"):
  * - createEscrowWithReferrers() captures referrer/referrer2 at creation
  *   (immutable per escrow, anti-fee-wash validated). Legacy
- *   createEscrow(seller, amount, duration) is kept and defaults both to zero.
+ *   createEscrow(seller, amount, duration) is kept as an XOM-defaulted
+ *   overload and defaults both referrers to zero.
  * - On release of a public XOM escrow the 1% marketplace fee is routed via
  *   UnifiedFeeVault.depositMarketplaceFee so the vault performs the canonical
  *   split: 0.50% referral (70/20/10 referrer/referrer2/ODDAO), 0.25%
@@ -463,6 +464,25 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
         uint256 indexed feeAmount
     );
 
+    /// @notice Emitted when a fee owed to FEE_VAULT could not be transferred
+    ///         because the token refused it. The amount stays in the contract
+    ///         as protocol surplus instead of blocking a settlement.
+    /// @param token Token that refused the transfer
+    /// @param amount Amount left in the contract
+    event FeeTransferDeferred(address indexed token, uint256 indexed amount);
+
+    /// @notice Emitted when a marketplace fee transfer is waived. Settlement is
+    ///         never blocked by fee routing; the protocol forgoes the fee
+    ///         (which stays in the contract as surplus) rather than the sale.
+    /// @param escrowId Escrow identifier
+    /// @param token Escrow token whose fee could not be transferred
+    /// @param feeAmount Fee that was waived (retained as protocol surplus)
+    event MarketplaceFeeWaived(
+        uint256 indexed escrowId,
+        address indexed token,
+        uint256 indexed feeAmount
+    );
+
     /// @notice Emitted when arbitration fee is deducted from disputed escrow resolution
     /// @param escrowId Escrow identifier
     /// @param totalArbitrationFee Total arbitration fee collected
@@ -538,6 +558,12 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
     error InvalidAddress();
     /// @notice Escrow token is not on the fee vault's payment allowlist
     error TokenNotSupported();
+    /// @notice The token moved a different amount than it reported (fee-on-transfer / rebasing)
+    error TokenTransferMismatch();
+    /// @notice The vault's allowlist could not be read (RPC/upgrade failure)
+    error AllowlistUnavailable();
+    /// @notice This escrow must resolve through the internal 2-of-3 vote, not the panel
+    error UseInternalArbitration();
     error InvalidFeeConfig();
     error InvalidAmount();
     error InvalidDuration();
@@ -653,7 +679,7 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
         address trustedForwarder_
     )
         ERC2771Context(trustedForwarder_)
-        EIP712("OmniBazaar MinimalEscrow", "2")
+        EIP712("OmniBazaar EscrowV2", "3")
     {
         if (
             _omniCoin == address(0) ||
@@ -666,6 +692,14 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
         if (_marketplaceFeeBps > MAX_MARKETPLACE_FEE_BPS) {
             revert InvalidFeeConfig();
         }
+        // 🛑 The canonical 1% split lives in UnifiedFeeVault.depositMarketplaceFee
+        // (it pulls saleAmount / 100). Any other value here silently falls back
+        // to an undistributed transfer and loses the entire referral split, and
+        // 0 disables the marketplace fee altogether. Pin it.
+        if (_marketplaceFeeBps != DEFAULT_MARKETPLACE_FEE_BPS) {
+            revert InvalidFeeConfig();
+        }
+        if (_feeVault.code.length == 0) revert InvalidAddress();
         OMNI_COIN = IERC20(_omniCoin);
         PRIVATE_OMNI_COIN = IERC20(_privateOmniCoin);
         REGISTRY = _registry;
@@ -709,6 +743,24 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
     }
 
     /**
+     * @notice Create a new XOM escrow (legacy v1 signature)
+     * @dev Preserved so a client that still encodes the v1 selector keeps
+     *      working. XOM is the default token; any other asset must use the
+     *      token-taking overload.
+     * @param seller Seller address
+     * @param amount Amount of XOM wei to escrow
+     * @param duration Escrow duration in seconds
+     * @return escrowId Unique escrow identifier
+     */
+    function createEscrow(
+        address seller,
+        uint256 amount,
+        uint256 duration
+    ) external nonReentrant whenNotPaused returns (uint256 escrowId) {
+        return _createEscrow(seller, address(OMNI_COIN), amount, duration, address(0), address(0));
+    }
+
+    /**
      * @notice Create a new escrow with two-level referral attribution
      * @dev V2 entry point. Referrers are captured once at creation and are
      *      immutable for the escrow's lifetime. Anti-fee-wash rules mirror
@@ -736,6 +788,27 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
     }
 
     /**
+     * @notice Create a new XOM escrow with referral attribution (legacy v1 signature)
+     * @dev Preserved for clients that encode the v1 selector; defaults the
+     *      token to XOM. Use the token-taking overload for any other asset.
+     * @param seller Seller address
+     * @param amount Amount of XOM wei to escrow
+     * @param duration Escrow duration in seconds
+     * @param referrer Primary referrer (zero if none)
+     * @param referrer2 Second-level referrer (zero if none)
+     * @return escrowId Unique escrow identifier
+     */
+    function createEscrowWithReferrers(
+        address seller,
+        uint256 amount,
+        uint256 duration,
+        address referrer,
+        address referrer2
+    ) external nonReentrant whenNotPaused returns (uint256 escrowId) {
+        return _createEscrow(seller, address(OMNI_COIN), amount, duration, referrer, referrer2);
+    }
+
+    /**
      * @notice Shared escrow-creation body
      * @dev Validates parties + referrer pair + token allowlist, pulls the
      *      escrow token, writes the escrow record and (when present) the
@@ -757,15 +830,22 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
         address referrer2
     ) private returns (uint256 escrowId) {
         address buyer = _msgSender();
-        if (seller == address(0) || seller == buyer) revert InvalidAddress();
+        if (seller == address(0) || seller == buyer || seller == address(this)) {
+            revert InvalidAddress();
+        }
         if (amount == 0) revert InvalidAmount();
         if (duration < MIN_DURATION || duration > MAX_DURATION) revert InvalidDuration();
         _requireSupportedToken(token);
 
         _validateReferrerPair(buyer, seller, referrer, referrer2);
 
-        // Transfer the escrowed token from buyer to this contract
-        IERC20(token).safeTransferFrom(buyer, address(this), amount);
+        // A fee that floors to zero would let a seller split sales into
+        // sub-100-unit escrows and pay nothing. One unit of the smallest
+        // denominator is the floor at which the 1% is actually collectible.
+        if (amount < _minEscrowAmount()) revert InvalidAmount();
+
+        // Credit only what actually ARRIVED (see {_pullExact}).
+        _pullExact(IERC20(token), buyer, amount);
         totalEscrowed[token] += amount;
 
         escrowId = ++escrowCounter;
@@ -950,6 +1030,10 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
         Escrow storage escrow = escrows[escrowId];
 
         if (escrow.buyer == address(0)) revert EscrowNotFound();
+        // Private escrows have no permissionless seller-release path
+        // (releaseExpiredToSeller rejects them), so a delivery flag would only
+        // remove the buyer's expiry refund without giving the seller anything.
+        if (isPrivateEscrow[escrowId]) revert PrivateEscrowUnsupported();
         if (escrow.resolved) revert AlreadyResolved();
         if (escrow.disputed) revert AlreadyDisputed();
         if (escrow.delivered) revert AlreadyDelivered();
@@ -1097,7 +1181,11 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
         // keep using this internal commit-reveal + votePrivate path. Rejecting
         // public disputes here also prevents a stale client stranding a stake
         // and disables the internal single-judge selection for public escrows.
-        if (arbitrationContract != address(0) && !isPrivateEscrow[escrowId]) {
+        if (
+            arbitrationContract != address(0) &&
+            !isPrivateEscrow[escrowId] &&
+            escrow.token == address(OMNI_COIN)
+        ) {
             revert UseArbitrationContract();
         }
 
@@ -1142,9 +1230,16 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
         // Reject zero-stake (dust) disputes — mirror postCounterpartyStake so a
         // sub-1000-wei private escrow can't be disputed for free.
         if (requiredStake == 0) revert InsufficientStake();
-        OMNI_COIN.safeTransferFrom(caller, address(this), requiredStake);
+        // 🛑 The stake is denominated in the SAME asset as `disputeBase`.
+        // v1 could hard-code XOM because the principal was always XOM; with a
+        // per-escrow token, a USDC principal (6 decimals) staked in XOM wei
+        // would be ~1e12 too small, making disputes free and arbitrators
+        // unpaid. Private escrows keep XOM stakes: pXOM is 1:1 with XOM and
+        // 18-decimal, so the v1 arithmetic was already correct for them.
+        address stakeToken = _stakeToken(escrowId);
+        _pullExact(IERC20(stakeToken), caller, requiredStake);
         disputeStakes[escrowId][caller] = requiredStake;
-        totalEscrowed[address(OMNI_COIN)] += requiredStake;
+        totalEscrowed[stakeToken] += requiredStake;
 
         disputeCommitments[escrowId] = DisputeCommitment({
             commitment: commitment,
@@ -1164,12 +1259,23 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
     function revealDispute(uint256 escrowId, uint256 nonce) external nonReentrant whenNotPaused {
         // v2: internal public-dispute path is disabled once the judge panel is
         // wired (mirrors commitDispute); private escrows still resolve here.
-        if (arbitrationContract != address(0) && !isPrivateEscrow[escrowId]) {
+        if (
+            arbitrationContract != address(0) &&
+            !isPrivateEscrow[escrowId] &&
+            escrows[escrowId].token == address(OMNI_COIN)
+        ) {
             revert UseArbitrationContract();
         }
 
         Escrow storage escrow = escrows[escrowId];
         DisputeCommitment storage commitment = disputeCommitments[escrowId];
+
+        // A commitment made before the parties settled must not be revealable
+        // after settlement: it would flip `disputed` on a resolved escrow and
+        // strand the committer's stake (every exit reverts AlreadyResolved,
+        // and reclaimExpiredStake refuses a disputed escrow).
+        if (escrow.buyer == address(0)) revert EscrowNotFound();
+        if (escrow.resolved) revert AlreadyResolved();
 
         // solhint-disable-next-line not-rely-on-time
         if (block.timestamp > commitment.revealDeadline) revert RevealDeadlinePassed();
@@ -1232,9 +1338,10 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
         uint256 requiredStake = (disputeBase * DISPUTE_STAKE_BASIS) / BASIS_POINTS;
         if (requiredStake == 0) revert InsufficientStake();
 
-        OMNI_COIN.safeTransferFrom(caller, address(this), requiredStake);
+        address stakeToken = _stakeToken(escrowId);
+        _pullExact(IERC20(stakeToken), caller, requiredStake);
         disputeStakes[escrowId][caller] = requiredStake;
-        totalEscrowed[address(OMNI_COIN)] += requiredStake;
+        totalEscrowed[stakeToken] += requiredStake;
 
         emit CounterpartyStakePosted(escrowId, caller, requiredStake);
     }
@@ -1271,8 +1378,9 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
         if (stake == 0) revert NothingToClaim();
 
         disputeStakes[escrowId][caller] = 0;
-        totalEscrowed[address(OMNI_COIN)] -= stake;
-        OMNI_COIN.safeTransfer(caller, stake);
+        address stakeToken = _stakeToken(escrowId);
+        totalEscrowed[stakeToken] -= stake;
+        IERC20(stakeToken).safeTransfer(caller, stake);
 
         emit DisputeStakeReturned(escrowId, caller, stake);
     }
@@ -1317,10 +1425,20 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
             revert EscrowNotExpired();
         }
 
-        // Refund buyer with no marketplace fee
+        // Refund buyer with no marketplace fee. For a private escrow the
+        // public `amount` is deliberately zero (the value lives encrypted in
+        // privateEscrowAmounts), so read the real figure — otherwise this
+        // "last-resort rescue" resolves the escrow and refunds nothing,
+        // stranding the principal where recoverERC20 cannot reach it.
         escrow.resolved = true;
-        uint256 amount = escrow.amount;
-        escrow.amount = 0;
+        uint256 amount;
+        if (isPrivateEscrow[escrowId]) {
+            amount = privateEscrowAmounts[escrowId];
+            privateEscrowAmounts[escrowId] = 0;
+        } else {
+            amount = escrow.amount;
+            escrow.amount = 0;
+        }
         totalEscrowed[escrow.token] -= amount;
 
         // Use pull pattern for fund disbursement
@@ -1342,13 +1460,19 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
      * @param voteForRelease True to release to seller, false to refund buyer
      */
     function vote(uint256 escrowId, bool voteForRelease) external nonReentrant whenNotPaused {
-        // M-03 FIX: If an arbitration contract is set, internal vote resolution
-        // must defer to it. This prevents dual resolution paths where both the
-        // internal 2-of-3 vote AND the external OmniArbitration could resolve
-        // the same escrow, risking double-resolution accounting issues.
-        if (arbitrationContract != address(0)) revert UseArbitrationContract();
-
         Escrow storage escrow = escrows[escrowId];
+
+        // M-03 FIX: an internal vote must never compete with the external
+        // OmniArbitration panel for the SAME escrow. The discriminator is
+        // `arbitrator`, not merely "a panel is configured": revealDispute
+        // always assigns one when it opens an internal dispute, while the
+        // panel's own markDisputed never touches it. Keying on the panel flag
+        // alone made every non-XOM dispute unreachable (its commit/reveal are
+        // allowed to run while the panel is wired), leaving the buyer as the
+        // only party who could ever exit — via claimDisputeTimeout.
+        if (arbitrationContract != address(0) && escrow.arbitrator == address(0)) {
+            revert UseArbitrationContract();
+        }
 
         // Private escrows MUST resolve through votePrivate()/_resolvePrivateEscrow:
         // their real value lives in privateEscrowAmounts (escrow.amount == 0), so
@@ -1450,9 +1574,13 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
      *      PRIV-H03: Returns 0 for private escrows because the
      *      plaintext amount is not stored in the Escrow struct.
      *      Use getEncryptedAmount() for private escrow amounts.
+     *      🛑 The unit is the ESCROW TOKEN's smallest unit, not XOM. Read
+     *      {getToken} alongside this. The external OmniArbitration panel only
+     *      ever prices disputes on XOM escrows ({markDisputed} refuses the
+     *      rest), so its XOM assumption holds there.
      * @param escrowId Escrow identifier
-     * @return Amount in XOM (0 if escrow does not exist,
-     *         already resolved, or is a private escrow)
+     * @return Amount in the escrow token's smallest unit (0 if the escrow
+     *         does not exist, is already resolved, or is a private escrow)
      */
     function getAmount(
         uint256 escrowId
@@ -1494,6 +1622,18 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
         Escrow storage escrow = escrows[escrowId];
         if (escrow.buyer == address(0)) revert EscrowNotFound();
         if (escrow.resolved) revert AlreadyResolved();
+        // The judge panel prices its dispute deposit in XOM from getAmount().
+        // A non-XOM escrow's amount is in another token's units, so the panel
+        // cannot price it — such escrows resolve through the internal 2-of-3
+        // vote (token-denominated stakes). Refusing here means createDispute
+        // fails closed rather than opening a dispute priced in the wrong unit.
+        if (escrow.token != address(OMNI_COIN)) revert UseInternalArbitration();
+        // An internal dispute (revealDispute) always has an arbitrator; the
+        // panel's own disputes never do. Refusing here stops the panel from
+        // opening a second venue on top of an internal dispute that was
+        // started before the panel was wired — the loser's resolution would
+        // revert atomically and strand the panel's dispute fee.
+        if (escrow.arbitrator != address(0)) revert AlreadyDisputed();
         if (!escrow.disputed) {
             escrow.disputed = true;
             emit EscrowMarkedDisputed(escrowId);
@@ -1582,9 +1722,10 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
             recipient = e.buyer;
         }
 
-        // Deduct arbitration fee from dispute stakes if disputed.
-        // Dispute stakes are always in XOM (OMNI_COIN), even for
-        // private escrows, so this logic uses OMNI_COIN directly.
+        // Deduct arbitration fee from dispute stakes if disputed. The stake
+        // asset is {_stakeToken}: the escrow's own token for a public escrow,
+        // XOM for a private one. `_collectArbitrationFee` reads it itself, so
+        // this call site must not assume XOM.
         // The resolving panel lives in OmniArbitration and is paid by
         // OmniArbitration's own 70/30 fee distribution, so the
         // escrow-side stake fee routes 100% to FEE_VAULT here
@@ -1624,9 +1765,87 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
         if (token == address(0) || token.code.length == 0) {
             revert InvalidAddress();
         }
-        if (!IFeeVaultTokenAllowlist(FEE_VAULT).supportedPaymentTokens(token)) {
-            revert TokenNotSupported();
+        // pXOM enters only through {createPrivateEscrow}, where the amount is
+        // MPC-encrypted and the privacy path is used. A PUBLIC escrow of
+        // shielded coin would publish its amount in EscrowCreated.
+        if (token == address(PRIVATE_OMNI_COIN) || token == address(this)) {
+            revert CannotMixPrivacyModes();
         }
+        try IFeeVaultTokenAllowlist(FEE_VAULT).supportedPaymentTokens(token) returns (
+            bool allowed
+        ) {
+            if (!allowed) revert TokenNotSupported();
+        } catch {
+            // The vault getter is unreachable (upgrade/rename/paused proxy).
+            // Distinguish our outage from the seller's token choice.
+            revert AllowlistUnavailable();
+        }
+    }
+
+    /**
+     * @notice Transfer a protocol fee, or leave it in the contract on refusal
+     * @dev The transfer is attempted with a low-level call so a reverting or
+     *      short-returning token cannot roll back a settlement. On failure the
+     *      amount is simply retained (protocol surplus) and an event records it.
+     * @param token Fee token
+     * @param to Recipient (FEE_VAULT)
+     * @param amount Fee amount
+     */
+    function _payOrHold(IERC20 token, address to, uint256 amount) private {
+        (bool ok, bytes memory ret) = address(token).call(
+            abi.encodeCall(IERC20.transfer, (to, amount))
+        );
+        bool moved = ok && (ret.length == 0 || (ret.length == 32 && abi.decode(ret, (bool))));
+        if (!moved) {
+            emit FeeTransferDeferred(address(token), amount);
+        }
+    }
+
+    /**
+     * @notice Smallest escrow amount that still yields a non-zero 1% fee
+     * @dev fee = amount * MARKETPLACE_FEE_BPS / BASIS_POINTS, so the fee
+     *      floors to zero below BASIS_POINTS / MARKETPLACE_FEE_BPS (100 at the
+     *      pinned 1%). A sub-minimum escrow would settle with no marketplace
+     *      fee at all — reachable by splitting a sale into many small escrows,
+     *      and materially so for a low-decimal token.
+     * @return Minimum escrow amount in the token's smallest unit
+     */
+    function _minEscrowAmount() private view returns (uint256) {
+        return BASIS_POINTS / MARKETPLACE_FEE_BPS;
+    }
+
+    /**
+     * @notice Pull `amount` and require that exactly that much arrived
+     * @dev A fee-on-transfer or negative-rebasing token would otherwise leave
+     *      this contract recording more than it holds, making every exit
+     *      revert and recoverERC20 refuse the remainder. Used for the escrow
+     *      principal, private deposits and both dispute stakes, because a
+     *      token can start charging a fee after an escrow was created.
+     * @param token ERC-20 to pull
+     * @param from Payer
+     * @param amount Amount requested
+     */
+    function _pullExact(IERC20 token, address from, uint256 amount) private {
+        uint256 before = token.balanceOf(address(this));
+        token.safeTransferFrom(from, address(this), amount);
+        if (token.balanceOf(address(this)) - before != amount) {
+            revert TokenTransferMismatch();
+        }
+    }
+
+    /**
+     * @notice The asset a dispute stake is denominated in
+     * @dev Private escrows stake in XOM (pXOM is 1:1 with XOM and 18-decimal,
+     *      so v1's arithmetic remains correct and the stake stays a stable
+     *      anti-spam bond). Every other escrow stakes in its own token, which
+     *      is the only way "2.5% of the principal" is dimensionally true.
+     * @param escrowId Escrow identifier
+     * @return Stake token address
+     */
+    function _stakeToken(uint256 escrowId) private view returns (address) {
+        return isPrivateEscrow[escrowId]
+            ? address(OMNI_COIN)
+            : escrows[escrowId].token;
     }
 
     /**
@@ -1753,7 +1972,11 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
      * @param escrowId Escrow identifier being acted on
      */
     function _requireInternalDisputePath(uint256 escrowId) private view {
-        if (arbitrationContract != address(0) && !isPrivateEscrow[escrowId]) {
+        if (
+            arbitrationContract != address(0) &&
+            !isPrivateEscrow[escrowId] &&
+            escrows[escrowId].token == address(OMNI_COIN)
+        ) {
             revert UseArbitrationContract();
         }
     }
@@ -1769,10 +1992,11 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
         if (stakeAmount > 0) {
             disputeStakes[escrowId][party] = 0;
             // M-01: Use pull pattern for stake returns
-            totalEscrowed[address(OMNI_COIN)] -= stakeAmount;
-            claimable[address(OMNI_COIN)][party] += stakeAmount;
-            totalClaimable[address(OMNI_COIN)] += stakeAmount;
-            emit FundsClaimable(party, address(OMNI_COIN), stakeAmount);
+            address stakeToken = _stakeToken(escrowId);
+            totalEscrowed[stakeToken] -= stakeAmount;
+            claimable[stakeToken][party] += stakeAmount;
+            totalClaimable[stakeToken] += stakeAmount;
+            emit FundsClaimable(party, stakeToken, stakeAmount);
             emit DisputeStakeReturned(escrowId, party, stakeAmount);
         }
     }
@@ -1848,7 +2072,6 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
         }
 
         IERC20 feeToken = IERC20(token);
-        totalMarketplaceFees[token] += feeAmount;
 
         // Referral-aware vault split — only when the escrow fee matches the
         // vault's hardcoded 1% pull exactly (always true at the production
@@ -1869,6 +2092,7 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
                     address(0)
                 )
             {
+                totalMarketplaceFees[token] += feeAmount;
                 emit MarketplaceFeeCollected(escrowId, FEE_VAULT, feeAmount);
                 return sellerAmount;
             } catch {
@@ -1877,8 +2101,32 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
             }
         }
 
-        // Fallback: v1 behavior — full fee direct to the vault.
-        feeToken.safeTransfer(FEE_VAULT, feeAmount);
+        // Fallback: v1 behavior — full fee direct to the vault. If the token
+        // itself refuses the transfer (paused token, blacklisted vault,
+        // insufficient balance), the sale must still settle: waive the fee and
+        // pay the seller their NET amount (the fee stays as surplus) rather
+        // than freezing their principal.
+        //
+        // Low-level on purpose: SafeERC20's helper is an internal library call,
+        // which Solidity cannot wrap in try/catch, and a reverting transfer here
+        // would otherwise block the seller's payout. The return value is checked
+        // exactly as SafeERC20 would (empty return = success for a contract).
+        (bool ok, bytes memory ret) = address(feeToken).call(
+            abi.encodeCall(IERC20.transfer, (FEE_VAULT, feeAmount))
+        );
+        // Empty returndata is success for a contract (SafeERC20's rule). A
+        // non-32-byte return is NOT decoded — decoding it would revert and
+        // block the release, which is the opposite of this branch's purpose.
+        bool moved = ok && (ret.length == 0 || (ret.length == 32 && abi.decode(ret, (bool))));
+        if (!moved) {
+            // The fee stays in the contract as surplus: the seller is paid the
+            // NET amount, exactly as if the fee had been taken, and nothing is
+            // recorded as collected. Paying the gross here would hand the
+            // seller the protocol's 1%.
+            emit MarketplaceFeeWaived(escrowId, token, feeAmount);
+            return sellerAmount;
+        }
+        totalMarketplaceFees[token] += feeAmount;
         emit MarketplaceFeeCollected(escrowId, FEE_VAULT, feeAmount);
     }
 
@@ -1928,7 +2176,8 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
         // Stakes were counted in totalEscrowed; the collected fee leaves
         // that bucket (vault share exits the contract, arbitrator share
         // moves to totalClaimable).
-        totalEscrowed[address(OMNI_COIN)] -= totalCollected;
+        address stakeToken = _stakeToken(escrowId);
+        totalEscrowed[stakeToken] -= totalCollected;
 
         uint256 arbitratorShare = 0;
         if (arbitratorRecipient != address(0)) {
@@ -1939,15 +2188,18 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
         uint256 vaultShare = totalCollected - arbitratorShare;
 
         if (arbitratorShare > 0) {
-            claimable[address(OMNI_COIN)][arbitratorRecipient] +=
+            claimable[stakeToken][arbitratorRecipient] +=
                 arbitratorShare;
-            totalClaimable[address(OMNI_COIN)] += arbitratorShare;
+            totalClaimable[stakeToken] += arbitratorShare;
             emit FundsClaimable(
-                arbitratorRecipient, address(OMNI_COIN), arbitratorShare
+                arbitratorRecipient, stakeToken, arbitratorShare
             );
         }
         if (vaultShare > 0) {
-            OMNI_COIN.safeTransfer(FEE_VAULT, vaultShare);
+            // Best-effort, like the marketplace fee: a token that refuses the
+            // vault must not make the dispute unresolvable. The amount stays in
+            // the contract as protocol surplus (recoverable by the admin).
+            _payOrHold(IERC20(stakeToken), FEE_VAULT, vaultShare);
         }
 
         emit ArbitrationFeeCollected(escrowId, totalCollected, arbitratorShare);
@@ -2082,8 +2334,11 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
         uint64 plainAmount = MpcCore.decrypt(encryptedAmount);
         if (plainAmount == 0) revert InvalidAmount();
 
+        if (seller == address(this)) revert InvalidAddress();
+        if (uint256(plainAmount) < _minEscrowAmount()) revert InvalidAmount();
+
         // Transfer pXOM tokens from buyer to escrow
-        PRIVATE_OMNI_COIN.safeTransferFrom(buyer, address(this), uint256(plainAmount));
+        _pullExact(PRIVATE_OMNI_COIN, buyer, uint256(plainAmount));
         totalEscrowed[address(PRIVATE_OMNI_COIN)] += uint256(plainAmount);
 
         escrowId = ++escrowCounter;
@@ -2389,11 +2644,17 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
      * @return enabled Whether privacy is supported
      */
     function _detectPrivacyAvailability() private view returns (bool enabled) {
-        // On COTI V2 network, MPC precompiles are available
-        // COTI Devnet: Chain ID 13068200
-        // COTI Testnet: Chain ID 7082
-        // For testing in Hardhat/Fuji, return false (MPC not available)
-        return (block.chainid == 13068200 || block.chainid == 7082);
+        // On COTI V2 network, MPC precompiles are available.
+        // COTI mainnet 2632500, COTI testnet 7082400, COTI devnet 13068200 —
+        // the ids the validator's chain config uses. The old testnet value
+        // (7082) matches no network, so a COTI testnet deployment silently
+        // reported privacy unavailable.
+        // For testing in Hardhat/Fuji, return false (MPC not available).
+        return (
+            block.chainid == 2632500 ||
+            block.chainid == 7082400 ||
+            block.chainid == 13068200
+        );
     }
 
     // ========================================================================
