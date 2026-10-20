@@ -207,17 +207,21 @@ describe('OmniArbitration — panel hardening', function () {
 
     await expect(tx).to.emit(arbitration, 'ReviewDecided');
 
-    // Net: the challenger is out 1,000 XOM for the review bond at escalate
-    // time and receives it back, plus the two forfeited seat bonds
-    // (2 x 1,000 XOM) — so the net gain is exactly two seat bonds.
-    const bond = ESCROW_AMOUNT;
+    // Net for the challenger: out the review bond at escalate time, in for the
+    // forfeited majority bonds CAPPED at the disputed amount, plus the bond
+    // remainder after the two review voters are paid (25% each).
+    const bond = ESCROW_AMOUNT; // 1,000 XOM disputed
+    const reviewBond = (ESCROW_AMOUNT * 5000n) / 10000n; // 5% = 500 XOM
+    const reviewerPay = (reviewBond / 4n) * 2n;
     const challengerAfter = await xom.balanceOf(buyer.address);
-    expect(challengerAfter - challengerBefore).to.equal(2n * bond);
+    expect(challengerAfter - challengerBefore).to.equal(
+      bond - reviewerPay
+    );
     expect(await arbitration.lockedBond(panel[0].address)).to.equal(0n);
     expect(await arbitration.lockedBond(panel[1].address)).to.equal(0n);
   });
 
-  it('reviews a verdict: an upheld verdict pays the review bond to the majority', async function () {
+  it('reviews a verdict: an upheld verdict pays the review voters, not the panel', async function () {
     const disputeId = await openDispute();
     const panel = await postBonds(disputeId);
     await arbitration.connect(panel[0]).castVote(disputeId, RELEASE);
@@ -227,12 +231,68 @@ describe('OmniArbitration — panel hardening', function () {
     const review = await arbitration.getEscalationPanel(disputeId);
     const reviewSigners = review.map((a) => judges.find((j) => j.address === a));
 
+    const reviewerBefore = await xom.balanceOf(reviewSigners[0].address);
     const majorityBefore = await xom.balanceOf(panel[0].address);
+
     await arbitration.connect(reviewSigners[0]).castReviewVote(disputeId, true);
     await arbitration.connect(reviewSigners[1]).castReviewVote(disputeId, true);
 
+    const reviewerAfter = await xom.balanceOf(reviewSigners[0].address);
     const majorityAfter = await xom.balanceOf(panel[0].address);
-    expect(majorityAfter).to.be.greaterThan(majorityBefore);
+
+    // Reviewers earn a quarter of the review bond each.
+    expect(reviewerAfter - reviewerBefore).to.equal(
+      ((ESCROW_AMOUNT * 5000n) / 10000n) / 4n
+    );
+    // The panel only gets its own seat bond back — it is not paid extra for
+    // being challenged.
+    expect(majorityAfter - majorityBefore).to.equal(ESCROW_AMOUNT);
+  });
+
+  it('releases the seat bonds when a deadlocked dispute times out (audit C-01)', async function () {
+    const disputeId = await openDispute();
+    const panel = await postBonds(disputeId);
+
+    // 1-1 split, third judge silent: no verdict can be reached.
+    await arbitration.connect(panel[0]).castVote(disputeId, RELEASE);
+    await arbitration.connect(panel[1]).castVote(disputeId, REFUND);
+    await time.increase(7 * 24 * 60 * 60 + 1);
+
+    await arbitration.connect(buyer).triggerDefaultResolution(disputeId);
+
+    // The reseat must have returned every bond and cleared the vote records.
+    for (const judge of panel) {
+      expect(await arbitration.lockedBond(judge.address)).to.equal(0n);
+      // Their stake is withdrawable again.
+      await expect(
+        arbitration.connect(judge).withdrawArbitratorStake(STAKE)
+      ).to.not.be.reverted;
+    }
+    const d = await arbitration.getDispute(disputeId);
+    expect(d.status).to.equal(4); // PendingSelection (fresh round)
+  });
+
+  it('closes a stalled review and returns the panel bonds (audit C-02)', async function () {
+    const disputeId = await openDispute();
+    const panel = await postBonds(disputeId);
+    await arbitration.connect(panel[0]).castVote(disputeId, RELEASE);
+    await arbitration.connect(panel[1]).castVote(disputeId, RELEASE);
+
+    const vaultBefore = await xom.balanceOf(feeVault.address);
+    await arbitration.connect(buyer).escalate(disputeId);
+
+    // Nobody votes on the review; it lapses.
+    await time.increase(3 * 24 * 60 * 60 + 1);
+    await expect(arbitration.connect(outsider).lapseReview(disputeId))
+      .to.emit(arbitration, 'ReviewLapsed');
+
+    for (const judge of panel) {
+      expect(await arbitration.lockedBond(judge.address)).to.equal(0n);
+    }
+    // A stalled review costs the challenger the bond, paid to the vault.
+    const bond = (ESCROW_AMOUNT * 5000n) / 10000n;
+    expect(await xom.balanceOf(feeVault.address)).to.equal(vaultBefore + bond);
+    expect(await arbitration.lockedBond(buyer.address)).to.equal(0n);
   });
 
   it('refuses a review after the challenge window', async function () {

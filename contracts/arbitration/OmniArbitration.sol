@@ -371,11 +371,14 @@ contract OmniArbitration is
     /// @notice How long the review (escalation) window stays open after a verdict
     uint256 public constant CHALLENGE_WINDOW = 7 days;
 
+    /// @notice How long the review panel has to decide once a review is open
+    uint256 public constant REVIEW_WINDOW = 3 days;
+
     /// @notice Bond a party posts to demand a review, in basis points (1,000 = 10%)
-    uint256 public constant ESCALATION_BOND_BPS = 1_000;
+    uint256 public constant ESCALATION_BOND_BPS = 5_000;
 
     /// @notice Floor on the escalation bond (1,000 XOM)
-    uint256 public constant MIN_ESCALATION_BOND = 1_000 ether;
+    uint256 public constant MIN_ESCALATION_BOND = 100 ether;
 
     /// @notice Timelock delay for fee vault address changes (48 hours)
     /// @dev FE-H-01 remediation: prevents instant fee redirection
@@ -542,11 +545,15 @@ contract OmniArbitration is
     /// @notice Party that opened the review (receives an overturned verdict's bonds)
     mapping(uint256 => address) public reviewChallenger;
 
+    /// @notice Deadline for the review panel to decide (independent of the
+    ///         challenge window; audit C-02)
+    mapping(uint256 => uint256) public reviewDeadline;
+
     /// @notice OmniRegistration, for the KYC read in {canBeArbitrator}
     address public registration;
 
     /// @notice Reserved storage gap for future upgradeable variables
-    uint256[34] private __gap;
+    uint256[33] private __gap;
 
     // ══════════════════════════════════════════════════════════════════
     //                              EVENTS
@@ -662,6 +669,9 @@ contract OmniArbitration is
         uint256 bond,
         address[3] panel
     );
+
+    /// @notice Emitted when a review closes without a decision
+    event ReviewLapsed(uint256 indexed disputeId);
 
     /// @notice Emitted when the review panel upholds or overturns the verdict
     event ReviewDecided(
@@ -813,6 +823,22 @@ contract OmniArbitration is
      * @param amount XOM to stake (must be >= minArbitratorStake)
      */
     /**
+     * @notice Post-upgrade initializer for the panel hardening (version 2)
+     * @dev Consumed by `upgradeToAndCall(impl, abi.encodeCall(initializeV2,
+     *      (registration)))`. Without it the new gate has no KYC source and
+     *      every judge is unqualified — the pool would be pruned to nothing
+     *      (audit H-03). `reinitializer(2)` makes it callable exactly once.
+     * @param registration_ OmniRegistration address (KYC reads)
+     */
+    function initializeV2(
+        address registration_
+    ) external reinitializer(2) {
+        if (registration_.code.length == 0) revert NotAContract(registration_);
+        registration = registration_;
+        emit RegistrationSet(registration_);
+    }
+
+    /**
      * @notice Whether an account may serve as an arbitrator
      * @dev Own gate: a stake at or above the minimum AND an identity check
      *      (KYC tier 2), or the pioneer founder allowlist. Deliberately does
@@ -864,7 +890,7 @@ contract OmniArbitration is
     function setRegistration(
         address registration_
     ) external onlyRole(DEFAULT_ADMIN_ROLE) {
-        if (registration_ == address(0)) revert NotFounderArbitrator(registration_);
+        if (registration_.code.length == 0) revert NotAContract(registration_);
         registration = registration_;
         emit RegistrationSet(registration_);
     }
@@ -1448,6 +1474,8 @@ contract OmniArbitration is
         Dispute storage d = disputes[disputeId];
         if (d.createdAt == 0) revert DisputeNotFound(disputeId);
         if (d.status != DisputeStatus.Active) revert InvalidDisputeStatus();
+        // solhint-disable-next-line not-rely-on-time
+        if (block.timestamp > d.deadline) revert DeadlineExpired();
 
         address caller = _msgSender();
         bool seated = false;
@@ -1515,10 +1543,7 @@ contract OmniArbitration is
     function escalate(uint256 disputeId) external nonReentrant whenNotPaused {
         Dispute storage d = disputes[disputeId];
         if (d.createdAt == 0) revert DisputeNotFound(disputeId);
-        if (
-            d.status != DisputeStatus.Resolved &&
-            d.status != DisputeStatus.DefaultResolved
-        ) {
+        if (d.status != DisputeStatus.Resolved) {
             revert NoVerdict(disputeId);
         }
         uint256 deadline = challengeDeadline[disputeId];
@@ -1529,9 +1554,12 @@ contract OmniArbitration is
         if (escalated[disputeId]) revert EscalationAlreadyOpened(disputeId);
 
         address caller = _msgSender();
-        if (caller != d.buyer && caller != d.seller) {
-            revert NotChallengeParty();
-        }
+        // Only the party HARMED by the verdict may demand a review. Letting the
+        // winner escalate gave it a free option on the judges' bonds
+        // (audit H-01).
+        bool originalRelease = d.releaseVotes > d.refundVotes;
+        address harmed = originalRelease ? d.buyer : d.seller;
+        if (caller != harmed) revert NotChallengeParty();
 
         address[3] memory panel = _selectReviewPanel(disputeId, d);
 
@@ -1542,9 +1570,60 @@ contract OmniArbitration is
         escalationPanel[disputeId] = panel;
         reviewChallenger[disputeId] = caller;
         escalationBond[disputeId] = bond;
+        lockedBond[caller] += bond;
+        // The review gets its own window (audit C-02): tying it to the
+        // challenge deadline let a challenger open a review one block before
+        // the deadline and strand every bond forever.
+        // solhint-disable-next-line not-rely-on-time
+        reviewDeadline[disputeId] = block.timestamp + REVIEW_WINDOW;
+        // Reviewers are locked like the panel so they cannot withdraw and
+        // vanish mid-review (audit M-05).
+        for (uint256 i = 0; i < 3; ++i) {
+            if (panel[i] != address(0)) ++activeDisputeCount[panel[i]];
+        }
         xomToken.safeTransferFrom(caller, address(this), bond);
 
         emit ReviewOpened(disputeId, caller, bond, panel);
+    }
+
+    /**
+     * @notice Close a review that produced no decision, returning every bond
+     * @dev Permissionless after the review deadline. A review that stalls must
+     *      not strand the panel's capital: an undecided review is treated as
+     *      "no forfeiture", the challenger gets the review bond back, and the
+     *      seat bonds are released (audit C-02).
+     * @param disputeId Dispute identifier
+     */
+    function lapseReview(uint256 disputeId) external nonReentrant {
+        if (!escalated[disputeId]) revert NoVerdict(disputeId);
+        uint256 deadline = reviewDeadline[disputeId];
+        // solhint-disable-next-line not-rely-on-time
+        if (deadline != 0 && block.timestamp < deadline) {
+            revert ChallengeWindowOpen(deadline);
+        }
+        Dispute storage d = disputes[disputeId];
+
+        address[3] memory panel = escalationPanel[disputeId];
+        for (uint256 i = 0; i < 3; ++i) {
+            if (panel[i] != address(0)) --activeDisputeCount[panel[i]];
+        }
+        uint256 bond = escalationBond[disputeId];
+        if (bond > 0) {
+            escalationBond[disputeId] = 0;
+            address challenger = reviewChallenger[disputeId];
+            lockedBond[challenger] -= bond;
+            // A review that never reaches a decision is a failed challenge:
+            // the challenger loses the bond (to the vault) and the panel keeps
+            // theirs. Refunding it made "open a review and stall" the cheapest
+            // way to freeze three judges' capital (red-team, 2026-10-20).
+            xomToken.safeTransfer(feeVault, bond);
+        }
+        // Mark the review closed without a decision; `escalated` stays true so
+        // no second review can be opened, but the window fields are cleared.
+        reviewDeadline[disputeId] = 0;
+        challengeDeadline[disputeId] = 0;
+        _releaseBonds(disputeId, d);
+        emit ReviewLapsed(disputeId);
     }
 
     /**
@@ -1560,9 +1639,11 @@ contract OmniArbitration is
         bool release
     ) external nonReentrant whenNotPaused {
         if (!escalated[disputeId]) revert NoVerdict(disputeId);
-        uint256 deadline = challengeDeadline[disputeId];
+        uint256 deadline = reviewDeadline[disputeId];
         // solhint-disable-next-line not-rely-on-time
-        if (block.timestamp >= deadline) revert ChallengeWindowClosed(deadline);
+        if (deadline == 0 || block.timestamp >= deadline) {
+            revert ChallengeWindowClosed(deadline);
+        }
 
         address caller = _msgSender();
         address[3] memory panel = escalationPanel[disputeId];
@@ -1612,7 +1693,8 @@ contract OmniArbitration is
         uint256 poolSize = arbitratorPool.length;
         uint256 found = 0;
         uint256 seatable = 0;
-        for (uint256 i = 0; i < poolSize; ++i) {
+        uint256 scan = poolSize < SEATING_SCAN_LIMIT ? poolSize : SEATING_SCAN_LIMIT;
+        for (uint256 i = 0; i < scan; ++i) {
             address c = arbitratorPool[i];
             if (c == d.buyer || c == d.seller) continue;
             if (c == original[0] || c == original[1] || c == original[2]) continue;
@@ -1621,9 +1703,13 @@ contract OmniArbitration is
         }
         if (seatable < 3) revert EscalationNotSeatable(seatable);
 
+        // Entropy from the PREVIOUS block: the challenger cannot compute this
+        // panel before submitting, so escalation is not a free option on a
+        // chosen panel (audit H-01).
+        bytes32 entropy = blockhash(block.number - 1);
         uint256 nonce = 0;
         while (found < 3 && nonce < MAX_ARBITRATOR_SEARCH) {
-            bytes32 h = keccak256(abi.encodePacked(disputeId, nonce, "review"));
+            bytes32 h = keccak256(abi.encodePacked(disputeId, nonce, entropy, "review"));
             address candidate = arbitratorPool[uint256(h) % poolSize];
             ++nonce;
 
@@ -1669,11 +1755,23 @@ contract OmniArbitration is
             if (held == 0) continue;
 
             if (overturned && majority) {
-                // Forfeit to the challenger.
+                // Forfeit to the challenger, but never pay more than the loss:
+                // paying 2x the dispute turned a review into a lottery on the
+                // judges' capital (red-team, 2026-10-20).
+                uint256 payableAmount = held;
+                uint256 cap = d.disputedAmount;
+                if (forfeited + payableAmount > cap) {
+                    payableAmount = cap > forfeited ? cap - forfeited : 0;
+                }
                 seatBonds[disputeId][judge] = 0;
                 lockedBond[judge] -= held;
-                forfeited += held;
-                xomToken.safeTransfer(_challenger(disputeId), held);
+                forfeited += payableAmount;
+                if (payableAmount > 0) {
+                    xomToken.safeTransfer(_challenger(disputeId), payableAmount);
+                }
+                if (held > payableAmount) {
+                    xomToken.safeTransfer(feeVault, held - payableAmount);
+                }
             } else {
                 seatBonds[disputeId][judge] = 0;
                 lockedBond[judge] -= held;
@@ -1681,27 +1779,39 @@ contract OmniArbitration is
             }
         }
 
-        if (overturned) {
-            // The challenger recovers the review bond too.
-            if (bond > 0) xomToken.safeTransfer(_challenger(disputeId), bond);
-        } else if (bond > 0) {
-            // Upheld: pay the review bond to the majority that was challenged.
+        if (bond > 0) {
+            address challenger = _challenger(disputeId);
+            lockedBond[challenger] -= bond;
+            // Reviewers are paid for deciding (25% of the review bond each to
+            // the two who voted); without a fee no one has a reason to make q
+            // greater than zero, and the review is theatre.
             uint256 paid = 0;
+            address[3] memory reviewers = escalationPanel[disputeId];
             for (uint256 i = 0; i < 3; ++i) {
-                address judge = original[i];
-                if (judge == address(0)) continue;
-                VoteType v = votes[disputeId][judge];
-                bool majority =
-                    (originalRelease && v == VoteType.Release) ||
-                    (!originalRelease && v == VoteType.Refund);
-                if (!majority) continue;
-                uint256 half = bond / 2;
-                xomToken.safeTransfer(judge, half);
-                paid += half;
+                address reviewer = reviewers[i];
+                if (reviewer == address(0)) continue;
+                if (reviewVotes[disputeId][reviewer] == VoteType.None) continue;
+                uint256 share = bond / 4;
+                if (share > 0) {
+                    xomToken.safeTransfer(reviewer, share);
+                    paid += share;
+                }
             }
-            if (bond > paid) xomToken.safeTransfer(feeVault, bond - paid);
+            if (!overturned) {
+                // Upheld: the rest of the challenger's bond goes to the vault —
+                // a meritless challenge must cost the challenger something.
+                if (bond > paid) xomToken.safeTransfer(feeVault, bond - paid);
+            } else if (bond > paid) {
+                // Overturned: the challenger keeps the unspent remainder.
+                xomToken.safeTransfer(challenger, bond - paid);
+            }
         }
 
+        address[3] memory reviewers = escalationPanel[disputeId];
+        for (uint256 i = 0; i < 3; ++i) {
+            if (reviewers[i] != address(0)) --activeDisputeCount[reviewers[i]];
+        }
+        reviewDeadline[disputeId] = 0;
         challengeDeadline[disputeId] = 0;
         emit ReviewDecided(disputeId, overturned, forfeited);
     }
@@ -1780,9 +1890,24 @@ contract OmniArbitration is
             for (uint256 i = 0; i < 3; ++i) {
                 address judge = d.arbitrators[i];
                 if (judge == address(0)) continue;
+                // No verdict was reached, so no bond is forfeited — but the
+                // bond MUST be returned before the panel is zeroed. Zeroing
+                // first destroyed the only record of who held it, which froze
+                // the bond and the judge's stake forever (audit C-01).
+                uint256 held = seatBonds[disputeId][judge];
+                if (held != 0) {
+                    seatBonds[disputeId][judge] = 0;
+                    lockedBond[judge] -= held;
+                    xomToken.safeTransfer(judge, held);
+                }
+                // Clear the round-1 vote record too (audit H-02): a reseated
+                // judge must be able to vote in round 2, and a stale vote must
+                // not count as participation in the deciding round.
+                delete votes[disputeId][judge];
                 --activeDisputeCount[judge];
                 d.arbitrators[i] = address(0);
             }
+            seatBondCount[disputeId] = 0;
             d.releaseVotes = 0;
             d.refundVotes = 0;
             d.deadline = 0;
@@ -1804,7 +1929,13 @@ contract OmniArbitration is
         if (refunded > 0 && d.feePayer != address(0)) {
             xomToken.safeTransfer(d.feePayer, refunded);
         }
-        _tryUnmarkDisputed(d.escrowId);
+        // Only forget the escrow↔dispute link if the escrow actually cleared
+        // its disputed flag. Otherwise a new dispute could be opened against an
+        // escrow that is still frozen, and the old link is the only record
+        // (audit M-01).
+        if (_tryUnmarkDisputed(d.escrowId)) {
+            delete escrowToDisputeId[d.escrowId];
+        }
         _releaseBonds(disputeId, d);
 
         emit DisputeReturnedToStatusQuo(disputeId, refunded);
@@ -1817,9 +1948,9 @@ contract OmniArbitration is
      *      its own exits apply, which is recorded in the event trail rather
      *      than reverting the whole call.
      */
-    function _tryUnmarkDisputed(uint256 escrowId) private {
+    function _tryUnmarkDisputed(uint256 escrowId) private returns (bool ok) {
         // solhint-disable-next-line avoid-low-level-calls
-        (bool ok, ) = address(escrow).call(
+        (ok, ) = address(escrow).call(
             abi.encodeWithSignature("unmarkDisputed(uint256)", escrowId)
         );
         if (!ok) {
