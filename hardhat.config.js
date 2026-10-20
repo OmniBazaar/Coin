@@ -537,7 +537,13 @@ module.exports = {
     },
     // Avalanche Mainnet C-Chain (for Bootstrap.sol on mainnet)
     "mainnet-c-chain": {
-      url: "https://api.avax.network/ext/bc/C/rpc",
+      // Overridable: the public endpoint is not reachable from every host (it
+      // timed out from the validator host on 2026-10-20, which is also why the
+      // validators' own Avalanche circuit breakers kept opening). Set
+      // AVALANCHE_CCHAIN_RPC_URL to any C-Chain endpoint to deploy.
+      url:
+        process.env.AVALANCHE_CCHAIN_RPC_URL ||
+        "https://api.avax.network/ext/bc/C/rpc",
       chainId: 43114,
       accounts: process.env.MAINNET_DEPLOYER_PRIVATE_KEY
         ? [process.env.MAINNET_DEPLOYER_PRIVATE_KEY]

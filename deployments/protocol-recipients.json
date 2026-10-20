@@ -1,0 +1,13 @@
+{
+  "_comment": "Chain-agnostic protocol recipients. The same three addresses are used on EVERY chain, because an account's key works on every EVM chain — no per-chain forwarding contract is needed. EscrowV2 credits these addresses via its pull-pattern claimable balances and they call withdrawClaimable(token) on the chain holding the token. The three address fields in EscrowV2 (ODDAO, STAKING_POOL, PROTOCOL_TREASURY) are immutable, so this file is the single source of truth for every escrow deployment on every chain.",
+  "_doNotEdit": "Addresses only. Private keys live in ~/.avalanche-cli/key/ and are never stored here.",
+  "createdAt": "2026-10-20",
+  "oddaoTreasury": "0x664B6347a69A22b35348D42E4640CA92e1609378",
+  "protocolTreasury": "0x78417313F74EA2b208913730DB3E879425Ed3e92",
+  "stakingReserve": "0x5cDeEd30431b7eF3b92260c666C49Eab85E21B27",
+  "_roles": {
+    "oddaoTreasury": "ODDao. Receives the 70% transaction slice, the 10% remainder of the transaction and listing splits, the 10% referral remainder, every zero-address attribution slot, and 100% of a judge-panel arbitration fee.",
+    "protocolTreasury": "OB Protocol Treasury. Replaces the deployer account as the destination for protocol money (founder directive 2026-10-20).",
+    "stakingReserve": "Staking share (20% of the transaction slice = 0.05% of each sale in kind). Accumulates per chain until a per-chain staking system exists to fund."
+  }
+}

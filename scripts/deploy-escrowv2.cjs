@@ -73,6 +73,29 @@ const MANIFESTS = {
 };
 
 /**
+ * Chain-agnostic protocol recipients (ODDao, OB Protocol Treasury, staking
+ * reserve). ONE set of addresses for every chain — an account key works on
+ * every EVM chain, so no per-chain forwarding contract is needed and none
+ * should ever be deployed for this purpose.
+ *
+ * These three are immutable in the constructor, so a wrong value is permanent
+ * for that deployment. Precedence: environment variable, then this file, then
+ * the chain manifest. The deployer account is refused outright as a sink
+ * (founder directive 2026-10-20).
+ * @returns {{oddaoTreasury: string, protocolTreasury: string, stakingReserve: string}}
+ */
+function loadProtocolRecipients() {
+  const path = require("path");
+  const file = path.join(__dirname, "..", "deployments", "protocol-recipients.json");
+  if (!fs.existsSync(file)) {
+    throw new Error(
+      `protocol recipients file is missing: ${file} — refusing to guess fee sinks`,
+    );
+  }
+  return JSON.parse(fs.readFileSync(file, "utf8"));
+}
+
+/**
  * Resolve (and create) the deployment manifest for the current chain.
  * @param {bigint} chainId - Chain id being deployed to.
  * @returns {{path: string, json: object}} Manifest path and parsed content.
@@ -150,9 +173,23 @@ async function main() {
   );
   const registry = resolveAddress("ESCROW_REGISTRY", c.OmniRegistration, "ESCROW_REGISTRY");
   const forwarder = resolveAddress("ESCROW_FORWARDER", c.OmniForwarder, "ESCROW_FORWARDER");
-  const oddao = resolveAddress("ESCROW_ODDAO", c.ODDAO, "ESCROW_ODDAO");
-  const stakingPool = resolveAddress("ESCROW_STAKING_POOL", c.StakingRewardPool, "ESCROW_STAKING_POOL");
-  const treasury = resolveAddress("ESCROW_TREASURY", c.OmniTreasuryV2, "ESCROW_TREASURY");
+  // The three sinks come from the chain-agnostic recipients file, NOT from each
+  // chain's manifest: the L1 staking pool and treasury are contracts that do
+  // not exist on other chains, and crediting an address with no code strands
+  // the funds where nothing can spend them (checked 2026-10-20 — neither had
+  // code on Avalanche C-Chain).
+  const recipients = loadProtocolRecipients();
+  const oddao = resolveAddress("ESCROW_ODDAO", recipients.oddaoTreasury, "ESCROW_ODDAO");
+  const stakingPool = resolveAddress(
+    "ESCROW_STAKING_POOL",
+    recipients.stakingReserve,
+    "ESCROW_STAKING_POOL",
+  );
+  const treasury = resolveAddress(
+    "ESCROW_TREASURY",
+    recipients.protocolTreasury,
+    "ESCROW_TREASURY",
+  );
 
   for (const [label, addr] of Object.entries({ oddao, stakingPool, treasury })) {
     if (addr === ethers.ZeroAddress) {
@@ -163,6 +200,15 @@ async function main() {
   }
   if (new Set([oddao, stakingPool, treasury]).size !== 3) {
     throw new Error("the three fee sinks must be distinct addresses");
+  }
+  // Founder directive 2026-10-20: protocol money must not land in the deployer
+  // account. These fields are immutable, so this is the last moment to catch it.
+  for (const [label, sink] of Object.entries({ oddao, stakingPool, treasury })) {
+    if (sink.toLowerCase() === deployer.address.toLowerCase()) {
+      throw new Error(
+        `${label} is the deployer account — protocol fee sinks must not be the deployer`,
+      );
+    }
   }
   // The contract only knows its own address after construction, so the "sink
   // is the escrow" case lives here: a credit on the escrow itself is
@@ -225,6 +271,14 @@ async function main() {
   manifest.json.contracts.EscrowV2DeployedAt = new Date().toISOString();
   manifest.json.contracts.EscrowV2DeployTx = deployTx ? deployTx.hash : "";
   saveManifest(manifest);
+  // Read the file back rather than trusting the write: a deploy whose record
+  // silently failed to persist leaves an unrecorded live contract.
+  const recorded = JSON.parse(fs.readFileSync(manifest.path, "utf8"));
+  if (recorded?.contracts?.EscrowV2 !== address) {
+    throw new Error(
+      `deployment record failed to persist: ${manifest.path} does not name ${address}`,
+    );
+  }
   console.log("addresses recorded in", manifest.path);
 
   // ── Verify ─────────────────────────────────────────────────────────────
