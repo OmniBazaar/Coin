@@ -143,11 +143,18 @@ async function main() {
   console.log("escrow.arbitratorCount:", (await escrow.arbitratorCount()).toString());
   console.log("panel.registration:", await panel.registration());
   console.log("panel.arbitratorPoolSize:", (await panel.arbitratorPoolSize()).toString());
+  // `canBeArbitrator` also requires the stake, which only arrives when the
+  // judge calls registerArbitrator itself. The deployer can prove the IDENTITY
+  // half here; the stake half is the judge's own transaction.
   let qualified = 0;
   for (const [name, addr] of Object.entries(ARBITRATORS)) {
-    const ok = await panel.canBeArbitrator(addr);
-    console.log(`canBeArbitrator(${name}):`, ok);
-    if (ok) qualified += 1;
+    const allowlisted = await panel.founderArbitrator(addr);
+    const registered = (await panel.arbitratorStakes(addr)) > 0n;
+    const eligible = await panel.canBeArbitrator(addr);
+    console.log(
+      `${name}: founder-allowlisted=${allowlisted} registered=${registered} canBeArbitrator=${eligible}`,
+    );
+    if (allowlisted) qualified += 1;
   }
   const vault = await ethers.getContractAt(
     [
@@ -161,9 +168,11 @@ async function main() {
     await vault.hasRole(await vault.DEPOSITOR_ROLE(), escrowAddress),
   );
   if (qualified === 0) {
-    throw new Error("no founder qualifies on the new panel — registration will fail");
+    throw new Error("no founder is allowlisted on the new panel — registration will fail");
   }
-  console.log(`\n${qualified}/3 founders qualify. Registration is a party action: Wallet → Settings → Marketplace → Arbitrator.`);
+  console.log(
+    `\n${qualified}/3 founders are allowlisted. Registration (10,000 XOM stake) is a party action: Wallet → Settings → Marketplace → Arbitrator.`,
+  );
 }
 
 main().catch((err) => {

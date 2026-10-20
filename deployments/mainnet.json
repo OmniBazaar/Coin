@@ -48,8 +48,8 @@
     "LiquidityBootstrappingPool": "0x0Bdab24bAB71dAdB8e58b5e16314fcB5E05071D5",
     "OmniPaymaster": "0x80A448F48dC0216298270CfC0D9801cecC8d222C",
     "OmniYieldFeeCollector": "0xbD3a1D5Df3c4F375000C6396CDac08D5F3EaD971",
-    "OmniArbitration": "0x1eca4579Ef34c30AA5DD48c6c4475315c1489ECc",
-    "OmniArbitrationImplementation": "0x154270309b1a4418D54c56BC4D22DeD376AEe9F0",
+    "OmniArbitration": "0x73d0Ea976850D2E8C0262255f1955B05973C0C38",
+    "OmniArbitrationImplementation": "0x3847B2aDdef9356f273158C851170BDD0b064190",
     "OmniMarketplace": "0xaf0734938801b9f7E1C6d83c78Dfd0667607AA2a",
     "OmniMarketplaceImplementation": "0x353A22B55836D3C4206596289f6bfC63bBD337bC",
     "OmniPrivacyBridge": "0x739b44D2D7E7A4B496A9620b7B346002885bd6A0",
@@ -123,7 +123,11 @@
     "BridgeDestinationLib": "0x6dDB9Dbc9B005c06a513549c5629985523fd6Af5",
     "NftSellerConsent": "0xF91aC67690B044d87dc95D2d3dAb9893497f5DC1",
     "OmniAgentPermissions": "0x48432398102d3e64cd03b55975A48b905ce97649",
-    "EscrowV2": "0x07aE62cFfe705e004bAbdECE2a336b0F548f230b"
+    "EscrowV2": "0x07aE62cFfe705e004bAbdECE2a336b0F548f230b",
+    "OmniArbitrationImplementationDeployedAt": "2026-10-20T19:13:44.729Z",
+    "OmniArbitrationLegacy": "0x1eca4579Ef34c30AA5DD48c6c4475315c1489ECc",
+    "OmniArbitrationDeployedAt": "2026-10-20T19:13:50.524661+00:00",
+    "OmniArbitrationDeployTx": "0x5f1e65973b05f4cd0dff88f74704add0174d82b62cab13beacb173b410e68bfc"
   },
   "escrowV2": {
     "address": "0x07aE62cFfe705e004bAbdECE2a336b0F548f230b",

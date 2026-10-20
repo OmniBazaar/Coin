@@ -142,7 +142,8 @@ async function main() {
   if (reads.xomToken.toLowerCase() !== xom.toLowerCase()) {
     throw new Error("panel XOM address mismatch");
   }
-  if (reads.nextDisputeId !== "0") {
+  // initialize() seeds nextDisputeId = 1 so dispute id 0 is never valid.
+  if (reads.nextDisputeId !== "1") {
     throw new Error(`fresh panel has nextDisputeId ${reads.nextDisputeId}`);
   }
   if (reads.pausedAt !== "0") throw new Error("fresh panel is paused");
