@@ -125,6 +125,9 @@ async function main() {
     await l.waitForDeployment();
     libs[name] = await l.getAddress();
     console.log(`${name}:`, libs[name]);
+    // Record each library as it lands — a later failure must not lose it.
+    manifest.contracts[name] = libs[name];
+    fs.writeFileSync(MANIFEST, `${JSON.stringify(manifest, null, 2)}\n`);
   }
   const Escrow = await ethers.getContractFactory("EscrowV2", { libraries: libs });
   const escrow = await Escrow.deploy(
@@ -140,10 +143,22 @@ async function main() {
   await escrow.waitForDeployment();
   const address = await escrow.getAddress();
   console.log("EscrowV2:", address);
+  manifest.contracts.EscrowV2 = address;
+  manifest.contracts.EscrowV2DeployedAt = new Date().toISOString();
+  manifest.contracts.EscrowV2DeployTx = deployTx ? deployTx.hash : "";
+  fs.writeFileSync(MANIFEST, `${JSON.stringify(manifest, null, 2)}\n`);
+  console.log("address recorded in", MANIFEST);
 
   // EscrowV2 needs both libraries at run time. Record everything on chain
   // NOW — a later step failing must not leave deployed addresses unrecorded.
-  const escrowCode = await ethers.provider.getCode(address);
+  // The subnet RPC is eventually consistent (see the post-deploy reads below),
+  // so a zero-length read here means "not indexed yet", not "no code".
+  let escrowCode = "0x";
+  for (let attempt = 0; attempt < 10 && escrowCode === "0x"; attempt += 1) {
+    escrowCode = await ethers.provider.getCode(address);
+    if (escrowCode === "0x") await new Promise((r) => setTimeout(r, 1500));
+  }
+  if (escrowCode === "0x") throw new Error(`no code at ${address} after 15s`);
   const size = (escrowCode.length - 2) / 2;
   if (size > 24576) {
     throw new Error(`EscrowV2 is ${size} bytes — over the 24,576 EIP-170 limit`);
@@ -232,7 +247,6 @@ async function main() {
   }
 
   // ── Manifest ───────────────────────────────────────────────────────────
-  fs.writeFileSync(MANIFEST, `${JSON.stringify(manifest, null, 2)}\n`);
   console.log("\nmanifest updated:", MANIFEST);
 
   console.log("\nNext: node scripts/sync-contract-addresses.js mainnet");

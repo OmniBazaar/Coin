@@ -3,7 +3,6 @@ pragma solidity 0.8.24;
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
-import {Escrow} from "../interfaces/EscrowV2Types.sol";
 
 /**
  * @title IFeeVaultMarketplaceDeposit
@@ -533,74 +532,5 @@ library EscrowFeeRouter {
             }
         }
         return true;
-    }
-
-    // ========================================================================
-    // Read helpers
-    // ========================================================================
-
-    /**
-     * @notice Read an escrow as a memory struct
-     * @param escrows escrowId => Escrow (escrow storage slot)
-     * @param escrowId Escrow identifier
-     * @return The escrow record (zeroed when it does not exist)
-     */
-    function getEscrow(
-        mapping(uint256 => Escrow) storage escrows,
-        uint256 escrowId
-    ) external view returns (Escrow memory) {
-        return escrows[escrowId];
-    }
-
-    /**
-     * @notice Read the buyer of an escrow
-     * @param escrows escrowId => Escrow (escrow storage slot)
-     * @param escrowId Escrow identifier
-     * @return Buyer address (address(0) if the escrow does not exist)
-     */
-    function getBuyer(
-        mapping(uint256 => Escrow) storage escrows,
-        uint256 escrowId
-    ) external view returns (address) {
-        return escrows[escrowId].buyer;
-    }
-
-    /**
-     * @notice Read the seller of an escrow
-     * @param escrows escrowId => Escrow (escrow storage slot)
-     * @param escrowId Escrow identifier
-     * @return Seller address (address(0) if the escrow does not exist)
-     */
-    function getSeller(
-        mapping(uint256 => Escrow) storage escrows,
-        uint256 escrowId
-    ) external view returns (address) {
-        return escrows[escrowId].seller;
-    }
-
-    /**
-     * @notice Read the ERC-20 an escrow holds
-     * @param escrows escrowId => Escrow (escrow storage slot)
-     * @param escrowId Escrow identifier
-     * @return Token address (address(0) if the escrow does not exist)
-     */
-    function getToken(
-        mapping(uint256 => Escrow) storage escrows,
-        uint256 escrowId
-    ) external view returns (address) {
-        return escrows[escrowId].token;
-    }
-
-    /**
-     * @notice Read the escrowed amount (the escrow token's smallest unit)
-     * @param escrows escrowId => Escrow (escrow storage slot)
-     * @param escrowId Escrow identifier
-     * @return Amount (0 if absent, resolved, or a private escrow)
-     */
-    function getAmount(
-        mapping(uint256 => Escrow) storage escrows,
-        uint256 escrowId
-    ) external view returns (uint256) {
-        return escrows[escrowId].amount;
     }
 }

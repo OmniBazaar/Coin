@@ -171,3 +171,31 @@ bodies only; no signature, event topic, error selector or storage slot changed.
 `npx hardhat test test/EscrowV2.test.ts` → **18 passing**.
 Combined run with `OmniArbitration.test.js` + `OmniArbitration.guards.test.js` +
 `MinimalEscrowV2.fees.test.ts` → **107 passing, 0 failing**.
+
+## Re-audit verification pass — 2026-10-20 (on the remediation)
+
+A second pass reviewed only the remediation commit. Verdict: **D-01 is properly
+closed** (each validator returns `bool`, the escrow requires it, a codeless
+target reverts with empty returndata at the decode site, and no legitimate
+input can return `false`). D-04, D-07 and D-09 confirmed closed. Six new items
+were raised by the remediation itself, all Low/Info, all now fixed:
+
+| ID | Sev | Item | Disposition |
+|---|---|---|---|
+| N-1 | Low | The deploy script's link smoke test called `getEscrow(0)`, which is **not** library-mediated (the escrow defines its own), so it could never detect a broken link. | **FIXED.** Replaced with a real library-mediated probe: `createEscrow.staticCall` with a codeless token must revert **with data**. A mislinked library returns no data where a `bool` is expected and reverts empty, so the script now fails loudly. |
+| N-2 | Low | Guards ran before the first manifest write, so the failure branch that matters left deployed addresses unrecorded (and `getCode` right after deploy could read `0x` on the eventually-consistent L1 RPC). | **FIXED.** `deploy-revision-2026-10.cjs` writes the address file before the guards; `deploy-escrowv2.cjs` records each library as it lands and the escrow immediately after deploy, and retries `getCode` for up to 15 s before asserting. |
+| N-3 | Info | Link assertions were presence-only (a swapped library pair passed). | **PARTLY FIXED.** Both libraries' runtime code hashes are now recorded in `revision-2026-10.json`, so a later audit can prove identity; the presence test stays as the in-run gate. |
+| N-4 | Info | D-08's slot comments were fixed in `EscrowV2Types.sol` but `EscrowReferrers` in `EscrowV2.sol` was still 1-based. | **FIXED.** |
+| N-5 | Info | Five read helpers in `EscrowFeeRouter` were dead (added during an abandoned attempt to move the getters). | **FIXED.** Removed; the library is now only what the escrow calls. |
+| N-6 | Info | Unused `IOmniRegistration` import in the escrow. | **FIXED.** |
+
+Remaining, accepted (Info): four library entry points still return nothing
+(`recordFirstSale` — best-effort by design, `collectArbitrationFee`,
+`returnDisputeStake`, and the three `EscrowPrivacyOps` bodies), so a mislink
+would silently no-op them instead of reverting. Every release path hits
+`collectMarketplaceFee` (which returns `uint256` and therefore reverts on a
+mislink) first, so the exposure is stranded stakes on an escrow that could not
+have released in the first place.
+
+Post-remediation: **23,867 bytes deployed**, 25,954 init; 95 tests passing
+(EscrowV2 18 + arbitration 71 + guards 6).

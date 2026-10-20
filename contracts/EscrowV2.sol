@@ -10,7 +10,6 @@ import {ERC2771Context} from "@openzeppelin/contracts/metatx/ERC2771Context.sol"
 import {Context} from "@openzeppelin/contracts/utils/Context.sol";
 import {EIP712} from "@openzeppelin/contracts/utils/cryptography/EIP712.sol";
 import {ECDSA} from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
-import {IOmniRegistration} from "./interfaces/IOmniRegistration.sol";
 import {EscrowFeeRouter} from "./libraries/EscrowFeeRouter.sol";
 import {EscrowPrivacyOps} from "./libraries/EscrowPrivacyOps.sol";
 import {Escrow} from "./interfaces/EscrowV2Types.sol";
@@ -96,8 +95,8 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
     ///      referrer / referrer2 / ODDAO. Zero addresses route the
     ///      corresponding share to ODDAO (vault-side behavior).
     struct EscrowReferrers {
-        address referrer;   // slot 1: primary referrer
-        address referrer2;  // slot 2: second-level referrer
+        address referrer;   // slot 0: primary referrer
+        address referrer2;  // slot 1: second-level referrer
     }
 
     // Constants

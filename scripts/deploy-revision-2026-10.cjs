@@ -69,6 +69,10 @@ async function main() {
   out.escrowV2Tx = escrow.deploymentTransaction()?.hash ?? "";
   console.log(out.escrowV2, out.escrowV2Tx);
 
+  // Record immediately: a guard failure or a later revert must not lose the
+  // three deployed addresses.
+  fs.writeFileSync(OUT, `${JSON.stringify(out, null, 2)}\n`);
+
   // ── Post-deploy guards ────────────────────────────────────────────────
   // EscrowV2 is only deployable because two libraries hold part of its code.
   // A resolved-but-wrong library address passes Hardhat's linker and would
@@ -85,14 +89,42 @@ async function main() {
   if (escrowSize > 24576) {
     throw new Error(`EscrowV2 is ${escrowSize} bytes — over the 24,576 EIP-170 limit`);
   }
+  out.escrowFeeRouterCodeHash = ethers.keccak256(
+    await ethers.provider.getCode(out.escrowFeeRouter),
+  );
+  out.escrowPrivacyOpsCodeHash = ethers.keccak256(
+    await ethers.provider.getCode(out.escrowPrivacyOps),
+  );
   for (const lib of [out.escrowFeeRouter, out.escrowPrivacyOps]) {
     if (!escrowCode.toLowerCase().includes(lib.slice(2).toLowerCase())) {
       throw new Error(`EscrowV2 bytecode does not embed library ${lib}`);
     }
   }
-  // Library-mediated read: reverts if a library is codeless (empty returndata).
-  await escrow.getEscrow(0);
-  console.log(`guards OK — escrow ${escrowSize} bytes, both libraries linked`);
+  // Library-mediated call: createEscrow runs `requireSupportedToken` in
+  // EscrowFeeRouter before anything else. A codeless (/mislinked) library
+  // returns no data where a bool is expected, so the call reverts with EMPTY
+  // revert data at the decode site; a correct link reverts with our own error
+  // selector (InvalidAddress for a token with no code). That difference is the
+  // link test — `getEscrow` is NOT library-mediated and proves nothing.
+  const noCodeToken = "0x000000000000000000000000000000000000dEaD";
+  let revertData = "";
+  try {
+    await escrow.createEscrow.staticCall(
+      "0x000000000000000000000000000000000000bEEF", // seller
+      noCodeToken,
+      1000n,
+      3600n,
+    );
+    throw new Error("createEscrow with a codeless token did not revert");
+  } catch (err) {
+    revertData = err?.data ?? err?.info?.error?.data ?? "";
+  }
+  if (typeof revertData !== "string" || revertData === "0x" || revertData === "") {
+    throw new Error(
+      "createEscrow reverted with no data — EscrowFeeRouter is not correctly linked",
+    );
+  }
+  console.log(`guards OK — escrow ${escrowSize} bytes, both libraries linked (revert ${revertData.slice(0, 10)})`);
 
   // Record progress immediately: a later step failing (or a gas problem in the
   // last deployment) must not lose deployed addresses.
