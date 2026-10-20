@@ -143,6 +143,13 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
         // `isPrivateEscrow` (XOM or pXOM, both fixed at deploy); v2 records it
         // per escrow so any vault-allowlisted token can be escrowed.
         address token;
+        // Fee-attribution nodes, recorded at creation. They receive the
+        // listing slice of the 1% (0.175% listing node / 0.05% selling node)
+        // when the fee goes through the vault's referral-aware split. Zero
+        // addresses route their share to ODDAO. Set from the listing row by
+        // the caller; see {createEscrowWithAttribution}.
+        address listingNode;
+        address sellingNode;
     }
 
     /// @notice Dispute commitment for commit-reveal pattern
@@ -343,6 +350,16 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
     /// @param escrowId Unique escrow identifier
     /// @param token ERC-20 the escrow holds
     event EscrowToken(uint256 indexed escrowId, address indexed token);
+
+    /// @notice Emitted when fee-attribution nodes are recorded
+    /// @param escrowId Unique escrow identifier
+    /// @param listingNode Node that hosted the listing (zero = none)
+    /// @param sellingNode Node that served the sale (zero = none)
+    event EscrowAttribution(
+        uint256 indexed escrowId,
+        address indexed listingNode,
+        address indexed sellingNode
+    );
 
     /// @notice Emitted when referral attribution is captured at creation
     /// @dev Only emitted when at least one referrer is non-zero.
@@ -554,6 +571,10 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
     /// @param escrowId Escrow identifier marked disputed
     event EscrowMarkedDisputed(uint256 indexed escrowId);
 
+    /// @notice Emitted when a panel dispute is cancelled before resolution
+    /// @param escrowId Escrow identifier
+    event EscrowUnmarkedDisputed(uint256 indexed escrowId);
+
     // Custom errors
     error InvalidAddress();
     /// @notice Escrow token is not on the fee vault's payment allowlist
@@ -564,6 +585,8 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
     error AllowlistUnavailable();
     /// @notice This escrow must resolve through the internal 2-of-3 vote, not the panel
     error UseInternalArbitration();
+    /// @notice A fee-attribution node collides with a party or the other node
+    error BadAttribution();
     error InvalidFeeConfig();
     error InvalidAmount();
     error InvalidDuration();
@@ -739,7 +762,16 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
         uint256 amount,
         uint256 duration
     ) external nonReentrant whenNotPaused returns (uint256 escrowId) {
-        return _createEscrow(seller, token, amount, duration, address(0), address(0));
+        return _createEscrow(
+            seller,
+            token,
+            amount,
+            duration,
+            address(0),
+            address(0),
+            address(0),
+            address(0)
+        );
     }
 
     /**
@@ -757,7 +789,16 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
         uint256 amount,
         uint256 duration
     ) external nonReentrant whenNotPaused returns (uint256 escrowId) {
-        return _createEscrow(seller, address(OMNI_COIN), amount, duration, address(0), address(0));
+        return _createEscrow(
+            seller,
+            address(OMNI_COIN),
+            amount,
+            duration,
+            address(0),
+            address(0),
+            address(0),
+            address(0)
+        );
     }
 
     /**
@@ -784,7 +825,88 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
         address referrer,
         address referrer2
     ) external nonReentrant whenNotPaused returns (uint256 escrowId) {
-        return _createEscrow(seller, token, amount, duration, referrer, referrer2);
+        return _createEscrow(
+            seller,
+            token,
+            amount,
+            duration,
+            referrer,
+            referrer2,
+            address(0),
+            address(0)
+        );
+    }
+
+    /**
+     * @notice Create an escrow with fee-attribution nodes (no referrers)
+     * @dev The listing row carries the nodes that earned the listing slice of
+     *      the 1% fee. Without passing them, that slice routes to ODDAO inside
+     *      the vault (v1 behaviour). The addresses are attribution CLAIMS by
+     *      the caller, exactly like the referrer slots: they must be distinct
+     *      from the buyer, the seller and each other, but the contract cannot
+     *      prove the listing was really hosted by them.
+     * @param seller Seller address
+     * @param token ERC-20 to escrow (allowlisted)
+     * @param amount Amount in the token's smallest unit
+     * @param duration Escrow duration in seconds
+     * @param listingNode Node that hosted the listing (zero = none)
+     * @param sellingNode Node that served the sale (zero = none)
+     * @return escrowId Unique escrow identifier
+     */
+    function createEscrowWithAttribution(
+        address seller,
+        address token,
+        uint256 amount,
+        uint256 duration,
+        address listingNode,
+        address sellingNode
+    ) external nonReentrant whenNotPaused returns (uint256 escrowId) {
+        return _createEscrow(
+            seller,
+            token,
+            amount,
+            duration,
+            address(0),
+            address(0),
+            listingNode,
+            sellingNode
+        );
+    }
+
+    /**
+     * @notice Create an escrow with referrers AND fee-attribution nodes
+     * @dev The complete attribution set, so one escrow carries every recipient
+     *      of the 1% marketplace fee.
+     * @param seller Seller address
+     * @param token ERC-20 to escrow (allowlisted)
+     * @param amount Amount in the token's smallest unit
+     * @param duration Escrow duration in seconds
+     * @param referrer Primary referrer (zero if none)
+     * @param referrer2 Second-level referrer (zero if none)
+     * @param listingNode Node that hosted the listing (zero = none)
+     * @param sellingNode Node that served the sale (zero = none)
+     * @return escrowId Unique escrow identifier
+     */
+    function createEscrowWithReferrersAndNodes(
+        address seller,
+        address token,
+        uint256 amount,
+        uint256 duration,
+        address referrer,
+        address referrer2,
+        address listingNode,
+        address sellingNode
+    ) external nonReentrant whenNotPaused returns (uint256 escrowId) {
+        return _createEscrow(
+            seller,
+            token,
+            amount,
+            duration,
+            referrer,
+            referrer2,
+            listingNode,
+            sellingNode
+        );
     }
 
     /**
@@ -805,7 +927,16 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
         address referrer,
         address referrer2
     ) external nonReentrant whenNotPaused returns (uint256 escrowId) {
-        return _createEscrow(seller, address(OMNI_COIN), amount, duration, referrer, referrer2);
+        return _createEscrow(
+            seller,
+            address(OMNI_COIN),
+            amount,
+            duration,
+            referrer,
+            referrer2,
+            address(0),
+            address(0)
+        );
     }
 
     /**
@@ -827,7 +958,9 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
         uint256 amount,
         uint256 duration,
         address referrer,
-        address referrer2
+        address referrer2,
+        address listingNode,
+        address sellingNode
     ) private returns (uint256 escrowId) {
         address buyer = _msgSender();
         if (seller == address(0) || seller == buyer || seller == address(this)) {
@@ -838,6 +971,14 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
         _requireSupportedToken(token);
 
         _validateReferrerPair(buyer, seller, referrer, referrer2);
+        _validateAttributionNodes(
+            buyer,
+            seller,
+            referrer,
+            referrer2,
+            listingNode,
+            sellingNode
+        );
 
         // A fee that floors to zero would let a seller split sales into
         // sub-100-unit escrows and pay nothing. One unit of the smallest
@@ -863,10 +1004,13 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
             disputed: false,
             delivered: false,
             inspectionDeadline: 0,
-            token: token
+            token: token,
+            listingNode: listingNode,
+            sellingNode: sellingNode
         });
 
         emit EscrowToken(escrowId, token);
+        emit EscrowAttribution(escrowId, listingNode, sellingNode);
 
         if (referrer != address(0) || referrer2 != address(0)) {
             escrowReferrers[escrowId] = EscrowReferrers({
@@ -1641,6 +1785,25 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
     }
 
     /**
+     * @notice Clear an escrow's disputed flag when a dispute is cancelled
+     * @dev Counterpart to {markDisputed}. `createDispute` takes the fee and
+     *      freezes the escrow up front; if the panel cannot be seated the
+     *      arbitration contract cancels the dispute and calls this to restore
+     *      the release/refund/inspection exits. Only the registered
+     *      arbitration contract may call it, and never on a resolved escrow.
+     * @param escrowId Escrow identifier
+     */
+    function unmarkDisputed(uint256 escrowId) external onlyArbitration {
+        Escrow storage escrow = escrows[escrowId];
+        if (escrow.buyer == address(0)) revert EscrowNotFound();
+        if (escrow.resolved) revert AlreadyResolved();
+        if (escrow.disputed) {
+            escrow.disputed = false;
+            emit EscrowUnmarkedDisputed(escrowId);
+        }
+    }
+
+    /**
      * @notice Resolve a dispute by releasing or refunding escrow
      * @dev H-01 OmniArbitration Round 6: Called exclusively by
      *      the authorized OmniArbitration contract after its
@@ -1830,6 +1993,49 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
         token.safeTransferFrom(from, address(this), amount);
         if (token.balanceOf(address(this)) - before != amount) {
             revert TokenTransferMismatch();
+        }
+    }
+
+    /**
+     * @notice Validate the fee-attribution nodes against the parties
+     * @dev Mirrors the anti-fee-wash rule for referrers: a node may not be the
+     *      buyer, the seller, a referrer, or the other node. Zero is allowed
+     *      (the share routes to ODDAO).
+     * @param buyer Escrow buyer
+     * @param seller Escrow seller
+     * @param referrer Primary referrer
+     * @param referrer2 Second-level referrer
+     * @param listingNode Node that hosted the listing
+     * @param sellingNode Node that served the sale
+     */
+    function _validateAttributionNodes(
+        address buyer,
+        address seller,
+        address referrer,
+        address referrer2,
+        address listingNode,
+        address sellingNode
+    ) private pure {
+        if (listingNode != address(0)) {
+            if (
+                listingNode == buyer ||
+                listingNode == seller ||
+                listingNode == referrer ||
+                listingNode == referrer2 ||
+                listingNode == sellingNode
+            ) {
+                revert BadAttribution();
+            }
+        }
+        if (sellingNode != address(0)) {
+            if (
+                sellingNode == buyer ||
+                sellingNode == seller ||
+                sellingNode == referrer ||
+                sellingNode == referrer2
+            ) {
+                revert BadAttribution();
+            }
         }
     }
 
@@ -2088,8 +2294,8 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
                     amount,
                     refs.referrer,
                     refs.referrer2,
-                    address(0),
-                    address(0)
+                    escrows[escrowId].listingNode,
+                    escrows[escrowId].sellingNode
                 )
             {
                 totalMarketplaceFees[token] += feeAmount;
@@ -2361,7 +2567,9 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
             disputed: false,
             delivered: false,
             inspectionDeadline: 0,
-            token: address(PRIVATE_OMNI_COIN)
+            token: address(PRIVATE_OMNI_COIN),
+            listingNode: address(0),
+            sellingNode: address(0)
         });
 
         emit EscrowToken(escrowId, address(PRIVATE_OMNI_COIN));

@@ -27,10 +27,13 @@ import {SafeERC20} from
  * @notice Interface for checking arbitrator qualification
  */
 interface IArbitrationParticipation {
-    /// @notice Check if user can be a validator (score >= 50, KYC 4)
+    /// @notice Check if user can be a service node (score >= 25, KYC 2)
+    /// @dev The same bar applies to a listing node. Arbitrators use this
+    ///      qualification (founder ruling 2026-10-20) rather than the
+    ///      validator standard.
     /// @param user Address to check
-    /// @return True if qualified as arbitrator
-    function canBeValidator(address user) external view returns (bool);
+    /// @return True if qualified as an arbitrator
+    function canBeServiceNode(address user) external view returns (bool);
 
     /// @notice Get total participation score
     /// @param user Address to check
@@ -85,6 +88,12 @@ interface IArbitrationEscrow {
     ///      disputing a settled escrow.
     /// @param escrowId Escrow ID to mark disputed
     function markDisputed(uint256 escrowId) external;
+
+    /**
+     * @notice Clear an escrow's disputed flag (cancelled dispute)
+     * @param escrowId Escrow identifier
+     */
+    function unmarkDisputed(uint256 escrowId) external;
 }
 
 // ══════════════════════════════════════════════════════════════════════
@@ -93,6 +102,18 @@ interface IArbitrationEscrow {
 
 /// @notice Caller is not qualified as arbitrator
 error NotQualifiedArbitrator();
+/**
+ * @notice Too few registered judges to seat a committee for this escrow
+ * @param available Judges currently in the pool
+ * @param required Judges needed (3 + buyer/seller if they are judges)
+ */
+error ArbitrationPoolNotSeated(uint256 available, uint256 required);
+
+/// @notice Dispute is not in PendingSelection, so it cannot be cancelled
+error DisputeNotPendingSelection(uint256 disputeId);
+
+/// @notice Cancellation is not allowed yet (selection block still recent)
+error CancellationTooEarly(uint256 disputeId, uint256 allowedAtBlock);
 
 /// @notice Dispute does not exist
 error DisputeNotFound(uint256 disputeId);
@@ -257,7 +278,8 @@ contract OmniArbitration is
         DefaultResolved,
         PendingSelection,
         // solhint-disable-next-line unused-state-variable
-        AppealPendingSelection // @dev deprecated — appeal tier removed, never set
+        AppealPendingSelection, // @dev deprecated — appeal tier removed, never set
+        Cancelled // selection failed; the fee was refunded and the escrow unfrozen
     }
 
     /// @notice Dispute record
@@ -271,6 +293,11 @@ contract OmniArbitration is
         uint256 createdAt;
         uint256 deadline;
         uint256 disputedAmount;
+        /// @dev The address that paid `disputeFee` (buyer OR seller — either
+        ///      party may open a panel dispute). Cancellation refunds THIS
+        ///      address, never a hard-coded party. Appended; safe because no
+        ///      dispute has ever been created on mainnet (nextDisputeId == 1).
+        address feePayer;
         DisputeStatus status;
         /// @dev Deprecated — appeal tier removed; never set.
         bool appealed;
@@ -502,6 +529,18 @@ contract OmniArbitration is
         address indexed triggeredBy
     );
 
+    /// @notice Emitted when an unseatable dispute is cancelled and refunded
+    /// @param disputeId Dispute identifier
+    /// @param escrowId Escrow identifier
+    /// @param caller Address that cancelled
+    /// @param refunded Fee returned to the disputer
+    event DisputeCancelled(
+        uint256 indexed disputeId,
+        uint256 indexed escrowId,
+        address indexed caller,
+        uint256 refunded
+    );
+
     /// @notice Emitted when arbitrator registers
     /// @param arbitrator Arbitrator address
     /// @param stake Amount staked in XOM
@@ -640,7 +679,13 @@ contract OmniArbitration is
     ) external nonReentrant whenNotPaused {
         address caller = _msgSender();
 
-        if (!participation.canBeValidator(caller)) {
+        // Arbitrator qualification = the NODE standard, not the validator
+        // standard (founder ruling 2026-10-20): participation score >= 25 and
+        // KYC Tier 2. Judging a marketplace dispute is an operational duty
+        // like hosting listings, not the capital/uptime commitment a
+        // validator makes, and requiring validator-grade KYC kept the panel
+        // below the three judges it needs to seat a committee.
+        if (!participation.canBeServiceNode(caller)) {
             revert NotQualifiedArbitrator();
         }
         if (amount < minArbitratorStake) {
@@ -657,6 +702,8 @@ contract OmniArbitration is
         );
         arbitratorStakes[caller] += amount;
 
+        _pruneUnqualified();
+
         if (!isInArbitratorPool[caller]) {
             isInArbitratorPool[caller] = true;
             arbitratorPoolIndex[caller] =
@@ -665,6 +712,31 @@ contract OmniArbitration is
         }
 
         emit ArbitratorRegistered(caller, amount);
+    }
+
+    /**
+     * @notice Drop pooled judges that can no longer be selected
+     * @dev Selection already skips them, but leaving them in the pool makes
+     *      the seatable-count check and the pool size disagree — and a stale
+     *      entry can sit in front of the scan window forever. Bounded by
+     *      {SEATING_SCAN_LIMIT}; called when the pool is touched rather than
+     *      on every read.
+     */
+    function _pruneUnqualified() private {
+        uint256 i = 0;
+        uint256 scanned = 0;
+        while (i < arbitratorPool.length && scanned < SEATING_SCAN_LIMIT) {
+            address candidate = arbitratorPool[i];
+            ++scanned;
+            bool eligible = arbitratorStakes[candidate] >= minArbitratorStake &&
+                participation.canBeServiceNode(candidate);
+            if (eligible) {
+                ++i;
+                continue;
+            }
+            _removeFromArbitratorPool(candidate);
+            // `_removeFromArbitratorPool` swap-and-pops; re-check index i.
+        }
     }
 
     /**
@@ -706,6 +778,49 @@ contract OmniArbitration is
         emit ArbitratorWithdrawn(caller, amount);
     }
 
+    /// @notice Judges selected per dispute (buyer and seller excluded)
+    uint256 public constant MIN_PANEL_SIZE = 3;
+
+    /// @notice Maximum pool entries the seating check will inspect
+    /// @dev A `canBeServiceNode` read fans out to several external calls, so
+    ///      scanning the full pool would let a large pool run dispute creation
+    ///      out of gas. Unqualified entries are pruned at registration, so the
+    ///      pool should never need a deep scan; the bound fails closed.
+    uint256 public constant SEATING_SCAN_LIMIT = 32;
+
+    /// @notice Blocks after createDispute before others may cancel a stuck dispute
+    /// @dev Long enough that a judge cannot be withdrawn and the dispute
+    ///      cancelled in the same breath, short enough that a stuck fee is not
+    ///      a multi-day problem (~8.5 minutes at 2s blocks).
+    uint256 public constant CANCEL_DELAY_BLOCKS = 256;
+
+    /**
+     * @notice Count judges that could actually be seated for this escrow
+     * @dev Mirrors the selection predicate exactly. The scan is bounded by
+     *      {MAX_ARBITRATOR_SEARCH} so a large pool cannot make dispute
+     *      creation unbounded in gas; it stops as soon as enough are found.
+     * @param buyer Escrow buyer (excluded from panels)
+     * @param seller Escrow seller (excluded from panels)
+     * @return eligible Number of seatable, non-party judges found
+     */
+    function _seatableJudges(
+        address buyer,
+        address seller
+    ) private view returns (uint256 eligible) {
+        uint256 pooled = arbitratorPool.length;
+        uint256 scan = pooled < SEATING_SCAN_LIMIT
+            ? pooled
+            : SEATING_SCAN_LIMIT;
+        for (uint256 i = 0; i < scan; ++i) {
+            address candidate = arbitratorPool[i];
+            if (candidate == buyer || candidate == seller) continue;
+            if (arbitratorStakes[candidate] < minArbitratorStake) continue;
+            if (!participation.canBeServiceNode(candidate)) continue;
+            ++eligible;
+            if (eligible >= MIN_PANEL_SIZE) return eligible;
+        }
+    }
+
     // ══════════════════════════════════════════════════════════════════
     //                       DISPUTE CREATION
     // ══════════════════════════════════════════════════════════════════
@@ -740,6 +855,17 @@ contract OmniArbitration is
             revert NotEscrowParty();
         }
 
+        // Refuse BEFORE taking the 5% fee unless a full committee is SEATABLE
+        // for this escrow. Counting `arbitratorPool.length` is not enough: a
+        // pooled judge can be under-staked, lose KYC, or lose participation
+        // score, and selection skips them — so a pool of 3 stale entries
+        // passed a length check and then failed selection, after the fee was
+        // taken. Count only judges the selector would actually accept.
+        uint256 seatable = _seatableJudges(buyer, seller);
+        if (seatable < MIN_PANEL_SIZE) {
+            revert ArbitrationPoolNotSeated(seatable, MIN_PANEL_SIZE);
+        }
+
         // C-01: Calculate and collect dispute fee (5% of amount)
         uint256 fee =
             (amount * ARBITRATION_FEE_BPS) / BPS;
@@ -762,6 +888,7 @@ contract OmniArbitration is
         d.createdAt = block.timestamp;
         d.disputedAmount = amount;
         d.disputeFee = fee;
+        d.feePayer = caller;
         // H-02: Store block number for two-phase selection
         d.selectionBlock = block.number;
         d.status = DisputeStatus.PendingSelection;
@@ -857,6 +984,58 @@ contract OmniArbitration is
             selected,
             d.deadline
         );
+    }
+
+    /**
+     * @notice Cancel a dispute whose panel could never be seated
+     * @dev `createDispute` takes the 5% fee up front and marks the escrow
+     *      disputed (which freezes every unilateral exit). If selection then
+     *      fails — judges withdrawn, under-staked, or disqualified in the
+     *      two-block window — the dispute used to sit in PendingSelection
+     *      forever: the fee had no refund path and the escrow stayed frozen
+     *      until the 30-day timeout. This returns the fee, frees the
+     *      escrow↔dispute mapping, and asks the escrow to clear its disputed
+     *      flag, restoring the pre-dispute state exactly.
+     *
+     *      Callable by a party, or by anyone once {CANCEL_DELAY_BLOCKS} have
+     *      passed, so a stuck dispute is never hostage to one silent party.
+     * @param disputeId Dispute to cancel
+     */
+    function cancelDispute(uint256 disputeId) external nonReentrant {
+        Dispute storage d = disputes[disputeId];
+        if (d.createdAt == 0) revert DisputeNotFound(disputeId);
+        if (d.status != DisputeStatus.PendingSelection) {
+            revert DisputeNotPendingSelection(disputeId);
+        }
+
+        address caller = _msgSender();
+        bool party = caller == d.buyer || caller == d.seller;
+        // solhint-disable-next-line not-rely-on-time
+        uint256 allowedAt = d.selectionBlock + CANCEL_DELAY_BLOCKS;
+        if (!party && block.number < allowedAt) {
+            revert CancellationTooEarly(disputeId, allowedAt);
+        }
+
+        d.status = DisputeStatus.Cancelled;
+
+        uint256 fee = d.disputeFee;
+        d.disputeFee = 0;
+        if (fee > 0) {
+            xomToken.safeTransfer(d.feePayer, fee);
+        }
+
+        uint256 escrowId = d.escrowId;
+        if (escrowToDisputeId[escrowId] == disputeId) {
+            delete escrowToDisputeId[escrowId];
+        }
+
+        // Unfreeze the escrow. Best-effort on purpose: a legacy escrow that
+        // predates `unmarkDisputed` (or one already resolved by the 30-day
+        // timeout) must not block the fee refund or the mapping cleanup.
+        // solhint-disable-next-line no-empty-blocks
+        try escrow.unmarkDisputed(escrowId) {} catch {}
+
+        emit DisputeCancelled(disputeId, escrowId, caller, fee);
     }
 
     /**
@@ -1061,6 +1240,15 @@ contract OmniArbitration is
         // The dispute creator must call finalizeArbitratorSelection() first.
         if (d.status == DisputeStatus.PendingSelection) {
             revert SelectionNotFinalized(disputeId);
+        }
+        // 🛑 ONLY an Active (seated) dispute may default. A Cancelled dispute
+        // has deadline == 0, so the timestamp check below would pass
+        // trivially and `_triggerEscrowResolution` would refund an escrow
+        // that a LATER dispute is still adjudicating — a self-service full
+        // refund for the buyer. Cancelled, Appealed and any future status
+        // must be refused here.
+        if (d.status != DisputeStatus.Active) {
+            revert DisputeAlreadyResolved(disputeId);
         }
         // solhint-disable-next-line not-rely-on-time
         if (block.timestamp < d.deadline) {
@@ -1497,7 +1685,7 @@ contract OmniArbitration is
                 candidate != seller &&
                 arbitratorStakes[candidate] >=
                     minArbitratorStake &&
-                participation.canBeValidator(candidate)
+                participation.canBeServiceNode(candidate)
             );
 
             if (valid) {

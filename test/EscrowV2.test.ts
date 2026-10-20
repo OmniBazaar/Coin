@@ -365,6 +365,70 @@ describe('EscrowV2 — per-escrow settlement token', function () {
     expect(await usdc.balanceOf(buyer.address)).to.equal(before);
   });
 
+  it('routes the 1% to the referrers and both nodes when the vault accepts the fee', async function () {
+    // Grant DEPOSITOR_ROLE (production does this by governance) so the escrow
+    // takes the referral-aware split instead of the plain-transfer fallback.
+    const role = await vault.DEPOSITOR_ROLE();
+    await vault.connect(owner).grantRole(role, await escrow.getAddress());
+
+    const listingNode = "0x1111111111111111111111111111111111111111";
+    const sellingNode = "0x2222222222222222222222222222222222222222";
+    const referrer = "0x3333333333333333333333333333333333333333";
+    const referrer2 = "0x4444444444444444444444444444444444444444";
+
+    await escrow
+      .connect(buyer)
+      ['createEscrowWithReferrersAndNodes(address,address,uint256,uint256,address,address,address,address)'](
+        seller.address,
+        await usdc.getAddress(),
+        USDC(100),
+        7 * DAY,
+        referrer,
+        referrer2,
+        listingNode,
+        sellingNode
+      );
+    const id = await escrow.escrowCounter();
+    const e = await escrow.getEscrow(id);
+    expect(e.listingNode).to.equal(listingNode);
+    expect(e.sellingNode).to.equal(sellingNode);
+
+    await escrow.connect(buyer).releaseFunds(id);
+
+    // 1 USDC fee: referral 0.50% -> 0.35 referrer / 0.10 referrer2 / 0.05 ODDAO;
+    // listing 0.25% -> 0.175 listing node / 0.05 selling node / 0.025 ODDAO.
+    const claim = async (who: string): Promise<bigint> =>
+      (await vault.pendingClaims(who, await usdc.getAddress())) as bigint;
+    expect(await claim(referrer)).to.equal(350_000n);
+    expect(await claim(referrer2)).to.equal(100_000n);
+    expect(await claim(listingNode)).to.equal(175_000n);
+    expect(await claim(sellingNode)).to.equal(50_000n);
+  });
+
+  it('refuses a node attribution that collides with a party', async function () {
+    await expect(
+      escrow
+        .connect(buyer)
+        ['createEscrowWithAttribution(address,address,uint256,uint256,address,address)'](
+          seller.address,
+          await usdc.getAddress(),
+          USDC(10),
+          7 * DAY,
+          buyer.address,
+          ethers.ZeroAddress
+        )
+    ).to.be.revertedWithCustomError(escrow, 'BadAttribution');
+  });
+
+  it('only the arbitration contract may clear a disputed flag', async function () {
+    await createInToken(await usdc.getAddress(), USDC(100), 7 * DAY);
+    const id = await escrow.escrowCounter();
+    await expect(escrow.connect(buyer).unmarkDisputed(id)).to.be.revertedWithCustomError(
+      escrow,
+      'OnlyArbitrationContract'
+    );
+  });
+
   it('refuses an escrow too small to yield any marketplace fee', async function () {
     await expect(createInToken(await usdc.getAddress(), 99n, 7 * DAY))
       .to.be.revertedWithCustomError(escrow, 'InvalidAmount');

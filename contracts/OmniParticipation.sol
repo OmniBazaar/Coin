@@ -1413,6 +1413,11 @@ contract OmniParticipation is // solhint-disable-line max-states-count
      * @return True if score >= 25 AND has KYC Tier 2
      */
     function canBeServiceNode(address user) external view returns (bool) {
+        // Pioneer-phase founder bypass, identical to {canBeValidator}. Without
+        // it a founder-seeded operator (no organic score yet) is qualified to
+        // validate but NOT to run a node or judge a dispute — which is how the
+        // judge panel lost its only members on 2026-10-20.
+        if (pioneerFounderAllowlist[user]) return true;
         (uint256 score,,,,,,,,,) = _calculateScore(user);
         bool hasRequiredKYC = registration.hasKycTier2(user);
         // solhint-disable-next-line gas-strict-inequalities
@@ -1421,15 +1426,26 @@ contract OmniParticipation is // solhint-disable-line max-states-count
 
     /**
      * @notice Check if user can be a listing node
-     * @dev L-01: Uses internal _calculateScore() for gas efficiency.
-     *      No KYC requirement -- only minimum score (25).
+     * @dev Listing node and service node are the SAME qualification
+     *      (founder ruling 2026-10-20): participation score >= 25 AND KYC
+     *      Tier 2. The two roles differ only in what they are trusted to do
+     *      — a listing node hosts and serves listings for its local market, a
+     *      service node also runs the business-logic APIs — so the bar to
+     *      enter is identical. Before this ruling a listing node needed only
+     *      the score, which let an unverified account serve marketplace
+     *      content.
      * @param user Address to check
-     * @return True if score >= 25
+     * @return True if score >= 25 AND has KYC Tier 2
      */
     function canBeListingNode(address user) external view returns (bool) {
+        // Same Pioneer founder bypass as {canBeValidator} and
+        // {canBeServiceNode}; the three role gates must agree or a seeded
+        // operator silently loses one role and keeps another.
+        if (pioneerFounderAllowlist[user]) return true;
         (uint256 score,,,,,,,,,) = _calculateScore(user);
+        bool hasRequiredKYC = registration.hasKycTier2(user);
         // solhint-disable-next-line gas-strict-inequalities
-        return score >= MIN_LISTING_NODE_SCORE;
+        return score >= MIN_LISTING_NODE_SCORE && hasRequiredKYC;
     }
 
     // ═══════════════════════════════════════════════════════════════════════

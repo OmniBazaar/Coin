@@ -9,7 +9,17 @@ pragma solidity 0.8.24;
  */
 contract MockArbitrationParticipation {
     mapping(address => bool) private _canBeValidator;
+    mapping(address => bool) private _canBeServiceNode;
     mapping(address => uint256) private _totalScore;
+
+    /**
+     * @notice Set service-node (== listing-node) eligibility for an address
+     * @param user Address to configure
+     * @param status True if qualified
+     */
+    function setCanBeServiceNode(address user, bool status) external {
+        _canBeServiceNode[user] = status;
+    }
 
     /**
      * @notice Set whether an address can be a validator
@@ -38,6 +48,20 @@ contract MockArbitrationParticipation {
         address user
     ) external view returns (bool) {
         return _canBeValidator[user];
+    }
+
+    /**
+     * @notice Check if user can be a service node
+     * @dev The arbitration contract gates registration on THIS standard
+     *      (founder ruling 2026-10-20). The separate validator flag is kept so
+     *      tests can prove the two are not interchangeable.
+     * @param user Address to check
+     * @return True if qualified
+     */
+    function canBeServiceNode(
+        address user
+    ) external view returns (bool) {
+        return _canBeServiceNode[user];
     }
 
     /**
@@ -96,6 +120,14 @@ contract MockArbitrationEscrow {
      */
     function markDisputed(uint256 escrowId) external {
         disputed[escrowId] = true;
+    }
+
+    /**
+     * @notice Mock of EscrowV2.unmarkDisputed — clears the recorded flag
+     * @param escrowId Escrow ID to unmark
+     */
+    function unmarkDisputed(uint256 escrowId) external {
+        disputed[escrowId] = false;
     }
 
     /**

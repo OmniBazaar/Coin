@@ -94,6 +94,8 @@ describe("OmniArbitration", function () {
     // ── Register 10 arbitrators ──
     for (const arb of arbitrators) {
       await participation.setCanBeValidator(arb.address, true);
+      await participation.setCanBeServiceNode(arb.address, true);
+      await participation.setCanBeServiceNode(arb.address, true);
       await participation.setTotalScore(arb.address, 75);
       await xom.mint(arb.address, ethers.parseEther("20000"));
       await xom.connect(arb).approve(await arbitration.getAddress(), ethers.parseEther("20000"));
@@ -152,6 +154,7 @@ describe("OmniArbitration", function () {
       const signers = await ethers.getSigners();
       const newArb = signers[16];
       await participation.setCanBeValidator(newArb.address, true);
+      await participation.setCanBeServiceNode(newArb.address, true);
       await xom.mint(newArb.address, ethers.parseEther("20000"));
       await xom.connect(newArb).approve(await arbitration.getAddress(), ethers.parseEther("20000"));
 
@@ -178,6 +181,7 @@ describe("OmniArbitration", function () {
       const signers = await ethers.getSigners();
       const newArb = signers[18];
       await participation.setCanBeValidator(newArb.address, true);
+      await participation.setCanBeServiceNode(newArb.address, true);
       const lowStake = ethers.parseEther("5000");
       await xom.mint(newArb.address, lowStake);
       await xom.connect(newArb).approve(await arbitration.getAddress(), lowStake);
@@ -615,6 +619,7 @@ describe("OmniArbitration", function () {
       const signers = await ethers.getSigners();
       const newArb = signers[19];
       await participation.setCanBeValidator(newArb.address, true);
+      await participation.setCanBeServiceNode(newArb.address, true);
       await xom.mint(newArb.address, ethers.parseEther("20000"));
       await xom.connect(newArb).approve(await arbitration.getAddress(), ethers.parseEther("20000"));
 
@@ -631,6 +636,7 @@ describe("OmniArbitration", function () {
       const signers = await ethers.getSigners();
       const newArb = signers[19];
       await participation.setCanBeValidator(newArb.address, true);
+      await participation.setCanBeServiceNode(newArb.address, true);
       await xom.mint(newArb.address, ethers.parseEther("20000"));
       await xom.connect(newArb).approve(await arbitration.getAddress(), ethers.parseEther("20000"));
       await expect(arbitration.connect(newArb).registerArbitrator(STAKE_AMOUNT)).to.not.be.reverted;
