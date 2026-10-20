@@ -93,7 +93,7 @@ describe('OmniArbitration — panel hardening', function () {
 
     await mockEscrow.setEscrow(1, buyer.address, seller.address, ESCROW_AMOUNT);
     for (const who of [buyer, seller]) {
-      // Enough for the dispute fee AND the 1,000 XOM escalation bond.
+      // Enough for the dispute fee AND the 1,000 XOM escalation bond (50% of the dispute).
       await xom.mint(who.address, ethers.parseEther('100000'));
       await xom.connect(who).approve(await arbitration.getAddress(), ethers.MaxUint256);
     }
@@ -327,6 +327,28 @@ describe('OmniArbitration — panel hardening', function () {
     await expect(
       arbitration.connect(seller).escalate(disputeId)
     ).to.not.be.reverted;
+  });
+
+  it('does not let an admin pause consume the review window (audit NEW-5)', async function () {
+    const disputeId = await openDispute();
+    const panel = await postBonds(disputeId);
+    await arbitration.connect(panel[0]).castVote(disputeId, RELEASE);
+    await arbitration.connect(panel[1]).castVote(disputeId, RELEASE);
+
+    await arbitration.connect(buyer).escalate(disputeId);
+    const review = await arbitration.getEscalationPanel(disputeId);
+    const reviewSigners = review.map((a) => judges.find((j) => j.address === a));
+
+    // The contract is paused for longer than the whole review window.
+    await arbitration.connect(owner).pause();
+    await time.increase(5 * 24 * 60 * 60);
+    await arbitration.connect(owner).unpause();
+
+    // The window is still open: the review can still be decided.
+    await arbitration.connect(reviewSigners[0]).castReviewVote(disputeId, true);
+    await expect(
+      arbitration.connect(reviewSigners[1]).castReviewVote(disputeId, true)
+    ).to.emit(arbitration, 'ReviewDecided');
   });
 
   it('refuses a review after the challenge window', async function () {

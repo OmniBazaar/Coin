@@ -374,7 +374,7 @@ contract OmniArbitration is
     /// @notice How long the review panel has to decide once a review is open
     uint256 public constant REVIEW_WINDOW = 3 days;
 
-    /// @notice Bond a party posts to demand a review, in basis points (1,000 = 10%)
+    /// @notice Bond a party posts to demand a review, in basis points (5,000 = 50%)
     uint256 public constant ESCALATION_BOND_BPS = 5_000;
 
     /// @notice Floor on the escalation bond (100 XOM)
@@ -552,8 +552,17 @@ contract OmniArbitration is
     ///         challenge window; audit C-02)
     mapping(uint256 => uint256) public reviewDeadline;
 
+    /// @notice Timestamp the contract was paused (0 when running)
+    uint256 public pausedAt;
+
+    /// @notice Total time spent paused, subtracted from every deadline check
+    /// @dev A pause must never consume a party's window (audit NEW-5): without
+    ///      this, an admin pause spanning the review window turned
+    ///      {lapseReview} into a forfeiture with no adjudication.
+    uint256 public pausedTotal;
+
     /// @notice Reserved storage gap for future upgradeable variables
-    uint256[33] private __gap;
+    uint256[31] private __gap;
 
     // ══════════════════════════════════════════════════════════════════
     //                              EVENTS
@@ -1200,7 +1209,7 @@ contract OmniArbitration is
 
         d.arbitrators = selected;
         // solhint-disable-next-line not-rely-on-time
-        d.deadline = block.timestamp + DEFAULT_DEADLINE;
+        d.deadline = _now() + DEFAULT_DEADLINE;
         d.status = DisputeStatus.Active;
 
         // H-01: Increment active dispute count per arbitrator
@@ -1254,15 +1263,14 @@ contract OmniArbitration is
         }
 
         uint256 escrowId = d.escrowId;
-        if (escrowToDisputeId[escrowId] == disputeId) {
+        // Unfreeze the escrow, best-effort: a legacy escrow that predates
+        // `unmarkDisputed` must not block the fee refund. But only forget the
+        // escrow↔dispute link when the escrow actually cleared its flag —
+        // otherwise a second dispute could be opened against an escrow that is
+        // still frozen (audit NEW-7).
+        if (_tryUnmarkDisputed(escrowId) && escrowToDisputeId[escrowId] == disputeId) {
             delete escrowToDisputeId[escrowId];
         }
-
-        // Unfreeze the escrow. Best-effort on purpose: a legacy escrow that
-        // predates `unmarkDisputed` (or one already resolved by the 30-day
-        // timeout) must not block the fee refund or the mapping cleanup.
-        // solhint-disable-next-line no-empty-blocks
-        try escrow.unmarkDisputed(escrowId) {} catch {}
 
         emit DisputeCancelled(disputeId, escrowId, caller, fee);
     }
@@ -1475,7 +1483,7 @@ contract OmniArbitration is
         if (d.createdAt == 0) revert DisputeNotFound(disputeId);
         if (d.status != DisputeStatus.Active) revert InvalidDisputeStatus();
         // solhint-disable-next-line not-rely-on-time
-        if (block.timestamp > d.deadline) revert DeadlineExpired();
+        if (_now() > d.deadline) revert DeadlineExpired();
 
         address caller = _msgSender();
         bool seated = false;
@@ -1515,7 +1523,7 @@ contract OmniArbitration is
         if (deadline == 0) revert NoVerdict(disputeId);
         if (escalated[disputeId]) revert EscalationAlreadyOpened(disputeId);
         // solhint-disable-next-line not-rely-on-time
-        if (block.timestamp < deadline) revert ChallengeWindowOpen(deadline);
+        if (_now() < deadline) revert ChallengeWindowOpen(deadline);
         _releaseBonds(disputeId, d);
     }
 
@@ -1548,7 +1556,7 @@ contract OmniArbitration is
         }
         uint256 deadline = challengeDeadline[disputeId];
         // solhint-disable-next-line not-rely-on-time
-        if (deadline == 0 || block.timestamp >= deadline) {
+        if (deadline == 0 || _now() >= deadline) {
             revert ChallengeWindowClosed(deadline);
         }
         if (escalated[disputeId]) revert EscalationAlreadyOpened(disputeId);
@@ -1575,7 +1583,7 @@ contract OmniArbitration is
         // challenge deadline let a challenger open a review one block before
         // the deadline and strand every bond forever.
         // solhint-disable-next-line not-rely-on-time
-        reviewDeadline[disputeId] = block.timestamp + REVIEW_WINDOW;
+        reviewDeadline[disputeId] = _now() + REVIEW_WINDOW;
         // Reviewers are locked like the panel so they cannot withdraw and
         // vanish mid-review (audit M-05).
         for (uint256 i = 0; i < 3; ++i) {
@@ -1600,7 +1608,7 @@ contract OmniArbitration is
         if (escalationBond[disputeId] == 0) revert NoVerdict(disputeId);
         uint256 deadline = reviewDeadline[disputeId];
         // solhint-disable-next-line not-rely-on-time
-        if (deadline != 0 && block.timestamp < deadline) {
+        if (deadline != 0 && _now() < deadline) {
             revert ChallengeWindowOpen(deadline);
         }
         Dispute storage d = disputes[disputeId];
@@ -1643,7 +1651,7 @@ contract OmniArbitration is
         if (!escalated[disputeId]) revert NoVerdict(disputeId);
         uint256 deadline = reviewDeadline[disputeId];
         // solhint-disable-next-line not-rely-on-time
-        if (deadline == 0 || block.timestamp >= deadline) {
+        if (deadline == 0 || _now() >= deadline) {
             revert ChallengeWindowClosed(deadline);
         }
 
@@ -1880,7 +1888,7 @@ contract OmniArbitration is
             revert DisputeAlreadyResolved(disputeId);
         }
         // solhint-disable-next-line not-rely-on-time
-        if (block.timestamp < d.deadline) {
+        if (_now() < d.deadline) {
             revert DeadlineNotReached(d.deadline);
         }
 
@@ -2175,12 +2183,25 @@ contract OmniArbitration is
 
     /// @notice Pause the contract
     function pause() external onlyRole(DEFAULT_ADMIN_ROLE) {
+        pausedAt = block.timestamp;
         _pause();
     }
 
     /// @notice Unpause the contract
     function unpause() external onlyRole(DEFAULT_ADMIN_ROLE) {
+        if (pausedAt != 0) {
+            pausedTotal += block.timestamp - pausedAt;
+            pausedAt = 0;
+        }
         _unpause();
+    }
+
+    /**
+     * @dev Clock used for every window check: wall time minus all pause time.
+     *      Windows never shrink because the contract was paused.
+     */
+    function _now() private view returns (uint256) {
+        return block.timestamp - pausedTotal;
     }
 
     // ══════════════════════════════════════════════════════════════════
@@ -2209,7 +2230,7 @@ contract OmniArbitration is
         // ends up harmed. No reversal, so the escrow keeps its one-way
         // resolution guarantee.
         // solhint-disable-next-line not-rely-on-time
-        challengeDeadline[disputeId] = block.timestamp + CHALLENGE_WINDOW;
+        challengeDeadline[disputeId] = _now() + CHALLENGE_WINDOW;
 
         // H-01: Release the original panel's stake locks now that the
         // dispute is resolved.
