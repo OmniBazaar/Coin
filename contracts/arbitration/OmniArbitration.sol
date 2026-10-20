@@ -246,6 +246,17 @@ error SelectionBlockhashExpired();
  *   proposer could theoretically influence selection by withholding
  *   blocks.
  */
+/**
+ * @title IArbitratorKyc
+ * @notice The one read arbitrator qualification needs from OmniRegistration
+ * @dev Read directly so arbitrator qualification never depends on a node-role
+ *      gate: those gates change (they did on 2026-10-20) and every change
+ *      silently re-qualified or disqualified the judge panel.
+ */
+interface IArbitratorKyc {
+    function hasKycTier2(address user) external view returns (bool);
+}
+
 contract OmniArbitration is
     AccessControlUpgradeable,
     UUPSUpgradeable,
@@ -354,6 +365,18 @@ contract OmniArbitration is
     uint256 public constant MIN_STAKE_UPPER_BOUND =
         10_000_000 ether;
 
+    /// @notice Seat bond, in basis points of the disputed amount (10,000 = 1x)
+    uint256 public constant SEAT_BOND_BPS = 10_000;
+
+    /// @notice How long the review (escalation) window stays open after a verdict
+    uint256 public constant CHALLENGE_WINDOW = 7 days;
+
+    /// @notice Bond a party posts to demand a review, in basis points (1,000 = 10%)
+    uint256 public constant ESCALATION_BOND_BPS = 1_000;
+
+    /// @notice Floor on the escalation bond (1,000 XOM)
+    uint256 public constant MIN_ESCALATION_BOND = 1_000 ether;
+
     /// @notice Timelock delay for fee vault address changes (48 hours)
     /// @dev FE-H-01 remediation: prevents instant fee redirection
     ///      by a compromised admin key
@@ -454,8 +477,76 @@ contract OmniArbitration is
     // solhint-disable-next-line var-name-mixedcase
     mapping(uint256 => uint256) private __removedReservedAppealFee;
 
+    // ── 2026-10 panel hardening ──────────────────────────────────────────
+    /// @notice Seat bond not posted for the calling judge
+    error SeatBondMissing(uint256 disputeId, address judge);
+    /// @notice Seat bond already posted for the calling judge
+    error SeatBondAlreadyPosted(uint256 disputeId, address judge);
+    /// @notice Caller is not seated on this dispute
+    error NotSeatedJudge(uint256 disputeId, address caller);
+    /// @notice The challenge window has already closed
+    error ChallengeWindowClosed(uint256 deadline);
+    /// @notice The challenge window is still open; bonds stay locked
+    error ChallengeWindowOpen(uint256 deadline);
+    /// @notice Escalation was already opened for this dispute
+    error EscalationAlreadyOpened(uint256 disputeId);
+    /// @notice Not enough unassigned, qualified judges to seat the review panel
+    error EscalationNotSeatable(uint256 seatable);
+    /// @notice Caller is not a party to the dispute
+    error NotChallengeParty();
+    /// @notice Withdraw blocked: the caller has bonds still held
+    error BondsStillLocked(address arbitrator, uint256 amount);
+    /// @notice No verdict was reached in this round
+    error NoVerdict(uint256 disputeId);
+    /// @notice Judge is not registered as a founder arbitrator
+    error NotFounderArbitrator(address account);
+
+    /// @notice Per-dispute seat bond posted by each seated judge
+    /// @dev 2026-10 panel hardening: a judge's decision has a price. The bond
+    ///      is 1x the disputed amount, held for the challenge window, and
+    ///      forfeited to the harmed party if a review panel overturns the
+    ///      verdict. Returned in full when the window closes clean.
+    mapping(uint256 => mapping(address => uint256)) public seatBonds;
+
+    /// @notice Number of seat bonds posted for a dispute (0..3)
+    mapping(uint256 => uint256) public seatBondCount;
+
+    /// @notice XOM held against a judge's bond obligations
+    mapping(address => uint256) public lockedBond;
+
+    /// @notice Timestamp after which a resolved dispute's bonds unlock
+    mapping(uint256 => uint256) public challengeDeadline;
+
+    /// @notice Whether a review (escalation) panel was opened
+    mapping(uint256 => bool) public escalated;
+
+    /// @notice Review panel seated by {escalate}
+    mapping(uint256 => address[3]) public escalationPanel;
+
+    /// @notice Review panel vote tallies
+    mapping(uint256 => uint8) public escalationReleaseVotes;
+    mapping(uint256 => uint8) public escalationRefundVotes;
+
+    /// @notice Bond posted by the party that demanded the review
+    mapping(uint256 => uint256) public escalationBond;
+
+    /// @notice One-shot flag: the no-verdict path already reselected a panel
+    mapping(uint256 => bool) public reselected;
+
+    /// @notice Founder-seeded arbitrators (pioneer phase)
+    mapping(address => bool) public founderArbitrator;
+
+    /// @notice Review votes per dispute per judge
+    mapping(uint256 => mapping(address => VoteType)) public reviewVotes;
+
+    /// @notice Party that opened the review (receives an overturned verdict's bonds)
+    mapping(uint256 => address) public reviewChallenger;
+
+    /// @notice OmniRegistration, for the KYC read in {canBeArbitrator}
+    address public registration;
+
     /// @notice Reserved storage gap for future upgradeable variables
-    uint256[48] private __gap;
+    uint256[34] private __gap;
 
     // ══════════════════════════════════════════════════════════════════
     //                              EVENTS
@@ -539,6 +630,53 @@ contract OmniArbitration is
         uint256 indexed escrowId,
         address indexed caller,
         uint256 refunded
+    );
+
+    /// @notice Emitted when a founder arbitrator is seeded or cleared
+    event FounderArbitratorSet(address indexed account, bool allowed);
+
+    /// @notice Emitted when the registration (KYC) source changes
+    event RegistrationSet(address indexed registration);
+
+    /// @notice Emitted when a review-panel judge votes
+    event ReviewVoteCast(
+        uint256 indexed disputeId,
+        address indexed judge,
+        VoteType vote
+    );
+
+    /// @notice Emitted when a judge posts the seat bond for a dispute
+    event SeatBondPosted(
+        uint256 indexed disputeId,
+        address indexed judge,
+        uint256 amount
+    );
+
+    /// @notice Emitted when a dispute's bonds unlock after the challenge window
+    event BondsUnlocked(uint256 indexed disputeId);
+
+    /// @notice Emitted when a party demands a review of a verdict
+    event ReviewOpened(
+        uint256 indexed disputeId,
+        address indexed requester,
+        uint256 bond,
+        address[3] panel
+    );
+
+    /// @notice Emitted when the review panel upholds or overturns the verdict
+    event ReviewDecided(
+        uint256 indexed disputeId,
+        bool overturned,
+        uint256 forfeited
+    );
+
+    /// @notice Emitted when the escrow could not clear its disputed flag
+    event EscrowUnmarkFailed(uint256 indexed escrowId);
+
+    /// @notice Emitted when a no-verdict dispute returns to the status quo
+    event DisputeReturnedToStatusQuo(
+        uint256 indexed disputeId,
+        uint256 feeRefunded
     );
 
     /// @notice Emitted when arbitrator registers
@@ -674,6 +812,63 @@ contract OmniArbitration is
      *      KYC Tier 4). Transfers XOM from caller to this contract.
      * @param amount XOM to stake (must be >= minArbitratorStake)
      */
+    /**
+     * @notice Whether an account may serve as an arbitrator
+     * @dev Own gate: a stake at or above the minimum AND an identity check
+     *      (KYC tier 2), or the pioneer founder allowlist. Deliberately does
+     *      NOT consult the service-node or validator gates — those describe
+     *      what else an operator runs, not whether they may judge.
+     * @param user Account to check
+     * @return eligible True when the account may register or be seated
+     */
+    function canBeArbitrator(address user) public view returns (bool eligible) {
+        if (arbitratorStakes[user] < minArbitratorStake) return false;
+        return _qualifiedIdentity(user);
+    }
+
+    /**
+     * @dev Identity half of the arbitrator gate, without the stake test —
+     *      used at registration, where the stake arrives with the call.
+     */
+    function _qualifiedIdentity(address user) private view returns (bool) {
+        if (founderArbitrator[user]) return true;
+        if (registration == address(0)) return false;
+        try IArbitratorKyc(registration).hasKycTier2(user) returns (bool kyc) {
+            return kyc;
+        } catch {
+            return false;
+        }
+    }
+
+    /**
+     * @notice Seed or clear a pioneer-phase founder arbitrator
+     * @dev The only bypass in {canBeArbitrator}. Admin-controlled because it is
+     *      a trust list, and it is the reason a founder-seeded judge does not
+     *      need a KYC tier recorded on chain.
+     * @param account Account to change
+     * @param allowed True to allowlist, false to remove
+     */
+    function setFounderArbitrator(
+        address account,
+        bool allowed
+    ) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        if (account == address(0)) revert NotFounderArbitrator(account);
+        founderArbitrator[account] = allowed;
+        emit FounderArbitratorSet(account, allowed);
+    }
+
+    /**
+     * @notice Point the qualification gate at OmniRegistration
+     * @param registration_ OmniRegistration address (KYC reads)
+     */
+    function setRegistration(
+        address registration_
+    ) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        if (registration_ == address(0)) revert NotFounderArbitrator(registration_);
+        registration = registration_;
+        emit RegistrationSet(registration_);
+    }
+
     function registerArbitrator(
         uint256 amount
     ) external nonReentrant whenNotPaused {
@@ -685,7 +880,12 @@ contract OmniArbitration is
         // like hosting listings, not the capital/uptime commitment a
         // validator makes, and requiring validator-grade KYC kept the panel
         // below the three judges it needs to seat a committee.
-        if (!participation.canBeServiceNode(caller)) {
+        // Arbitrator qualification is its OWN gate (2026-10-20). It used to
+        // ride the service-node standard, which meant a node-role rule change
+        // silently re-qualified or disqualified every seated judge — and on
+        // 2026-10-20 it disqualified all of them. A judge must prove a stake
+        // and an identity; what else they run is not this contract's business.
+        if (!_qualifiedIdentity(caller)) {
             revert NotQualifiedArbitrator();
         }
         if (amount < minArbitratorStake) {
@@ -728,8 +928,7 @@ contract OmniArbitration is
         while (i < arbitratorPool.length && scanned < SEATING_SCAN_LIMIT) {
             address candidate = arbitratorPool[i];
             ++scanned;
-            bool eligible = arbitratorStakes[candidate] >= minArbitratorStake &&
-                participation.canBeServiceNode(candidate);
+            bool eligible = canBeArbitrator(candidate);
             if (eligible) {
                 ++i;
                 continue;
@@ -754,6 +953,11 @@ contract OmniArbitration is
         // H-01: Block withdrawal while assigned to active disputes
         if (activeDisputeCount[caller] > 0) {
             revert ArbitratorBusyInDispute();
+        }
+        // Panel hardening: seat bonds stay locked through the challenge window,
+        // so a judge cannot exit with the capital that secures a verdict.
+        if (lockedBond[caller] > 0) {
+            revert BondsStillLocked(caller, lockedBond[caller]);
         }
 
         if (arbitratorStakes[caller] < amount) {
@@ -814,8 +1018,7 @@ contract OmniArbitration is
         for (uint256 i = 0; i < scan; ++i) {
             address candidate = arbitratorPool[i];
             if (candidate == buyer || candidate == seller) continue;
-            if (arbitratorStakes[candidate] < minArbitratorStake) continue;
-            if (!participation.canBeServiceNode(candidate)) continue;
+            if (!canBeArbitrator(candidate)) continue;
             ++eligible;
             if (eligible >= MIN_PANEL_SIZE) return eligible;
         }
@@ -1181,6 +1384,13 @@ contract OmniArbitration is
         }
         if (!isArbitrator) revert NotAssignedArbitrator();
 
+        // Panel hardening (2026-10-20): a judge may not decide a dispute until
+        // it has capital at stake in it. The bond is held for the challenge
+        // window and is forfeited if a review panel overturns the verdict.
+        if (seatBonds[disputeId][caller] == 0) {
+            revert SeatBondMissing(disputeId, caller);
+        }
+
         // Check not already voted
         if (votes[disputeId][caller] != VoteType.None) {
             revert AlreadyVoted();
@@ -1213,21 +1423,334 @@ contract OmniArbitration is
     }
 
     // ══════════════════════════════════════════════════════════════════
+    //              PANEL HARDENING (2026-10-20): BONDS + REVIEW
+    // ══════════════════════════════════════════════════════════════════
+
+    /**
+     * @notice Bond a seated judge must post for this dispute
+     * @dev 1x the disputed amount (SEAT_BOND_BPS = 10,000). Two colluding
+     *      judges therefore put two dollars at risk for every dollar they can
+     *      redirect.
+     * @param disputeId Dispute identifier
+     * @return Bond in XOM
+     */
+    function seatBondFor(uint256 disputeId) public view returns (uint256) {
+        return (disputes[disputeId].disputedAmount * SEAT_BOND_BPS) / BPS;
+    }
+
+    /**
+     * @notice Post the seat bond for a dispute you were selected to judge
+     * @dev Without it {castVote} refuses. Held through the challenge window and
+     *      returned in full unless a review panel overturns the verdict.
+     * @param disputeId Dispute identifier
+     */
+    function postSeatBond(uint256 disputeId) external nonReentrant whenNotPaused {
+        Dispute storage d = disputes[disputeId];
+        if (d.createdAt == 0) revert DisputeNotFound(disputeId);
+        if (d.status != DisputeStatus.Active) revert InvalidDisputeStatus();
+
+        address caller = _msgSender();
+        bool seated = false;
+        for (uint256 i = 0; i < 3; ++i) {
+            if (d.arbitrators[i] == caller) {
+                seated = true;
+                break;
+            }
+        }
+        if (!seated) revert NotSeatedJudge(disputeId, caller);
+        if (seatBonds[disputeId][caller] != 0) {
+            revert SeatBondAlreadyPosted(disputeId, caller);
+        }
+
+        uint256 bond = seatBondFor(disputeId);
+        if (bond == 0) revert DisputedAmountTooSmall();
+
+        seatBonds[disputeId][caller] = bond;
+        seatBondCount[disputeId] += 1;
+        lockedBond[caller] += bond;
+        xomToken.safeTransferFrom(caller, address(this), bond);
+
+        emit SeatBondPosted(disputeId, caller, bond);
+    }
+
+    /**
+     * @notice Return every seat bond once the challenge window has closed clean
+     * @dev Permissionless: a judge should never depend on a party to get their
+     *      capital back. Refuses while a review is open — that path decides the
+     *      bonds itself.
+     * @param disputeId Dispute identifier
+     */
+    function unlockBonds(uint256 disputeId) external nonReentrant {
+        Dispute storage d = disputes[disputeId];
+        if (d.createdAt == 0) revert DisputeNotFound(disputeId);
+        uint256 deadline = challengeDeadline[disputeId];
+        if (deadline == 0) revert NoVerdict(disputeId);
+        if (escalated[disputeId]) revert EscalationAlreadyOpened(disputeId);
+        // solhint-disable-next-line not-rely-on-time
+        if (block.timestamp < deadline) revert ChallengeWindowOpen(deadline);
+        _releaseBonds(disputeId, d);
+    }
+
+    /**
+     * @notice Read the review panel seated for a dispute
+     * @param disputeId Dispute identifier
+     * @return panel Three review judges (zero addresses when no review is open)
+     */
+    function getEscalationPanel(
+        uint256 disputeId
+    ) external view returns (address[3] memory panel) {
+        return escalationPanel[disputeId];
+    }
+
+    /**
+     * @notice Demand a review of a verdict by a panel that did not decide it
+     * @dev Either party may open it inside the challenge window by posting a
+     *      bond (10% of the dispute, floor 1,000 XOM). The review panel is
+     *      drawn from judges who were NOT on the original panel, so a captured
+     *      majority cannot review itself. The escrow payout is never reversed:
+     *      an overturn pays the harmed party out of the colluding judges'
+     *      bonds, which is what makes the seat bond a real deterrent.
+     * @param disputeId Dispute identifier
+     */
+    function escalate(uint256 disputeId) external nonReentrant whenNotPaused {
+        Dispute storage d = disputes[disputeId];
+        if (d.createdAt == 0) revert DisputeNotFound(disputeId);
+        if (
+            d.status != DisputeStatus.Resolved &&
+            d.status != DisputeStatus.DefaultResolved
+        ) {
+            revert NoVerdict(disputeId);
+        }
+        uint256 deadline = challengeDeadline[disputeId];
+        // solhint-disable-next-line not-rely-on-time
+        if (deadline == 0 || block.timestamp >= deadline) {
+            revert ChallengeWindowClosed(deadline);
+        }
+        if (escalated[disputeId]) revert EscalationAlreadyOpened(disputeId);
+
+        address caller = _msgSender();
+        if (caller != d.buyer && caller != d.seller) {
+            revert NotChallengeParty();
+        }
+
+        address[3] memory panel = _selectReviewPanel(disputeId, d);
+
+        uint256 bond = (d.disputedAmount * ESCALATION_BOND_BPS) / BPS;
+        if (bond < MIN_ESCALATION_BOND) bond = MIN_ESCALATION_BOND;
+
+        escalated[disputeId] = true;
+        escalationPanel[disputeId] = panel;
+        reviewChallenger[disputeId] = caller;
+        escalationBond[disputeId] = bond;
+        xomToken.safeTransferFrom(caller, address(this), bond);
+
+        emit ReviewOpened(disputeId, caller, bond, panel);
+    }
+
+    /**
+     * @notice Cast a review vote
+     * @dev Two matching votes decide. Upholding the verdict pays the review
+     *      bond to the majority that was challenged; overturning it pays the
+     *      challenger out of the challenged majority's seat bonds.
+     * @param disputeId Dispute identifier
+     * @param release True to release to the seller, false to refund the buyer
+     */
+    function castReviewVote(
+        uint256 disputeId,
+        bool release
+    ) external nonReentrant whenNotPaused {
+        if (!escalated[disputeId]) revert NoVerdict(disputeId);
+        uint256 deadline = challengeDeadline[disputeId];
+        // solhint-disable-next-line not-rely-on-time
+        if (block.timestamp >= deadline) revert ChallengeWindowClosed(deadline);
+
+        address caller = _msgSender();
+        address[3] memory panel = escalationPanel[disputeId];
+        bool seated = false;
+        for (uint256 i = 0; i < 3; ++i) {
+            if (panel[i] == caller) {
+                seated = true;
+                break;
+            }
+        }
+        if (!seated) revert NotSeatedJudge(disputeId, caller);
+        if (reviewVotes[disputeId][caller] != VoteType.None) {
+            revert AlreadyVoted();
+        }
+
+        VoteType vote = release ? VoteType.Release : VoteType.Refund;
+        reviewVotes[disputeId][caller] = vote;
+        if (release) {
+            ++escalationReleaseVotes[disputeId];
+        } else {
+            ++escalationRefundVotes[disputeId];
+        }
+        emit ReviewVoteCast(disputeId, caller, vote);
+
+        if (
+            escalationReleaseVotes[disputeId] >= 2 ||
+            escalationRefundVotes[disputeId] >= 2
+        ) {
+            _decideReview(
+                disputeId,
+                escalationReleaseVotes[disputeId] >= 2
+            );
+        }
+    }
+
+
+    /**
+     * @dev Seat three judges who were not on the original panel and are not
+     *      parties. Deterministic like the first selection, salted by the
+     *      review, and bounded by MAX_ARBITRATOR_SEARCH.
+     */
+    function _selectReviewPanel(
+        uint256 disputeId,
+        Dispute storage d
+    ) private view returns (address[3] memory panel) {
+        address[3] memory original = d.arbitrators;
+        uint256 poolSize = arbitratorPool.length;
+        uint256 found = 0;
+        uint256 seatable = 0;
+        for (uint256 i = 0; i < poolSize; ++i) {
+            address c = arbitratorPool[i];
+            if (c == d.buyer || c == d.seller) continue;
+            if (c == original[0] || c == original[1] || c == original[2]) continue;
+            if (!canBeArbitrator(c)) continue;
+            ++seatable;
+        }
+        if (seatable < 3) revert EscalationNotSeatable(seatable);
+
+        uint256 nonce = 0;
+        while (found < 3 && nonce < MAX_ARBITRATOR_SEARCH) {
+            bytes32 h = keccak256(abi.encodePacked(disputeId, nonce, "review"));
+            address candidate = arbitratorPool[uint256(h) % poolSize];
+            ++nonce;
+
+            if (candidate == d.buyer || candidate == d.seller) continue;
+            if (candidate == original[0] || candidate == original[1] || candidate == original[2]) continue;
+            if (!canBeArbitrator(candidate)) continue;
+
+            bool duplicate = false;
+            for (uint256 j = 0; j < found; ++j) {
+                if (panel[j] == candidate) duplicate = true;
+            }
+            if (duplicate) continue;
+
+            panel[found] = candidate;
+            ++found;
+        }
+        if (found < 3) revert EscalationNotSeatable(found);
+    }
+
+    /**
+     * @dev Settle a review: uphold pays the challenger's bond to the majority
+     *      that was challenged; overturn pays the challenger out of the
+     *      challenged majority's seat bonds. Either way every remaining bond is
+     *      released to its owner and the lock is cleared.
+     */
+    function _decideReview(uint256 disputeId, bool reviewRelease) private {
+        Dispute storage d = disputes[disputeId];
+        bool originalRelease = d.releaseVotes > d.refundVotes;
+        bool overturned = reviewRelease != originalRelease;
+        uint256 forfeited = 0;
+        uint256 bond = escalationBond[disputeId];
+
+        // The challenged majority: judges who voted with the original verdict.
+        address[3] memory original = d.arbitrators;
+        for (uint256 i = 0; i < 3; ++i) {
+            address judge = original[i];
+            if (judge == address(0)) continue;
+            VoteType v = votes[disputeId][judge];
+            bool majority =
+                (originalRelease && v == VoteType.Release) ||
+                (!originalRelease && v == VoteType.Refund);
+            uint256 held = seatBonds[disputeId][judge];
+            if (held == 0) continue;
+
+            if (overturned && majority) {
+                // Forfeit to the challenger.
+                seatBonds[disputeId][judge] = 0;
+                lockedBond[judge] -= held;
+                forfeited += held;
+                xomToken.safeTransfer(_challenger(disputeId), held);
+            } else {
+                seatBonds[disputeId][judge] = 0;
+                lockedBond[judge] -= held;
+                xomToken.safeTransfer(judge, held);
+            }
+        }
+
+        if (overturned) {
+            // The challenger recovers the review bond too.
+            if (bond > 0) xomToken.safeTransfer(_challenger(disputeId), bond);
+        } else if (bond > 0) {
+            // Upheld: pay the review bond to the majority that was challenged.
+            uint256 paid = 0;
+            for (uint256 i = 0; i < 3; ++i) {
+                address judge = original[i];
+                if (judge == address(0)) continue;
+                VoteType v = votes[disputeId][judge];
+                bool majority =
+                    (originalRelease && v == VoteType.Release) ||
+                    (!originalRelease && v == VoteType.Refund);
+                if (!majority) continue;
+                uint256 half = bond / 2;
+                xomToken.safeTransfer(judge, half);
+                paid += half;
+            }
+            if (bond > paid) xomToken.safeTransfer(feeVault, bond - paid);
+        }
+
+        challengeDeadline[disputeId] = 0;
+        emit ReviewDecided(disputeId, overturned, forfeited);
+    }
+
+    /// @dev The party that opened the review.
+    function _challenger(uint256 disputeId) private view returns (address) {
+        return reviewChallenger[disputeId];
+    }
+
+    /// @dev Release every remaining seat bond for a dispute.
+    function _releaseBonds(uint256 disputeId, Dispute storage d) private {
+        address[3] memory panel = d.arbitrators;
+        for (uint256 i = 0; i < 3; ++i) {
+            address judge = panel[i];
+            if (judge == address(0)) continue;
+            uint256 held = seatBonds[disputeId][judge];
+            if (held == 0) continue;
+            seatBonds[disputeId][judge] = 0;
+            lockedBond[judge] -= held;
+            xomToken.safeTransfer(judge, held);
+        }
+        seatBondCount[disputeId] = 0;
+        challengeDeadline[disputeId] = 0;
+        emit BondsUnlocked(disputeId);
+    }
+
+    // ══════════════════════════════════════════════════════════════════
     //                       TIMEOUT RESOLUTION
     // ══════════════════════════════════════════════════════════════════
 
     /**
-     * @notice Trigger default resolution after deadline passes
-     * @dev Default: refund to buyer. Anyone can trigger after
-     *      deadline. C-01: Distributes fees. C-02: Triggers escrow
-     *      refund.
-     * @param disputeId Dispute ID
+     * @notice Close a dispute that produced no verdict — never by picking a winner
+     * @dev Replaces "default = refund the buyer", which paid one party for
+     *      stalling and paid every judge for not reading.
+     *
+     *      Round 1: one fresh panel (new selection block, bonds returned to the
+     *      panel that did not decide). Round 2: the status quo — the dispute
+     *      fee is refunded to whoever paid it, the escrow's disputed flag is
+     *      cleared where the escrow supports it, and the parties fall back on
+     *      the escrow's own exits, which decide on delivery evidence instead of
+     *      on who waited longer.
+     *
+     *      Permissionless after the deadline.
+     * @param disputeId Dispute identifier
      */
     function triggerDefaultResolution(
         uint256 disputeId
     ) external nonReentrant {
         Dispute storage d = disputes[disputeId];
-        // M-05: Use createdAt for existence check
         if (d.createdAt == 0) revert DisputeNotFound(disputeId);
         if (
             d.status == DisputeStatus.Resolved ||
@@ -1235,18 +1758,9 @@ contract OmniArbitration is
         ) {
             revert DisputeAlreadyResolved(disputeId);
         }
-        // M-02 (Round 6): Reject PendingSelection disputes -- arbitrators
-        // have not been selected yet, so default resolution is premature.
-        // The dispute creator must call finalizeArbitratorSelection() first.
         if (d.status == DisputeStatus.PendingSelection) {
             revert SelectionNotFinalized(disputeId);
         }
-        // 🛑 ONLY an Active (seated) dispute may default. A Cancelled dispute
-        // has deadline == 0, so the timestamp check below would pass
-        // trivially and `_triggerEscrowResolution` would refund an escrow
-        // that a LATER dispute is still adjudicating — a self-service full
-        // refund for the buyer. Cancelled, Appealed and any future status
-        // must be refused here.
         if (d.status != DisputeStatus.Active) {
             revert DisputeAlreadyResolved(disputeId);
         }
@@ -1255,29 +1769,64 @@ contract OmniArbitration is
             revert DeadlineNotReached(d.deadline);
         }
 
-        d.status = DisputeStatus.DefaultResolved;
-
-        // H-01: Decrement active dispute count for arbitrators
-        for (uint256 i = 0; i < 3; ++i) {
-            if (d.arbitrators[i] != address(0)) {
-                --activeDisputeCount[d.arbitrators[i]];
-            }
+        // A 2-vote majority resolves in castVote; reaching here means none.
+        if (d.releaseVotes >= 2 || d.refundVotes >= 2) {
+            revert DisputeAlreadyResolved(disputeId);
         }
 
-        // C-01: Distribute collected fees
-        _collectAndDistributeFee(disputeId);
+        // Round 1 → seat one fresh panel with a new selection block.
+        if (!reselected[disputeId]) {
+            reselected[disputeId] = true;
+            for (uint256 i = 0; i < 3; ++i) {
+                address judge = d.arbitrators[i];
+                if (judge == address(0)) continue;
+                --activeDisputeCount[judge];
+                d.arbitrators[i] = address(0);
+            }
+            d.releaseVotes = 0;
+            d.refundVotes = 0;
+            d.deadline = 0;
+            d.selectionBlock = block.number;
+            d.status = DisputeStatus.PendingSelection;
+            emit ArbitratorReselectionScheduled(disputeId, block.number);
+            return;
+        }
 
-        // C-02: Default is refund to buyer
-        _triggerEscrowResolution(d.escrowId, false);
+        // Round 2 → status quo. No winner, no fee kept.
+        d.status = DisputeStatus.Cancelled;
+        for (uint256 i = 0; i < 3; ++i) {
+            address judge = d.arbitrators[i];
+            if (judge == address(0)) continue;
+            --activeDisputeCount[judge];
+        }
+        uint256 refunded = d.disputeFee;
+        d.disputeFee = 0;
+        if (refunded > 0 && d.feePayer != address(0)) {
+            xomToken.safeTransfer(d.feePayer, refunded);
+        }
+        _tryUnmarkDisputed(d.escrowId);
+        _releaseBonds(disputeId, d);
 
-        emit DisputeDefaultResolved(disputeId, _msgSender());
-        emit DisputeResolved(
-            disputeId,
-            VoteType.Refund,
-            d.releaseVotes,
-            d.refundVotes
-        );
+        emit DisputeReturnedToStatusQuo(disputeId, refunded);
     }
+
+    /**
+     * @dev Ask the escrow to clear its disputed flag, without letting an escrow
+     *      that predates {unmarkDisputed} block the cancel. The old
+     *      MinimalEscrow has no such function; its escrow stays frozen until
+     *      its own exits apply, which is recorded in the event trail rather
+     *      than reverting the whole call.
+     */
+    function _tryUnmarkDisputed(uint256 escrowId) private {
+        // solhint-disable-next-line avoid-low-level-calls
+        (bool ok, ) = address(escrow).call(
+            abi.encodeWithSignature("unmarkDisputed(uint256)", escrowId)
+        );
+        if (!ok) {
+            emit EscrowUnmarkFailed(escrowId);
+        }
+    }
+
 
     // ══════════════════════════════════════════════════════════════════
     //                          VIEW FUNCTIONS
@@ -1519,6 +2068,13 @@ contract OmniArbitration is
         Dispute storage d = disputes[disputeId];
         d.status = DisputeStatus.Resolved;
 
+        // Bonds stay locked for CHALLENGE_WINDOW: a verdict is final in the
+        // escrow, but the judges' capital is still at risk to the party that
+        // ends up harmed. No reversal, so the escrow keeps its one-way
+        // resolution guarantee.
+        // solhint-disable-next-line not-rely-on-time
+        challengeDeadline[disputeId] = block.timestamp + CHALLENGE_WINDOW;
+
         // H-01: Release the original panel's stake locks now that the
         // dispute is resolved.
         for (uint256 i = 0; i < 3; ++i) {
@@ -1560,20 +2116,21 @@ contract OmniArbitration is
         // Zero out fee to prevent double-distribution
         d.disputeFee = 0;
 
-        // Each arbitrator receives 30% of the total fee; the vault
-        // receives the remaining 10% (absorbs rounding dust).
+        // Pay ONLY the judges who voted (2026-10-20). Paying an absent judge
+        // pays for absence, and absence is the cheapest way to stall a panel.
+        // A non-voter's share stays in the vault.
         uint256 perArb = (fee * PER_ARBITRATOR_FEE_SHARE) / BPS;
-        uint256 arbitratorsTotal = perArb * 3;
-        uint256 vaultAmount = fee - arbitratorsTotal;
-
+        uint256 arbitratorsTotal = 0;
         for (uint256 i = 0; i < 3; ++i) {
+            address judge = d.arbitrators[i];
+            if (judge == address(0)) continue;
+            if (votes[disputeId][judge] == VoteType.None) continue;
             if (perArb > 0) {
-                xomToken.safeTransfer(
-                    d.arbitrators[i],
-                    perArb
-                );
+                xomToken.safeTransfer(judge, perArb);
+                arbitratorsTotal += perArb;
             }
         }
+        uint256 vaultAmount = fee - arbitratorsTotal;
 
         // Fee vault share (10%)
         if (vaultAmount > 0) {
@@ -1685,7 +2242,7 @@ contract OmniArbitration is
                 candidate != seller &&
                 arbitratorStakes[candidate] >=
                     minArbitratorStake &&
-                participation.canBeServiceNode(candidate)
+                canBeArbitrator(candidate)
             );
 
             if (valid) {

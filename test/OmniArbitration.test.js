@@ -35,7 +35,8 @@ describe("OmniArbitration", function () {
     Appealed: 2,
     DefaultResolved: 3,
     PendingSelection: 4,
-    AppealPendingSelection: 5
+    AppealPendingSelection: 5,
+    Cancelled: 6
   };
 
   /**
@@ -52,6 +53,21 @@ describe("OmniArbitration", function () {
     const disputeId = (await arbitration.nextDisputeId()) - 1n;
     await arbitration.connect(caller).finalizeArbitratorSelection(disputeId);
     return disputeId;
+  }
+
+  /**
+   * Helper: post the seat bond for every judge seated on a dispute.
+   * The panel hardening requires it before any vote (2026-10-20).
+   */
+  async function postSeatBonds(disputeId) {
+    const dispute = await arbitration.getDispute(disputeId);
+    const bond = await arbitration.seatBondFor(disputeId);
+    for (const addr of dispute.arbitrators) {
+      if (addr === ethers.ZeroAddress) continue;
+      const signer = arbitrators.find((a) => a.address === addr);
+      await arbitration.connect(signer).postSeatBond(disputeId);
+    }
+    return bond;
   }
 
   // ─────────────────────────────────────────────────────────────────────
@@ -92,13 +108,16 @@ describe("OmniArbitration", function () {
     );
 
     // ── Register 10 arbitrators ──
+    // Arbitrator qualification is its own gate now (pioneer founder allowlist
+    // OR KYC tier 2, plus the stake). The fixture uses the allowlist; the
+    // KYC path is covered in the panel-hardening suite.
     for (const arb of arbitrators) {
       await participation.setCanBeValidator(arb.address, true);
       await participation.setCanBeServiceNode(arb.address, true);
-      await participation.setCanBeServiceNode(arb.address, true);
       await participation.setTotalScore(arb.address, 75);
-      await xom.mint(arb.address, ethers.parseEther("20000"));
-      await xom.connect(arb).approve(await arbitration.getAddress(), ethers.parseEther("20000"));
+      await arbitration.setFounderArbitrator(arb.address, true);
+      await xom.mint(arb.address, ethers.parseEther("200000"));
+      await xom.connect(arb).approve(await arbitration.getAddress(), ethers.MaxUint256);
       await arbitration.connect(arb).registerArbitrator(STAKE_AMOUNT);
     }
 
@@ -153,8 +172,8 @@ describe("OmniArbitration", function () {
       // Use a fresh signer to test registration from scratch
       const signers = await ethers.getSigners();
       const newArb = signers[16];
-      await participation.setCanBeValidator(newArb.address, true);
-      await participation.setCanBeServiceNode(newArb.address, true);
+      // Arbitrator qualification is its own gate: founder allowlist or KYC 2.
+      await arbitration.setFounderArbitrator(newArb.address, true);
       await xom.mint(newArb.address, ethers.parseEther("20000"));
       await xom.connect(newArb).approve(await arbitration.getAddress(), ethers.parseEther("20000"));
 
@@ -180,8 +199,7 @@ describe("OmniArbitration", function () {
     it("should reject registration with insufficient stake", async function () {
       const signers = await ethers.getSigners();
       const newArb = signers[18];
-      await participation.setCanBeValidator(newArb.address, true);
-      await participation.setCanBeServiceNode(newArb.address, true);
+      await arbitration.setFounderArbitrator(newArb.address, true);
       const lowStake = ethers.parseEther("5000");
       await xom.mint(newArb.address, lowStake);
       await xom.connect(newArb).approve(await arbitration.getAddress(), lowStake);
@@ -395,6 +413,9 @@ describe("OmniArbitration", function () {
       arbSigners = disputeArbs.map((addr) =>
         arbitrators.find((a) => a.address === addr)
       );
+
+      // Panel hardening: no vote without a seat bond.
+      await postSeatBonds(1);
     });
 
     it("should allow assigned arbitrator to cast Release vote", async function () {
@@ -497,36 +518,51 @@ describe("OmniArbitration", function () {
       await createAndFinalizeDispute(buyer, 1);
     });
 
-    it("should allow default resolution after deadline", async function () {
+    it("reseats a fresh panel instead of deciding a winner", async function () {
       await time.increase(SEVEN_DAYS + 1);
 
       const tx = await arbitration.connect(buyer).triggerDefaultResolution(1);
-      await expect(tx).to.emit(arbitration, "DisputeDefaultResolved").withArgs(1, buyer.address);
-      await expect(tx)
-        .to.emit(arbitration, "DisputeResolved")
-        .withArgs(1, VoteType.Refund, 0, 0);
+      await expect(tx).to.emit(arbitration, "ArbitratorReselectionScheduled");
+
+      const dispute = await arbitration.getDispute(1);
+      expect(dispute.status).to.equal(DisputeStatus.PendingSelection);
+      // No winner was picked and no fee was distributed.
+      expect(await arbitration.nextDisputeId()).to.equal(2n);
     });
 
-    it("should set status to DefaultResolved", async function () {
+    it("returns the dispute to the status quo and refunds the fee when the second round also fails", async function () {
       await time.increase(SEVEN_DAYS + 1);
       await arbitration.connect(buyer).triggerDefaultResolution(1);
 
+      // Second round: reselect, finalize, let it time out again.
+      await ethers.provider.send("evm_mine", []);
+      await ethers.provider.send("evm_mine", []);
+      await arbitration.connect(buyer).finalizeArbitratorSelection(1);
+      await time.increase(SEVEN_DAYS + 1);
+
+      const before = await xom.balanceOf(buyer.address);
+      const tx = await arbitration.connect(buyer).triggerDefaultResolution(1);
+      await expect(tx).to.emit(arbitration, "DisputeReturnedToStatusQuo");
+
       const dispute = await arbitration.getDispute(1);
-      expect(dispute.status).to.equal(DisputeStatus.DefaultResolved);
+      expect(dispute.status).to.equal(DisputeStatus.Cancelled);
+      const after = await xom.balanceOf(buyer.address);
+      // The fee payer is made whole: 5% of the disputed amount comes back.
+      expect(after - before).to.equal((ESCROW_AMOUNT * 500n) / 10000n);
     });
 
-    it("should reject default resolution before deadline", async function () {
+    it("rejects default resolution before deadline", async function () {
       await expect(
         arbitration.connect(buyer).triggerDefaultResolution(1)
       ).to.be.revertedWithCustomError(arbitration, "DeadlineNotReached");
     });
 
     it("should reject default resolution on already resolved dispute", async function () {
-      // Resolve via votes first
       const dispute = await arbitration.getDispute(1);
       const arbSigners = dispute.arbitrators.map((addr) =>
         arbitrators.find((a) => a.address === addr)
       );
+      await postSeatBonds(1);
       await arbitration.connect(arbSigners[0]).castVote(1, VoteType.Release);
       await arbitration.connect(arbSigners[1]).castVote(1, VoteType.Release);
 
@@ -536,37 +572,33 @@ describe("OmniArbitration", function () {
       ).to.be.revertedWithCustomError(arbitration, "DisputeAlreadyResolved");
     });
 
-    it("should allow anyone to trigger default resolution", async function () {
+    it("allows anyone to trigger the timeout path", async function () {
       await time.increase(SEVEN_DAYS + 1);
-
-      // Even 'other' (non-party) can trigger default resolution
       const tx = await arbitration.connect(other).triggerDefaultResolution(1);
-      await expect(tx).to.emit(arbitration, "DisputeDefaultResolved").withArgs(1, other.address);
+      await expect(tx).to.emit(arbitration, "ArbitratorReselectionScheduled");
     });
 
     it("atomic-revert: a failed escrow fund-move reverts the whole verdict and stays re-callable", async function () {
-      // B2 fix: _triggerEscrowResolution is a direct (non-swallowed) call, so
-      // when the escrow fund-move reverts the verdict must NOT finalize — and
-      // the dispute stays re-callable once the fault clears (vs. the old
-      // swallow, which finalized the verdict while funds stayed locked).
-      await time.increase(SEVEN_DAYS + 1);
-      await mockEscrow.setResolveShouldRevert(true);
+      const dispute = await arbitration.getDispute(1);
+      const arbSigners = dispute.arbitrators.map((addr) =>
+        arbitrators.find((a) => a.address === addr)
+      );
+      await postSeatBonds(1);
+      await arbitration.connect(arbSigners[0]).castVote(1, VoteType.Release);
 
+      // The second vote is the majority: the escrow call happens here, and its
+      // failure must revert the whole verdict.
+      await mockEscrow.setResolveShouldRevert(true);
       await expect(
-        arbitration.connect(buyer).triggerDefaultResolution(1)
+        arbitration.connect(arbSigners[1]).castVote(1, VoteType.Release)
       ).to.be.reverted;
 
-      // Verdict did NOT finalize — dispute still Active, escrow unresolved.
-      let dispute = await arbitration.getDispute(1);
-      expect(dispute.status).to.equal(DisputeStatus.Active);
-      expect(await mockEscrow.resolved(1)).to.equal(false);
-
-      // Once the fault clears, the SAME call succeeds (permissionless retry).
+      // Once the fault clears the same vote goes through and finalizes.
       await mockEscrow.setResolveShouldRevert(false);
-      await arbitration.connect(buyer).triggerDefaultResolution(1);
-      dispute = await arbitration.getDispute(1);
-      expect(dispute.status).to.equal(DisputeStatus.DefaultResolved);
-      expect(await mockEscrow.resolved(1)).to.equal(true);
+      await arbitration.connect(arbSigners[1]).castVote(1, VoteType.Release);
+
+      const after = await arbitration.getDispute(1);
+      expect(after.status).to.equal(DisputeStatus.Resolved);
     });
   });
 
@@ -618,8 +650,7 @@ describe("OmniArbitration", function () {
       // Registering should fail while paused
       const signers = await ethers.getSigners();
       const newArb = signers[19];
-      await participation.setCanBeValidator(newArb.address, true);
-      await participation.setCanBeServiceNode(newArb.address, true);
+      await arbitration.setFounderArbitrator(newArb.address, true);
       await xom.mint(newArb.address, ethers.parseEther("20000"));
       await xom.connect(newArb).approve(await arbitration.getAddress(), ethers.parseEther("20000"));
 
@@ -635,8 +666,8 @@ describe("OmniArbitration", function () {
       // Should work again after unpause
       const signers = await ethers.getSigners();
       const newArb = signers[19];
-      await participation.setCanBeValidator(newArb.address, true);
-      await participation.setCanBeServiceNode(newArb.address, true);
+      // Own qualification gate: founder allowlist (or KYC tier 2) + stake.
+      await arbitration.setFounderArbitrator(newArb.address, true);
       await xom.mint(newArb.address, ethers.parseEther("20000"));
       await xom.connect(newArb).approve(await arbitration.getAddress(), ethers.parseEther("20000"));
       await expect(arbitration.connect(newArb).registerArbitrator(STAKE_AMOUNT)).to.not.be.reverted;
@@ -824,7 +855,8 @@ describe("OmniArbitration", function () {
         arbitrators.find((a) => a.address === addr)
       );
 
-      // Resolve with 2-of-3
+      // Resolve with 2-of-3 (seat bonds first — no vote without one)
+      await postSeatBonds(1);
       await arbitration.connect(arbSigners[0]).castVote(1, VoteType.Release);
       await arbitration.connect(arbSigners[1]).castVote(1, VoteType.Release);
 
