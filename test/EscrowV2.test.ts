@@ -145,7 +145,12 @@ describe('EscrowV2 — per-escrow settlement token', function () {
     const Registry = await ethers.getContractFactory('MockFirstSaleRegistry');
     registry = await Registry.deploy();
 
-    const Escrow = await ethers.getContractFactory('EscrowV2');
+    const Escrow = await ethers.getContractFactory('EscrowV2', {
+      libraries: {
+        EscrowFeeRouter: await deployLib('EscrowFeeRouter'),
+        EscrowPrivacyOps: await deployLib('EscrowPrivacyOps')
+      }
+    });
     escrow = await Escrow.deploy(
       await xom.getAddress(),
       await pxom.getAddress(),

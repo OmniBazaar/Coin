@@ -37,8 +37,32 @@ async function main() {
 
   const out = { deployedAt: new Date().toISOString(), deployer: deployer.address };
 
+  console.log("== Escrow linked libraries ==");
+  // EscrowV2 is under the EIP-170 limit only because its fee routing and
+  // privacy entry points live in these two external libraries. Both are
+  // deployed ONCE and shared by the escrow; they hold no state and are never
+  // upgraded.
+  const FeeRouter = await ethers.getContractFactory("EscrowFeeRouter");
+  const feeRouter = await FeeRouter.deploy();
+  await feeRouter.waitForDeployment();
+  out.escrowFeeRouter = await feeRouter.getAddress();
+  out.escrowFeeRouterTx = feeRouter.deploymentTransaction()?.hash ?? "";
+  console.log(out.escrowFeeRouter, out.escrowFeeRouterTx);
+
+  const PrivacyOps = await ethers.getContractFactory("EscrowPrivacyOps");
+  const privacyOps = await PrivacyOps.deploy();
+  await privacyOps.waitForDeployment();
+  out.escrowPrivacyOps = await privacyOps.getAddress();
+  out.escrowPrivacyOpsTx = privacyOps.deploymentTransaction()?.hash ?? "";
+  console.log(out.escrowPrivacyOps, out.escrowPrivacyOpsTx);
+
   console.log("== EscrowV2 (revision) ==");
-  const Escrow = await ethers.getContractFactory("EscrowV2");
+  const Escrow = await ethers.getContractFactory("EscrowV2", {
+    libraries: {
+      EscrowFeeRouter: out.escrowFeeRouter,
+      EscrowPrivacyOps: out.escrowPrivacyOps,
+    },
+  });
   const escrow = await Escrow.deploy(xom, pxom, registry, vault, 100n, forwarder);
   await escrow.waitForDeployment();
   out.escrowV2 = await escrow.getAddress();

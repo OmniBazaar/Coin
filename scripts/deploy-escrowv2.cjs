@@ -116,7 +116,17 @@ async function main() {
 
   // ── Deploy ─────────────────────────────────────────────────────────────
   console.log("\n-- deploy --");
-  const Escrow = await ethers.getContractFactory("EscrowV2");
+  // EscrowV2 links two external libraries (fee routing + privacy entry
+  // points) — they are deployed once and shared, and hold no state.
+  const libs = {};
+  for (const name of ["EscrowFeeRouter", "EscrowPrivacyOps"]) {
+    const L = await ethers.getContractFactory(name);
+    const l = await L.deploy();
+    await l.waitForDeployment();
+    libs[name] = await l.getAddress();
+    console.log(`${name}:`, libs[name]);
+  }
+  const Escrow = await ethers.getContractFactory("EscrowV2", { libraries: libs });
   const escrow = await Escrow.deploy(
     omniCoin,
     privateOmniCoin,

@@ -22,7 +22,14 @@ proposed**. Nothing in this document has been broadcast.
    (≈ 9–10 days total). Proposal threshold: 1.7M XOM of voting power.
 4. Execute (permissionless once the timelock matures).
 5. Deployer wiring — `scripts/post-revision-wiring.cjs`
-6. Verify with a real sale (§Verification).
+6. Record the new addresses: copy `escrowV2`, `escrowFeeRouter`,
+   `escrowPrivacyOps` from `deployments/revision-2026-10.json` into
+   `deployments/mainnet.json` (`contracts.EscrowV2`, plus two new keys for the
+   libraries), then run `node scripts/sync-contract-addresses.js mainnet` from
+   the repo root so `omnicoin-integration.ts` (and its three copies) match.
+   The libraries are deployed once and shared; never redeploy them for an
+   escrow change.
+7. Verify with a real sale (§Verification).
 
 ## The four proposal actions
 
@@ -48,14 +55,27 @@ escrows stay at the old address; they are all test data (v1 has
 - **Zero live disputes.** `nextDisputeId == 1` on the arbitration proxy — no
   dispute has ever been created, so the `Dispute` struct change (added
   `feePayer`) and the new `Cancelled` status have no migration.
-- **Judge pool.** The two registered judges (`omnirick`, `rickcrites`) are
-  allowlist-qualified; the new `canBeServiceNode` honours the allowlist, so
-  they remain selectable. A third judge is required before disputes can be
-  filed: `omnibazaar_marketing` (0x824b…) is allowlisted and holds 100,000
-  XOM — it only needs to call `registerArbitrator(10000e18)` from that
-  account. **Do not propose before a third judge is registered**, or every
-  `createDispute` reverts `ArbitrationPoolNotSeated` (fail-closed; no fee is
-  taken).
+- **Judge pool — corrected 2026-10-20.** The earlier note here said "do not
+  propose before a third judge is registered". That ordering is **impossible**
+  and must not be used as a gate. Verified on chain 2026-10-20: the *deployed*
+  `OmniParticipation.canBeServiceNode` returns **false** for `omnirick`,
+  `rickcrites` **and** `omnibazaar_marketing` — the live gate does not honour
+  the pioneer founder allowlist (only `canBeValidator` does, which is how the
+  first two registered under the older arbitration build). Since
+  `OmniArbitration.registerArbitrator` calls `canBeServiceNode`, **no one** can
+  register until this proposal executes action 2 (the Participation upgrade
+  that adds the bypass). Sequence therefore:
+  1. propose and execute (the pool stays at 2 during the vote);
+  2. `omnibazaar_marketing` (`0x824b…2683`, holds 100,000 XOM, allowlisted)
+     calls `registerArbitrator(10000e18)` — see
+     `INSTRUCTION_CHRIS_ARBITRATOR_REGISTRATION_2026-10-20.md`;
+  3. only then can `createDispute` seat a panel.
+  Between execution and step 2 every `createDispute` reverts
+  `ArbitrationPoolNotSeated` — fail-closed, no fee taken. That window is
+  expected and must be announced, not treated as a defect.
+  The two existing judges' stakes survive the upgrade; `_seatableJudges`
+  filters on `canBeServiceNode`, which becomes true for all three allowlisted
+  accounts the moment action 2 lands.
 - **Escrow pointer.** The arbitration proxy currently points at
   `0x246Da6DF…`, a different escrow build. Action 4 repoints it.
 - **Vault admin.** `DEFAULT_ADMIN_ROLE` on the vault is the timelock; the

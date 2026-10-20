@@ -132,6 +132,50 @@ module.exports = {
     // + P2P settlement surface. Use `runs: 1` to aggressively minimise
     // deployed bytecode (trades per-call gas cost for bytecode size).
     overrides: {
+      // EscrowV2 crossed the 24,576-byte EIP-170 limit with the 2026-10
+      // governance revision (node attribution, unmarkDisputed, per-escrow
+      // token) — 27,290 bytes at runs: 200. Two changes fit it: the
+      // marketplace-fee routing + first-sale bridge moved to the linked
+      // library contracts/libraries/EscrowFeeRouter.sol, and `runs: 1` here.
+      // Same trade-off as UnifiedFeeVault / OmniRegistration below: slightly
+      // higher per-call gas for a much smaller runtime. `bytecodeHash: none`
+      // strips the 53-byte CBOR metadata trailer.
+      "contracts/EscrowV2.sol": {
+        version: "0.8.24",
+        settings: {
+          optimizer: {
+            enabled: true,
+            runs: 1,
+            details: {
+              yul: true
+            }
+          },
+          viaIR: true,
+          evmVersion: "paris",
+          metadata: {
+            bytecodeHash: "none"
+          }
+        }
+      },
+      // The linked fee-routing library. Compiled with the same settings as
+      // its only caller so a single `solc` invocation links both.
+      "contracts/libraries/EscrowFeeRouter.sol": {
+        version: "0.8.24",
+        settings: {
+          optimizer: {
+            enabled: true,
+            runs: 1,
+            details: {
+              yul: true
+            }
+          },
+          viaIR: true,
+          evmVersion: "paris",
+          metadata: {
+            bytecodeHash: "none"
+          }
+        }
+      },
       "contracts/UnifiedFeeVault.sol": {
         version: "0.8.24",
         settings: {
