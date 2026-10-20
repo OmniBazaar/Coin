@@ -4,7 +4,8 @@ pragma solidity 0.8.24;
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {MpcCore, gtUint64, ctUint64} from "../../coti-contracts/contracts/utils/mpc/MpcCore.sol";
-import {Escrow} from "../interfaces/EscrowV2Types.sol";
+import {Escrow, FeeAttribution, FeeBeneficiaries} from "../interfaces/EscrowV2Types.sol";
+import {EscrowFeeRouter} from "./EscrowFeeRouter.sol";
 
 /**
  * @title EscrowPrivacyOps
@@ -50,10 +51,10 @@ library EscrowPrivacyOps {
         uint256 expiry
     );
     event PrivateEscrowResolved(uint256 indexed escrowId, address indexed recipient);
-    event MarketplaceFeeCollected(
+    event MarketplaceFeeSplit(
         uint256 indexed escrowId,
-        address indexed feeCollector,
-        uint256 indexed feeAmount
+        address indexed token,
+        uint256 feeAmount
     );
     event FundsClaimable(
         address indexed user,
@@ -152,8 +153,8 @@ library EscrowPrivacyOps {
      * @param claimable token => user => claimable (escrow storage slot)
      * @param totalClaimable token => claimable total (escrow storage slot)
      * @param pXom Private OmniCoin (pXOM) token
-     * @param feeVault UnifiedFeeVault address
      * @param feeBps Marketplace fee in basis points
+     * @param beneficiaries ODDAO / staking / treasury on this chain
      * @param escrowId Private escrow to release
      * @param caller Address that called the escrow (already resolved)
      */
@@ -165,8 +166,8 @@ library EscrowPrivacyOps {
         mapping(address => mapping(address => uint256)) storage claimable,
         mapping(address => uint256) storage totalClaimable,
         address pXom,
-        address feeVault,
         uint256 feeBps,
+        FeeBeneficiaries memory beneficiaries,
         uint256 escrowId,
         address caller
     ) external {
@@ -185,14 +186,23 @@ library EscrowPrivacyOps {
 
             totalEscrowed[pXom] -= amount;
 
-            // Deduct the marketplace fee before paying the seller
+            // Deduct the marketplace fee before paying the seller. V4: the
+            // fee is split in kind on THIS chain (nine pull-pattern credits),
+            // never transferred to a cross-chain vault.
             uint256 feeAmount = (amount * feeBps) / 10_000;
             uint256 sellerAmount = amount - feeAmount;
 
             if (feeAmount > 0) {
-                IERC20(pXom).safeTransfer(feeVault, feeAmount);
-                totalMarketplaceFees[pXom] += feeAmount;
-                emit MarketplaceFeeCollected(escrowId, feeVault, feeAmount);
+                EscrowFeeRouter.splitInKind(
+                    claimable,
+                    totalClaimable,
+                    totalMarketplaceFees,
+                    escrowId,
+                    pXom,
+                    feeAmount,
+                    FeeAttribution(address(0), address(0), address(0), address(0)),
+                    beneficiaries
+                );
             }
             // M-02 (Round 6): pull pattern for private escrow release
             claimable[pXom][escrow.seller] += sellerAmount;

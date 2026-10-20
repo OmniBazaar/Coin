@@ -4,13 +4,42 @@ pragma solidity 0.8.24;
 /**
  * @title EscrowV2Types
  * @author OmniCoin Development Team
- * @notice Shared storage struct for EscrowV2 and its linked fee-routing
- *         library.
+ * @notice Shared structs for EscrowV2 and its linked libraries.
  * @dev Declared at file level so that `EscrowV2` and `EscrowFeeRouter` refer
  *      to the SAME Solidity type: a library function can only take a
  *      `mapping(uint256 => Escrow) storage` pointer if both sides agree on the
- *      struct definition. Field order and types are the storage layout — do
- *      not reorder or resize a field.
+ *      struct definition. `Escrow` field order and types are the storage
+ *      layout — do not reorder or resize a field.
+ */
+/**
+ * @notice The four fee-attribution recipients an escrow can claim at
+ *         creation, plus the escrow-specific records
+ * @dev Grouped into a memory struct so the fee-splitting library call stays
+ *      within the EVM's stack limit (`FeeAttribution` replaces four separate
+ *      address arguments).
+ */
+struct FeeAttribution {
+    address referrer;    // primary referrer (zero → ODDAO)
+    address referrer2;   // second-level referrer (zero → ODDAO)
+    address listingNode; // node that hosted the listing (zero → ODDAO)
+    address sellingNode; // node that served the sale (zero → ODDAO)
+}
+
+/**
+ * @notice The three protocol-owned recipients of the in-kind 1% split
+ * @dev Set at deploy. The escrow pays its own chain's fee in the sale token
+ *      (referential recipients included), so it needs the local addresses of
+ *      the ODDAO, staking-pool and treasury sinks — it no longer reads a
+ *      cross-chain fee vault.
+ */
+struct FeeBeneficiaries {
+    address oddao;
+    address stakingPool;
+    address treasury;
+}
+
+/**
+ * @notice Recorded state of one escrowed sale
  */
 struct Escrow {
     address buyer;        // slot 0: 20 bytes

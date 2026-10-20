@@ -2,34 +2,7 @@
 pragma solidity 0.8.24;
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
-
-/**
- * @title IFeeVaultMarketplaceDeposit
- * @notice Minimal interface to UnifiedFeeVault's referral-aware
- *         marketplace-fee deposit entry point
- * @dev The calling escrow must hold DEPOSITOR_ROLE on the vault and approve
- *      the vault for exactly 1% of `saleAmount` before calling.
- */
-interface IFeeVaultMarketplaceDeposit {
-    /**
-     * @notice Deposit and distribute a 1% marketplace fee with attribution
-     * @param token Fee token (the escrow's own token)
-     * @param saleAmount Gross sale amount (vault pulls saleAmount / 100)
-     * @param referrer Primary referrer (zero routes share to ODDAO)
-     * @param referrerL2 Second-level referrer (zero routes share to ODDAO)
-     * @param listingNode Listing node (zero routes share to ODDAO)
-     * @param sellingNode Selling node (zero routes share to ODDAO)
-     */
-    function depositMarketplaceFee(
-        address token,
-        uint256 saleAmount,
-        address referrer,
-        address referrerL2,
-        address listingNode,
-        address sellingNode
-    ) external;
-}
+import {FeeAttribution, FeeBeneficiaries} from "../interfaces/EscrowV2Types.sol";
 
 /**
  * @title IFirstSaleRegistry
@@ -50,47 +23,43 @@ interface IFirstSaleRegistry {
 /**
  * @title EscrowFeeRouter
  * @author OmniCoin Development Team
- * @notice External library that performs EscrowV2's marketplace-fee routing
- *         and first-sale bonus bridge.
+ * @notice External library that performs EscrowV2's per-chain marketplace-fee
+ *         split and first-sale bonus bridge.
  * @dev Extracted from `EscrowV2` on 2026-10-20 to bring the contract under the
  *      24,576-byte EIP-170 limit (it was 27,290 bytes deployed). Solidity
  *      links `external` library functions via DELEGATECALL, so every function
  *      here executes inside the ESCROW's storage context: the mapping
  *      references passed in resolve to the escrow's slots, and the events
- *      emitted here are logged at the escrow's address with the exact same
- *      topics as before the move. The library declares no state variables.
+ *      emitted here are logged at the escrow's address. The library declares
+ *      no state variables.
 
- *      Behaviour is intended to be IDENTICAL to the code it replaces. Any
- *      change in this file is a money-path change and needs a full audit.
+ *      DECOUPLED FROM THE FEE VAULT (2026-10-20, founder decision 3): the
+ *      escrow now pays the whole 1% IN KIND, ON ITS OWN CHAIN, in the token it
+ *      holds. There is no cross-chain `UnifiedFeeVault` call and no vault
+ *      allowlist read; the nine slices land in the escrow's own pull-pattern
+ *      `claimable` ledger (referrer, referrer2, listing node, selling node,
+ *      ODDAO, staking pool, treasury). Every payment is a credit, never a
+ *      transfer, so a token that blacklists or refuses a recipient can never
+ *      block a release. Any change in this file is a money-path change and
+ *      needs a full audit.
  */
-/**
- * @title IFeeVaultTokenAllowlist
- * @notice The subset of UnifiedFeeVault's payment-token allowlist the escrow uses.
- */
-interface IFeeVaultTokenAllowlist {
-    function supportedPaymentTokens(address token) external view returns (bool);
-}
-
 library EscrowFeeRouter {
-    using SafeERC20 for IERC20;
-
     /// @dev Mirrored from EscrowV2 — identical signatures, identical selectors,
     ///      so client-side error decoding is unchanged.
     error InvalidAddress();
     error TokenNotSupported();
-    error AllowlistUnavailable();
     error CannotMixPrivacyModes();
     error BadAttribution();
     error BadReferrer();
 
-    /// @notice Emitted when marketplace fee is collected on escrow release
+    /// @notice Emitted when the marketplace fee is split in kind on release
     /// @param escrowId Escrow identifier
-    /// @param feeCollector Address receiving the fee
-    /// @param feeAmount Fee amount collected
-    event MarketplaceFeeCollected(
+    /// @param token Token the fee was taken in (the escrow's own token)
+    /// @param feeAmount Total fee split across the nine slices
+    event MarketplaceFeeSplit(
         uint256 indexed escrowId,
-        address indexed feeCollector,
-        uint256 indexed feeAmount
+        address indexed token,
+        uint256 feeAmount
     );
 
     /// @notice Emitted when funds are credited to pull-based claimable balance
@@ -123,121 +92,165 @@ library EscrowFeeRouter {
         uint256 arbitratorShare
     );
 
-    /// @notice Emitted when a fee transfer was refused and retained as surplus
-    /// @param token Token that refused the transfer
-    /// @param amount Amount left in the contract
-    event FeeTransferDeferred(address indexed token, uint256 indexed amount);
+    /// @notice Basis-points denominator
+    uint256 internal constant BPS = 10_000;
 
+    /// @notice 70% slice (ODDAO of each component, primary of each pair)
+    uint256 internal constant PRIMARY_BPS = 7_000;
 
-    /// @notice Emitted when a marketplace fee transfer is waived. Settlement is
-    ///         never blocked by fee routing; the protocol forgoes the fee
-    ///         (which stays in the contract as surplus) rather than the sale.
-    /// @param escrowId Escrow identifier
-    /// @param token Escrow token whose fee could not be transferred
-    /// @param feeAmount Fee that was waived (retained as protocol surplus)
-    event MarketplaceFeeWaived(
-        uint256 indexed escrowId,
-        address indexed token,
-        uint256 indexed feeAmount
-    );
+    /// @notice 20% slice (secondary of each pair)
+    uint256 internal constant SECONDARY_BPS = 2_000;
 
     /**
-     * @notice Deduct the marketplace fee from a released escrow and route it to
-     *         the fee vault, referral-aware when possible
-     * @dev Prefers `UnifiedFeeVault.depositMarketplaceFee` so the canonical
-     *      9-way split runs (referral / listing-node / selling-node slices).
-     *      Falls back to a plain transfer to the vault when the call cannot
-     *      succeed (no DEPOSITOR_ROLE, vault paused, sub-minimum sale), and
-     *      waives the fee (keeping it as surplus) when the token itself
-     *      refuses the transfer. A release is therefore never blocked by fee
-     *      routing.
-     * @param totalMarketplaceFees Running per-token total (escrow storage slot)
-     * @param escrowId Escrow identifier (for referral lookup + events)
+     * @notice Deduct the marketplace fee from a released escrow and split it
+     *         in kind across the nine canonical recipients
+     * @dev Canonical schedule (founder-ruled 2026-06-12), each component split
+     *      70/20/10 with the 10% remainder and any rounding dust to ODDAO:
+     *        transaction 25% of the fee → ODDAO / staking / treasury
+     *        referral    50% of the fee → referrer / referrer2 / ODDAO
+     *        listing     25% of the fee → listing node / selling node / ODDAO
+     *      (the referral and listing 10% remainders are ODDAO's; the
+     *      transaction 10% remainder is the protocol treasury's)
+     *      A zero attribution address routes its slice to ODDAO. Slices are
+     *      credited to the escrow's pull-pattern `claimable` ledger, so no
+     *      recipient can block settlement and no token transfer is attempted
+     *      here (the escrow already holds the fee).
+     * @param claimable token => user => credited amount (escrow storage slot)
+     * @param totalClaimable token => credited total (escrow storage slot)
+     * @param totalMarketplaceFees token => lifetime fee total (escrow slot)
+     * @param escrowId Escrow identifier (for events)
      * @param token Fee token — the escrow's own token
      * @param amount Gross escrow amount being released
      * @param feeBps Marketplace fee in basis points (pinned to 100 on chain)
-     * @param feeVault UnifiedFeeVault address
-     * @param referrer Primary referrer for this escrow (zero → ODDAO)
-     * @param referrer2 Second-level referrer (zero → ODDAO)
-     * @param listingNode Node that hosted the listing (zero → ODDAO)
-     * @param sellingNode Node that served the sale (zero → ODDAO)
+     * @param attribution Referrers + nodes recorded for this escrow
+     * @param beneficiaries ODDAO / staking / treasury addresses on this chain
      * @return sellerAmount Net amount owed to the seller (amount - fee)
      */
     function collectMarketplaceFee(
+        mapping(address => mapping(address => uint256)) storage claimable,
+        mapping(address => uint256) storage totalClaimable,
         mapping(address => uint256) storage totalMarketplaceFees,
         uint256 escrowId,
         address token,
         uint256 amount,
         uint256 feeBps,
-        address feeVault,
-        address referrer,
-        address referrer2,
-        address listingNode,
-        address sellingNode
+        FeeAttribution memory attribution,
+        FeeBeneficiaries memory beneficiaries
     ) external returns (uint256 sellerAmount) {
-        uint256 feeAmount = (amount * feeBps) / 10_000;
+        uint256 feeAmount = (amount * feeBps) / BPS;
         sellerAmount = amount - feeAmount;
         if (feeAmount == 0) {
             return sellerAmount;
         }
-
-        IERC20 feeToken = IERC20(token);
-
-        // Referral-aware vault split — only when the escrow fee matches the
-        // vault's hardcoded 1% pull exactly (always true at the production
-        // fee of 100 bps). The codeless-vault guard matters: a high-level call
-        // to a codeless address reverts in the CALLER, outside try/catch's
-        // reach (same gotcha as {recordFirstSale}), which would brick
-        // releases instead of falling back.
-        if (feeAmount == amount / 100 && feeVault.code.length != 0) {
-            feeToken.forceApprove(feeVault, feeAmount);
-            try
-                IFeeVaultMarketplaceDeposit(feeVault).depositMarketplaceFee(
-                    token,
-                    amount,
-                    referrer,
-                    referrer2,
-                    listingNode,
-                    sellingNode
-                )
-            {
-                totalMarketplaceFees[token] += feeAmount;
-                emit MarketplaceFeeCollected(escrowId, feeVault, feeAmount);
-                return sellerAmount;
-            } catch {
-                // Clear the unconsumed allowance before falling back.
-                feeToken.forceApprove(feeVault, 0);
-            }
-        }
-
-        // Fallback: v1 behavior — full fee direct to the vault. If the token
-        // itself refuses the transfer (paused token, blacklisted vault,
-        // insufficient balance), the sale must still settle: waive the fee and
-        // pay the seller their NET amount (the fee stays as surplus) rather
-        // than freezing their principal.
-        //
-        // Low-level on purpose: SafeERC20's helper is an internal library call,
-        // which Solidity cannot wrap in try/catch, and a reverting transfer here
-        // would otherwise block the seller's payout. The return value is checked
-        // exactly as SafeERC20 would (empty return = success for a contract).
-        (bool ok, bytes memory ret) = address(feeToken).call(
-            abi.encodeCall(IERC20.transfer, (feeVault, feeAmount))
+        splitInKind(
+            claimable,
+            totalClaimable,
+            totalMarketplaceFees,
+            escrowId,
+            token,
+            feeAmount,
+            attribution,
+            beneficiaries
         );
-        // Empty returndata is success for a contract (SafeERC20's rule). A
-        // non-32-byte return is NOT decoded — decoding it would revert and
-        // block the release, which is the opposite of this branch's purpose.
-        bool moved =
-            ok && (ret.length == 0 || (ret.length == 32 && abi.decode(ret, (bool))));
-        if (!moved) {
-            // The fee stays in the contract as surplus: the seller is paid the
-            // NET amount, exactly as if the fee had been taken, and nothing is
-            // recorded as collected. Paying the gross here would hand the
-            // seller the protocol's 1%.
-            emit MarketplaceFeeWaived(escrowId, token, feeAmount);
-            return sellerAmount;
-        }
+    }
+
+    /**
+     * @notice Credit the nine canonical slices of an already-computed fee
+     * @dev Shared by the public release path and the private (pXOM) release
+     *      path, which lives in {EscrowPrivacyOps}. `internal`, so each caller
+     *      inlines it — no extra linking hop.
+     * @param claimable token => user => credited amount (escrow storage slot)
+     * @param totalClaimable token => credited total (escrow storage slot)
+     * @param totalMarketplaceFees token => lifetime fee total (escrow slot)
+     * @param escrowId Escrow identifier (for events)
+     * @param token Fee token
+     * @param feeAmount The 1% fee to split (already computed, non-zero)
+     * @param attribution Referrers + nodes recorded for this escrow
+     * @param beneficiaries ODDAO / staking / treasury addresses on this chain
+     */
+    function splitInKind(
+        mapping(address => mapping(address => uint256)) storage claimable,
+        mapping(address => uint256) storage totalClaimable,
+        mapping(address => uint256) storage totalMarketplaceFees,
+        uint256 escrowId,
+        address token,
+        uint256 feeAmount,
+        FeeAttribution memory attribution,
+        FeeBeneficiaries memory beneficiaries
+    ) internal {
+        // Split 1 — transaction 25% of the fee: ODDAO / staking / treasury.
+        uint256 txFee = feeAmount / 4;
+        uint256 txOddao = (txFee * PRIMARY_BPS) / BPS;
+        uint256 txStaking = (txFee * SECONDARY_BPS) / BPS;
+        _credit(
+            claimable, totalClaimable, token, beneficiaries.oddao, txOddao
+        );
+        _credit(
+            claimable, totalClaimable, token, beneficiaries.stakingPool, txStaking
+        );
+        // Remainder (10% + dust) to the protocol treasury.
+        _credit(
+            claimable,
+            totalClaimable,
+            token,
+            beneficiaries.treasury,
+            txFee - txOddao - txStaking
+        );
+
+        // Split 2 — referral 50% of the fee: referrer / referrer2 / ODDAO.
+        uint256 refFee = feeAmount / 2;
+        uint256 refPrimary = (refFee * PRIMARY_BPS) / BPS;
+        uint256 refSecondary = (refFee * SECONDARY_BPS) / BPS;
+        _credit(
+            claimable,
+            totalClaimable,
+            token,
+            _or(attribution.referrer, beneficiaries.oddao),
+            refPrimary
+        );
+        _credit(
+            claimable,
+            totalClaimable,
+            token,
+            _or(attribution.referrer2, beneficiaries.oddao),
+            refSecondary
+        );
+        _credit(
+            claimable,
+            totalClaimable,
+            token,
+            beneficiaries.oddao,
+            refFee - refPrimary - refSecondary
+        );
+
+        // Split 3 — listing 25% of the fee (remainder): node / node / ODDAO.
+        uint256 listFee = feeAmount - txFee - refFee;
+        uint256 listNode = (listFee * PRIMARY_BPS) / BPS;
+        uint256 sellNode = (listFee * SECONDARY_BPS) / BPS;
+        _credit(
+            claimable,
+            totalClaimable,
+            token,
+            _or(attribution.listingNode, beneficiaries.oddao),
+            listNode
+        );
+        _credit(
+            claimable,
+            totalClaimable,
+            token,
+            _or(attribution.sellingNode, beneficiaries.oddao),
+            sellNode
+        );
+        _credit(
+            claimable,
+            totalClaimable,
+            token,
+            beneficiaries.oddao,
+            listFee - listNode - sellNode
+        );
+
         totalMarketplaceFees[token] += feeAmount;
-        emit MarketplaceFeeCollected(escrowId, feeVault, feeAmount);
+        emit MarketplaceFeeSplit(escrowId, token, feeAmount);
     }
 
     /**
@@ -302,17 +315,15 @@ library EscrowFeeRouter {
         }
     }
 
-
     /**
      * @notice Deduct and distribute the arbitration fee from dispute stakes
      *         (charged 50/50 buyer/seller, capped at each stake)
      * @dev Distribution: `arbitratorShareBps` (70%) to `arbitratorRecipient`
-     *      via the pull-pattern claimable balance (arbitrators are arbitrary
-     *      addresses — pull prevents transfer-revert griefing), remainder to
-     *      the fee vault by direct best-effort transfer. Passing
-     *      `arbitratorRecipient = address(0)` routes 100% to the vault (used
-     *      by the OmniArbitration-driven resolution path, where the resolving
-     *      panel is paid by OmniArbitration's own fee).
+     *      via the pull-pattern claimable balance, remainder to ODDAO by the
+     *      same ledger (no token transfer, so no token can block a resolution).
+     *      Passing `arbitratorRecipient = address(0)` routes 100% to ODDAO
+     *      (used by the OmniArbitration-driven resolution path, where the
+     *      resolving panel is paid by OmniArbitration's own fee).
      * @param disputeStakes escrowId => party => stake (escrow storage slot)
      * @param claimable token => user => amount (escrow storage slot)
      * @param totalEscrowed token => active principal (escrow storage slot)
@@ -324,8 +335,8 @@ library EscrowFeeRouter {
      * @param amount Disputed escrow principal the fee is computed on
      * @param feeBps Arbitration fee in basis points (500 = 5%)
      * @param arbitratorShareBps Share of the fee paid to the arbitrator (7000)
-     * @param arbitratorRecipient Resolving arbitrator (zero → all to vault)
-     * @param feeVault Fee vault address
+     * @param arbitratorRecipient Resolving arbitrator (zero → all to ODDAO)
+     * @param oddao ODDAO address on this chain (receives the remainder)
      */
     function collectArbitrationFee(
         mapping(uint256 => mapping(address => uint256))
@@ -341,9 +352,9 @@ library EscrowFeeRouter {
         uint256 feeBps,
         uint256 arbitratorShareBps,
         address arbitratorRecipient,
-        address feeVault
+        address oddao
     ) external {
-        uint256 arbitrationFee = (amount * feeBps) / 10_000;
+        uint256 arbitrationFee = (amount * feeBps) / BPS;
         // Each party pays half from their dispute stake
         uint256 halfFee = arbitrationFee / 2;
         uint256 otherHalf = arbitrationFee - halfFee; // handles rounding
@@ -364,16 +375,15 @@ library EscrowFeeRouter {
         }
 
         // Stakes were counted in totalEscrowed; the collected fee leaves
-        // that bucket (vault share exits the contract, arbitrator share
-        // moves to totalClaimable).
+        // that bucket and becomes claimable (arbitrator share) or ODDAO's.
         totalEscrowed[stakeToken] -= totalCollected;
 
         uint256 arbitratorShare = 0;
         if (arbitratorRecipient != address(0)) {
-            arbitratorShare = (totalCollected * arbitratorShareBps) / 10_000;
+            arbitratorShare = (totalCollected * arbitratorShareBps) / BPS;
         }
-        // Vault gets the remainder (absorbs rounding dust)
-        uint256 vaultShare = totalCollected - arbitratorShare;
+        // ODDAO gets the remainder (absorbs rounding dust)
+        uint256 oddaoShare = totalCollected - arbitratorShare;
 
         if (arbitratorShare > 0) {
             claimable[stakeToken][arbitratorRecipient] += arbitratorShare;
@@ -382,18 +392,10 @@ library EscrowFeeRouter {
                 arbitratorRecipient, stakeToken, arbitratorShare
             );
         }
-        if (vaultShare > 0) {
-            // Best-effort, like the marketplace fee: a token that refuses the
-            // vault must not make the dispute unresolvable. The amount stays in
-            // the contract as protocol surplus (recoverable by the admin).
-            (bool ok, bytes memory ret) = address(stakeToken).call(
-                abi.encodeCall(IERC20.transfer, (feeVault, vaultShare))
-            );
-            bool moved =
-                ok && (ret.length == 0 || (ret.length == 32 && abi.decode(ret, (bool))));
-            if (!moved) {
-                emit FeeTransferDeferred(stakeToken, vaultShare);
-            }
+        if (oddaoShare > 0) {
+            claimable[stakeToken][oddao] += oddaoShare;
+            totalClaimable[stakeToken] += oddaoShare;
+            emit FundsClaimable(oddao, stakeToken, oddaoShare);
         }
 
         emit ArbitrationFeeCollected(escrowId, totalCollected, arbitratorShare);
@@ -433,17 +435,19 @@ library EscrowFeeRouter {
     }
 
     /**
-     * @notice Reject a token the fee vault will not settle
-     * @dev Single source of truth: the vault's own allowlist. A token must
-     *      also have code — a plain address has no ERC-20 behaviour and every
-     *      transfer against it would revert after the buyer had committed.
-     * @param feeVault UnifiedFeeVault address (owns the allowlist)
+     * @notice Reject a token this chain's escrow will not settle
+     * @dev Single source of truth is now the escrow's OWN allowlist (admin-set
+     *      per chain, founder decision 3): a chain cannot read another chain's
+     *      vault. The token must also have code — a plain address has no
+     *      ERC-20 behaviour and every transfer against it would revert after
+     *      the buyer had committed.
+     * @param supported token => allowed (escrow storage slot)
      * @param token ERC-20 address supplied by the buyer
      * @param privateOmniCoin pXOM address (public escrows may not use it)
      * @param escrow Self address (a token pointing at the escrow is nonsense)
      */
     function requireSupportedToken(
-        address feeVault,
+        mapping(address => bool) storage supported,
         address token,
         address privateOmniCoin,
         address escrow
@@ -457,15 +461,7 @@ library EscrowFeeRouter {
         if (token == privateOmniCoin || token == escrow) {
             revert CannotMixPrivacyModes();
         }
-        try IFeeVaultTokenAllowlist(feeVault).supportedPaymentTokens(token) returns (
-            bool allowed
-        ) {
-            if (!allowed) revert TokenNotSupported();
-        } catch {
-            // The vault getter is unreachable (upgrade/rename/paused proxy).
-            // Distinguish our outage from the seller's token choice.
-            revert AllowlistUnavailable();
-        }
+        if (!supported[token]) revert TokenNotSupported();
         return true;
     }
 
@@ -532,5 +528,33 @@ library EscrowFeeRouter {
             }
         }
         return true;
+    }
+
+    /**
+     * @notice Credit one fee slice to the pull-pattern ledger
+     * @dev Zero slices are skipped so a tiny fee does not emit empty credits;
+     *      the parent split's remainder slice absorbs the difference, keeping
+     *      the credited total equal to the fee.
+     */
+    function _credit(
+        mapping(address => mapping(address => uint256)) storage claimable,
+        mapping(address => uint256) storage totalClaimable,
+        address token,
+        address user,
+        uint256 amount
+    ) private {
+        if (amount == 0) {
+            return;
+        }
+        claimable[token][user] += amount;
+        totalClaimable[token] += amount;
+        emit FundsClaimable(user, token, amount);
+    }
+
+    /**
+     * @notice Resolve a zero attribution slot to the protocol sink
+     */
+    function _or(address recipient, address fallback_) private pure returns (address) {
+        return recipient == address(0) ? fallback_ : recipient;
     }
 }
