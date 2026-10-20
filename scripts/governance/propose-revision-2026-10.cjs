@@ -1,24 +1,24 @@
 /**
  * Build (and optionally submit) the 2026-10 governance proposal.
  *
- * Four actions, executed atomically by the timelock after the vote and the
+ * TWO actions, executed atomically by the timelock after the vote and the
  * 48-hour delay:
  *
- *   1. UnifiedFeeVault.grantRole(DEPOSITOR_ROLE, newEscrow)
- *      → escrow releases take the referral-aware 9-way split (referrers and
- *        both nodes paid) instead of the plain-transfer fallback.
+ *   1. UnifiedFeeVault.grantRole(DEPOSITOR_ROLE, MinimalEscrow)
+ *      → the escrow the Validator actually uses takes the referral-aware 9-way
+ *        split on `depositMarketplaceFee` (referrers and both nodes paid)
+ *        instead of the plain-transfer fallback. It is MinimalEscrow, NOT a new
+ *        EscrowV2: the 2026-10-20 decoupling removed the vault dependency from
+ *        EscrowV2 entirely, so a role grant to it would do nothing.
  *   2. OmniParticipation proxy `upgradeToAndCall(newImpl, 0x)`
  *      → listing node == service node (score ≥ 25 + KYC tier 2), and all
  *        three role gates honour the pioneer founder allowlist.
- *   3. OmniArbitration proxy `upgradeToAndCall(newImpl, 0x)`
- *      → arbitrators use the node standard; createDispute refuses a panel it
- *        cannot seat; cancelDispute refunds a stuck fee.
- *   4. OmniArbitration.updateContracts(participation, newEscrow)
- *      → the panel adjudicates the marketplace escrow, not the legacy one.
  *
- * EscrowV2's own `setArbitrationContract` is a deployer-admin action and is
- * NOT part of the proposal (run scripts/post-revision-wiring.cjs after
- * execution).
+ * 🛑 The arbitration action is GONE (founder decision 1, 2026-10-20): the
+ * hardened panel is deployed as a FRESH proxy (scripts/deploy-arbitration-panel.cjs)
+ * instead of upgrading a proxy whose OpenZeppelin manifest record diverges,
+ * and the production escrow is pointed at it by its own deployer-admin
+ * `setArbitrationContract` (scripts/post-revision-wiring.cjs).
  *
  * Usage:
  *   MAINNET_DEPLOYER_PRIVATE_KEY=$(cat ~/.avalanche-cli/key/deployer.pk) \
@@ -51,9 +51,8 @@ async function main() {
 
   const vault = c.UnifiedFeeVault;
   const participationProxy = c.OmniParticipation;
-  const arbitrationProxy = c.OmniArbitration;
   const governance = c.OmniGovernance;
-  for (const [k, v] of Object.entries({ vault, participationProxy, arbitrationProxy, governance })) {
+  for (const [k, v] of Object.entries({ vault, participationProxy, governance })) {
     if (!v || !ethers.isAddress(v)) throw new Error(`manifest missing ${k}`);
   }
 
@@ -64,19 +63,18 @@ async function main() {
   const proxyIface = new ethers.Interface([
     "function upgradeToAndCall(address newImplementation, bytes data) payable",
   ]);
-  const arbitrationIface = new ethers.Interface([
-    "function updateContracts(address participation, address escrow)",
-  ]);
-
   const depositorRole = await new ethers.Contract(vault, vaultIface, ethers.provider).DEPOSITOR_ROLE();
 
-  const targets = [vault, participationProxy, arbitrationProxy, arbitrationProxy];
-  const values = [0n, 0n, 0n, 0n];
+  const productionEscrow = c.MinimalEscrow;
+  if (!productionEscrow || !ethers.isAddress(productionEscrow)) {
+    throw new Error("manifest missing MinimalEscrow — the escrow the Validator uses");
+  }
+
+  const targets = [vault, participationProxy];
+  const values = [0n, 0n];
   const calldatas = [
-    vaultIface.encodeFunctionData("grantRole", [depositorRole, rev.escrowV2]),
+    vaultIface.encodeFunctionData("grantRole", [depositorRole, productionEscrow]),
     proxyIface.encodeFunctionData("upgradeToAndCall", [rev.participationImpl, "0x"]),
-    proxyIface.encodeFunctionData("upgradeToAndCall", [rev.arbitrationImpl, "0x"]),
-    arbitrationIface.encodeFunctionData("updateContracts", [participationProxy, rev.escrowV2]),
   ];
 
   console.log("== proposal actions ==");
@@ -88,9 +86,9 @@ async function main() {
   }
 
   const description =
-    "2026-10 marketplace fee + arbitration revision: grant DEPOSITOR_ROLE to " +
-    `EscrowV2 ${rev.escrowV2}; upgrade OmniParticipation and OmniArbitration ` +
-    "implementations; point the arbiters at the marketplace escrow.";
+    "2026-10 marketplace revision: grant DEPOSITOR_ROLE to the production " +
+    `escrow ${productionEscrow}; upgrade the OmniParticipation implementation ` +
+    "(listing node == service node, founder allowlist on every role).";
 
   const gov = await ethers.getContractAt(
     ["function propose(uint8 proposalType,address[] targets,uint256[] values,bytes[] calldatas,string description) returns (uint256)"],

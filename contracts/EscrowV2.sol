@@ -684,7 +684,10 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
         if (
             _oddao == _stakingPool ||
             _oddao == _protocolTreasury ||
-            _stakingPool == _protocolTreasury
+            _stakingPool == _protocolTreasury ||
+            _oddao == address(this) ||
+            _stakingPool == address(this) ||
+            _protocolTreasury == address(this)
         ) {
             revert InvalidAddress();
         }
@@ -1123,7 +1126,12 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
         // remove the buyer's expiry refund without giving the seller anything.
         if (isPrivateEscrow[escrowId]) revert PrivateEscrowUnsupported();
         if (escrow.resolved) revert AlreadyResolved();
-        if (escrow.disputed) revert AlreadyDisputed();
+        // 🛑 Delivery is a FACT, not a payout, so it stays recordable while a
+        // dispute is open. Refusing it let a buyer freeze the escrow one block
+        // before delivery and keep `delivered` false — which handed them the
+        // whole principal on the timeout refund (re-audit D-1). This call moves
+        // no money: {releaseExpiredToSeller} and {refundBuyer} still refuse a
+        // disputed escrow, and the timeout outcome is what reads the flag.
         if (escrow.delivered) revert AlreadyDelivered();
         if (_msgSender() != escrow.seller) revert NotParticipant();
 
@@ -1504,8 +1512,11 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
         // buyer refund, matching triggerDefaultResolution's own default outcome.
         if (!escrow.disputed) revert NotDisputed();
 
-        address caller = _msgSender();
-        if (caller != escrow.buyer) revert NotParticipant();
+        // 🛑 Permissionless (re-audit D-2): the timeout is the only exit a
+        // frozen escrow has when no verdict arrives, and its outcome is decided
+        // by on-chain state (delivered or not), not by the caller. Restricting
+        // it to the buyer let that buyer lock a DELIVERED escrow's principal
+        // forever, because calling it would pay the seller.
 
         // Must wait DISPUTE_TIMEOUT after the escrow expiry
         // solhint-disable-next-line not-rely-on-time

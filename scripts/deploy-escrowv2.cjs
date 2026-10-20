@@ -58,12 +58,32 @@ const EIP170_LIMIT = 24576;
 const LIBRARIES = ["EscrowFeeRouter", "EscrowPrivacyOps", "EscrowSignatureLib"];
 
 /**
+ * Manifest file per chain. Names must match the files the rest of the repo
+ * already uses — a made-up name writes an address nothing reads (re-audit D-6).
+ */
+const MANIFESTS = {
+  88008n: "mainnet",
+  43114n: "avalanche",
+  43113n: "avalanche-testnet",
+  137n: "polygon",
+  8453n: "base",
+  42161n: "arbitrum",
+  56n: "bsc",
+  1n: "ethereum-mainnet",
+};
+
+/**
  * Resolve (and create) the deployment manifest for the current chain.
  * @param {bigint} chainId - Chain id being deployed to.
  * @returns {{path: string, json: object}} Manifest path and parsed content.
  */
 function loadManifest(chainId) {
-  const name = chainId === 88008n ? "mainnet" : `chain-${chainId}`;
+  const name = MANIFESTS[chainId];
+  if (!name) {
+    throw new Error(
+      `No manifest for chain ${chainId}. Add it to MANIFESTS with the file name the repo already uses.`,
+    );
+  }
   const file = path.join(__dirname, "..", "deployments", `${name}.json`);
   const json = fs.existsSync(file)
     ? JSON.parse(fs.readFileSync(file, "utf8"))
@@ -144,6 +164,10 @@ async function main() {
   if (new Set([oddao, stakingPool, treasury]).size !== 3) {
     throw new Error("the three fee sinks must be distinct addresses");
   }
+  // The contract only knows its own address after construction, so the "sink
+  // is the escrow" case lives here: a credit on the escrow itself is
+  // unrecoverable (re-audit D-8).
+  console.log("(the escrow address cannot be checked before deploy; re-check after)");
   console.log("\n-- constructor arguments --");
   console.log("omniCoin        :", omniCoin);
   console.log("privateOmniCoin :", privateOmniCoin);
@@ -223,6 +247,33 @@ async function main() {
     }
   }
   console.log(`\nlinked libraries OK — escrow ${size} of ${EIP170_LIMIT} bytes`);
+
+  // Binding probe (re-audit D-7): an address-in-bytecode check also passes for
+  // a STALE library of the same name. A createEscrow staticCall with a codeless
+  // token reaches `requireSupportedToken`, so a linked, working library must
+  // return revert data. Empty returndata means the DELEGATECALL hit nothing —
+  // exactly what a mislinked library looks like.
+  const probe = await ethers.provider.call({
+    to: address,
+    from: deployer.address,
+    data: new ethers.Interface([
+      "function createEscrow(address,address,uint256,uint256)",
+    ]).encodeFunctionData("createEscrow", [
+      deployer.address,
+      "0x000000000000000000000000000000000000dEaD",
+      1n,
+      24 * 60 * 60,
+    ]),
+  }).catch((err) => {
+    const data = err && err.data;
+    return typeof data === "string" ? data : "0x";
+  });
+  if (!probe || probe === "0x") {
+    throw new Error(
+      "binding probe returned no revert data — the escrow's libraries are not linked",
+    );
+  }
+  console.log("library binding probe OK");
 
   const reads = {
     OMNI_COIN: await escrow.OMNI_COIN(),
