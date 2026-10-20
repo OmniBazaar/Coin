@@ -140,6 +140,30 @@ async function main() {
   await escrow.waitForDeployment();
   const address = await escrow.getAddress();
   console.log("EscrowV2:", address);
+
+  // EscrowV2 needs both libraries at run time. Record everything on chain
+  // NOW — a later step failing must not leave deployed addresses unrecorded.
+  const escrowCode = await ethers.provider.getCode(address);
+  const size = (escrowCode.length - 2) / 2;
+  if (size > 24576) {
+    throw new Error(`EscrowV2 is ${size} bytes — over the 24,576 EIP-170 limit`);
+  }
+  for (const [name, libAddr] of Object.entries(libs)) {
+    if ((await ethers.provider.getCode(libAddr)) === "0x") {
+      throw new Error(`${name} has no code at ${libAddr}`);
+    }
+    if (!escrowCode.toLowerCase().includes(libAddr.slice(2).toLowerCase())) {
+      throw new Error(`EscrowV2 bytecode does not embed ${name} (${libAddr})`);
+    }
+  }
+  console.log(`linked libraries OK — escrow ${size} bytes`);
+  manifest.contracts.EscrowFeeRouter = libs.EscrowFeeRouter;
+  manifest.contracts.EscrowPrivacyOps = libs.EscrowPrivacyOps;
+  manifest.contracts.EscrowV2 = address;
+  manifest.contracts.EscrowV2DeployedAt = new Date().toISOString();
+  manifest.contracts.EscrowV2DeployTx = deployTx ? deployTx.hash : "";
+  fs.writeFileSync(MANIFEST, `${JSON.stringify(manifest, null, 2)}\n`);
+  console.log("addresses recorded in", MANIFEST);
   const receipt = await deployTx.wait();
   console.log("mined in block", receipt.blockNumber, "gas used", receipt.gasUsed.toString());
 
@@ -170,12 +194,25 @@ async function main() {
   // ── DEPOSITOR_ROLE, so releases can use the canonical 70/20/10 split ───
   const role = await vault.DEPOSITOR_ROLE();
   const already = await vault.hasRole(role, address);
-  if (!already) {
-    const tx = await vault.grantRole(role, address);
-    await tx.wait();
-    console.log("granted DEPOSITOR_ROLE:", tx.hash);
-  } else {
+  if (already) {
     console.log("DEPOSITOR_ROLE already held");
+  } else {
+    // The vault's DEFAULT_ADMIN_ROLE is the OmniTimelockController, so the
+    // deployer CANNOT grant this. The grant is action 1 of the governance
+    // proposal; a revert here must not abort the deploy (it would also skip
+    // the arbitrator seed below).
+    try {
+      const tx = await vault.grantRole(role, address);
+      await tx.wait();
+      console.log("granted DEPOSITOR_ROLE:", tx.hash);
+    } catch {
+      console.log(
+        "DEPOSITOR_ROLE not grantable by the deployer (expected: vault admin is the timelock).",
+      );
+      console.log(
+        "  → it is granted by scripts/governance/propose-revision-2026-10.cjs (action 1).",
+      );
+    }
   }
 
   // ── Seed an arbitrator (internal disputes are unrevertable without one) ─
@@ -195,9 +232,6 @@ async function main() {
   }
 
   // ── Manifest ───────────────────────────────────────────────────────────
-  manifest.contracts.EscrowV2 = address;
-  manifest.contracts.EscrowV2DeployedAt = new Date().toISOString();
-  manifest.contracts.EscrowV2DeployTx = deployTx ? deployTx.hash : "";
   fs.writeFileSync(MANIFEST, `${JSON.stringify(manifest, null, 2)}\n`);
   console.log("\nmanifest updated:", MANIFEST);
 

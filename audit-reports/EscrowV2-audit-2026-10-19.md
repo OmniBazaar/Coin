@@ -106,3 +106,68 @@ Stale NatSpec in `OmniArbitration.IArbitrationEscrow.getAmount` (still says "Amo
 - "Panic/precision loss in the 1% computation": refuted — `floor(amount*100/10000) == floor(amount/100)` exactly for every uint256, and the vault uses the same expression, so the approved amount always equals the pulled amount.
 - "Stake can be replayed as principal": refuted — every stake return zeroes the mapping first and credits `claimable`, never the principal bucket's available balance.
 - "Fee-on-transfer token can still pass creation": refuted — the delta check is on the actual received amount.
+
+---
+
+# Re-audit addendum — 2026-10-20: library extraction (EIP-170)
+
+**Why:** the revision's `EscrowV2` compiled to 27,290 bytes deployed against the
+24,576-byte limit, so it could not be deployed. The code was split across two
+external libraries and re-audited as a delta.
+
+## What moved
+
+| New location | Moved from `EscrowV2` |
+|---|---|
+| `contracts/libraries/EscrowFeeRouter.sol` | `_collectMarketplaceFee`, `_recordFirstSale`, `_collectArbitrationFee`, `_payOrHold`, `_returnDisputeStake`, `_requireSupportedToken`, `_validateAttributionNodes`, `validateReferrerPair` |
+| `contracts/libraries/EscrowPrivacyOps.sol` | `createPrivateEscrow`, `releasePrivateFunds`, `refundPrivateBuyer` (bodies) |
+| `contracts/interfaces/EscrowV2Types.sol` | the `Escrow` struct (shared type; layout unchanged) |
+
+Both libraries are state-free and reachable only by DELEGATECALL from the
+escrow, so every mapping reference resolves to the escrow's slots and every log
+is emitted at the escrow's address with unchanged topics. `hardhat.config.js`
+adds per-file overrides (`runs: 1`, `bytecodeHash: none`) for the three files.
+
+Result: **23,867 bytes deployed**, 25,954 init code.
+
+## Verification performed
+
+- No library declares state, immutables, `receive`/`fallback`, or a constructor.
+- No `msg.sender` / `tx.origin` / `_msgSender` in either library: the caller is
+  resolved once in the escrow and passed in (ERC-2771 preserved).
+- `address(this)` inside the libraries is the escrow, which is what the balance
+  delta and the `seller == address(this)` guard require.
+- No library calls another library's external function (that would switch
+  storage context); `MpcCore.decrypt`/`offBoard` are `internal` and inline.
+- All 11 call sites checked for positional/type agreement, including the 14- and
+  13-argument cases; `claimable[token][user]` and `disputeStakes[escrowId][party]`
+  orientations unchanged.
+- Immutable values are read at every call site from the escrow's own state; no
+  second source of truth exists for fee vault, pXOM, fee bps, durations or the
+  arbitrator delay.
+- Every event and error the libraries emit/raise is still declared in the
+  escrow, so the ABI and client decoding are unchanged. No function was removed.
+
+## Findings and remediation
+
+| ID | Sev | Finding | Disposition |
+|---|---|---|---|
+| D-01 | Medium | Three creation-time validators were moved to library calls that **returned nothing**. A DELEGATECALL to a codeless address succeeds with empty returndata, so a mislinked library would let `createEscrow` accept an unallowlisted token, accept pXOM in a public escrow, and skip the attribution checks. | **FIXED.** Each validator now returns `bool` and the escrow requires it, so empty returndata reverts on decode. Deploy scripts additionally assert library code exists, that the escrow's bytecode embeds both addresses, and that a library-mediated read (`getEscrow(0)`) does not revert. |
+| D-02 | Low | `deploy-escrowv2.cjs` wrote the manifest only at the end, after a `DEPOSITOR_ROLE` grant the deployer cannot make — so a failed grant left the escrow and both libraries unrecorded. | **FIXED.** Addresses are written immediately after deployment (and the libraries recorded), and the grant is tried/caught with the correct explanation. |
+| D-03 | Low | Nothing asserted the EIP-170 size, and the local network allows unlimited contract size. | **FIXED.** Both deploy scripts assert `size <= 24576`; the runbook records 23,867 / 25,954 as the expected figures. |
+| D-04 | Low | `EscrowPrivacyOps` had no compiler override, so the standalone artifact could be built at `runs: 200` while the escrow linked a `runs: 1` build. | **FIXED.** Override added; the two builds now match. |
+| D-05 | Low | The moved private (pXOM) path has no test coverage: on any non-COTI chain `createPrivateEscrow` reverts before reaching the library, and `MpcCore`'s precompile does not exist in Hardhat. | **OPEN — accepted, recorded.** Identical to the pre-existing gap on `MinimalEscrow` (`test/MinimalEscrowPrivacy.test.js` documents the same limitation). The path is unreachable on the deployment target (OmniCoin L1); on COTI it must be verified on-chain. |
+| D-06 | Low | `runs: 1` + `bytecodeHash: none` change no runtime behaviour, but bytecode-level source matching is gone and per-call gas rises. | **Documented** in the runbook: verify with the library addresses supplied, and re-estimate client `gasLimit` values before rollout. |
+| D-07 | Info | `_payOrHold` / `payOrHold` became dead code after the arbitration-fee split moved. | **FIXED.** Both deleted. |
+| D-08 | Info | `Escrow` struct slot comments were off by one. | **FIXED.** |
+| D-09 | Info | A duplicate `IFeeVaultTokenAllowlist` declaration remained in the escrow. | **FIXED.** Removed. |
+| D-10 | Info | The private ops rely on `address(this)`/`block.timestamp` meaning the escrow, which holds only because external library calls are DELEGATECALL. | **Accepted**, covered by the library-level NatSpec that forbids inlining or direct calls. |
+
+No Critical or High finding was raised by the delta audit. The extraction moves
+bodies only; no signature, event topic, error selector or storage slot changed.
+
+## Test evidence (post-remediation)
+
+`npx hardhat test test/EscrowV2.test.ts` → **18 passing**.
+Combined run with `OmniArbitration.test.js` + `OmniArbitration.guards.test.js` +
+`MinimalEscrowV2.fees.test.ts` → **107 passing, 0 failing**.

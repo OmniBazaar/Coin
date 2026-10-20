@@ -157,9 +157,31 @@ module.exports = {
           }
         }
       },
-      // The linked fee-routing library. Compiled with the same settings as
-      // its only caller so a single `solc` invocation links both.
+      // The two linked libraries. Same settings as EscrowV2 so the artifact
+      // used for linking and the standalone artifact review are one build.
       "contracts/libraries/EscrowFeeRouter.sol": {
+        version: "0.8.24",
+        settings: {
+          optimizer: {
+            enabled: true,
+            runs: 1,
+            details: {
+              yul: true
+            }
+          },
+          viaIR: true,
+          evmVersion: "paris",
+          metadata: {
+            bytecodeHash: "none"
+          }
+        }
+      },
+      // The privacy half of the escrow (pXOM create/release/refund). Declared
+      // here for the same reason: EscrowV2 imports it, so it is also built
+      // inside EscrowV2's job — without this override the standalone artifact
+      // would be built at runs: 200 and the escrow could link a different
+      // build than the one that was reviewed.
+      "contracts/libraries/EscrowPrivacyOps.sol": {
         version: "0.8.24",
         settings: {
           optimizer: {

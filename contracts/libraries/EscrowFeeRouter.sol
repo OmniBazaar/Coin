@@ -303,25 +303,6 @@ library EscrowFeeRouter {
         }
     }
 
-    /**
-     * @notice Transfer a protocol fee, or leave it in the contract on refusal
-     * @dev The transfer is attempted with a low-level call so a reverting or
-     *      short-returning token cannot roll back a settlement. On failure the
-     *      amount is simply retained (protocol surplus) and an event records it.
-     * @param token Fee token
-     * @param to Recipient (fee vault)
-     * @param amount Fee amount
-     */
-    function payOrHold(IERC20 token, address to, uint256 amount) external {
-        (bool ok, bytes memory ret) = address(token).call(
-            abi.encodeCall(IERC20.transfer, (to, amount))
-        );
-        bool moved =
-            ok && (ret.length == 0 || (ret.length == 32 && abi.decode(ret, (bool))));
-        if (!moved) {
-            emit FeeTransferDeferred(address(token), amount);
-        }
-    }
 
     /**
      * @notice Deduct and distribute the arbitration fee from dispute stakes
@@ -467,7 +448,7 @@ library EscrowFeeRouter {
         address token,
         address privateOmniCoin,
         address escrow
-    ) external view {
+    ) external view returns (bool) {
         if (token == address(0) || token.code.length == 0) {
             revert InvalidAddress();
         }
@@ -486,6 +467,7 @@ library EscrowFeeRouter {
             // Distinguish our outage from the seller's token choice.
             revert AllowlistUnavailable();
         }
+        return true;
     }
 
     /**
@@ -501,7 +483,7 @@ library EscrowFeeRouter {
         address referrer2,
         address listingNode,
         address sellingNode
-    ) external pure {
+    ) external pure returns (bool) {
         if (listingNode != address(0)) {
             if (
                 listingNode == buyer ||
@@ -523,6 +505,7 @@ library EscrowFeeRouter {
                 revert BadAttribution();
             }
         }
+        return true;
     }
 
     /**
@@ -536,7 +519,7 @@ library EscrowFeeRouter {
         address seller,
         address referrer,
         address referrer2
-    ) external pure {
+    ) external pure returns (bool) {
         if (referrer != address(0)) {
             if (referrer == buyer || referrer == seller) revert BadReferrer();
         }
@@ -549,6 +532,7 @@ library EscrowFeeRouter {
                 revert BadReferrer();
             }
         }
+        return true;
     }
 
     // ========================================================================

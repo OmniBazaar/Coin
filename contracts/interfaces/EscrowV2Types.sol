@@ -13,20 +13,20 @@ pragma solidity 0.8.24;
  *      not reorder or resize a field.
  */
 struct Escrow {
-    address buyer;        // slot 1: 20 bytes
-    address seller;       // slot 2: 20 bytes
-    address arbitrator;   // slot 3: 20 bytes
-    uint8 releaseVotes;   // slot 3: 1 byte
-    uint8 refundVotes;    // slot 3: 1 byte
-    bool resolved;        // slot 3: 1 byte
-    bool disputed;        // slot 3: 1 byte (total: 24 bytes in slot 3)
-    uint256 amount;       // slot 4: 32 bytes
-    uint256 expiry;       // slot 5: 32 bytes
-    uint256 createdAt;    // slot 6: 32 bytes
+    address buyer;        // slot 0: 20 bytes
+    address seller;       // slot 1: 20 bytes
+    address arbitrator;   // slot 2: 20 bytes
+    uint8 releaseVotes;   // slot 2: 1 byte
+    uint8 refundVotes;    // slot 2: 1 byte
+    bool resolved;        // slot 2: 1 byte
+    bool disputed;        // slot 2: 1 byte (total: 24 bytes in slot 2)
+    uint256 amount;       // slot 3: 32 bytes
+    uint256 expiry;       // slot 4: 32 bytes
+    uint256 createdAt;    // slot 5: 32 bytes
     // Seller-asserted delivery + inspection window (permissionless
     // seller-release path). Appended after the original fields.
-    bool delivered;              // slot 7: 1 byte
-    uint256 inspectionDeadline;  // slot 8: 32 bytes
+    bool delivered;              // slot 6: 1 byte
+    uint256 inspectionDeadline;  // slot 7: 32 bytes
     // The ERC-20 this escrow actually holds. v1 inferred it from
     // `isPrivateEscrow` (XOM or pXOM, both fixed at deploy); v2 records it
     // per escrow so any vault-allowlisted token can be escrowed.

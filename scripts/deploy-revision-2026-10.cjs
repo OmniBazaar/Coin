@@ -69,6 +69,35 @@ async function main() {
   out.escrowV2Tx = escrow.deploymentTransaction()?.hash ?? "";
   console.log(out.escrowV2, out.escrowV2Tx);
 
+  // ── Post-deploy guards ────────────────────────────────────────────────
+  // EscrowV2 is only deployable because two libraries hold part of its code.
+  // A resolved-but-wrong library address passes Hardhat's linker and would
+  // ship a broken escrow, so assert what actually landed on chain.
+  for (const [name, addr] of [
+    ["EscrowFeeRouter", out.escrowFeeRouter],
+    ["EscrowPrivacyOps", out.escrowPrivacyOps],
+  ]) {
+    const code = await ethers.provider.getCode(addr);
+    if (code === "0x") throw new Error(`${name} has no code at ${addr}`);
+  }
+  const escrowCode = await ethers.provider.getCode(out.escrowV2);
+  const escrowSize = (escrowCode.length - 2) / 2;
+  if (escrowSize > 24576) {
+    throw new Error(`EscrowV2 is ${escrowSize} bytes — over the 24,576 EIP-170 limit`);
+  }
+  for (const lib of [out.escrowFeeRouter, out.escrowPrivacyOps]) {
+    if (!escrowCode.toLowerCase().includes(lib.slice(2).toLowerCase())) {
+      throw new Error(`EscrowV2 bytecode does not embed library ${lib}`);
+    }
+  }
+  // Library-mediated read: reverts if a library is codeless (empty returndata).
+  await escrow.getEscrow(0);
+  console.log(`guards OK — escrow ${escrowSize} bytes, both libraries linked`);
+
+  // Record progress immediately: a later step failing (or a gas problem in the
+  // last deployment) must not lose deployed addresses.
+  fs.writeFileSync(OUT, `${JSON.stringify(out, null, 2)}\n`);
+
   console.log("== OmniParticipation implementation ==");
   const Participation = await ethers.getContractFactory("OmniParticipation");
   // Implementation constructor: trusted forwarder, then initializers are

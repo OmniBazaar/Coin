@@ -16,23 +16,6 @@ import {EscrowPrivacyOps} from "./libraries/EscrowPrivacyOps.sol";
 import {Escrow} from "./interfaces/EscrowV2Types.sol";
 
 /**
- * @title IFeeVaultTokenAllowlist
- * @author OmniCoin Development Team
- * @notice The ONE list of tokens a marketplace payment may be denominated in.
- * @dev EscrowV2 asks the fee vault rather than keeping its own copy, so a
- *      token can never be escrowable but unsettleable (or the reverse). The
- *      vault's mapping is admin-gated and 48-hour timelocked on chain.
- */
-interface IFeeVaultTokenAllowlist {
-    /**
-     * @notice Whether the vault accepts this token for marketplace settlement
-     * @param token ERC-20 address
-     * @return allowed True when payments in `token` are accepted
-     */
-    function supportedPaymentTokens(address token) external view returns (bool);
-}
-
-/**
  * @title EscrowV2
  * @author OmniCoin Development Team
  * @notice Ultra-simple 2-of-3 multisig escrow with privacy support via COTI V2 MPC
@@ -1872,26 +1855,20 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
      * @param token ERC-20 address supplied by the buyer
      */
     function _requireSupportedToken(address token) private view {
-        EscrowFeeRouter.requireSupportedToken(
-            FEE_VAULT, token, address(PRIVATE_OMNI_COIN), address(this)
-        );
+        // Each validator returns `true` on success. That return value is the
+        // mislink guard: a DELEGATECALL to an address with no code SUCCEEDS
+        // with empty returndata, so a validator that returned nothing would
+        // silently pass every check if the library were linked wrong. Decoding
+        // the bool makes that case revert instead.
+        if (
+            !EscrowFeeRouter.requireSupportedToken(
+                FEE_VAULT, token, address(PRIVATE_OMNI_COIN), address(this)
+            )
+        ) {
+            revert AllowlistUnavailable();
+        }
     }
 
-    /**
-     * @notice Transfer a protocol fee, or leave it in the contract on refusal
-     * @dev The transfer is attempted with a low-level call so a reverting or
-     *      short-returning token cannot roll back a settlement. On failure the
-     *      amount is simply retained (protocol surplus) and an event records it.
-     * @param token Fee token
-     * @param to Recipient (FEE_VAULT)
-     * @param amount Fee amount
-     */
-    function _payOrHold(IERC20 token, address to, uint256 amount) private {
-        // Routed through the linked fee-routing library (see
-        // {_collectMarketplaceFee} for why); same low-level, never-reverting
-        // transfer with a FeeTransferDeferred event on refusal.
-        EscrowFeeRouter.payOrHold(token, to, amount);
-    }
 
     /**
      * @notice Smallest escrow amount that still yields a non-zero 1% fee
@@ -1945,9 +1922,14 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
         address listingNode,
         address sellingNode
     ) private pure {
-        EscrowFeeRouter.validateAttributionNodes(
-            buyer, seller, referrer, referrer2, listingNode, sellingNode
-        );
+        // Returns true; see {_requireSupportedToken} for why the value matters.
+        if (
+            !EscrowFeeRouter.validateAttributionNodes(
+                buyer, seller, referrer, referrer2, listingNode, sellingNode
+            )
+        ) {
+            revert BadAttribution();
+        }
     }
 
     /**
@@ -2133,7 +2115,10 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
         address referrer,
         address referrer2
     ) private pure {
-        EscrowFeeRouter.validateReferrerPair(buyer, seller, referrer, referrer2);
+        // Returns true; see {_requireSupportedToken} for why the value matters.
+        if (!EscrowFeeRouter.validateReferrerPair(buyer, seller, referrer, referrer2)) {
+            revert BadReferrer();
+        }
     }
 
     /**

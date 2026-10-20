@@ -83,6 +83,21 @@ escrows stay at the old address; they are all test data (v1 has
 
 ## Verification after execution
 
+0. **Source verification and gas**, both affected by the two libraries and the
+   `runs: 1` / `bytecodeHash: none` override:
+   - verify with the library addresses supplied, or the bytecode will not match:
+     `npx hardhat verify --network mainnet --libraries
+     contracts/libraries/EscrowFeeRouter.sol:EscrowFeeRouter=<addr>
+     --libraries contracts/libraries/EscrowPrivacyOps.sol:EscrowPrivacyOps=<addr>
+     <escrowAddr> <omniCoin> <pXom> <registry> <vault> 100 <forwarder>`;
+   - `runs: 1` costs roughly 10–15% more gas per call than `runs: 200`. Re-check
+     every client-side hard-coded `gasLimit` on escrow calls (`releaseFunds`,
+     `commitDispute`, `resolveDispute`) against a live estimate before the
+     client rollout.
+1. **Generation check.** `EscrowV2` is **23,867** bytes deployed and **25,954**
+   init code. If a rebuild reports anything else, the build settings drifted —
+   stop, do not deploy.
+
 1. `hasRole(DEPOSITOR_ROLE, newEscrow) == true`.
 2. `OmniParticipation.canBeListingNode(<no-KYC account>) == false`,
    `canBeServiceNode(<allowlisted account>) == true`.
