@@ -377,7 +377,7 @@ contract OmniArbitration is
     /// @notice Bond a party posts to demand a review, in basis points (1,000 = 10%)
     uint256 public constant ESCALATION_BOND_BPS = 5_000;
 
-    /// @notice Floor on the escalation bond (1,000 XOM)
+    /// @notice Floor on the escalation bond (100 XOM)
     uint256 public constant MIN_ESCALATION_BOND = 100 ether;
 
     /// @notice Timelock delay for fee vault address changes (48 hours)
@@ -545,12 +545,12 @@ contract OmniArbitration is
     /// @notice Party that opened the review (receives an overturned verdict's bonds)
     mapping(uint256 => address) public reviewChallenger;
 
+    /// @notice OmniRegistration, for the KYC read in {canBeArbitrator}
+    address public registration;
+
     /// @notice Deadline for the review panel to decide (independent of the
     ///         challenge window; audit C-02)
     mapping(uint256 => uint256) public reviewDeadline;
-
-    /// @notice OmniRegistration, for the KYC read in {canBeArbitrator}
-    address public registration;
 
     /// @notice Reserved storage gap for future upgradeable variables
     uint256[33] private __gap;
@@ -832,7 +832,7 @@ contract OmniArbitration is
      */
     function initializeV2(
         address registration_
-    ) external reinitializer(2) {
+    ) external reinitializer(2) onlyRole(DEFAULT_ADMIN_ROLE) {
         if (registration_.code.length == 0) revert NotAContract(registration_);
         registration = registration_;
         emit RegistrationSet(registration_);
@@ -1532,8 +1532,8 @@ contract OmniArbitration is
 
     /**
      * @notice Demand a review of a verdict by a panel that did not decide it
-     * @dev Either party may open it inside the challenge window by posting a
-     *      bond (10% of the dispute, floor 1,000 XOM). The review panel is
+     * @dev The party harmed by the verdict may open it inside the challenge
+     *      window by posting a bond (50% of the dispute, floor 100 XOM). The review panel is
      *      drawn from judges who were NOT on the original panel, so a captured
      *      majority cannot review itself. The escrow payout is never reversed:
      *      an overturn pays the harmed party out of the colluding judges'
@@ -1594,8 +1594,10 @@ contract OmniArbitration is
      *      seat bonds are released (audit C-02).
      * @param disputeId Dispute identifier
      */
-    function lapseReview(uint256 disputeId) external nonReentrant {
+    function lapseReview(uint256 disputeId) external nonReentrant whenNotPaused {
         if (!escalated[disputeId]) revert NoVerdict(disputeId);
+        // A decided review has already consumed its bond; lapsed is terminal.
+        if (escalationBond[disputeId] == 0) revert NoVerdict(disputeId);
         uint256 deadline = reviewDeadline[disputeId];
         // solhint-disable-next-line not-rely-on-time
         if (deadline != 0 && block.timestamp < deadline) {
@@ -1813,6 +1815,9 @@ contract OmniArbitration is
         }
         reviewDeadline[disputeId] = 0;
         challengeDeadline[disputeId] = 0;
+        // Consume the review bond: this is the one-shot marker that makes
+        // {lapseReview} unreachable after a decision (audit NEW-1).
+        escalationBond[disputeId] = 0;
         emit ReviewDecided(disputeId, overturned, forfeited);
     }
 

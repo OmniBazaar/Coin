@@ -295,6 +295,40 @@ describe('OmniArbitration — panel hardening', function () {
     expect(await arbitration.lockedBond(buyer.address)).to.equal(0n);
   });
 
+  it('cannot lapse a review that already decided (audit NEW-1)', async function () {
+    const disputeId = await openDispute();
+    const panel = await postBonds(disputeId);
+    await arbitration.connect(panel[0]).castVote(disputeId, RELEASE);
+    await arbitration.connect(panel[1]).castVote(disputeId, RELEASE);
+
+    await arbitration.connect(buyer).escalate(disputeId);
+    const review = await arbitration.getEscalationPanel(disputeId);
+    const reviewSigners = review.map((a) => judges.find((j) => j.address === a));
+    await arbitration.connect(reviewSigners[0]).castReviewVote(disputeId, true);
+    await arbitration.connect(reviewSigners[1]).castReviewVote(disputeId, true);
+
+    await time.increase(3 * 24 * 60 * 60 + 1);
+    await expect(
+      arbitration.connect(outsider).lapseReview(disputeId)
+    ).to.be.revertedWithCustomError(arbitration, 'NoVerdict');
+  });
+
+  it('lets the seller challenge a refund verdict (harmed party)', async function () {
+    const disputeId = await openDispute();
+    const panel = await postBonds(disputeId);
+    await arbitration.connect(panel[0]).castVote(disputeId, REFUND);
+    await arbitration.connect(panel[1]).castVote(disputeId, REFUND);
+
+    // A Refund verdict harms the seller, so the seller — and only the seller —
+    // may open the review.
+    await expect(
+      arbitration.connect(buyer).escalate(disputeId)
+    ).to.be.revertedWithCustomError(arbitration, 'NotChallengeParty');
+    await expect(
+      arbitration.connect(seller).escalate(disputeId)
+    ).to.not.be.reverted;
+  });
+
   it('refuses a review after the challenge window', async function () {
     const disputeId = await openDispute();
     const panel = await postBonds(disputeId);

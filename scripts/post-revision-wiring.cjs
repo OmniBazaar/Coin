@@ -58,7 +58,31 @@ async function main() {
     console.log(name, "added as internal arbitrator:", tx.hash);
   }
 
-  // 3. Proof.
+  // 3. Arbitration qualification source + founder allowlist.
+  //
+  // The hardened panel reads KYC straight from OmniRegistration and trusts a
+  // local founder allowlist. Without this step every judge is unqualified and
+  // the first registration prunes the whole pool (audit H-03).
+  const arbitration = await ethers.getContractAt("OmniArbitration", c.OmniArbitration);
+  const currentRegistration = await arbitration.registration();
+  if (currentRegistration.toLowerCase() !== c.OmniRegistration.toLowerCase()) {
+    const tx = await arbitration.setRegistration(c.OmniRegistration);
+    await tx.wait();
+    console.log("setRegistration:", tx.hash);
+  } else {
+    console.log("registration already set");
+  }
+  for (const [name, addr] of Object.entries(ARBITRATORS)) {
+    if (await arbitration.founderArbitrator(addr)) {
+      console.log(name, "already a founder arbitrator");
+      continue;
+    }
+    const tx = await arbitration.setFounderArbitrator(addr, true);
+    await tx.wait();
+    console.log(name, "allowlisted as founder arbitrator:", tx.hash);
+  }
+
+  // 4. Proof.
   console.log("\n== state ==");
   console.log("escrow.arbitrationContract:", await escrow.arbitrationContract());
   console.log("escrow.arbitratorCount:", (await escrow.arbitratorCount()).toString());
@@ -70,6 +94,11 @@ async function main() {
     "escrow holds DEPOSITOR_ROLE:",
     await vault.hasRole(await vault.DEPOSITOR_ROLE(), rev.escrowV2),
   );
+  console.log("arbitration.registration:", await arbitration.registration());
+  for (const [name, addr] of Object.entries(ARBITRATORS)) {
+    console.log(`canBeArbitrator(${name}):`, await arbitration.canBeArbitrator(addr));
+  }
+  console.log("arbitratorPoolSize:", (await arbitration.arbitratorPoolSize()).toString());
 }
 
 main().catch((err) => {
