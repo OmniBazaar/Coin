@@ -198,6 +198,48 @@ module.exports = {
           }
         }
       },
+      // The signature library is built inside EscrowV2's job, so it carries
+      // the same settings as the escrow: one artifact for linking and review.
+      "contracts/libraries/EscrowSignatureLib.sol": {
+        version: "0.8.24",
+        settings: {
+          optimizer: {
+            enabled: true,
+            runs: 1,
+            details: {
+              yul: true
+            }
+          },
+          viaIR: true,
+          evmVersion: "paris",
+          metadata: {
+            bytecodeHash: "none"
+          }
+        }
+      },
+      // The arbitration panel reached 24,462 of the 24,576-byte EIP-170 limit
+      // after cross-chain dispute support (2026-10-20). `runs: 1` minimises
+      // deployed bytecode instead of splitting another library out; dispute
+      // entry points and voting are human-scale, so the extra per-call gas is
+      // an acceptable trade for headroom. `bytecodeHash: none` strips the
+      // ~53-byte CBOR metadata trailer.
+      "contracts/arbitration/OmniArbitration.sol": {
+        version: "0.8.24",
+        settings: {
+          optimizer: {
+            enabled: true,
+            runs: 1,
+            details: {
+              yul: true
+            }
+          },
+          viaIR: true,
+          evmVersion: "paris",
+          metadata: {
+            bytecodeHash: "none"
+          }
+        }
+      },
       "contracts/UnifiedFeeVault.sol": {
         version: "0.8.24",
         settings: {

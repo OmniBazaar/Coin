@@ -443,7 +443,11 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
     /// @notice Emitted when a party freezes an escrow for the judge panel
     /// @param escrowId Escrow identifier
     /// @param disputer The buyer or seller that opened the dispute
-    event EscrowDisputeOpened(uint256 indexed escrowId, address indexed disputer);
+    event EscrowDisputeOpened(
+        uint256 indexed escrowId,
+        address indexed disputer,
+        uint256 stake
+    );
 
     /// @notice Emitted when a signed 2-of-N judge verdict is executed
     /// @param escrowId Escrow identifier
@@ -663,10 +667,12 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
         ERC2771Context(trustedForwarder_)
         EIP712("OmniBazaar EscrowV2", "3")
     {
+        // XOM and the three protocol sinks are required. pXOM and the registry
+        // are optional: a chain that has neither (Avalanche today) still gets a
+        // working escrow — privacy stays unavailable there (the chain-id check)
+        // and the first-sale bridge no-ops on a codeless registry.
         if (
             _omniCoin == address(0) ||
-            _privateOmniCoin == address(0) ||
-            _registry == address(0) ||
             _oddao == address(0) ||
             _stakingPool == address(0) ||
             _protocolTreasury == address(0)
@@ -1521,18 +1527,31 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
             amount = escrow.amount;
             escrow.amount = 0;
         }
-        totalEscrowed[escrow.token] -= amount;
+        address token = escrow.token;
+        totalEscrowed[token] -= amount;
+
+        // 🛑 A DELIVERED escrow times out to the SELLER (audit C-1). Delivery is
+        // the seller's on-chain assertion and the buyer's inspection window has
+        // long passed; paying the buyer here made "freeze, then wait" a way to
+        // take a delivered sale for free. An undelivered escrow still refunds
+        // the buyer — nothing was proven.
+        address recipient = escrow.buyer;
+        uint256 payout = amount;
+        if (escrow.delivered) {
+            recipient = escrow.seller;
+            payout = _collectMarketplaceFee(escrowId, token, amount);
+        }
 
         // Use pull pattern for fund disbursement
-        claimable[escrow.token][escrow.buyer] += amount;
-        totalClaimable[escrow.token] += amount;
-        emit FundsClaimable(escrow.buyer, escrow.token, amount);
+        claimable[token][recipient] += payout;
+        totalClaimable[token] += payout;
+        emit FundsClaimable(recipient, token, payout);
 
         // Return dispute stakes to both parties
         _returnDisputeStake(escrowId, escrow.buyer);
         _returnDisputeStake(escrowId, escrow.seller);
 
-        emit EscrowResolved(escrowId, escrow.buyer, amount);
+        emit EscrowResolved(escrowId, recipient, payout);
     }
 
     /**
@@ -1794,11 +1813,25 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
         // commit/reveal flow; mixing the two venues is what
         // {_requireInternalDisputePath} exists to prevent.
         if (e.arbitrator != address(0)) revert AlreadyDisputed();
+        // Private escrows keep the internal commit-reveal path: their amount is
+        // hidden, so a judge panel cannot price a seat bond for them.
+        if (isPrivateEscrow[escrowId]) revert CannotMixPrivacyModes();
         address caller = _msgSender();
         if (caller != e.buyer && caller != e.seller) revert NotParticipant();
 
+        // 🛑 Freezing is not free. Without this stake a buyer could freeze a
+        // delivered sale for gas and wait out the timeout (audit C-1), so the
+        // opener posts the same 2.5% the internal dispute path requires. It is
+        // returned with the other stakes on every resolution, timeout included.
         e.disputed = true;
-        emit EscrowDisputeOpened(escrowId, caller);
+        address stakeToken = _stakeToken(escrowId);
+        uint256 requiredStake = (e.amount * DISPUTE_STAKE_BASIS) / BASIS_POINTS;
+        if (requiredStake == 0) revert InsufficientStake();
+        _pullExact(IERC20(stakeToken), caller, requiredStake);
+        disputeStakes[escrowId][caller] += requiredStake;
+        totalEscrowed[stakeToken] += requiredStake;
+
+        emit EscrowDisputeOpened(escrowId, caller, requiredStake);
     }
 
     /**
@@ -1831,6 +1864,9 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
     ) external nonReentrant whenNotPaused {
         Escrow storage e = escrows[escrowId];
         if (e.buyer == address(0)) revert EscrowNotFound();
+        // An internal commit-reveal dispute is already in progress; its own
+        // vote (and its resolving arbitrator's 70% share) owns this escrow.
+        if (e.arbitrator != address(0)) revert AlreadyDisputed();
         bytes32 digest = EscrowSignatureLib.hashVerdict(
             _domainSeparatorV4(), escrowId, releaseFunds, validUntil
         );
@@ -2004,7 +2040,12 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
         address referrer2,
         address listingNode,
         address sellingNode
-    ) private pure {
+    ) private view {
+        // Same burn rule as {_validateReferrerPair}: the escrow itself can
+        // never collect a credit.
+        if (listingNode == address(this) || sellingNode == address(this)) {
+            revert BadAttribution();
+        }
         // Returns true; see {_requireSupportedToken} for why the value matters.
         if (
             !EscrowFeeRouter.validateAttributionNodes(
@@ -2197,7 +2238,13 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
         address seller,
         address referrer,
         address referrer2
-    ) private pure {
+    ) private view {
+        // A referral slice credited to this contract could never be withdrawn
+        // (nothing can call withdrawClaimable as the escrow), so it would be
+        // burned out of the seller's proceeds.
+        if (referrer == address(this) || referrer2 == address(this)) {
+            revert BadReferrer();
+        }
         // Returns true; see {_requireSupportedToken} for why the value matters.
         if (!EscrowFeeRouter.validateReferrerPair(buyer, seller, referrer, referrer2)) {
             revert BadReferrer();

@@ -1,27 +1,45 @@
 /**
- * Deploy EscrowV2 to OmniCoin L1 mainnet (chain 88008).
+ * Deploy EscrowV2 — the PER-CHAIN escrow (2026-10-20).
  *
- * EscrowV2 is a FRESH contract, never an upgrade: v1 `MinimalEscrow` stays live
- * for in-flight escrows (30-day maximum duration) while new escrows use this
- * instance. Run order matters — the constructor allowlist call and the dispute
- * path both depend on state that must already exist:
+ * Founder decision 3: escrow on the chain where the token lives. This V4
+ * contract has no cross-chain dependency — its own admin-set token allowlist,
+ * the 1% split in kind on its own chain, and judge verdicts delivered as
+ * EIP-712 signatures from the L1 arbitration panel. It is a FRESH contract,
+ * never an upgrade.
  *
- *   1. deploy EscrowV2 (omniCoin, privateOmniCoin, registry, feeVault, 100 bps,
- *      OmniForwarder)
- *   2. grant DEPOSITOR_ROLE on UnifiedFeeVault to the new escrow (fee split)
- *   3. seed at least one arbitrator, or `revealDispute` reverts and an internal
- *      dispute can never be resolved
- *   4. re-read deployed state and verify the constructor arguments
- *   5. write the address into Coin/deployments/mainnet.json
+ * WHAT THIS SCRIPT DOES
+ *   1. deploys the three linked libraries (fee router, privacy ops, signature
+ *      verification) and records each as it lands;
+ *   2. deploys EscrowV2 and verifies: code present, EIP-170 size under 24,576,
+ *      every library address embedded in the runtime bytecode, constructor
+ *      state read back, XOM seeded into the allowlist;
+ *   3. writes the addresses into deployments/<chain>.json.
  *
- * Preflight probes every external selector the contract calls on an
- * already-deployed address, because a counterparty compiled from an older
- * commit can silently lack it (the deploy runbook records a router incident
- * caused by exactly that).
+ * WHAT IT DELIBERATELY DOES NOT DO
+ *   - allowlist additional settlement tokens (call `setSupportedToken`);
+ *   - roster verdict judges (call `setVerdictJudge`);
+ *   - seed internal arbitrators.
+ *   Those are one-line admin calls, printed at the end, so a mistyped token or
+ *   judge address cannot be buried in a deploy transaction.
  *
- * Usage (the key is read from the file, never printed):
+ * INPUTS (env; a missing or malformed value is a hard error, never a default
+ * that silently points a fee slice at the wrong address):
+ *   MAINNET_DEPLOYER_PRIVATE_KEY   the Pioneer-phase admin key
+ *   ESCROW_ODDAO                   ODDAO sink on THIS chain
+ *   ESCROW_STAKING_POOL            staking-pool sink on THIS chain
+ *   ESCROW_TREASURY                protocol-treasury sink on THIS chain
+ *   ESCROW_OMNI_COIN               (optional) settlement coin; defaults to the
+ *                                  chain manifest's OmniCoin
+ *   ESCROW_PRIVATE_OMNI_COIN       (optional) pXOM; omit on chains without it
+ *   ESCROW_REGISTRY                (optional) OmniRegistration; omit if absent
+ *   ESCROW_FORWARDER               (optional) ERC-2771 forwarder; omit to
+ *                                  disable meta-transactions
+ *
+ * Usage:
  *   MAINNET_DEPLOYER_PRIVATE_KEY=$(cat ~/.avalanche-cli/key/deployer.pk) \
- *     npx hardhat run scripts/deploy-escrowv2.cjs --network mainnet
+ *   ESCROW_ODDAO=0x… ESCROW_STAKING_POOL=0x… ESCROW_TREASURY=0x… \
+ *     npx hardhat run scripts/deploy-escrowv2.cjs --network mainnet-c-chain
+ *   (OmniCoin L1: --network mainnet, chain 88008)
  */
 const fs = require("fs");
 const path = require("path");
@@ -33,47 +51,57 @@ const EXPECTED_DEPLOYER = "0x021868f2E3D49C059EF52B539AAa933B437e0321";
 /** Canonical 1% marketplace fee, pinned by the constructor. */
 const MARKETPLACE_FEE_BPS = 100n;
 
-/** Deployment manifest, updated in place. */
-const MANIFEST = path.join(__dirname, "..", "deployments", "mainnet.json");
+/** EIP-170 deployed-code ceiling. */
+const EIP170_LIMIT = 24576;
+
+/** Libraries EscrowV2 links (must match its `import` list). */
+const LIBRARIES = ["EscrowFeeRouter", "EscrowPrivacyOps", "EscrowSignatureLib"];
 
 /**
- * Resolve the deployment manifest's `contracts` map.
- * @returns {Record<string, string>} Contract name → address.
+ * Resolve (and create) the deployment manifest for the current chain.
+ * @param {bigint} chainId - Chain id being deployed to.
+ * @returns {{path: string, json: object}} Manifest path and parsed content.
  */
-function loadContracts() {
-  const json = JSON.parse(fs.readFileSync(MANIFEST, "utf8"));
-  return json;
+function loadManifest(chainId) {
+  const name = chainId === 88008n ? "mainnet" : `chain-${chainId}`;
+  const file = path.join(__dirname, "..", "deployments", `${name}.json`);
+  const json = fs.existsSync(file)
+    ? JSON.parse(fs.readFileSync(file, "utf8"))
+    : { chainId: Number(chainId), contracts: {} };
+  json.contracts = json.contracts || {};
+  return { path: file, json };
 }
 
 /**
- * Probe one selector on a deployed address.
- * @param {object} provider - ethers provider.
- * @param {string} to - Contract address.
- * @param {string} signature - Human-readable function signature.
- * @param {string[]} args - ABI-encoded argument types rendered as zero values.
- * @returns {Promise<boolean>} True when the selector exists.
+ * Persist a manifest, creating the deployments directory if needed.
+ * @param {{path: string, json: object}} manifest - Manifest handle.
  */
-async function selectorExists(provider, to, signature, args) {
-  const { ethers } = hre;
-  const iface = new ethers.Interface([`function ${signature}`]);
-  const fragment = iface.getFunction(signature.split("(")[0]);
-  const data = iface.encodeFunctionData(fragment, args);
-  try {
-    await provider.call({ to, data });
-    return true;
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    // A revert from the function body still proves the selector exists.
-    if (/reverted|execution reverted/i.test(message)) return true;
-    return false;
+function saveManifest(manifest) {
+  fs.mkdirSync(path.dirname(manifest.path), { recursive: true });
+  fs.writeFileSync(manifest.path, `${JSON.stringify(manifest.json, null, 2)}\n`);
+}
+
+/**
+ * Parse an optional address from the environment.
+ * @param {string} key - Environment variable name.
+ * @param {string|undefined} fallback - Value to use when the variable is unset.
+ * @param {string} label - Human-readable label for errors.
+ * @returns {string} A checksummed address, or the zero address.
+ */
+function resolveAddress(key, fallback, label) {
+  const raw = process.env[key] || fallback || "";
+  if (!raw) return hre.ethers.ZeroAddress;
+  if (!hre.ethers.isAddress(raw)) {
+    throw new Error(`${label}: "${raw}" is not an address`);
   }
+  return hre.ethers.getAddress(raw);
 }
 
 async function main() {
   const { ethers } = hre;
   const [deployer] = await ethers.getSigners();
 
-  console.log("=== EscrowV2 mainnet deployment ===");
+  console.log("=== EscrowV2 (per-chain) deployment ===");
   console.log("deployer:", deployer.address);
   if (deployer.address.toLowerCase() !== EXPECTED_DEPLOYER.toLowerCase()) {
     throw new Error(
@@ -81,176 +109,156 @@ async function main() {
     );
   }
   const network = await ethers.provider.getNetwork();
-  if (network.chainId !== 88008n) {
-    throw new Error(`Wrong chain: ${network.chainId}, expected 88008`);
-  }
-  console.log("gas balance:", ethers.formatEther(await ethers.provider.getBalance(deployer.address)), "XOM");
+  console.log("chain:", network.chainId.toString());
+  console.log(
+    "gas balance:",
+    ethers.formatEther(await ethers.provider.getBalance(deployer.address)),
+    "native",
+  );
 
-  const manifest = loadContracts();
-  const c = manifest.contracts;
-  const omniCoin = c.OmniCoin;
-  const privateOmniCoin = c.PrivateOmniCoin;
-  const registry = c.OmniRegistration;
-  const feeVault = c.UnifiedFeeVault;
-  const forwarder = c.OmniForwarder;
-  const v1Escrow = c.MinimalEscrow;
-  for (const [name, addr] of Object.entries({ omniCoin, privateOmniCoin, registry, feeVault, forwarder })) {
-    if (!addr || !ethers.isAddress(addr)) throw new Error(`manifest missing ${name}`);
-  }
+  const manifest = loadManifest(network.chainId);
+  const c = manifest.json.contracts;
 
-  // ── Preflight: every external selector EscrowV2 calls must exist ────────
-  console.log("\n-- selector probes --");
-  const probes = [
-    [feeVault, "supportedPaymentTokens(address)", [omniCoin], "vault allowlist read"],
-    [feeVault, "depositMarketplaceFee(address,uint256,address,address,address,address)", [omniCoin, 1n, ethers.ZeroAddress, ethers.ZeroAddress, ethers.ZeroAddress, ethers.ZeroAddress], "vault fee deposit"],
-    [feeVault, "DEPOSITOR_ROLE()", [], "vault role constant"],
-    [feeVault, "grantRole(bytes32,address)", [ethers.ZeroHash, ethers.ZeroAddress], "vault role grant"],
-    [registry, "hasCompletedFirstSale(address)", [ethers.ZeroAddress], "registry first-sale read"],
-    [registry, "markFirstSaleCompleted(address,uint256,address)", [ethers.ZeroAddress, 1n, ethers.ZeroAddress], "registry first-sale write"],
-  ];
-  for (const [to, sig, args, label] of probes) {
-    const ok = await selectorExists(ethers.provider, to, sig, args);
-    console.log(`${ok ? "OK  " : "MISS"} ${label.padEnd(24)} ${sig}`);
-    if (!ok) throw new Error(`Missing selector on ${to}: ${sig}`);
+  const omniCoin = resolveAddress("ESCROW_OMNI_COIN", c.OmniCoin, "ESCROW_OMNI_COIN");
+  if (omniCoin === ethers.ZeroAddress) {
+    throw new Error("ESCROW_OMNI_COIN is required (no OmniCoin in this chain's manifest)");
+  }
+  const privateOmniCoin = resolveAddress(
+    "ESCROW_PRIVATE_OMNI_COIN",
+    c.PrivateOmniCoin,
+    "ESCROW_PRIVATE_OMNI_COIN",
+  );
+  const registry = resolveAddress("ESCROW_REGISTRY", c.OmniRegistration, "ESCROW_REGISTRY");
+  const forwarder = resolveAddress("ESCROW_FORWARDER", c.OmniForwarder, "ESCROW_FORWARDER");
+  const oddao = resolveAddress("ESCROW_ODDAO", c.ODDAO, "ESCROW_ODDAO");
+  const stakingPool = resolveAddress("ESCROW_STAKING_POOL", c.StakingRewardPool, "ESCROW_STAKING_POOL");
+  const treasury = resolveAddress("ESCROW_TREASURY", c.OmniTreasuryV2, "ESCROW_TREASURY");
+
+  for (const [label, addr] of Object.entries({ oddao, stakingPool, treasury })) {
+    if (addr === ethers.ZeroAddress) {
+      throw new Error(
+        `${label} is required: every sale pays this sink a slice of the 1%`,
+      );
+    }
+  }
+  if (new Set([oddao, stakingPool, treasury]).size !== 3) {
+    throw new Error("the three fee sinks must be distinct addresses");
+  }
+  console.log("\n-- constructor arguments --");
+  console.log("omniCoin        :", omniCoin);
+  console.log("privateOmniCoin :", privateOmniCoin);
+  console.log("registry        :", registry);
+  console.log("oddao           :", oddao);
+  console.log("stakingPool     :", stakingPool);
+  console.log("treasury        :", treasury);
+  console.log("forwarder       :", forwarder);
+
+  // Every constructor input must be a contract (or zero) BEFORE spending gas:
+  // a mistyped sink would route protocol fees into a hole forever.
+  for (const [label, addr] of Object.entries({
+    omniCoin,
+    privateOmniCoin,
+    registry,
+    forwarder,
+  })) {
+    if (addr === ethers.ZeroAddress) continue;
+    const code = await ethers.provider.getCode(addr);
+    if (code === "0x") throw new Error(`${label} has no code at ${addr}`);
   }
 
   // ── Deploy ─────────────────────────────────────────────────────────────
-  console.log("\n-- deploy --");
-  // EscrowV2 links two external libraries (fee routing + privacy entry
-  // points) — they are deployed once and shared, and hold no state.
   const libs = {};
-  for (const name of ["EscrowFeeRouter", "EscrowPrivacyOps"]) {
+  for (const name of LIBRARIES) {
     const L = await ethers.getContractFactory(name);
-    const l = await L.deploy();
-    await l.waitForDeployment();
-    libs[name] = await l.getAddress();
-    console.log(`${name}:`, libs[name]);
+    const lib = await L.deploy();
+    await lib.waitForDeployment();
+    libs[name] = await lib.getAddress();
+    console.log(`\n${name}:`, libs[name]);
     // Record each library as it lands — a later failure must not lose it.
-    manifest.contracts[name] = libs[name];
-    fs.writeFileSync(MANIFEST, `${JSON.stringify(manifest, null, 2)}\n`);
+    manifest.json.contracts[name] = libs[name];
+    saveManifest(manifest);
   }
+
   const Escrow = await ethers.getContractFactory("EscrowV2", { libraries: libs });
   const escrow = await Escrow.deploy(
     omniCoin,
     privateOmniCoin,
     registry,
-    feeVault,
+    oddao,
+    stakingPool,
+    treasury,
     MARKETPLACE_FEE_BPS,
     forwarder,
   );
   const deployTx = escrow.deploymentTransaction();
-  console.log("tx:", deployTx ? deployTx.hash : "(unknown)");
+  console.log("\ndeploy tx:", deployTx ? deployTx.hash : "(unknown)");
   await escrow.waitForDeployment();
   const address = await escrow.getAddress();
   console.log("EscrowV2:", address);
-  manifest.contracts.EscrowV2 = address;
-  manifest.contracts.EscrowV2DeployedAt = new Date().toISOString();
-  manifest.contracts.EscrowV2DeployTx = deployTx ? deployTx.hash : "";
-  fs.writeFileSync(MANIFEST, `${JSON.stringify(manifest, null, 2)}\n`);
-  console.log("address recorded in", MANIFEST);
 
-  // EscrowV2 needs both libraries at run time. Record everything on chain
-  // NOW — a later step failing must not leave deployed addresses unrecorded.
-  // The subnet RPC is eventually consistent (see the post-deploy reads below),
-  // so a zero-length read here means "not indexed yet", not "no code".
-  let escrowCode = "0x";
-  for (let attempt = 0; attempt < 10 && escrowCode === "0x"; attempt += 1) {
-    escrowCode = await ethers.provider.getCode(address);
-    if (escrowCode === "0x") await new Promise((r) => setTimeout(r, 1500));
+  // Record before verifying: a verification failure must not lose the address.
+  manifest.json.contracts.EscrowV2 = address;
+  manifest.json.contracts.EscrowV2DeployedAt = new Date().toISOString();
+  manifest.json.contracts.EscrowV2DeployTx = deployTx ? deployTx.hash : "";
+  saveManifest(manifest);
+  console.log("addresses recorded in", manifest.path);
+
+  // ── Verify ─────────────────────────────────────────────────────────────
+  let code = "0x";
+  for (let attempt = 0; attempt < 10 && code === "0x"; attempt += 1) {
+    code = await ethers.provider.getCode(address);
+    if (code === "0x") await new Promise((r) => setTimeout(r, 1500));
   }
-  if (escrowCode === "0x") throw new Error(`no code at ${address} after 15s`);
-  const size = (escrowCode.length - 2) / 2;
-  if (size > 24576) {
-    throw new Error(`EscrowV2 is ${size} bytes — over the 24,576 EIP-170 limit`);
+  if (code === "0x") throw new Error(`no code at ${address} after 15s`);
+  const size = (code.length - 2) / 2;
+  if (size > EIP170_LIMIT) {
+    throw new Error(`EscrowV2 is ${size} bytes — over the ${EIP170_LIMIT} EIP-170 limit`);
   }
   for (const [name, libAddr] of Object.entries(libs)) {
     if ((await ethers.provider.getCode(libAddr)) === "0x") {
       throw new Error(`${name} has no code at ${libAddr}`);
     }
-    if (!escrowCode.toLowerCase().includes(libAddr.slice(2).toLowerCase())) {
+    if (!code.toLowerCase().includes(libAddr.slice(2).toLowerCase())) {
       throw new Error(`EscrowV2 bytecode does not embed ${name} (${libAddr})`);
     }
   }
-  console.log(`linked libraries OK — escrow ${size} bytes`);
-  manifest.contracts.EscrowFeeRouter = libs.EscrowFeeRouter;
-  manifest.contracts.EscrowPrivacyOps = libs.EscrowPrivacyOps;
-  manifest.contracts.EscrowV2 = address;
-  manifest.contracts.EscrowV2DeployedAt = new Date().toISOString();
-  manifest.contracts.EscrowV2DeployTx = deployTx ? deployTx.hash : "";
-  fs.writeFileSync(MANIFEST, `${JSON.stringify(manifest, null, 2)}\n`);
-  console.log("addresses recorded in", MANIFEST);
-  const receipt = await deployTx.wait();
-  console.log("mined in block", receipt.blockNumber, "gas used", receipt.gasUsed.toString());
+  console.log(`\nlinked libraries OK — escrow ${size} of ${EIP170_LIMIT} bytes`);
 
-  // ── Post-deploy reads (subnet RPC is eventually consistent) ────────────
-  console.log("\n-- verify deployed state --");
   const reads = {
     OMNI_COIN: await escrow.OMNI_COIN(),
     PRIVATE_OMNI_COIN: await escrow.PRIVATE_OMNI_COIN(),
     REGISTRY: await escrow.REGISTRY(),
-    FEE_VAULT: await escrow.FEE_VAULT(),
+    ODDAO: await escrow.ODDAO(),
+    STAKING_POOL: await escrow.STAKING_POOL(),
+    PROTOCOL_TREASURY: await escrow.PROTOCOL_TREASURY(),
     MARKETPLACE_FEE_BPS: (await escrow.MARKETPLACE_FEE_BPS()).toString(),
     admin: await escrow.admin(),
   };
   for (const [k, v] of Object.entries(reads)) console.log(`${k}: ${v}`);
   if (reads.MARKETPLACE_FEE_BPS !== "100") throw new Error("fee bps not pinned to 100");
-  if (reads.admin.toLowerCase() !== deployer.address.toLowerCase()) throw new Error("admin is not the deployer");
-
-  // ── Allowlist visibility for both settlement tokens ────────────────────
-  const vault = await ethers.getContractAt(
-    ["function supportedPaymentTokens(address) view returns (bool)", "function DEPOSITOR_ROLE() view returns (bytes32)", "function grantRole(bytes32,address)", "function hasRole(bytes32,address) view returns (bool)"],
-    feeVault,
-  );
-  const xomAllowed = await vault.supportedPaymentTokens(omniCoin);
-  const usdcAllowed = await vault.supportedPaymentTokens(c.ERC20TokenRemote || c.BridgedUSDC);
-  console.log("vault allowlist — XOM:", xomAllowed, "USDC:", usdcAllowed);
-  if (!xomAllowed) throw new Error("vault does not allowlist XOM; every escrow create would fail");
-
-  // ── DEPOSITOR_ROLE, so releases can use the canonical 70/20/10 split ───
-  const role = await vault.DEPOSITOR_ROLE();
-  const already = await vault.hasRole(role, address);
-  if (already) {
-    console.log("DEPOSITOR_ROLE already held");
-  } else {
-    // The vault's DEFAULT_ADMIN_ROLE is the OmniTimelockController, so the
-    // deployer CANNOT grant this. The grant is action 1 of the governance
-    // proposal; a revert here must not abort the deploy (it would also skip
-    // the arbitrator seed below).
-    try {
-      const tx = await vault.grantRole(role, address);
-      await tx.wait();
-      console.log("granted DEPOSITOR_ROLE:", tx.hash);
-    } catch {
-      console.log(
-        "DEPOSITOR_ROLE not grantable by the deployer (expected: vault admin is the timelock).",
-      );
-      console.log(
-        "  → it is granted by scripts/governance/propose-revision-2026-10.cjs (action 1).",
-      );
-    }
+  if (reads.admin.toLowerCase() !== deployer.address.toLowerCase()) {
+    throw new Error("admin is not the deployer");
   }
-
-  // ── Seed an arbitrator (internal disputes are unrevertable without one) ─
-  console.log("\n-- arbitrators --");
-  let count = await escrow.arbitratorCount();
-  if (count === 0n) {
-    // v1 has none either; the admin EOA is the Pioneer-phase arbitrator until
-    // a panel is appointed. Disputes need at least one eligible address.
-    const tx = await escrow.addArbitrator(deployer.address);
-    await tx.wait();
-    count = await escrow.arbitratorCount();
-    console.log("seeded arbitrator:", deployer.address, "tx:", tx.hash);
+  if (reads.ODDAO.toLowerCase() !== oddao.toLowerCase()) throw new Error("ODDAO mismatch");
+  if (reads.STAKING_POOL.toLowerCase() !== stakingPool.toLowerCase()) {
+    throw new Error("staking pool mismatch");
   }
-  console.log("arbitratorCount:", count.toString());
-  for (let i = 0n; i < count; i += 1n) {
-    console.log("  ", i.toString(), await escrow.arbitratorList(i));
+  if (reads.PROTOCOL_TREASURY.toLowerCase() !== treasury.toLowerCase()) {
+    throw new Error("treasury mismatch");
   }
+  const xomAllowed = await escrow.supportedToken(omniCoin);
+  console.log("XOM on the escrow's own allowlist:", xomAllowed);
+  if (!xomAllowed) throw new Error("XOM is not allowlisted; every create would revert");
 
-  // ── Manifest ───────────────────────────────────────────────────────────
-  console.log("\nmanifest updated:", MANIFEST);
+  const receipt = await deployTx.wait();
+  console.log("mined in block", receipt.blockNumber, "gas used", receipt.gasUsed.toString());
 
-  console.log("\nNext: node scripts/sync-contract-addresses.js mainnet");
-  console.log("v1 MinimalEscrow stays live for in-flight escrows:", v1Escrow);
+  // ── Follow-ups (deliberately not automated) ────────────────────────────
+  console.log("\n-- follow-ups, one admin call each --");
+  console.log(`  escrow.setSupportedToken(<settlement token>, true)`);
+  console.log(`  escrow.setVerdictJudge(<seated judge>, true)   × 3 (at least 2)`);
+  console.log(`  escrow.addArbitrator(<internal arbitrator>)    (private/pXOM votes)`);
+  console.log("\nNext: node scripts/sync-contract-addresses.js <chain>");
 }
 
 main().catch((err) => {

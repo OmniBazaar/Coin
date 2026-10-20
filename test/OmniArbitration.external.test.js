@@ -16,9 +16,11 @@
 
 const { expect } = require('chai');
 const { ethers, upgrades } = require('hardhat');
+const { time } = require('@nomicfoundation/hardhat-network-helpers');
 
 describe('OmniArbitration — external (cross-chain) disputes', function () {
   let arbitration;
+  let owner;
   let xom;
   let feeVault;
   let judges;
@@ -76,6 +78,7 @@ describe('OmniArbitration — external (cross-chain) disputes', function () {
 
   beforeEach(async function () {
     const signers = await ethers.getSigners();
+    owner = signers[0];
     feeVault = signers[1];
     judges = signers.slice(2, 10);
     buyer = signers[10];
@@ -154,14 +157,15 @@ describe('OmniArbitration — external (cross-chain) disputes', function () {
         .createExternalDispute(DEST_CHAIN, DEST_ESCROW, 1, buyer.address, seller.address, AMOUNT)
     ).to.be.revertedWithCustomError(arbitration, 'NotEscrowParty');
 
+    // A second dispute for the same escrow is ALLOWED (a third party must not
+    // be able to occupy a real escrow's only slot). Each costs its own fee.
     await arbitration
       .connect(buyer)
       .createExternalDispute(DEST_CHAIN, DEST_ESCROW, 1, buyer.address, seller.address, AMOUNT);
-    await expect(
-      arbitration
-        .connect(seller)
-        .createExternalDispute(DEST_CHAIN, DEST_ESCROW, 1, buyer.address, seller.address, AMOUNT)
-    ).to.be.revertedWithCustomError(arbitration, 'ExternalEscrowAlreadyDisputed');
+    await arbitration
+      .connect(seller)
+      .createExternalDispute(DEST_CHAIN, DEST_ESCROW, 1, buyer.address, seller.address, AMOUNT);
+    expect(await arbitration.nextDisputeId()).to.be.greaterThan(2n);
   });
 
   it('does not touch a local escrow and takes the fee up front', async function () {
@@ -224,6 +228,74 @@ describe('OmniArbitration — external (cross-chain) disputes', function () {
     }
   });
 
+  it('floors the fee so a dust claim cannot buy the escrow slot', async function () {
+    // Audit H-3: the asserted amount is unverifiable, so a 20-wei claim would
+    // otherwise occupy a valuable escrow's single dispute slot for 1 wei.
+    await expect(
+      arbitration
+        .connect(buyer)
+        .createExternalDispute(DEST_CHAIN, DEST_ESCROW, ESCROW_ID, buyer.address, seller.address, 20n)
+    ).to.be.revertedWithCustomError(arbitration, 'DisputedAmountTooSmall');
+  });
+
+  it('never unfreezes the LOCAL escrow that shares an external escrow id', async function () {
+    // Audit H-2: round 2 of the default-resolution path used to call
+    // unmarkDisputed on the local escrow with the foreign id, reopening the
+    // refund race the V4 release closed.
+    const MockEscrow = await ethers.getContractFactory('MockArbitrationEscrow');
+    const local = await MockEscrow.deploy();
+    await local.setEscrow(ESCROW_ID, buyer.address, seller.address, ethers.parseEther('100'));
+    await arbitration.connect(owner).updateContracts(ethers.ZeroAddress, await local.getAddress());
+
+    // A live local dispute on escrow id 7.
+    await arbitration.connect(buyer).createDispute(ESCROW_ID);
+    const localDisputeId = (await arbitration.nextDisputeId()) - 1n;
+    expect(await local.disputed(ESCROW_ID)).to.equal(true);
+
+    // An external dispute that happens to reuse the same numeric escrow id.
+    await arbitration
+      .connect(buyer)
+      .createExternalDispute(
+        DEST_CHAIN,
+        DEST_ESCROW,
+        ESCROW_ID,
+        buyer.address,
+        seller.address,
+        AMOUNT
+      );
+    const extId = (await arbitration.nextDisputeId()) - 1n;
+
+    await ethers.provider.send('evm_mine', []);
+    await ethers.provider.send('evm_mine', []);
+    await arbitration.connect(buyer).finalizeArbitratorSelection(extId);
+    await ethers.provider.send('evm_mine', []);
+
+    await time.increase(7 * 24 * 60 * 60 + 1);
+    await arbitration.triggerDefaultResolution(extId); // round 1: reseat
+    await ethers.provider.send('evm_mine', []);
+    await ethers.provider.send('evm_mine', []);
+    await arbitration.connect(buyer).finalizeArbitratorSelection(extId);
+    await ethers.provider.send('evm_mine', []);
+    await time.increase(7 * 24 * 60 * 60 + 1);
+    await arbitration.triggerDefaultResolution(extId); // round 2: status quo
+
+    // The local escrow is untouched and still owned by its live dispute.
+    expect(await local.disputed(ESCROW_ID)).to.equal(true);
+    expect(await arbitration.escrowToDisputeId(ESCROW_ID)).to.equal(localDisputeId);
+
+    // ... while the cross-chain slot was released for the real parties.
+    await arbitration
+      .connect(seller)
+      .createExternalDispute(
+        DEST_CHAIN,
+        DEST_ESCROW,
+        ESCROW_ID,
+        buyer.address,
+        seller.address,
+        AMOUNT
+      );
+  });
+
   it('cancels an unseatable external dispute and refunds the fee', async function () {
     await arbitration
       .connect(buyer)
@@ -234,7 +306,7 @@ describe('OmniArbitration — external (cross-chain) disputes', function () {
     await arbitration.connect(buyer).cancelDispute(disputeId);
     expect(await xom.balanceOf(buyer.address)).to.equal(before + DISPUTE_FEE);
 
-    // The key is released, so the same escrow can be disputed again.
+    // Nothing is left occupying the escrow: a fresh dispute can be opened.
     await arbitration
       .connect(seller)
       .createExternalDispute(DEST_CHAIN, DEST_ESCROW, ESCROW_ID, buyer.address, seller.address, AMOUNT);
