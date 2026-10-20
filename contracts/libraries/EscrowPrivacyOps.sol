@@ -135,7 +135,8 @@ library EscrowPrivacyOps {
             inspectionDeadline: 0,
             token: pXom,
             listingNode: address(0),
-            sellingNode: address(0)
+            sellingNode: address(0),
+            disputeOpenedAt: 0
         });
 
         emit EscrowToken(escrowId, pXom);

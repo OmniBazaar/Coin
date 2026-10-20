@@ -690,22 +690,22 @@ describe('EscrowV2 — per-chain settlement, in-kind fee, signed verdicts', func
       expect(await escrow.totalMarketplaceFees(await usdc.getAddress())).to.equal(USDC(1));
     });
 
-    it('cannot be stolen by freezing BEFORE delivery (re-audit D-1)', async function () {
-      // The buyer freezes first, so markDelivered used to revert forever and
-      // the timeout refunded the whole principal. Delivery is now recordable
-      // during a dispute, and the timeout pays whichever state is on chain.
+    it('records delivery during a dispute but will not pay for it on timeout', async function () {
+      // Delivery stays recordable while frozen (it is a fact, not a payout), so
+      // the seller is not blocked from asserting it — but an assertion made
+      // AFTER the buyer's freeze does not decide the timeout. The older claim
+      // wins; the seller's route is a signed verdict.
       await escrow.connect(buyer).openDispute(id);
       await escrow.connect(seller).markDelivered(id);
       expect((await escrow.getEscrow(id)).delivered).to.equal(true);
 
       await time.increase(7 * DAY + 31 * DAY);
-      // Permissionless: the buyer has no incentive to trigger a seller payout.
+      // Permissionless: whoever calls, the outcome is the escrow's own state.
       await escrow.connect(outsider).claimDisputeTimeout(id);
 
-      const sellerBefore = await usdc.balanceOf(seller.address);
-      await escrow.connect(seller).withdrawClaimable(await usdc.getAddress());
-      expect(await usdc.balanceOf(seller.address)).to.equal(sellerBefore + USDC(99));
-      expect((await escrow.getEscrow(id)).resolved).to.equal(true);
+      await escrow.connect(buyer).withdrawClaimable(await usdc.getAddress());
+      expect(await escrow.claimable(await usdc.getAddress(), seller.address)).to.equal(0n);
+      expect(await escrow.totalMarketplaceFees(await usdc.getAddress())).to.equal(0n);
     });
 
     it('lets anyone release a frozen, delivered escrow once the timeout passes', async function () {
@@ -716,6 +716,32 @@ describe('EscrowV2 — per-chain settlement, in-kind fee, signed verdicts', func
       const sellerBefore = await usdc.balanceOf(seller.address);
       await escrow.connect(seller).withdrawClaimable(await usdc.getAddress());
       expect(await usdc.balanceOf(seller.address)).to.equal(sellerBefore + USDC(99));
+    });
+
+    it('ignores a delivery asserted AFTER the buyer froze (re-audit N-1)', async function () {
+      // The mirror attack: the seller marks delivery late to make the timeout
+      // pay them. The older claim (the freeze) wins; the seller's route is a
+      // signed verdict.
+      await escrow.connect(buyer).openDispute(id);
+      await time.increase(DAY);
+      await escrow.connect(seller).markDelivered(id);
+
+      await time.increase(6 * DAY + 31 * DAY);
+      await escrow.connect(seller).claimDisputeTimeout(id);
+
+      // Buyer refunded the principal, seller credited nothing.
+      await escrow.connect(buyer).withdrawClaimable(await usdc.getAddress());
+      expect(await escrow.claimable(await usdc.getAddress(), seller.address)).to.equal(0n);
+      expect((await escrow.getEscrow(id)).resolved).to.equal(true);
+    });
+
+    it('waits for the inspection window before a delivered timeout pays out', async function () {
+      // Delivery marked just before the 30-day timeout must still give the
+      // buyer the full inspection period.
+      await escrow.connect(seller).markDelivered(id); // deadline = now + 7d
+      await time.increase(7 * DAY + 30 * DAY + 1);
+      await expect(escrow.connect(outsider).claimDisputeTimeout(id))
+        .to.be.revertedWithCustomError(escrow, 'NotDisputed');
     });
 
     it('refuses a verdict while an internal dispute owns the escrow', async function () {

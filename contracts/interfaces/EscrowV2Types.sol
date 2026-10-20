@@ -66,4 +66,8 @@ struct Escrow {
     // their share to ODDAO.
     address listingNode;
     address sellingNode;
+    // When a party froze the escrow for the judge panel (0 = never). The
+    // timeout uses it to decide whether a delivery assertion predates the
+    // freeze; see EscrowV2.claimDisputeTimeout.
+    uint256 disputeOpenedAt;
 }

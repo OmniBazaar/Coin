@@ -594,6 +594,9 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
     /// @notice Fewer than two distinct judge signatures were supplied
     error NotEnoughVerdicts();
 
+    /// @notice The seller's inspection window has not elapsed yet
+    error InspectionWindowOpen();
+
     // ──────────────────────────────────────────────────────────────────────
     // Errors specific to {releaseFundsViaContract} (P1-A / Phase 4.x).
     // ──────────────────────────────────────────────────────────────────────
@@ -892,7 +895,8 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
             inspectionDeadline: 0,
             token: token,
             listingNode: attribution.listingNode,
-            sellingNode: attribution.sellingNode
+            sellingNode: attribution.sellingNode,
+            disputeOpenedAt: 0
         });
 
         emit EscrowToken(escrowId, token);
@@ -1117,7 +1121,7 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
      *      resolved, disputed, or already-delivered escrow reverts.
      * @param escrowId The escrow to mark delivered.
      */
-    function markDelivered(uint256 escrowId) external whenNotPaused {
+    function markDelivered(uint256 escrowId) external {
         Escrow storage escrow = escrows[escrowId];
 
         if (escrow.buyer == address(0)) revert EscrowNotFound();
@@ -1541,14 +1545,25 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
         address token = escrow.token;
         totalEscrowed[token] -= amount;
 
-        // 🛑 A DELIVERED escrow times out to the SELLER (audit C-1). Delivery is
-        // the seller's on-chain assertion and the buyer's inspection window has
-        // long passed; paying the buyer here made "freeze, then wait" a way to
-        // take a delivered sale for free. An undelivered escrow still refunds
-        // the buyer — nothing was proven.
+        // 🛑 A DELIVERED escrow times out to the SELLER (audit C-1), but only
+        // when the delivery was asserted BEFORE the freeze: `inspectionDeadline`
+        // is `deliveredAt + INSPECTION_PERIOD`, so this compares the assertion
+        // against `disputeOpenedAt`. A seller who marks delivery after the buyer
+        // disputed gains nothing from it (re-audit N-1) — the older claim wins,
+        // and the seller's route is a signed verdict, not the timeout.
         address recipient = escrow.buyer;
         uint256 payout = amount;
-        if (escrow.delivered) {
+        if (
+            escrow.delivered &&
+            escrow.inspectionDeadline - INSPECTION_PERIOD <= escrow.disputeOpenedAt
+        ) {
+            // The buyer's inspection window must also have elapsed: otherwise a
+            // delivery marked one block earlier would pay the seller before the
+            // buyer could inspect (re-audit N-1.3).
+            // solhint-disable-next-line not-rely-on-time
+            if (block.timestamp <= escrow.inspectionDeadline) {
+                revert InspectionWindowOpen();
+            }
             recipient = escrow.seller;
             payout = _collectMarketplaceFee(escrowId, token, amount);
         }
@@ -1835,6 +1850,7 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
         // opener posts the same 2.5% the internal dispute path requires. It is
         // returned with the other stakes on every resolution, timeout included.
         e.disputed = true;
+        e.disputeOpenedAt = block.timestamp; // solhint-disable-line not-rely-on-time
         address stakeToken = _stakeToken(escrowId);
         uint256 requiredStake = (e.amount * DISPUTE_STAKE_BASIS) / BASIS_POINTS;
         if (requiredStake == 0) revert InsufficientStake();
