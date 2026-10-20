@@ -21,9 +21,15 @@
  * `setArbitrationContract` (scripts/post-revision-wiring.cjs).
  *
  * Usage:
- *   MAINNET_DEPLOYER_PRIVATE_KEY=$(cat ~/.avalanche-cli/key/deployer.pk) \
+ *   GOVERNANCE_PROPOSER_PRIVATE_KEY=$(cat ~/.avalanche-cli/key/iceberg-omnibazaar.pk) \
  *     npx hardhat run scripts/governance/propose-revision-2026-10.cjs --network mainnet
  * Add DRY_RUN=1 to print the calldata without submitting.
+ *
+ * 🛑 The proposer must clear `proposalThreshold` (1.7M XOM of voting power at
+ * the prior block). The deployer account has ZERO voting power, so proposing
+ * with it reverts `InsufficientVotingPower` — the proposal therefore has to
+ * come from the governance-weight account. The deployer key is only checked
+ * when no proposer key is supplied, which keeps the deploy-side guard intact.
  */
 const fs = require("fs");
 const path = require("path");
@@ -36,9 +42,17 @@ const MANIFEST = path.join(__dirname, "..", "..", "deployments", "mainnet.json")
 
 async function main() {
   const { ethers } = hre;
-  const [deployer] = await ethers.getSigners();
-  if (deployer.address.toLowerCase() !== EXPECTED_DEPLOYER.toLowerCase()) {
-    throw new Error(`wrong signer: ${deployer.address}`);
+  const [signer] = await ethers.getSigners();
+  const proposerKey = process.env.GOVERNANCE_PROPOSER_PRIVATE_KEY;
+  if (proposerKey === undefined || proposerKey === "") {
+    // No governance key supplied: this is a preparation run, so hold the
+    // deploy-side signer guard.
+    if (signer.address.toLowerCase() !== EXPECTED_DEPLOYER.toLowerCase()) {
+      throw new Error(`wrong signer: ${signer.address}`);
+    }
+  } else {
+    // Proposal comes from the account that holds the voting power.
+    console.log("proposer:", signer.address);
   }
   const network = await ethers.provider.getNetwork();
   if (network.chainId !== 88008n) throw new Error("wrong chain");
