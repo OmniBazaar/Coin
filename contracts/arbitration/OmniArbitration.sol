@@ -158,6 +158,15 @@ error InvalidVoteType();
 /// @param escrowId The escrow ID that is already disputed
 error EscrowAlreadyDisputed(uint256 escrowId);
 
+/// @notice An external dispute must target another chain, never this one
+error ExternalChainInvalid(uint256 chainId);
+
+/// @notice An external dispute must name a real escrow and both parties
+error InvalidExternalEscrow();
+
+/// @notice That external escrow already has a dispute recorded
+error ExternalEscrowAlreadyDisputed(bytes32 key);
+
 /// @notice Arbitrator has active dispute assignments and cannot withdraw
 error ArbitratorBusyInDispute();
 
@@ -380,6 +389,25 @@ contract OmniArbitration is
     /// @notice Floor on the escalation bond (100 XOM)
     uint256 public constant MIN_ESCALATION_BOND = 100 ether;
 
+    /// @notice EIP-712 domain name/version of the destination EscrowV2
+    /// @dev Mirrors EscrowV2's constructor: EIP712("OmniBazaar EscrowV2", "3").
+    bytes32 internal constant ESCROW_DOMAIN_NAME_HASH =
+        keccak256("OmniBazaar EscrowV2");
+    bytes32 internal constant ESCROW_DOMAIN_VERSION_HASH = keccak256("3");
+
+    /// @dev keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)")
+    bytes32 internal constant EIP712_DOMAIN_TYPEHASH = keccak256(
+        "EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"
+    );
+
+    /// @dev keccak256("Verdict(uint256 escrowId,bool releaseFunds,uint256 validUntil)")
+    ///      — must stay byte-identical to EscrowSignatureLib.VERDICT_TYPEHASH.
+    bytes32 internal constant VERDICT_TYPEHASH =
+        keccak256("Verdict(uint256 escrowId,bool releaseFunds,uint256 validUntil)");
+
+    /// @notice How long a judge's verdict signature stays usable (30 days)
+    uint256 internal constant VERDICT_VALIDITY = 30 days;
+
     /// @notice Timelock delay for fee vault address changes (48 hours)
     /// @dev FE-H-01 remediation: prevents instant fee redirection
     ///      by a compromised admin key
@@ -561,8 +589,28 @@ contract OmniArbitration is
     ///      {lapseReview} into a forfeiture with no adjudication.
     uint256 public pausedTotal;
 
+    /// @notice A dispute over an escrow that lives on ANOTHER chain
+    /// @dev `escrowId` is not duplicated here: it lives in the Dispute record.
+    struct ExternalDispute {
+        uint256 chainId;
+        address escrowContract;
+        /// @dev EIP-712 domain separator of the destination escrow, derived
+        ///      here from (chainId, escrowContract) — never taken on trust.
+        bytes32 domainSeparator;
+    }
+
+    /// @notice Cross-chain dispute record (zero `escrowContract` = local dispute)
+    mapping(uint256 => ExternalDispute) public externalDispute;
+
+    /// @notice keccak256(chainId, escrowContract, escrowId) => disputeId + 1
+    /// @dev One dispute per external escrow, mirroring {escrowToDisputeId}.
+    mapping(bytes32 => uint256) public externalKeyToDispute;
+
+    /// @notice Deadline the judges signed into an emitted external verdict
+    mapping(uint256 => uint256) public verdictValidUntil;
+
     /// @notice Reserved storage gap for future upgradeable variables
-    uint256[31] private __gap;
+    uint256[28] private __gap;
 
     // ══════════════════════════════════════════════════════════════════
     //                              EVENTS
@@ -594,6 +642,47 @@ contract OmniArbitration is
         uint256 indexed disputeId,
         address[3] arbitrators,
         uint256 deadline
+    );
+
+    /// @notice Emitted when a dispute is opened against an escrow on another chain
+    /// @param disputeId Unique dispute ID
+    /// @param chainId Chain the escrow lives on
+    /// @param escrowContract Escrow contract on that chain
+    /// @param escrowId Escrow identifier on that chain
+    /// @param buyer Asserted buyer
+    /// @param seller Asserted seller
+    /// @param amount Asserted disputed amount
+    /// @param disputeFee Fee collected from the opener
+    event ExternalDisputeCreated(
+        uint256 indexed disputeId,
+        uint256 indexed chainId,
+        address indexed escrowContract,
+        uint256 escrowId,
+        address buyer,
+        address seller,
+        uint256 amount,
+        uint256 disputeFee
+    );
+
+    /// @notice Emitted when a non-L1 verdict is ready for delivery
+    /// @dev Two of the seated judges sign `digest` with the keys that hold
+    ///      their seats; anyone relays the signatures to the destination
+    ///      escrow's `executeVerdict`.
+    /// @param disputeId Dispute ID
+    /// @param chainId Destination chain
+    /// @param escrowContract Destination escrow
+    /// @param escrowId Escrow identifier on that chain
+    /// @param releaseFunds True = pay the seller, false = refund the buyer
+    /// @param digest EIP-712 digest in the destination escrow's domain
+    /// @param validUntil Deadline the judges sign
+    event ExternalVerdict(
+        uint256 indexed disputeId,
+        uint256 indexed chainId,
+        address indexed escrowContract,
+        uint256 escrowId,
+        bool releaseFunds,
+        bytes32 digest,
+        uint256 validUntil
     );
 
     /// @notice Emitted when an arbitrator casts a vote
@@ -1155,6 +1244,104 @@ contract OmniArbitration is
     }
 
     /**
+     * @notice Open a dispute over an escrow that lives on ANOTHER chain
+     * @dev Founder decision 3 (2026-10-20): the panel, the stakes and the seat
+     *      bonds stay here on OmniCoin L1, and the verdict travels to the
+     *      destination escrow as two judge signatures. This contract never
+     *      calls that escrow — it cannot — so the dispute is recorded here and
+     *      the FINAL outcome is emitted as an EIP-712 digest
+     *      ({ExternalVerdict}) that the seated judges sign with their own keys.
+     *
+     *      Trust model: a chain cannot read another chain's escrow, so `buyer`,
+     *      `seller` and `disputedAmount` are ASSERTED by the opener and the fee
+     *      is paid in XOM up front. The destination escrow is the real gate —
+     *      it pays only its own recorded buyer/seller, and only when a party
+     *      itself froze it with `openDispute`. A bogus panel record therefore
+     *      yields a verdict the escrow refuses, and costs the opener the fee.
+     * @param chainId Chain the escrow lives on (must not be this chain)
+     * @param escrowContract Escrow contract on that chain
+     * @param escrowId Escrow identifier on that chain
+     * @param buyer Buyer recorded by that escrow
+     * @param seller Seller recorded by that escrow
+     * @param disputedAmount Disputed principal in that escrow's token units
+     * @return disputeId New dispute identifier
+     */
+    function createExternalDispute(
+        uint256 chainId,
+        address escrowContract,
+        uint256 escrowId,
+        address buyer,
+        address seller,
+        uint256 disputedAmount
+    ) external nonReentrant whenNotPaused returns (uint256 disputeId) {
+        if (chainId == 0 || chainId == block.chainid) {
+            revert ExternalChainInvalid(chainId);
+        }
+        if (
+            escrowContract == address(0) ||
+            escrowContract == address(this) ||
+            buyer == address(0) ||
+            seller == address(0) ||
+            buyer == seller ||
+            disputedAmount == 0
+        ) {
+            revert InvalidExternalEscrow();
+        }
+
+        bytes32 key = keccak256(abi.encode(chainId, escrowContract, escrowId));
+        if (externalKeyToDispute[key] != 0) {
+            revert ExternalEscrowAlreadyDisputed(key);
+        }
+
+        // Only an asserted party can open it. It cannot be verified here; the
+        // fee is the spam brake, and the destination escrow is the gate.
+        address caller = _msgSender();
+        if (caller != buyer && caller != seller) revert NotEscrowParty();
+
+        uint256 seatable = _seatableJudges(buyer, seller);
+        if (seatable < MIN_PANEL_SIZE) {
+            revert ArbitrationPoolNotSeated(seatable, MIN_PANEL_SIZE);
+        }
+
+        uint256 fee = (disputedAmount * ARBITRATION_FEE_BPS) / BPS;
+        if (fee == 0) revert DisputedAmountTooSmall();
+        xomToken.safeTransferFrom(caller, address(this), fee);
+
+        disputeId = nextDisputeId;
+        ++nextDisputeId;
+
+        Dispute storage d = disputes[disputeId];
+        d.escrowId = escrowId;
+        d.buyer = buyer;
+        d.seller = seller;
+        // solhint-disable-next-line not-rely-on-time
+        d.createdAt = block.timestamp;
+        d.disputedAmount = disputedAmount;
+        d.disputeFee = fee;
+        d.feePayer = caller;
+        d.selectionBlock = block.number;
+        d.status = DisputeStatus.PendingSelection;
+
+        externalDispute[disputeId] = ExternalDispute({
+            chainId: chainId,
+            escrowContract: escrowContract,
+            domainSeparator: _escrowDomainSeparator(chainId, escrowContract)
+        });
+        externalKeyToDispute[key] = disputeId;
+
+        emit ExternalDisputeCreated(
+            disputeId,
+            chainId,
+            escrowContract,
+            escrowId,
+            buyer,
+            seller,
+            disputedAmount,
+            fee
+        );
+    }
+
+    /**
      * @notice Finalize arbitrator selection for a pending dispute
      *         (phase 2)
      * @dev H-02: Must be called at least 2 blocks after
@@ -1263,12 +1450,29 @@ contract OmniArbitration is
         }
 
         uint256 escrowId = d.escrowId;
-        // Unfreeze the escrow, best-effort: a legacy escrow that predates
-        // `unmarkDisputed` must not block the fee refund. But only forget the
-        // escrow↔dispute link when the escrow actually cleared its flag —
-        // otherwise a second dispute could be opened against an escrow that is
-        // still frozen (audit NEW-7).
-        if (_tryUnmarkDisputed(escrowId) && escrowToDisputeId[escrowId] == disputeId) {
+        if (externalDispute[disputeId].escrowContract != address(0)) {
+            // A cross-chain escrow cannot be called from here. It stays frozen
+            // by its own `openDispute` until its 30-day timeout backstop (a
+            // buyer refund) fires — the same backstop every panel escrow has.
+            bytes32 key = keccak256(
+                abi.encode(
+                    externalDispute[disputeId].chainId,
+                    externalDispute[disputeId].escrowContract,
+                    escrowId
+                )
+            );
+            if (externalKeyToDispute[key] == disputeId) {
+                delete externalKeyToDispute[key];
+            }
+        } else if (
+            _tryUnmarkDisputed(escrowId) &&
+            escrowToDisputeId[escrowId] == disputeId
+        ) {
+            // Unfreeze the escrow, best-effort: a legacy escrow that predates
+            // `unmarkDisputed` must not block the fee refund. But only forget
+            // the escrow↔dispute link when the escrow actually cleared its flag
+            // — otherwise a second dispute could be opened against an escrow
+            // that is still frozen (audit NEW-7).
             delete escrowToDisputeId[escrowId];
         }
 
@@ -2243,8 +2447,14 @@ contract OmniArbitration is
         // C-01: Distribute collected fees
         _collectAndDistributeFee(disputeId);
 
-        // C-02: Execute the escrow fund movement
-        _triggerEscrowResolution(d.escrowId, isRelease);
+        // C-02: Deliver the verdict. A local escrow is resolved by a direct
+        // call; an escrow on another chain cannot be called, so the final
+        // outcome is emitted as an EIP-712 digest two seated judges sign.
+        if (externalDispute[disputeId].escrowContract != address(0)) {
+            _emitExternalVerdict(disputeId, isRelease);
+        } else {
+            _triggerEscrowResolution(d.escrowId, isRelease);
+        }
 
         emit DisputeResolved(
             disputeId,
@@ -2321,6 +2531,80 @@ contract OmniArbitration is
         bool releaseFunds
     ) internal {
         escrow.resolveDispute(escrowId, releaseFunds);
+    }
+
+    /**
+     * @dev The destination escrow's EIP-712 domain separator
+     * @dev Derived, never supplied: EscrowV2 is deployed with
+     *      EIP712("OmniBazaar EscrowV2", "3"), so (chainId, address) is all
+     *      that a disputer could otherwise lie about — and this function takes
+     *      both from the dispute record.
+     */
+    function _escrowDomainSeparator(
+        uint256 chainId,
+        address escrowContract
+    ) private pure returns (bytes32) {
+        return
+            keccak256(
+                abi.encode(
+                    EIP712_DOMAIN_TYPEHASH,
+                    ESCROW_DOMAIN_NAME_HASH,
+                    ESCROW_DOMAIN_VERSION_HASH,
+                    chainId,
+                    escrowContract
+                )
+            );
+    }
+
+    /**
+     * @dev The EIP-712 verdict digest in the destination escrow's domain
+     */
+    function _verdictDigest(
+        uint256 disputeId,
+        bool releaseFunds,
+        uint256 validUntil
+    ) private view returns (bytes32) {
+        return
+            keccak256(
+                abi.encodePacked(
+                    "\x19\x01",
+                    externalDispute[disputeId].domainSeparator,
+                    keccak256(
+                        abi.encode(
+                            VERDICT_TYPEHASH,
+                            disputes[disputeId].escrowId,
+                            releaseFunds,
+                            validUntil
+                        )
+                    )
+                )
+            );
+    }
+
+    /**
+     * @dev Record and emit the signed-verdict payload for an external escrow
+     * @dev The judges sign `digest` off-chain with the keys that hold their
+     *      seats; the destination escrow accepts two distinct rostered
+     *      signatures and pays its own recorded buyer or seller. Nothing here
+     *      is reversible: a review compensates bonds, it never re-issues a
+     *      verdict.
+     */
+    function _emitExternalVerdict(uint256 disputeId, bool releaseFunds) private {
+        ExternalDispute storage ext = externalDispute[disputeId];
+        Dispute storage d = disputes[disputeId];
+        // solhint-disable-next-line not-rely-on-time
+        uint256 validUntil = _now() + VERDICT_VALIDITY;
+        verdictValidUntil[disputeId] = validUntil;
+        bytes32 digest = _verdictDigest(disputeId, releaseFunds, validUntil);
+        emit ExternalVerdict(
+            disputeId,
+            ext.chainId,
+            ext.escrowContract,
+            d.escrowId,
+            releaseFunds,
+            digest,
+            validUntil
+        );
     }
 
     /**
