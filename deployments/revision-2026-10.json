@@ -1,0 +1,8 @@
+{
+  "deployedAt": "2026-10-20T23:32:24.818Z",
+  "deployer": "0x021868f2E3D49C059EF52B539AAa933B437e0321",
+  "participationImpl": "0x8aE048E9EE8d55af6987923E7D12F8b014d19c32",
+  "participationTx": "0xf369368689fdfcec8a5ac00bdf8c7d9ad6b3250508e0c7601fd0198ce3439b87",
+  "arbitrationImpl": "0xc4250096E1b28e9B4A7f0B54e94Caed2A173d8A0",
+  "arbitrationTx": "0x2d401e6c35c450d6998949ca420b3aa5343013e13cd11ccc09ff4b6fbbfe042f"
+}
