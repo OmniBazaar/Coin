@@ -38,7 +38,11 @@ async function main() {
   const governance = JSON.parse(fs.readFileSync(MANIFEST, "utf8")).contracts.OmniGovernance;
   const gov = await ethers.getContractAt(
     [
-      "function vote(uint256 proposalId, uint8 support)",
+      // 🛑 `castVote`, not `vote`. The deployed governance exposes castVote
+      // (and a gasless castVoteBySig); an ABI entry for `vote` encodes a
+      // selector the contract does not implement, so the call reverts with no
+      // useful reason. Verified 2026-10-23 by simulating castVote(16,1).
+      "function castVote(uint256 proposalId, uint8 support)",
       "function state(uint256 proposalId) view returns (uint8)",
       "function getVotingPower(address account) view returns (uint256)",
       "function proposals(uint256) view returns (address proposer,uint8 proposalType,bool executed,bool cancelled,bool queued,bytes32 descriptionHash,uint256 snapshotBlock,uint256 snapshotTotalSupply,uint256 voteStart,uint256 voteEnd,uint256 forVotes,uint256 againstVotes,uint256 abstainVotes,uint256 snapshotQuorumBps)",
@@ -64,7 +68,7 @@ async function main() {
     );
   }
 
-  const tx = await gov.vote(PROPOSAL_ID, SUPPORT);
+  const tx = await gov.castVote(PROPOSAL_ID, SUPPORT);
   const receipt = await tx.wait();
   console.log("vote tx:", tx.hash, "block", receipt.blockNumber);
 
