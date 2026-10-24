@@ -69,6 +69,44 @@ const CHAINS = [
     escrowKey: "EscrowV2",
     routerKey: "OmniFeeRouter",
   },
+  // Deployed 2026-10-24 — the chains the Early LP mesh already runs on, so a
+  // seller there can take escrowed payment without bridging the token.
+  {
+    chainId: 1,
+    name: "Ethereum",
+    deployment: "ethereum-mainnet.json",
+    rpcEnv: "ETH_RPC_URL",
+    rpcDefault: "https://ethereum.publicnode.com",
+    escrowKey: "EscrowV2",
+    routerKey: "OmniFeeRouter",
+  },
+  {
+    chainId: 42161,
+    name: "Arbitrum One",
+    deployment: "arbitrum.json",
+    rpcEnv: "ARBITRUM_RPC_URL",
+    rpcDefault: "https://arbitrum-one-rpc.publicnode.com",
+    escrowKey: "EscrowV2",
+    routerKey: "OmniFeeRouter",
+  },
+  {
+    chainId: 8453,
+    name: "Base",
+    deployment: "base.json",
+    rpcEnv: "BASE_RPC_URL",
+    rpcDefault: "https://base-rpc.publicnode.com",
+    escrowKey: "EscrowV2",
+    routerKey: "OmniFeeRouter",
+  },
+  {
+    chainId: 137,
+    name: "Polygon",
+    deployment: "polygon.json",
+    rpcEnv: "POLYGON_RPC_URL",
+    rpcDefault: "https://polygon-bor-rpc.publicnode.com",
+    escrowKey: "EscrowV2",
+    routerKey: "OmniFeeRouter",
+  },
 ];
 
 const ESCROW_ABI = [
