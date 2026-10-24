@@ -107,6 +107,15 @@ const CHAINS = [
     escrowKey: "EscrowV2",
     routerKey: "OmniFeeRouter",
   },
+  {
+    chainId: 56,
+    name: "BNB Smart Chain",
+    deployment: "bsc.json",
+    rpcEnv: "BSC_RPC_URL",
+    rpcDefault: "https://bsc-dataseed.binance.org",
+    escrowKey: "EscrowV2",
+    routerKey: "OmniFeeRouter",
+  },
 ];
 
 const ESCROW_ABI = [
