@@ -374,7 +374,7 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
     event EscrowDisputeOpened(
         uint256 indexed escrowId,
         address indexed disputer,
-        uint256 stake
+        uint256 arbitrationFee
     );
 
     /// @notice Emitted when a signed 2-of-N judge verdict is executed
