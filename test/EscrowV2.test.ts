@@ -677,7 +677,7 @@ describe('EscrowV2 — per-chain settlement, in-kind fee, signed verdicts', func
       // Removal is delayed by two days; substitution cannot happen in one block.
       await escrow.connect(owner).setVerdictJudge(judgeA.address, false);
       await expect(escrow.connect(owner).acceptJudgeRemoval())
-        .to.be.revertedWithCustomError(escrow, 'BeneficiaryDelayActive');
+        .to.be.revertedWithCustomError(escrow, 'JudgeRemovalDelayActive');
       await time.increase(48 * 60 * 60 + 1);
       await escrow.connect(owner).acceptJudgeRemoval();
       await escrow.connect(owner).setVerdictJudge(d.address, true);
@@ -705,8 +705,11 @@ describe('EscrowV2 — per-chain settlement, in-kind fee, signed verdicts', func
 
     it('snapshots the split at filing, so a later change cannot zero the judges', async function () {
       await escrow.connect(buyer).openDispute(id);
-      // The admin zeroes the judge pool AFTER the case was filed.
-      await escrow.connect(owner).setArbitrationSplit(0, 0, 9500, 9500);
+      // The admin moves the split AFTER the case was filed (a zero pool is
+      // refused outright, so this is the harshest legal change).
+      await expect(escrow.connect(owner).setArbitrationSplit(0, 0, 9500, 9500))
+        .to.be.revertedWithCustomError(escrow, 'InvalidFeeConfig');
+      await escrow.connect(owner).setArbitrationSplit(5000, 5000, 2000, 2000);
       const validUntil = (await time.latest()) + DAY;
       const sigs = [
         await signVerdict(judgeA, id, true, validUntil),

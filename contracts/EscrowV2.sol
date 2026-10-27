@@ -414,6 +414,9 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
     /// @notice Emitted when a judge removal is proposed
     event JudgeRemovalProposed(address indexed judge, uint256 effectiveAt);
 
+    /// @notice Emitted when a pending judge removal is withdrawn
+    event JudgeRemovalCancelled();
+
     event BeneficiariesProposed(
         address indexed oddao,
         address indexed stakingPool,
@@ -477,6 +480,8 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
     error VerdictWindowClosed();
     /// @notice No judge removal has been proposed
     error NoPendingJudgeRemoval();
+    /// @notice The judge-removal delay has not elapsed
+    error JudgeRemovalDelayActive();
     /// @notice A judge removal is pending the delay
     error JudgeRemovalPending();
     /// @notice The verdict roster already holds {MAX_VERDICT_JUDGES}
@@ -1224,6 +1229,11 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
         escrow.resolved = true;
         uint256 amount = escrow.amount;
         escrow.amount = 0;
+        // No fee is charged on this path, so the snapshot must not linger: a
+        // non-zero disputeFee on a resolved escrow reads as collected revenue.
+        escrow.disputeFee = 0;
+        escrow.arbSplit = 0;
+        escrow.arbOddao = address(0);
         address token = escrow.token;
         totalEscrowed[token] -= amount;
 
@@ -1379,7 +1389,7 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
         // the filer was shown, and who gets paid for the work, cannot be
         // rewritten by a later parameter change while the case runs.
         uint256 fee = _arbitrationFee(e.amount, e.token);
-        if (fee == 0) revert FeeTooLarge();
+        if (fee == 0) revert InvalidFeeConfig();
         // Refuse a dispute whose fee would eat more than `maxArbitrationFeeBps`
         // of the sale (default a quarter). Below that, arbitration costs more
         // than the amount in dispute.
@@ -1851,11 +1861,23 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
     /**
      * @notice Complete a judge removal once its delay has elapsed
      */
+    /**
+     * @notice Withdraw a pending judge removal
+     * @dev Without this, a removal proposed by one admin key could survive a
+     *      handover and land from another, laundering who asked for it.
+     */
+    function cancelJudgeRemoval() external onlyAdmin {
+        if (pendingJudgeRemoval == address(0)) revert NoPendingJudgeRemoval();
+        pendingJudgeRemoval = address(0);
+        judgeRemovalAt = 0;
+        emit JudgeRemovalCancelled();
+    }
+
     function acceptJudgeRemoval() external onlyAdmin {
         address judge = pendingJudgeRemoval;
         if (judge == address(0)) revert NoPendingJudgeRemoval();
         // solhint-disable-next-line not-rely-on-time
-        if (block.timestamp < judgeRemovalAt) revert BeneficiaryDelayActive();
+        if (block.timestamp < judgeRemovalAt) revert JudgeRemovalDelayActive();
         verdictJudge[judge] = false;
         --verdictJudgeCount;
         pendingJudgeRemoval = address(0);
@@ -1928,6 +1950,11 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
         uint256 sub3
     ) external onlyAdmin {
         if (pool2 > BASIS_POINTS || pool3 > BASIS_POINTS) {
+            revert InvalidFeeConfig();
+        }
+        // "Judges are paid for sitting" is the whole point of the fee, so the
+        // panel keeps at least half and the submitter never more than a fifth.
+        if (pool2 < 5000 || pool3 < 5000 || sub2 > 2000 || sub3 > 2000) {
             revert InvalidFeeConfig();
         }
         if (pool2 + sub2 > BASIS_POINTS || pool3 + sub3 > BASIS_POINTS) {
@@ -2128,6 +2155,9 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
         address old = admin;
         admin = pendingAdmin;
         pendingAdmin = address(0);
+        // A pending judge removal must not be inherited by the new admin.
+        pendingJudgeRemoval = address(0);
+        judgeRemovalAt = 0;
         emit AdminTransferred(old, admin);
     }
 
