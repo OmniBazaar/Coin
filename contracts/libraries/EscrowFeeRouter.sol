@@ -101,6 +101,10 @@ library EscrowFeeRouter {
     /// @notice 20% slice (secondary of each pair)
     uint256 internal constant SECONDARY_BPS = 2_000;
 
+    /// @notice Most judges whose signatures are paid a share
+    /// @dev Mirrors the escrow's roster cap of three.
+    uint256 internal constant MAX_PAID_SIGNERS = 3;
+
     /**
      * @notice Deduct the marketplace fee from a released escrow and split it
      *         in kind across the nine canonical recipients
@@ -157,8 +161,7 @@ library EscrowFeeRouter {
     /**
      * @notice Credit the nine canonical slices of an already-computed fee
      * @dev Shared by the public release path and the private (pXOM) release
-     *      path, which lives in {EscrowPrivacyOps}. `internal`, so each caller
-     *      inlines it — no extra linking hop.
+     *      path. `internal`, so each caller inlines it — no extra linking hop.
      * @param claimable token => user => credited amount (escrow storage slot)
      * @param totalClaimable token => credited total (escrow storage slot)
      * @param totalMarketplaceFees token => lifetime fee total (escrow slot)
@@ -315,123 +318,82 @@ library EscrowFeeRouter {
         }
     }
 
-    /**
-     * @notice Deduct and distribute the arbitration fee from dispute stakes
-     *         (charged 50/50 buyer/seller, capped at each stake)
-     * @dev Distribution: `arbitratorShareBps` (70%) to `arbitratorRecipient`
-     *      via the pull-pattern claimable balance, remainder to ODDAO by the
-     *      same ledger (no token transfer, so no token can block a resolution).
-     *      Passing `arbitratorRecipient = address(0)` routes 100% to ODDAO
-     *      (used by the OmniArbitration-driven resolution path, where the
-     *      resolving panel is paid by OmniArbitration's own fee).
-     * @param disputeStakes escrowId => party => stake (escrow storage slot)
-     * @param claimable token => user => amount (escrow storage slot)
-     * @param totalEscrowed token => active principal (escrow storage slot)
-     * @param totalClaimable token => claimable total (escrow storage slot)
-     * @param escrowId Escrow identifier
-     * @param stakeToken Token the stakes are denominated in
-     * @param buyer Escrow buyer (first stake holder)
-     * @param seller Escrow seller (second stake holder)
-     * @param amount Disputed escrow principal the fee is computed on
-     * @param feeBps Arbitration fee in basis points (500 = 5%)
-     * @param arbitratorShareBps Share of the fee paid to the arbitrator (7000)
-     * @param arbitratorRecipient Resolving arbitrator (zero → all to ODDAO)
-     * @param oddao ODDAO address on this chain (receives the remainder)
-     */
-    function collectArbitrationFee(
-        mapping(uint256 => mapping(address => uint256))
-            storage disputeStakes,
-        mapping(address => mapping(address => uint256)) storage claimable,
-        mapping(address => uint256) storage totalEscrowed,
-        mapping(address => uint256) storage totalClaimable,
-        uint256 escrowId,
-        address stakeToken,
-        address buyer,
-        address seller,
-        uint256 amount,
-        uint256 feeBps,
-        uint256 arbitratorShareBps,
-        address arbitratorRecipient,
-        address oddao
-    ) external {
-        uint256 arbitrationFee = (amount * feeBps) / BPS;
-        // Each party pays half from their dispute stake
-        uint256 halfFee = arbitrationFee / 2;
-        uint256 otherHalf = arbitrationFee - halfFee; // handles rounding
 
-        // Deduct from buyer stake (capped at posted stake)
-        uint256 buyerStake = disputeStakes[escrowId][buyer];
-        uint256 buyerDeduction = halfFee > buyerStake ? buyerStake : halfFee;
-        disputeStakes[escrowId][buyer] = buyerStake - buyerDeduction;
-
-        // Deduct from seller stake (capped at posted stake)
-        uint256 sellerStake = disputeStakes[escrowId][seller];
-        uint256 sellerDeduction = otherHalf > sellerStake ? sellerStake : otherHalf;
-        disputeStakes[escrowId][seller] = sellerStake - sellerDeduction;
-
-        uint256 totalCollected = buyerDeduction + sellerDeduction;
-        if (totalCollected == 0) {
-            return;
-        }
-
-        // Stakes were counted in totalEscrowed; the collected fee leaves
-        // that bucket and becomes claimable (arbitrator share) or ODDAO's.
-        totalEscrowed[stakeToken] -= totalCollected;
-
-        uint256 arbitratorShare = 0;
-        if (arbitratorRecipient != address(0)) {
-            arbitratorShare = (totalCollected * arbitratorShareBps) / BPS;
-        }
-        // ODDAO gets the remainder (absorbs rounding dust)
-        uint256 oddaoShare = totalCollected - arbitratorShare;
-
-        if (arbitratorShare > 0) {
-            claimable[stakeToken][arbitratorRecipient] += arbitratorShare;
-            totalClaimable[stakeToken] += arbitratorShare;
-            emit FundsClaimable(
-                arbitratorRecipient, stakeToken, arbitratorShare
-            );
-        }
-        if (oddaoShare > 0) {
-            claimable[stakeToken][oddao] += oddaoShare;
-            totalClaimable[stakeToken] += oddaoShare;
-            emit FundsClaimable(oddao, stakeToken, oddaoShare);
-        }
-
-        emit ArbitrationFeeCollected(escrowId, totalCollected, arbitratorShare);
-    }
 
     /**
-     * @notice Return a dispute stake to the pull-pattern claimable balance
-     * @dev No-op when the party posted nothing.
-     * @param disputeStakes escrowId => party => stake (escrow storage slot)
-     * @param claimable token => user => amount (escrow storage slot)
-     * @param totalEscrowed token => active principal (escrow storage slot)
-     * @param totalClaimable token => claimable total (escrow storage slot)
-     * @param escrowId Escrow identifier
-     * @param stakeToken Token the stake is denominated in
-     * @param party Buyer or seller
+     * @notice Split the arbitration fee: judges, submitter, ODDAO
+     * @dev Founder decision 2026-10-27. The whole schedule is passed in, so
+     *      tuning it never needs a new escrow deployment:
+     *
+     *        n = 2 signers → judges take `judgePoolBps2` (8000 = 40% each),
+     *                        the submitter `submitterBps2` (1000),
+     *                        ODDAO the remainder (1000).
+     *        n ≥ 3 signers → judges take `judgePoolBps3` (8100 = 27% each),
+     *                        the submitter `submitterBps3` (900),
+     *                        ODDAO the remainder (1000).
+     *
+     *      `signers` is EVERY judge whose signature the bundle carried, on
+     *      either direction, so a judge who dissented is paid for sitting.
+     *      Each is credited equally; rounding dust lands on ODDAO.
+     *      Credits go to the escrow's pull-pattern ledger — no token transfer,
+     *      so no token can block a settlement.
+     * @param claimable token => user => credited amount (escrow storage slot)
+     * @param totalClaimable token => credited total (escrow storage slot)
+     * @param escrowId Escrow identifier (for events)
+     * @param token Fee token (the escrow's own token)
+     * @param fee The arbitration fee, already deducted from the payout
+     * @param signers Judges whose signatures were presented
+     * @param submitter Account that submitted the verdict (gas is its cost)
+     * @param oddao Protocol sink that absorbs the remainder and the dust
+     * @param judgePoolBps2 Judge share of the fee when two judges signed
+     * @param judgePoolBps3 Judge share of the fee when three or more signed
+     * @param submitterBps2 Submitter share when two judges signed
+     * @param submitterBps3 Submitter share when three or more signed
      */
-    function returnDisputeStake(
-        mapping(uint256 => mapping(address => uint256))
-            storage disputeStakes,
+    function payArbitrationFee(
         mapping(address => mapping(address => uint256)) storage claimable,
-        mapping(address => uint256) storage totalEscrowed,
         mapping(address => uint256) storage totalClaimable,
         uint256 escrowId,
-        address stakeToken,
-        address party
+        address token,
+        uint256 fee,
+        address[] memory signers,
+        address submitter,
+        address oddao,
+        uint256 judgePoolBps2,
+        uint256 judgePoolBps3,
+        uint256 submitterBps2,
+        uint256 submitterBps3
     ) external {
-        uint256 stakeAmount = disputeStakes[escrowId][party];
-        if (stakeAmount > 0) {
-            disputeStakes[escrowId][party] = 0;
-            // M-01: Use pull pattern for stake returns
-            totalEscrowed[stakeToken] -= stakeAmount;
-            claimable[stakeToken][party] += stakeAmount;
-            totalClaimable[stakeToken] += stakeAmount;
-            emit FundsClaimable(party, stakeToken, stakeAmount);
-            emit DisputeStakeReturned(escrowId, party, stakeAmount);
+        uint256 n = signers.length;
+        // The roster is capped at three; a fourth signature is not paid a
+        // judge share (its slice falls to ODDAO through the remainder).
+        if (n > MAX_PAID_SIGNERS) n = MAX_PAID_SIGNERS;
+
+        uint256 paid;
+        if (n > 0) {
+            uint256 judgePool = n >= 3 ? judgePoolBps3 : judgePoolBps2;
+            uint256 each = (fee * judgePool) / BPS / n;
+            for (uint256 i = 0; i < n; ++i) {
+                _credit(claimable, totalClaimable, token, signers[i], each);
+                paid += each;
+            }
         }
+
+        uint256 tip;
+        if (submitter != address(0)) {
+            uint256 submitterBps = n >= 3 ? submitterBps3 : submitterBps2;
+            tip = (fee * submitterBps) / BPS;
+            if (tip > 0) {
+                _credit(claimable, totalClaimable, token, submitter, tip);
+            }
+        }
+
+        uint256 rest = fee - paid - tip;
+        if (rest > 0) {
+            _credit(claimable, totalClaimable, token, oddao, rest);
+        }
+
+        emit ArbitrationFeeCollected(escrowId, fee, paid);
     }
 
     /**

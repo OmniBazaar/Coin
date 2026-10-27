@@ -144,24 +144,41 @@ library EscrowSignatureLib {
     }
 
     /**
-     * @notice Verify that a verdict carries two distinct rostered signatures
-     * @dev Every supplied signature must be valid, rostered and distinct: an
-     *      extra unusable blob is a revert, not something to skip past.
-     * @param digest The verdict digest (see {hashVerdict})
+     * @notice Verify a verdict bundle and return EVERY judge it names
+     * @dev Founder decision 2026-10-27 (tie-break): a three-judge panel can
+     *      split two ways, and the judge who breaks the tie signs the winning
+     *      direction while the dissenter stays on the losing one. Both are
+     *      participants and both must be paid, so this classifies each
+     *      signature against BOTH digests (release and refund, same
+     *      `validUntil`) instead of a single one.
+     *
+     *      Rules:
+     *      - at least two distinct rostered non-party judges signed the
+     *        requested direction;
+     *      - every supplied signature must be a valid rostered non-party
+     *        signature over one of the two digests — a stray blob reverts;
+     *      - a signer appears once only, even if they signed both directions
+     *        (a contradictory judge is paid once, not twice).
+     * @param domainSeparator The escrow's `_domainSeparatorV4()`
+     * @param escrowId Escrow the verdict applies to
+     * @param releaseFunds The direction being executed
+     * @param validUntil Bundle deadline (both directions share it)
      * @param signatures Judge signatures (65 bytes each)
      * @param judges Judge roster (escrow storage slot)
      * @param buyer Escrow buyer (may never sign)
      * @param seller Escrow seller (may never sign)
-     * @param validUntil Bundle deadline
+     * @return signers Every distinct judge whose signature was accepted
      */
     function verifyVerdict(
-        bytes32 digest,
+        bytes32 domainSeparator,
+        uint256 escrowId,
+        bool releaseFunds,
+        uint256 validUntil,
         bytes[] calldata signatures,
         mapping(address => bool) storage judges,
         address buyer,
-        address seller,
-        uint256 validUntil
-    ) external view {
+        address seller
+    ) external view returns (address[] memory signers) {
         // solhint-disable-next-line not-rely-on-time
         if (block.timestamp > validUntil) revert InvalidVerdict();
         uint256 count = signatures.length;
@@ -169,20 +186,72 @@ library EscrowSignatureLib {
             revert NotEnoughVerdicts();
         }
 
+        bytes32 winning = _digest(
+            domainSeparator, escrowId, releaseFunds, validUntil
+        );
+        bytes32 losing = _digest(
+            domainSeparator, escrowId, !releaseFunds, validUntil
+        );
+
+        // NOTE: `tryRecover` succeeds for ANY well-formed signature — a wrong
+        // digest simply recovers a different address. So each signature is
+        // classified by whether the RECOVERED address is an eligible signer,
+        // not by the recovery error code.
         address[MAX_SIGNATURES] memory seen;
+        signers = new address[](count);
+        uint256 onWinning;
         for (uint256 i = 0; i < count; ++i) {
             (address signer, ECDSA.RecoverError err, ) = ECDSA.tryRecover(
-                digest,
+                winning,
                 signatures[i]
             );
-            if (err != ECDSA.RecoverError.NoError) revert InvalidVerdict();
-            if (!judges[signer]) revert InvalidVerdict();
-            if (signer == buyer || signer == seller) revert InvalidVerdict();
+            bool eligible = err == ECDSA.RecoverError.NoError &&
+                judges[signer] &&
+                signer != buyer &&
+                signer != seller;
+            if (eligible) {
+                ++onWinning;
+            } else {
+                (signer, err, ) = ECDSA.tryRecover(losing, signatures[i]);
+                if (
+                    err != ECDSA.RecoverError.NoError ||
+                    !judges[signer] ||
+                    signer == buyer ||
+                    signer == seller
+                ) {
+                    revert InvalidVerdict();
+                }
+            }
             for (uint256 j = 0; j < i; ++j) {
                 if (seen[j] == signer) revert InvalidVerdict();
             }
             seen[i] = signer;
+            signers[i] = signer;
         }
+        if (onWinning < VERDICT_THRESHOLD) revert NotEnoughVerdicts();
+    }
+
+    /**
+     * @notice EIP-712 digest of one verdict direction
+     */
+    function _digest(
+        bytes32 domainSeparator,
+        uint256 escrowId,
+        bool releaseFunds,
+        uint256 validUntil
+    ) private pure returns (bytes32) {
+        return
+            MessageHashUtils.toTypedDataHash(
+                domainSeparator,
+                keccak256(
+                    abi.encode(
+                        VERDICT_TYPEHASH,
+                        escrowId,
+                        releaseFunds,
+                        validUntil
+                    )
+                )
+            );
     }
 
     /**

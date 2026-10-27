@@ -44,30 +44,22 @@ struct FeeBeneficiaries {
 struct Escrow {
     address buyer;        // slot 0: 20 bytes
     address seller;       // slot 1: 20 bytes
-    address arbitrator;   // slot 2: 20 bytes
-    uint8 releaseVotes;   // slot 2: 1 byte
-    uint8 refundVotes;    // slot 2: 1 byte
     bool resolved;        // slot 2: 1 byte
-    bool disputed;        // slot 2: 1 byte (total: 24 bytes in slot 2)
+    bool disputed;        // slot 2: 1 byte
+    bool delivered;       // slot 2: 1 byte
     uint256 amount;       // slot 3: 32 bytes
     uint256 expiry;       // slot 4: 32 bytes
     uint256 createdAt;    // slot 5: 32 bytes
-    // Seller-asserted delivery + inspection window (permissionless
-    // seller-release path). Appended after the original fields.
-    bool delivered;              // slot 6: 1 byte
-    uint256 inspectionDeadline;  // slot 7: 32 bytes
-    // The ERC-20 this escrow actually holds. v1 inferred it from
-    // `isPrivateEscrow` (XOM or pXOM, both fixed at deploy); v2 records it
-    // per escrow so any vault-allowlisted token can be escrowed.
-    address token;
-    // Fee-attribution nodes, recorded at creation. They receive the listing
-    // slice of the 1% (0.175% listing node / 0.05% selling node) when the fee
-    // goes through the vault's referral-aware split. Zero addresses route
-    // their share to ODDAO.
-    address listingNode;
-    address sellingNode;
-    // When a party froze the escrow for the judge panel (0 = never). The
-    // timeout uses it to decide whether a delivery assertion predates the
-    // freeze; see EscrowV2.claimDisputeTimeout.
-    uint256 disputeOpenedAt;
+    uint256 inspectionDeadline; // slot 6: 32 bytes
+    // The ERC-20 this escrow actually holds.
+    address token;        // slot 7: 20 bytes
+    address listingNode;  // slot 8: 20 bytes
+    address sellingNode;  // slot 9: 20 bytes
+    // When a party froze the escrow for the judge panel (0 = never) and the
+    // arbitration fee snapshotted at that moment, in the escrow's own token.
+    // The timeout uses the timestamp to decide whether a delivery assertion
+    // predates the freeze; the fee is what the filer was shown, so a later
+    // parameter change cannot alter what this case costs.
+    uint128 disputeOpenedAt; // slot 10: 16 bytes
+    uint128 disputeFee;      // slot 10: 16 bytes
 }

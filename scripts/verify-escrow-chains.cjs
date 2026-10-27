@@ -301,6 +301,60 @@ async function checkChain(chain, recipients) {
     record(chain.name, "fee sinks readable", false, err instanceof Error ? err.message : String(err));
   }
 
+  // 6. 🛑 THE ARBITRATION FEE ACTUALLY REACHES THE JUDGES.
+  // The 2026-10 defect was not a missing sink but a SPLIT: the escrow asserted
+  // the fee was paid, and the judges received zero. Fee sinks were checked;
+  // fee SHARES were not, so a 100%-to-ODDAO split passed every check. This
+  // reads the deployed schedule and fails loudly if a judge share is zero.
+  if (typeof escrow.arbitrationFeeBps === "function") {
+    try {
+      const [feeBps, maxOfAmount, pool2, pool3, sub2, sub3, judges] =
+        await Promise.all([
+          escrow.arbitrationFeeBps.staticCall(),
+          escrow.maxArbitrationFeeBps.staticCall(),
+          escrow.judgePoolBps2.staticCall(),
+          escrow.judgePoolBps3.staticCall(),
+          escrow.submitterBps2.staticCall(),
+          escrow.submitterBps3.staticCall(),
+          escrow.verdictJudgeCount.staticCall(),
+        ]);
+      const j2 = Number(pool2);
+      const j3 = Number(pool3);
+      const s2 = Number(sub2);
+      const s3 = Number(sub3);
+      // A judge share of zero is the exact 2026-10 defect: fail, never skip.
+      record(chain.name, "verdict judges are paid", j2 > 0 && j3 > 0, `judge pools ${String(j2)} / ${String(j3)} bps`);
+      record(
+        chain.name,
+        "fee split fits in 100%",
+        j2 + s2 <= 10000 && j3 + s3 <= 10000 && 10000 - j2 - s2 >= 500 && 10000 - j3 - s3 >= 500,
+        `2 judges: ${String(j2)}+${String(s2)}+${String(10000 - j2 - s2)} · 3 judges: ${String(j3)}+${String(s3)}+${String(10000 - j3 - s3)}`
+      );
+      record(
+        chain.name,
+        "arbitration fee is sane",
+        Number(feeBps) > 0 && Number(feeBps) <= 1000 && Number(maxOfAmount) > 0 && Number(maxOfAmount) <= 5000,
+        `fee ${String(feeBps)} bps, capped at ${String(maxOfAmount)} bps of the amount`
+      );
+      record(
+        chain.name,
+        "verdict roster capped",
+        Number(judges) <= 3,
+        `${String(judges)} rostered (max 3)`
+      );
+      const floors = [];
+      for (const token of tokens) {
+        const floor = await escrow.minArbitrationFee.staticCall(token.address).catch(() => 0n);
+        floors.push(`${token.symbol}=${String(floor)}`);
+      }
+      record(chain.name, "per-token fee floors", true, floors.join(" ") || "no tokens");
+    } catch (err) {
+      record(chain.name, "arbitration fee split readable", false, err instanceof Error ? err.message : String(err));
+    }
+  } else {
+    record(chain.name, "arbitration fee split", "skip", "escrow has no settable arbitration fee");
+  }
+
   // 5. The chain's fee router must not pay the deployer.
   const routerAddress = manifest.contracts?.[chain.routerKey];
   if (typeof routerAddress === "string" && ethers.isAddress(routerAddress)) {

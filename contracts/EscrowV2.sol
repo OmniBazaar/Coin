@@ -11,7 +11,6 @@ import {Context} from "@openzeppelin/contracts/utils/Context.sol";
 import {EIP712} from "@openzeppelin/contracts/utils/cryptography/EIP712.sol";
 import {ECDSA} from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 import {EscrowFeeRouter} from "./libraries/EscrowFeeRouter.sol";
-import {EscrowPrivacyOps} from "./libraries/EscrowPrivacyOps.sol";
 import {EscrowSignatureLib} from "./libraries/EscrowSignatureLib.sol";
 import {
     Escrow,
@@ -96,13 +95,6 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
     // {Escrow} is declared in ./interfaces/EscrowV2Types.sol so the two linked
     // libraries (fee routing, privacy ops) can take a storage pointer to it.
 
-    /// @notice Dispute commitment for commit-reveal pattern
-    struct DisputeCommitment {
-        bytes32 commitment;
-        uint256 revealDeadline;
-        bool revealed;
-    }
-
     /// @notice Referral attribution captured at escrow creation
     /// @dev Immutable per escrow (written once in {_createEscrow}, never
     ///      updated). Threaded into UnifiedFeeVault.depositMarketplaceFee
@@ -129,14 +121,8 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
     ///         released to the seller (7 days).
     uint256 public constant INSPECTION_PERIOD = 7 days;
 
-    /// @notice Dispute stake amount (2.5% of escrow — covers half the 5% arbitration fee)
-    uint256 public constant DISPUTE_STAKE_BASIS = 250; // 2.5%
-
     /// @notice Basis points denominator
     uint256 public constant BASIS_POINTS = 10000;
-
-    /// @notice Maximum number of registered arbitrators (M-03: prevent unbounded loop)
-    uint256 public constant MAX_ARBITRATORS = 100;
 
     /// @notice Timeout for unresolved disputes (30 days)
     uint256 public constant DISPUTE_TIMEOUT = 30 days;
@@ -150,21 +136,24 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
     /// @notice Maximum marketplace fee cap (5% = 500 bps)
     uint256 public constant MAX_MARKETPLACE_FEE_BPS = 500;
 
-    /// @notice Arbitration fee in basis points (5% = 500 bps)
-    /// @dev Per spec: 5% of disputed amount, charged 50/50 from the buyer's
-    ///      and seller's dispute stakes. Distribution: 70% to the single
-    ///      resolving arbitrator via the pull-pattern claimable balance, 30%
-    ///      to ODDAO on this chain. When the dispute is resolved by the judge
-    ///      panel (through a signed verdict) the full escrow-side fee goes to
-    ///      ODDAO because the panel is compensated by its own 90/10 fee
-    ///      distribution on its own chain.
-    uint256 public constant ARBITRATION_FEE_BPS = 500;
+    /// @notice Default arbitration fee (5%) used at construction
+    /// @dev The live value is the settable `arbitrationFeeBps`.
+    uint256 public constant DEFAULT_ARBITRATION_FEE_BPS = 500;
 
-    /// @notice Share of the arbitration fee paid directly to the single
-    ///         resolving arbitrator (70% = 7000 bps). Distinct from the
-    ///         public 3-arbitrator panel (OmniArbitration), which pays
-    ///         30% to each arbitrator and 10% to the vault.
-    uint256 public constant ARBITRATOR_FEE_SHARE_BPS = 7000;
+    /// @notice Hard ceiling on the settable arbitration fee (10%)
+    uint256 public constant MAX_ARBITRATION_FEE_BPS = 1000;
+
+    /// @notice Hard ceiling on the settable fee-to-amount ratio (50%)
+    uint256 public constant MAX_FEE_OF_AMOUNT_BPS = 5000;
+
+    /// @notice Most addresses the verdict roster may hold
+    uint256 public constant MAX_VERDICT_JUDGES = 3;
+
+    /// @notice How long after expiry a verdict is still executable
+    /// @dev MUST stay shorter than {DISPUTE_TIMEOUT}: the trustless timeout
+    ///      opens at expiry + DISPUTE_TIMEOUT, and the two paths must never be
+    ///      callable in the same block or a losing party can race the verdict.
+    uint256 public constant VERDICT_WINDOW = 25 days;
 
     // State variables (immutables first)
     /// @notice OmniCoin token (XOM)
@@ -179,14 +168,20 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
     /// @notice ODDAO recipient of the protocol-owned slices of the fee split
     /// @dev V4: the 1% is paid in kind on THIS chain. This address receives
     ///      the transaction/listing 70/10 slices and every zero-address
-    ///      attribution slot. Immutable: no admin can redirect protocol fees.
-    address public immutable ODDAO;
+    ///      attribution slot, plus the arbitration fee remainder.
+    ///
+    ///      SETTABLE BEHIND A DELAY (founder decision 2026-10-27). These three
+    ///      sinks were immutable, so a protocol reorganisation meant a new
+    ///      escrow on every chain. A two-step change with a 48-hour delay keeps
+    ///      the "no single party can redirect fees instantly" property while
+    ///      removing the redeploy.
+    address public ODDAO;
 
     /// @notice Staking-pool recipient of the 20% transaction slice
-    address public immutable STAKING_POOL;
+    address public STAKING_POOL;
 
     /// @notice Protocol-treasury recipient of the 10% transaction slice
-    address public immutable PROTOCOL_TREASURY;
+    address public PROTOCOL_TREASURY;
 
     /// @notice Marketplace fee in basis points (e.g., 100 = 1%)
     uint256 public immutable MARKETPLACE_FEE_BPS;
@@ -200,6 +195,17 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
 
     /// @notice Pending admin (two-step transfer; must call acceptAdmin).
     address public pendingAdmin;
+
+    /// @notice Delay before a proposed fee-recipient change takes effect
+    uint256 public constant BENEFICIARY_DELAY = 48 hours;
+
+    /// @notice The three sinks a pending change would install
+    address public pendingOddao;
+    address public pendingStakingPool;
+    address public pendingTreasury;
+
+    /// @notice When the pending change was proposed (0 = none)
+    uint256 public beneficiaryProposedAt;
 
     // Non-immutable state variables
     /// @notice Total marketplace fees collected per token (for transparency)
@@ -215,24 +221,6 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
     /// @dev Both addresses zero for unreferred escrows (no storage write).
     mapping(uint256 => EscrowReferrers) public escrowReferrers;
 
-    /// @notice Mapping of escrow ID to voter addresses to votes
-    mapping(uint256 => mapping(address => bool)) public hasVoted;
-
-    /// @notice Mapping of escrow ID to dispute commitments
-    mapping(uint256 => DisputeCommitment) public disputeCommitments;
-
-    /// @notice Random seed for arbitrator selection
-    uint256 private arbitratorSeed;
-
-    /// @notice Registered arbitrator addresses
-    address[] public arbitratorList;
-
-    /// @notice Quick lookup for arbitrator status
-    mapping(address => bool) public isRegisteredArbitrator;
-
-    /// @notice Dispute stakes held per escrow (escrowId => disputer => stake amount)
-    mapping(uint256 => mapping(address => uint256)) public disputeStakes;
-
     /// @notice Claimable balances for pull-based withdrawal (M-01: DoS protection)
     /// @dev token address => user address => claimable amount
     mapping(address => mapping(address => uint256)) public claimable;
@@ -242,27 +230,6 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
 
     /// @notice Total tokens in claimable balances per token (M-01: pull-pattern accounting)
     mapping(address => uint256) public totalClaimable;
-
-    // Privacy-related state variables
-    /// @notice Encrypted amounts for private escrows (ct = ciphertext for storage)
-    mapping(uint256 => ctUint64) private encryptedEscrowAmounts;
-
-    /// @notice Flag indicating if an escrow is private
-    mapping(uint256 => bool) public isPrivateEscrow;
-
-    /// @notice Internal plaintext amounts for private escrows (not publicly queryable)
-    /// @dev PRIV-H03: Used internally for ERC20 transfers at resolution time.
-    ///      Not exposed via any public getter. The encrypted amount is accessible
-    ///      via getEncryptedAmount().
-    mapping(uint256 => uint256) private privateEscrowAmounts;
-
-    /// @notice Whether privacy features are enabled on this network
-    bool private privacyEnabled;
-
-    /// @notice Authorized OmniArbitration contract address
-    /// @dev H-01 OmniArbitration Round 6: Only this address may call
-    ///      resolveDispute(). Set via setArbitrationContract() by admin.
-    address public arbitrationContract;
 
     /// @notice Tokens this escrow will settle — THIS chain's allowlist
     /// @dev Founder decision 3 (2026-10-20): each chain's escrow owns its
@@ -276,6 +243,37 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
     ///      {executeVerdict}). The admin points this at the arbitration
     ///      panel's seated judges — the same EOAs that sit on the L1 panel.
     mapping(address => bool) public verdictJudge;
+
+    /// @notice How many addresses are on the verdict roster
+    /// @dev CAPPED AT {MAX_VERDICT_JUDGES}: the threshold is 2 of N, so a
+    ///      growing roster silently lowers the bar to "any two of many" and
+    ///      divides the fee further. The panel is fixed at three.
+    uint256 public verdictJudgeCount;
+
+    /// @notice Arbitration fee charged on a disputed resolution (bps of amount)
+    /// @dev Settable so the fee never needs a redeploy. 500 = 5%.
+    uint256 public arbitrationFeeBps;
+
+    /// @notice Smallest arbitration fee, per token (in that token's units)
+    /// @dev 5% of a small sale is dust. The floor keeps a verdict worth
+    ///      deciding; per token because the contract cannot price tokens.
+    mapping(address => uint256) public minArbitrationFee;
+
+    /// @notice Largest arbitration fee as a share of the disputed amount (bps)
+    /// @dev Above this a dispute is refused: arbitrating must never cost a
+    ///      quarter of the sale. 2500 = 25%.
+    uint256 public maxArbitrationFeeBps;
+
+    /// @notice Share of the arbitration fee paid to the judges (bps)
+    /// @dev 2 signers → 8000 (40% each), 3 signers → 8100 (27% each).
+    uint256 public judgePoolBps2;
+    uint256 public judgePoolBps3;
+
+    /// @notice Share paid to whoever submits the verdict (bps of the fee)
+    /// @dev 2 signers → 1000, 3 signers → 900. Covers the submitter's gas out
+    ///      of the case itself.
+    uint256 public submitterBps2;
+    uint256 public submitterBps3;
 
     // Events
     /// @notice Emitted when escrow is created
@@ -318,16 +316,6 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
         address indexed referrer2
     );
 
-    /// @notice Emitted when dispute is raised
-    /// @param escrowId Escrow identifier
-    /// @param disputer Address raising dispute
-    /// @param arbitrator Assigned arbitrator
-    event DisputeRaised(
-        uint256 indexed escrowId,
-        address indexed disputer,
-        address indexed arbitrator
-    );
-
     /// @notice Emitted when escrow is resolved
     /// @param escrowId Escrow identifier
     /// @param winner Address receiving funds
@@ -348,73 +336,6 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
         uint256 indexed escrowId,
         address indexed seller,
         uint256 inspectionDeadline
-    );
-
-    /// @notice Emitted when vote is cast
-    /// @param escrowId Escrow identifier
-    /// @param voter Address casting vote
-    /// @param voteFor True if voting for release, false for refund
-    event VoteCast(
-        uint256 indexed escrowId,
-        address indexed voter,
-        bool indexed voteFor
-    );
-
-    /// @notice Emitted when private escrow is created
-    /// @param escrowId Unique escrow identifier
-    /// @param buyer Buyer address
-    /// @param seller Seller address
-    /// @param expiry Expiration timestamp
-    /// @dev Amount not revealed for privacy
-    event PrivateEscrowCreated(
-        uint256 indexed escrowId,
-        address indexed buyer,
-        address indexed seller,
-        uint256 expiry
-    );
-
-    /// @notice Emitted when private escrow is resolved
-    /// @param escrowId Escrow identifier
-    /// @param winner Address receiving funds
-    /// @dev Amount not revealed for privacy
-    event PrivateEscrowResolved(uint256 indexed escrowId, address indexed winner);
-
-    /// @notice Emitted when private dispute is raised
-    /// @param escrowId Escrow identifier
-    /// @param disputer Address raising dispute
-    /// @param arbitrator Assigned arbitrator
-    event PrivateDisputeRaised(
-        uint256 indexed escrowId,
-        address indexed disputer,
-        address indexed arbitrator
-    );
-
-    /// @notice Emitted when a dispute commitment is made (step 1 of commit-reveal)
-    /// @param escrowId Escrow identifier
-    /// @param committer Address that committed
-    /// @param commitment Commitment hash
-    event DisputeCommitted(
-        uint256 indexed escrowId,
-        address indexed committer,
-        bytes32 indexed commitment
-    );
-
-    /// @notice Emitted when arbitrator is added to registry
-    /// @param arbitrator Address of the new arbitrator
-    event ArbitratorAdded(address indexed arbitrator);
-
-    /// @notice Emitted when arbitrator is removed from registry
-    /// @param arbitrator Address of the removed arbitrator
-    event ArbitratorRemoved(address indexed arbitrator);
-
-    /// @notice Emitted when dispute stake is returned
-    /// @param escrowId Escrow identifier
-    /// @param disputer Address receiving stake back
-    /// @param amount Stake amount returned
-    event DisputeStakeReturned(
-        uint256 indexed escrowId,
-        address indexed disputer,
-        uint256 indexed amount
     );
 
     /// @notice Emitted when the 1% marketplace fee is split in kind on release
@@ -465,6 +386,34 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
     /// @notice Emitted when the admin adds/removes a verdict judge
     event VerdictJudgeUpdated(address indexed judge, bool allowed);
 
+    /// @notice Emitted when the arbitration fee parameters change
+    event ArbitrationFeeConfigured(uint256 feeBps, uint256 maxFeeOfAmountBps);
+
+    /// @notice Emitted when a per-token fee floor changes
+    event MinArbitrationFeeSet(address indexed token, uint256 amount);
+
+    /// @notice Emitted when the judge/submitter split changes
+    event ArbitrationSplitConfigured(
+        uint256 pool2,
+        uint256 pool3,
+        uint256 submitter2,
+        uint256 submitter3
+    );
+
+    /// @notice Emitted when a fee-recipient change is proposed
+    event BeneficiariesProposed(
+        address indexed oddao,
+        address indexed stakingPool,
+        address indexed treasury
+    );
+
+    /// @notice Emitted when proposed fee recipients take effect
+    event BeneficiariesUpdated(
+        address indexed oddao,
+        address indexed stakingPool,
+        address indexed treasury
+    );
+
     /// @notice Emitted when funds are credited to pull-based claimable balance (M-01)
     /// @param user Address receiving the claimable credit
     /// @param token Token address credited
@@ -485,16 +434,6 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
         uint256 indexed amount
     );
 
-    /// @notice Emitted when the counterparty posts a matching dispute stake
-    /// @param escrowId Escrow identifier
-    /// @param party Address posting the counter-stake
-    /// @param amount Stake amount
-    event CounterpartyStakePosted(
-        uint256 indexed escrowId,
-        address indexed party,
-        uint256 amount
-    );
-
     /// @notice Emitted when OmniArbitration resolves a dispute
     /// @param escrowId Escrow identifier
     /// @param releasedToSeller True if funds released to seller
@@ -507,26 +446,6 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
         uint256 amount
     );
 
-    /// @notice Emitted when the arbitration contract address is set
-    /// @param oldArbitration Previous arbitration contract address
-    /// @param newArbitration New arbitration contract address
-    event ArbitrationContractUpdated(
-        address indexed oldArbitration,
-        address indexed newArbitration
-    );
-
-    /// @notice Emitted when the authorized OmniArbitration contract marks
-    ///         an escrow disputed because a judge-panel dispute was opened
-    /// @dev Set once per escrow at OmniArbitration.createDispute time. Blocks
-    ///      every party-unilateral exit (refundBuyer, releaseFundsViaContract)
-    ///      until the panel resolves the dispute via resolveDispute().
-    /// @param escrowId Escrow identifier marked disputed
-    event EscrowMarkedDisputed(uint256 indexed escrowId);
-
-    /// @notice Emitted when a panel dispute is cancelled before resolution
-    /// @param escrowId Escrow identifier
-    event EscrowUnmarkedDisputed(uint256 indexed escrowId);
-
     // Custom errors
     error InvalidAddress();
     /// @notice Escrow token is not on the fee vault's payment allowlist
@@ -536,20 +455,24 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
     /// @notice The vault's allowlist could not be read (RPC/upgrade failure)
     error AllowlistUnavailable();
     /// @notice This escrow must resolve through the internal 2-of-3 vote, not the panel
-    error UseInternalArbitration();
     /// @notice A fee-attribution node collides with a party or the other node
     error BadAttribution();
     error InvalidFeeConfig();
+    /// @notice Fee would exceed the settable share of the disputed amount
+    error FeeTooLarge();
+    /// @notice The verdict roster already holds {MAX_VERDICT_JUDGES}
+    error TooManyVerdictJudges();
+    /// @notice No beneficiary change has been proposed
+    error NoPendingBeneficiaries();
+    /// @notice The beneficiary change delay has not elapsed
+    error BeneficiaryDelayActive();
     error InvalidAmount();
     error InvalidDuration();
     error EscrowNotFound();
     error EscrowExpired();
-    error AlreadyVoted();
     error NotParticipant();
     error AlreadyResolved();
     error DisputeTooEarly();
-    error InvalidCommitment();
-    error RevealDeadlinePassed();
     error AlreadyDisputed();
     /// @notice The escrow has already been marked delivered by the seller.
     error AlreadyDelivered();
@@ -558,21 +481,13 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
     /// @notice The buyer inspection window has not yet elapsed.
     error InspectionPending();
     /// @notice Permissionless seller-release is unavailable for private escrows.
-    error PrivateEscrowUnsupported();
-    error InsufficientStake();
-    error PrivacyNotAvailable();
-    error CannotMixPrivacyModes();
     error AmountTooLarge();
-    error NoArbitratorsAvailable();
     error OnlyAdmin();
     error NotPendingAdmin();
     error NotDisputed();
-    error StakeAlreadyPosted();
-    error TooManyArbitrators();
     error EscrowNotExpired();
 
     /// @notice Caller is not the authorized arbitration contract
-    error OnlyArbitrationContract();
     error NothingToClaim();
 
     /// @notice Referrer slot collides with buyer/seller, or referrer2
@@ -580,10 +495,8 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
     error BadReferrer();
 
     /// @notice A previous dispute commit has not been reclaimed; call reclaimExpiredStake() first
-    error PreviousCommitNotReclaimed();
 
     /// @notice When an arbitration contract is set, internal vote resolution must defer to it
-    error UseArbitrationContract();
 
     /// @notice A non-zero attribution set arrived without the seller's consent
     error InvalidSellerSignature();
@@ -630,16 +543,6 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
     /// @notice Restrict to admin only
     modifier onlyAdmin() {
         if (msg.sender != admin) revert OnlyAdmin();
-        _;
-    }
-
-    /// @notice Restrict to authorized OmniArbitration contract
-    /// @dev H-01 OmniArbitration Round 6: Only the registered
-    ///      arbitration contract may call resolveDispute().
-    modifier onlyArbitration() {
-        if (msg.sender != arbitrationContract) {
-            revert OnlyArbitrationContract();
-        }
         _;
     }
 
@@ -716,14 +619,12 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
         // token is added per chain by the admin as it becomes usable.
         supportedToken[_omniCoin] = true;
 
-        // solhint-disable-next-line not-rely-on-time
-        arbitratorSeed = uint256(keccak256(abi.encodePacked(
-            block.timestamp,
-            block.prevrandao
-        )));
-
-        // Detect if privacy is available (COTI network check)
-        privacyEnabled = _detectPrivacyAvailability();
+        arbitrationFeeBps = DEFAULT_ARBITRATION_FEE_BPS;
+        maxArbitrationFeeBps = 2500;
+        judgePoolBps2 = 8000;
+        judgePoolBps3 = 8100;
+        submitterBps2 = 1000;
+        submitterBps3 = 900;
     }
 
     /**
@@ -883,12 +784,9 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
         escrows[escrowId] = Escrow({
             buyer: buyer,
             seller: seller,
-            arbitrator: address(0),
             amount: amount,
             expiry: block.timestamp + duration, // solhint-disable-line not-rely-on-time
             createdAt: block.timestamp, // solhint-disable-line not-rely-on-time
-            releaseVotes: 0,
-            refundVotes: 0,
             resolved: false,
             disputed: false,
             delivered: false,
@@ -896,7 +794,8 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
             token: token,
             listingNode: attribution.listingNode,
             sellingNode: attribution.sellingNode,
-            disputeOpenedAt: 0
+            disputeOpenedAt: 0,
+            disputeFee: 0
         });
 
         emit EscrowToken(escrowId, token);
@@ -982,7 +881,6 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
     function releaseFunds(uint256 escrowId) external nonReentrant whenNotPaused {
         Escrow storage escrow = escrows[escrowId];
 
-        if (isPrivateEscrow[escrowId]) revert CannotMixPrivacyModes();
         if (escrow.buyer == address(0)) revert EscrowNotFound();
         if (escrow.resolved) revert AlreadyResolved();
         // A disputed escrow resolves only through its dispute path (panel
@@ -1067,7 +965,6 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
     ) external nonReentrant whenNotPaused {
         Escrow storage escrow = escrows[escrowId];
 
-        if (isPrivateEscrow[escrowId]) revert CannotMixPrivacyModes();
         if (escrow.buyer == address(0)) revert EscrowNotFound();
         if (escrow.resolved) revert AlreadyResolved();
         if (escrow.disputed) revert AlreadyDisputed();
@@ -1127,8 +1024,6 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
         if (escrow.buyer == address(0)) revert EscrowNotFound();
         // Private escrows have no permissionless seller-release path
         // (releaseExpiredToSeller rejects them), so a delivery flag would only
-        // remove the buyer's expiry refund without giving the seller anything.
-        if (isPrivateEscrow[escrowId]) revert PrivateEscrowUnsupported();
         if (escrow.resolved) revert AlreadyResolved();
         // 🛑 Delivery is a FACT, not a payout, so it stays recordable while a
         // dispute is open. Refusing it let a buyer freeze the escrow one block
@@ -1170,7 +1065,6 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
         if (escrow.buyer == address(0)) revert EscrowNotFound();
         if (escrow.resolved) revert AlreadyResolved();
         if (escrow.disputed) revert AlreadyDisputed();
-        if (isPrivateEscrow[escrowId]) revert PrivateEscrowUnsupported();
         if (!escrow.delivered) revert NotDelivered();
         // solhint-disable-next-line not-rely-on-time
         if (block.timestamp <= escrow.inspectionDeadline) {
@@ -1201,7 +1095,6 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
     function refundBuyer(uint256 escrowId) external nonReentrant {
         Escrow storage escrow = escrows[escrowId];
 
-        if (isPrivateEscrow[escrowId]) revert CannotMixPrivacyModes();
         if (escrow.buyer == address(0)) revert EscrowNotFound();
         if (escrow.resolved) revert AlreadyResolved();
         // A disputed escrow is resolved exclusively through its dispute path
@@ -1258,232 +1151,9 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
         }
     }
 
-    /**
-     * @notice Commit to raising a dispute (step 1 of commit-reveal)
-     * @dev Prevents front-running arbitrator selection
-     * @param escrowId Escrow to dispute
-     * @param commitment Hash of (escrowId, nonce, msg.sender)
-     */
-    function commitDispute(uint256 escrowId, bytes32 commitment) external nonReentrant whenNotPaused {
-        if (commitment == bytes32(0)) revert InvalidAmount(); // L-04: reject zero commitment
-        Escrow storage escrow = escrows[escrowId];
 
-        if (escrow.buyer == address(0)) revert EscrowNotFound();
-        if (escrow.resolved) revert AlreadyResolved();
-        if (escrow.disputed) revert AlreadyDisputed();
-        address caller = _msgSender();
-        if (caller != escrow.buyer && caller != escrow.seller) revert NotParticipant();
 
-        // v2: once the external judge panel (OmniArbitration) is connected,
-        // PUBLIC disputes go through it (deposit-backed random committee). The
-        // judge panel cannot price a private-coin escrow (its value is hidden,
-        // so the panel's 5%-of-amount fee can't be computed), so PRIVATE escrows
-        // keep using this internal commit-reveal + votePrivate path. Rejecting
-        // public disputes here also prevents a stale client stranding a stake
-        // and disables the internal single-judge selection for public escrows.
-        if (
-            arbitrationContract != address(0) &&
-            !isPrivateEscrow[escrowId] &&
-            escrow.token == address(OMNI_COIN)
-        ) {
-            revert UseArbitrationContract();
-        }
 
-        // F2: reject overwriting an ACTIVE commitment regardless of caller. The
-        // H-01 guard below only stops the SAME caller re-committing with an
-        // unreclaimed stake; without this a counterparty could overwrite the
-        // committer's commitment, seize arbitrator selection, and freeze the
-        // committer's stake. The counterparty's legitimate path is
-        // postCounterpartyStake after reveal, not a competing commit.
-        DisputeCommitment storage activeCommit = disputeCommitments[escrowId];
-        if (
-            activeCommit.commitment != bytes32(0) &&
-            !activeCommit.revealed &&
-            block.timestamp <= activeCommit.revealDeadline // solhint-disable-line not-rely-on-time
-        ) {
-            revert AlreadyDisputed();
-        }
-
-        // H-01 FIX: Prevent re-commit that would orphan previous dispute stake.
-        // If a previous commit exists and the caller still has an unreturned stake,
-        // they must call reclaimExpiredStake() first to recover it.
-        if (
-            disputeCommitments[escrowId].commitment != bytes32(0) &&
-            disputeStakes[escrowId][caller] > 0
-        ) {
-            revert PreviousCommitNotReclaimed();
-        }
-
-        // Must wait minimum time before dispute
-        uint256 disputeEarliest = escrow.createdAt + ARBITRATOR_DELAY;
-        if (block.timestamp < disputeEarliest) revert DisputeTooEarly(); // solhint-disable-line not-rely-on-time
-
-        // Require dispute stake (paid in OmniCoin). L-B: for private-coin
-        // escrows the public `amount` is zero (value lives in
-        // privateEscrowAmounts), so base the stake on the private amount —
-        // otherwise private disputes were free (no anti-frivolous deterrent and
-        // the counterparty could never post a matching stake).
-        uint256 disputeBase = isPrivateEscrow[escrowId]
-            ? privateEscrowAmounts[escrowId]
-            : escrow.amount;
-        uint256 requiredStake = (disputeBase * DISPUTE_STAKE_BASIS) / BASIS_POINTS;
-        // Reject zero-stake (dust) disputes — mirror postCounterpartyStake so a
-        // sub-1000-wei private escrow can't be disputed for free.
-        if (requiredStake == 0) revert InsufficientStake();
-        // 🛑 The stake is denominated in the SAME asset as `disputeBase`.
-        // v1 could hard-code XOM because the principal was always XOM; with a
-        // per-escrow token, a USDC principal (6 decimals) staked in XOM wei
-        // would be ~1e12 too small, making disputes free and arbitrators
-        // unpaid. Private escrows keep XOM stakes: pXOM is 1:1 with XOM and
-        // 18-decimal, so the v1 arithmetic was already correct for them.
-        address stakeToken = _stakeToken(escrowId);
-        _pullExact(IERC20(stakeToken), caller, requiredStake);
-        disputeStakes[escrowId][caller] = requiredStake;
-        totalEscrowed[stakeToken] += requiredStake;
-
-        disputeCommitments[escrowId] = DisputeCommitment({
-            commitment: commitment,
-            revealDeadline: block.timestamp + 1 hours, // solhint-disable-line not-rely-on-time
-            revealed: false
-        });
-
-        emit DisputeCommitted(escrowId, caller, commitment);
-    }
-
-    /**
-     * @notice Reveal dispute and assign arbitrator (step 2)
-     * @dev Deterministic arbitrator assignment
-     * @param escrowId Escrow to dispute
-     * @param nonce Random nonce from commitment
-     */
-    function revealDispute(uint256 escrowId, uint256 nonce) external nonReentrant whenNotPaused {
-        // v2: internal public-dispute path is disabled once the judge panel is
-        // wired (mirrors commitDispute); private escrows still resolve here.
-        if (
-            arbitrationContract != address(0) &&
-            !isPrivateEscrow[escrowId] &&
-            escrows[escrowId].token == address(OMNI_COIN)
-        ) {
-            revert UseArbitrationContract();
-        }
-
-        Escrow storage escrow = escrows[escrowId];
-        DisputeCommitment storage commitment = disputeCommitments[escrowId];
-
-        // A commitment made before the parties settled must not be revealable
-        // after settlement: it would flip `disputed` on a resolved escrow and
-        // strand the committer's stake (every exit reverts AlreadyResolved,
-        // and reclaimExpiredStake refuses a disputed escrow).
-        if (escrow.buyer == address(0)) revert EscrowNotFound();
-        if (escrow.resolved) revert AlreadyResolved();
-
-        // solhint-disable-next-line not-rely-on-time
-        if (block.timestamp > commitment.revealDeadline) revert RevealDeadlinePassed();
-        if (commitment.revealed) revert AlreadyDisputed();
-
-        address caller = _msgSender();
-        // Verify commitment (hash includes caller address for consistency)
-        bytes32 expectedHash = keccak256(abi.encodePacked(
-            escrowId,
-            nonce,
-            caller
-        ));
-        if (commitment.commitment != expectedHash) revert InvalidCommitment();
-
-        commitment.revealed = true;
-        escrow.disputed = true;
-
-        // Deterministic arbitrator selection
-        address arbitrator = selectArbitrator(escrowId, nonce);
-        escrow.arbitrator = arbitrator;
-
-        emit DisputeRaised(escrowId, caller, arbitrator);
-    }
-
-    /**
-     * @notice Post a matching dispute stake as the counterparty
-     * @dev After a dispute is raised, the counterparty (buyer or seller) must also post
-     *      a dispute stake. This eliminates the moral hazard of one-sided staking where
-     *      only the disputer bears economic risk. Both parties must have skin in the game.
-     *      If the counterparty fails to post their stake, the arbitrator may consider
-     *      that in their resolution decision.
-     * @param escrowId Escrow identifier
-     */
-    function postCounterpartyStake(uint256 escrowId) external nonReentrant {
-        Escrow storage escrow = escrows[escrowId];
-
-        if (escrow.buyer == address(0)) revert EscrowNotFound();
-        if (escrow.resolved) revert AlreadyResolved();
-        // v2: public panel escrows track no internal counterparty stake — defer
-        // to OmniArbitration (see {_requireInternalDisputePath}).
-        _requireInternalDisputePath(escrowId);
-        if (!escrow.disputed) revert NotDisputed();
-
-        address caller = _msgSender();
-        // Only the counterparty (the party who did NOT initiate the dispute) can post
-        if (caller != escrow.buyer && caller != escrow.seller) {
-            revert NotParticipant();
-        }
-
-        // Prevent double-staking
-        if (disputeStakes[escrowId][caller] != 0) revert StakeAlreadyPosted();
-
-        // Calculate the same stake amount the initiator paid. L-B: mirror
-        // commitDispute and base private-coin escrows on privateEscrowAmounts
-        // (escrow.amount is zero for them) so the counterparty can actually
-        // match the initiator's stake instead of always reverting InsufficientStake.
-        uint256 disputeBase = isPrivateEscrow[escrowId]
-            ? privateEscrowAmounts[escrowId]
-            : escrow.amount;
-        uint256 requiredStake = (disputeBase * DISPUTE_STAKE_BASIS) / BASIS_POINTS;
-        if (requiredStake == 0) revert InsufficientStake();
-
-        address stakeToken = _stakeToken(escrowId);
-        _pullExact(IERC20(stakeToken), caller, requiredStake);
-        disputeStakes[escrowId][caller] = requiredStake;
-        totalEscrowed[stakeToken] += requiredStake;
-
-        emit CounterpartyStakePosted(escrowId, caller, requiredStake);
-    }
-
-    /**
-     * @notice Reclaim dispute stake when the commit was never revealed
-     * @dev H-02 (Round 6): Prevents permanent loss of dispute stakes
-     *      when a party commits but fails to reveal within the deadline.
-     *      The caller can reclaim their stake after the reveal deadline
-     *      plus a grace period has passed, provided the dispute was never
-     *      successfully revealed (escrow.disputed remains false).
-     * @param escrowId Escrow identifier
-     */
-    function reclaimExpiredStake(uint256 escrowId) external nonReentrant {
-        Escrow storage escrow = escrows[escrowId];
-        if (escrow.buyer == address(0)) revert EscrowNotFound();
-        // If the dispute was successfully revealed, stakes are
-        // handled by the normal resolution path -- not reclaimable
-        if (escrow.disputed) revert AlreadyDisputed();
-
-        DisputeCommitment storage commitment = disputeCommitments[escrowId];
-        // Must have a commitment (revealDeadline > 0 indicates a commit was made)
-        if (commitment.revealDeadline == 0) revert InvalidCommitment();
-        // Must not have been revealed
-        if (commitment.revealed) revert AlreadyDisputed();
-        // Must wait until reveal deadline + grace period has passed
-        // solhint-disable-next-line not-rely-on-time
-        if (block.timestamp <= commitment.revealDeadline + REVEAL_GRACE_PERIOD) {
-            revert DisputeTooEarly();
-        }
-
-        address caller = _msgSender();
-        uint256 stake = disputeStakes[escrowId][caller];
-        if (stake == 0) revert NothingToClaim();
-
-        disputeStakes[escrowId][caller] = 0;
-        address stakeToken = _stakeToken(escrowId);
-        totalEscrowed[stakeToken] -= stake;
-        IERC20(stakeToken).safeTransfer(caller, stake);
-
-        emit DisputeStakeReturned(escrowId, caller, stake);
-    }
 
     /**
      * @notice Claim refund on a disputed escrow that has timed out
@@ -1528,20 +1198,11 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
             revert EscrowNotExpired();
         }
 
-        // Refund buyer with no marketplace fee. For a private escrow the
-        // public `amount` is deliberately zero (the value lives encrypted in
-        // privateEscrowAmounts), so read the real figure — otherwise this
-        // "last-resort rescue" resolves the escrow and refunds nothing,
-        // stranding the principal where recoverERC20 cannot reach it.
+        // Refund buyer with no marketplace fee. No arbitration fee is charged:
+        // no panel decided, so nobody earned one.
         escrow.resolved = true;
-        uint256 amount;
-        if (isPrivateEscrow[escrowId]) {
-            amount = privateEscrowAmounts[escrowId];
-            privateEscrowAmounts[escrowId] = 0;
-        } else {
-            amount = escrow.amount;
-            escrow.amount = 0;
-        }
+        uint256 amount = escrow.amount;
+        escrow.amount = 0;
         address token = escrow.token;
         totalEscrowed[token] -= amount;
 
@@ -1573,63 +1234,9 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
         totalClaimable[token] += payout;
         emit FundsClaimable(recipient, token, payout);
 
-        // Return dispute stakes to both parties
-        _returnDisputeStake(escrowId, escrow.buyer);
-        _returnDisputeStake(escrowId, escrow.seller);
-
         emit EscrowResolved(escrowId, recipient, payout);
     }
 
-    /**
-     * @notice Vote on disputed escrow outcome
-     * @dev 2-of-3 multisig voting
-     * @param escrowId Escrow to vote on
-     * @param voteForRelease True to release to seller, false to refund buyer
-     */
-    function vote(uint256 escrowId, bool voteForRelease) external nonReentrant whenNotPaused {
-        Escrow storage escrow = escrows[escrowId];
-
-        // M-03 FIX: an internal vote must never compete with the external
-        // OmniArbitration panel for the SAME escrow. The discriminator is
-        // `arbitrator`, not merely "a panel is configured": revealDispute
-        // always assigns one when it opens an internal dispute, while the
-        // panel's own markDisputed never touches it. Keying on the panel flag
-        // alone made every non-XOM dispute unreachable (its commit/reveal are
-        // allowed to run while the panel is wired), leaving the buyer as the
-        // only party who could ever exit — via claimDisputeTimeout.
-        if (arbitrationContract != address(0) && escrow.arbitrator == address(0)) {
-            revert UseArbitrationContract();
-        }
-
-        // Private escrows MUST resolve through votePrivate()/_resolvePrivateEscrow:
-        // their real value lives in privateEscrowAmounts (escrow.amount == 0), so
-        // resolving here via _resolveEscrow would set resolved=true while paying
-        // nothing and never zeroing privateEscrowAmounts — permanently stranding
-        // the pXOM (and recoverERC20 excludes it from totalEscrowed, so even admin
-        // could not rescue it). Mirror votePrivate()'s isPrivateEscrow guard.
-        if (isPrivateEscrow[escrowId]) revert CannotMixPrivacyModes();
-
-        address caller = _msgSender();
-
-        _validateVote(escrow, escrowId, caller);
-
-        hasVoted[escrowId][caller] = true;
-
-        if (voteForRelease) {
-            ++escrow.releaseVotes;
-        } else {
-            ++escrow.refundVotes;
-        }
-
-        emit VoteCast(escrowId, caller, voteForRelease);
-
-        // Check if we have a decision (2 votes)
-        if (escrow.releaseVotes > 1) {
-            _resolveEscrow(escrow, escrowId, escrow.seller);
-        } else if (escrow.refundVotes > 1) {
-            _resolveEscrow(escrow, escrowId, escrow.buyer);
-        }
-    }
 
     /**
      * @notice Get escrow details
@@ -1642,15 +1249,6 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
         return escrows[escrowId];
     }
 
-    /**
-     * @notice Check if address has voted
-     * @param escrowId Escrow identifier
-     * @param voter Address to check
-     * @return voted Whether address has voted
-     */
-    function hasUserVoted(uint256 escrowId, address voter) external view returns (bool voted) {
-        return hasVoted[escrowId][voter];
-    }
 
     // ========================================================================
     // IArbitrationEscrow INTERFACE (OmniArbitration Integration)
@@ -1715,105 +1313,8 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
         return escrows[escrowId].amount;
     }
 
-    /**
-     * @notice Mark an escrow disputed on behalf of the authorized
-     *         OmniArbitration contract when a judge-panel dispute is opened
-     * @dev B4/v2 refund-race fix. On the public L1 path a panel dispute is
-     *      created in OmniArbitration.createDispute, which previously left
-     *      this escrow's `disputed` flag false. That allowed the buyer to
-     *      call {refundBuyer} after expiry WHILE the panel was still
-     *      deliberating; the eventual {resolveDispute} callback then reverted
-     *      with AlreadyResolved (caught upstream and surfaced only as the
-     *      unmonitored ResolutionCallFailed event), so a winning seller could
-     *      lose principal. Setting `disputed` here blocks every
-     *      party-unilateral exit ({refundBuyer}, {releaseFundsViaContract})
-     *      until the panel resolves.
-     *
-     *      Authorization mirrors {resolveDispute}: only the registered
-     *      arbitrationContract may call this (see {onlyArbitration}). The
-     *      resolved flag remains the single terminal gate, so no explicit
-     *      clear of `disputed` is needed at resolution time — once
-     *      {resolveDispute} sets `resolved`, every exit path short-circuits
-     *      on AlreadyResolved regardless of `disputed`.
-     *
-     *      Idempotent: a repeat call while already disputed is a no-op.
-     *      Reverts if the escrow is absent (EscrowNotFound) or already
-     *      resolved (AlreadyResolved) — the latter makes
-     *      OmniArbitration.createDispute correctly reject a dispute against
-     *      an escrow whose funds have already been released or refunded.
-     * @param escrowId Escrow identifier to mark disputed
-     */
-    function markDisputed(
-        uint256 escrowId
-    ) external onlyArbitration {
-        Escrow storage escrow = escrows[escrowId];
-        if (escrow.buyer == address(0)) revert EscrowNotFound();
-        if (escrow.resolved) revert AlreadyResolved();
-        // The judge panel prices its dispute deposit in XOM from getAmount().
-        // A non-XOM escrow's amount is in another token's units, so the panel
-        // cannot price it — such escrows resolve through the internal 2-of-3
-        // vote (token-denominated stakes). Refusing here means createDispute
-        // fails closed rather than opening a dispute priced in the wrong unit.
-        if (escrow.token != address(OMNI_COIN)) revert UseInternalArbitration();
-        // An internal dispute (revealDispute) always has an arbitrator; the
-        // panel's own disputes never do. Refusing here stops the panel from
-        // opening a second venue on top of an internal dispute that was
-        // started before the panel was wired — the loser's resolution would
-        // revert atomically and strand the panel's dispute fee.
-        if (escrow.arbitrator != address(0)) revert AlreadyDisputed();
-        if (!escrow.disputed) {
-            escrow.disputed = true;
-            emit EscrowMarkedDisputed(escrowId);
-        }
-    }
 
-    /**
-     * @notice Clear an escrow's disputed flag when a dispute is cancelled
-     * @dev Counterpart to {markDisputed}. `createDispute` takes the fee and
-     *      freezes the escrow up front; if the panel cannot be seated the
-     *      arbitration contract cancels the dispute and calls this to restore
-     *      the release/refund/inspection exits. Only the registered
-     *      arbitration contract may call it, and never on a resolved escrow.
-     * @param escrowId Escrow identifier
-     */
-    function unmarkDisputed(uint256 escrowId) external onlyArbitration {
-        Escrow storage escrow = escrows[escrowId];
-        if (escrow.buyer == address(0)) revert EscrowNotFound();
-        if (escrow.resolved) revert AlreadyResolved();
-        if (escrow.disputed) {
-            escrow.disputed = false;
-            emit EscrowUnmarkedDisputed(escrowId);
-        }
-    }
 
-    /**
-     * @notice Resolve a dispute by releasing or refunding escrow
-     * @dev H-01 OmniArbitration Round 6: Called exclusively by
-     *      the authorized OmniArbitration contract after its
-     *      arbitration panel reaches a resolution. This function
-     *      handles fund distribution (marketplace fee on release,
-     *      arbitration fee from dispute stakes) and returns
-     *      remaining stakes to both parties.
-     *
-     *      Security:
-     *      - Only callable by the registered arbitrationContract
-     *      - Escrow must exist, be marked disputed, and not already resolved
-     *        (the disputed gate prevents a compromised panel from force-resolving
-     *        a non-disputed escrow)
-     *      - Uses pull pattern (claimable balances) for fund
-     *        disbursement to prevent DoS via reverting recipients
-     *      - Re-entrancy protected via nonReentrant
-     *
-     * @param escrowId Escrow ID to resolve
-     * @param releaseFunds True to release to seller, false to
-     *        refund buyer
-     */
-    function resolveDispute(
-        uint256 escrowId,
-        bool releaseFunds
-    ) external nonReentrant onlyArbitration {
-        _resolve(escrowId, releaseFunds, true);
-    }
 
     /**
      * @notice Freeze an escrow for the judge panel (called by a party)
@@ -1835,30 +1336,31 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
         if (e.buyer == address(0)) revert EscrowNotFound();
         if (e.resolved) revert AlreadyResolved();
         if (e.disputed) revert AlreadyDisputed();
-        // An internal commit-reveal dispute has an arbitrator and its own
-        // commit/reveal flow; mixing the two venues is what
-        // {_requireInternalDisputePath} exists to prevent.
-        if (e.arbitrator != address(0)) revert AlreadyDisputed();
-        // Private escrows keep the internal commit-reveal path: their amount is
-        // hidden, so a judge panel cannot price a seat bond for them.
-        if (isPrivateEscrow[escrowId]) revert CannotMixPrivacyModes();
         address caller = _msgSender();
         if (caller != e.buyer && caller != e.seller) revert NotParticipant();
 
-        // 🛑 Freezing is not free. Without this stake a buyer could freeze a
-        // delivered sale for gas and wait out the timeout (audit C-1), so the
-        // opener posts the same 2.5% the internal dispute path requires. It is
-        // returned with the other stakes on every resolution, timeout included.
-        e.disputed = true;
-        e.disputeOpenedAt = block.timestamp; // solhint-disable-line not-rely-on-time
-        address stakeToken = _stakeToken(escrowId);
-        uint256 requiredStake = (e.amount * DISPUTE_STAKE_BASIS) / BASIS_POINTS;
-        if (requiredStake == 0) revert InsufficientStake();
-        _pullExact(IERC20(stakeToken), caller, requiredStake);
-        disputeStakes[escrowId][caller] += requiredStake;
-        totalEscrowed[stakeToken] += requiredStake;
+        // 🛑 FILING IS FREE AND NOTHING IS STAKED (founder decision
+        // 2026-10-27). The arbitration fee comes out of the escrow's own
+        // payout at resolution, so it is collectible in full without either
+        // party posting anything. A stake here only re-created the friction
+        // that left real disputes half-funded and unarbitrable.
+        //
+        // The fee is SNAPSHOTTED now, so the number the filer was shown is the
+        // number charged even if the parameters are tuned while the case runs.
+        uint256 fee = _arbitrationFee(e.amount, e.token);
+        // Refuse a dispute whose fee would eat more than `maxArbitrationFeeBps`
+        // of the sale (default a quarter). Below that, arbitration costs more
+        // than the amount in dispute.
+        if (fee * BASIS_POINTS > e.amount * maxArbitrationFeeBps) {
+            revert FeeTooLarge();
+        }
 
-        emit EscrowDisputeOpened(escrowId, caller, requiredStake);
+        e.disputed = true;
+        // solhint-disable-next-line not-rely-on-time
+        e.disputeOpenedAt = uint128(block.timestamp);
+        e.disputeFee = uint128(fee);
+
+        emit EscrowDisputeOpened(escrowId, caller, fee);
     }
 
     /**
@@ -1891,40 +1393,52 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
     ) external nonReentrant whenNotPaused {
         Escrow storage e = escrows[escrowId];
         if (e.buyer == address(0)) revert EscrowNotFound();
-        // An internal commit-reveal dispute is already in progress; its own
-        // vote (and its resolving arbitrator's 70% share) owns this escrow.
-        if (e.arbitrator != address(0)) revert AlreadyDisputed();
-        bytes32 digest = EscrowSignatureLib.hashVerdict(
-            _domainSeparatorV4(), escrowId, releaseFunds, validUntil
-        );
-        EscrowSignatureLib.verifyVerdict(
-            digest,
+        if (e.resolved) revert AlreadyResolved();
+        if (!e.disputed) revert NotDisputed();
+        // 🛑 The verdict window closes STRICTLY BEFORE the trustless timeout
+        // opens (expiry + DISPUTE_TIMEOUT). Without the gap both paths are
+        // callable in the same block at the boundary, so whichever party pays
+        // gas first decides the outcome — a losing party could beat a verdict
+        // with a timeout refund.
+        // solhint-disable-next-line not-rely-on-time
+        if (validUntil > e.expiry + VERDICT_WINDOW) revert InvalidVerdict();
+
+        // Recovers EVERY signer presented, on either direction, so a judge who
+        // dissented is still paid. Reverts unless two distinct rostered
+        // non-party judges signed the requested direction.
+        address[] memory signers = EscrowSignatureLib.verifyVerdict(
+            _domainSeparatorV4(),
+            escrowId,
+            releaseFunds,
+            validUntil,
             signatures,
             verdictJudge,
             e.buyer,
-            e.seller,
-            validUntil
+            e.seller
         );
-        _resolve(escrowId, releaseFunds, true);
+        _resolve(escrowId, releaseFunds, signers);
         emit VerdictExecuted(escrowId, releaseFunds, validUntil);
     }
 
     /**
-     * @notice Shared resolution body for the panel and signed-verdict paths
+     * @notice Settle a disputed escrow from a judge verdict
      * @dev Pays the seller (charging the in-kind 1%) or refunds the buyer,
-     *      deducts the 5% arbitration fee from the dispute stakes, returns the
-     *      remaining stakes to both parties and credits the payee through the
-     *      pull-pattern ledger.
+     *      deducts the arbitration fee SNAPSHOTTED at {openDispute} from that
+     *      payout, credits the judges and the submitter, and credits the payee
+     *      through the pull-pattern ledger.
+     *
+     *      🛑 The fee never comes from a stake and never touches principal:
+     *      it is a share of the disputed amount taken out of what the escrow
+     *      was going to pay anyway. That is the only collection path a party
+     *      cannot starve by declining to participate.
      * @param escrowId Escrow to resolve
      * @param releaseFunds True = pay the seller, false = refund the buyer
-     * @param panelResolved True when a judge panel decided (its own fee), false
-     *        when the internal commit-reveal vote did (resolving arbitrator
-     *        takes 70% of the escrow-side arbitration fee)
+     * @param signers Every judge whose signature the bundle carried
      */
     function _resolve(
         uint256 escrowId,
         bool releaseFunds,
-        bool panelResolved
+        address[] memory signers
     ) private {
         Escrow storage e = escrows[escrowId];
 
@@ -1934,24 +1448,16 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
 
         e.resolved = true;
 
-        // M-02: for private escrows e.amount is 0; the real amount is in
-        // privateEscrowAmounts. `e.token` is pXOM for those, so the fee split
-        // below needs no special case.
-        uint256 amount;
-        if (isPrivateEscrow[escrowId]) {
-            amount = privateEscrowAmounts[escrowId];
-            privateEscrowAmounts[escrowId] = 0;
-        } else {
-            amount = e.amount;
-            e.amount = 0;
-        }
+        uint256 amount = e.amount;
+        e.amount = 0;
         address tokenAddr = e.token;
-        IERC20 token = IERC20(tokenAddr);
+        uint256 fee = e.disputeFee;
+        e.disputeFee = 0;
 
         totalEscrowed[tokenAddr] -= amount;
 
         address recipient;
-        uint256 recipientAmount = amount;
+        uint256 recipientAmount;
 
         if (releaseFunds) {
             // Release to seller: the in-kind 1% split runs on this chain.
@@ -1960,26 +1466,20 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
         } else {
             // Refund to buyer (no marketplace fee)
             recipient = e.buyer;
+            recipientAmount = amount;
         }
 
-        // Deduct the arbitration fee from the dispute stakes. The stake asset
-        // is the escrow's own token. A judge panel pays itself on its own
-        // chain, so the escrow-side fee routes 100% to ODDAO (zero recipient).
-        if (e.disputed) {
-            _collectArbitrationFee(
-                escrowId, e, amount, panelResolved ? address(0) : e.arbitrator
-            );
-        }
+        // 🛑 THE FEE COMES OUT OF THE PAYOUT. Guarded so no parameter change
+        // can ever make the fee exceed what is being paid out.
+        if (fee >= recipientAmount) revert InvalidFeeConfig();
+        recipientAmount -= fee;
+        _payArbitrationFee(escrowId, tokenAddr, fee, signers);
 
         // M-01: pull-pattern disbursement — a reverting recipient can never
         // block a resolution.
         claimable[tokenAddr][recipient] += recipientAmount;
         totalClaimable[tokenAddr] += recipientAmount;
         emit FundsClaimable(recipient, tokenAddr, recipientAmount);
-
-        // Return remaining dispute stakes to both parties
-        _returnDisputeStake(escrowId, e.buyer);
-        _returnDisputeStake(escrowId, e.seller);
 
         emit DisputeResolvedByArbitration(
             escrowId, releaseFunds, recipient, recipientAmount
@@ -2083,171 +1583,10 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
         }
     }
 
-    /**
-     * @notice The asset a dispute stake is denominated in
-     * @dev Private escrows stake in XOM (pXOM is 1:1 with XOM and 18-decimal,
-     *      so v1's arithmetic remains correct and the stake stays a stable
-     *      anti-spam bond). Every other escrow stakes in its own token, which
-     *      is the only way "2.5% of the principal" is dimensionally true.
-     * @param escrowId Escrow identifier
-     * @return Stake token address
-     */
-    function _stakeToken(uint256 escrowId) private view returns (address) {
-        return isPrivateEscrow[escrowId]
-            ? address(OMNI_COIN)
-            : escrows[escrowId].token;
-    }
 
-    /**
-     * @notice Select arbitrator deterministically from registered arbitrator list
-     * @dev Uses escrow creation block and nonce for deterministic selection.
-     *      Excludes buyer and seller from selection to prevent conflict of interest.
-     * @param escrowId Escrow identifier
-     * @param nonce Random nonce from reveal
-     * @return arbitrator Selected arbitrator address
-     */
-    function selectArbitrator(
-        uint256 escrowId,
-        uint256 nonce
-    ) internal view returns (address arbitrator) {
-        uint256 listLen = arbitratorList.length;
-        if (listLen == 0) revert NoArbitratorsAvailable();
 
-        Escrow storage escrow = escrows[escrowId];
 
-        // Reveal-time entropy makes the selection unpredictable at COMMIT time.
-        // Every other input here — createdAt, arbitratorSeed (a constructor
-        // constant readable from storage), escrowId, and the caller-chosen
-        // nonce — is fixed and public when the disputer commits, so without
-        // this they could grind `nonce` offline to land on a colluding
-        // arbitrator. `blockhash(block.number - 1)` and `prevrandao` belong to
-        // the REVEAL block, which is always later than the commit block and so
-        // cannot be precomputed when the commitment is made.
-        // NOTE: this is grind-RESISTANCE, not cryptographic randomness — the
-        // validator that produces the reveal block retains marginal influence
-        // over blockhash/prevrandao. Removing that residual requires a VRF or
-        // the RandomCommitteeVerifier committee path (tracked separately).
-        // solhint-disable-next-line not-rely-on-time
-        uint256 seed = uint256(keccak256(abi.encodePacked(
-            escrow.createdAt,
-            arbitratorSeed,
-            nonce,
-            escrowId,
-            blockhash(block.number - 1),
-            block.prevrandao
-        )));
 
-        // Try up to listLen times to find an arbitrator who is not a party
-        for (uint256 attempt = 0; attempt < listLen; ++attempt) {
-            uint256 idx = (seed + attempt) % listLen;
-            address candidate = arbitratorList[idx];
-            if (candidate != escrow.buyer && candidate != escrow.seller) {
-                return candidate;
-            }
-        }
-
-        // All arbitrators are parties (should not happen with >2 arbitrators)
-        revert NoArbitratorsAvailable();
-    }
-
-    /**
-     * @notice Resolve escrow and transfer funds
-     * @dev Internal helper to avoid code duplication. When disputed, deducts a 5%
-     *      arbitration fee (charged 50/50 from buyer and seller stakes) and
-     *      distributes it 70% to the resolving arbitrator (pull-pattern
-     *      claimable) / 30% to ODDAO on this chain.
-     *      Marketplace fee only applies when releasing to the seller (not on
-     *      refunds) and routes through the referral-aware vault split.
-     *      Returns remaining dispute stakes to both parties after arbitration fee.
-     * @param escrow Escrow data
-     * @param escrowId Escrow identifier
-     * @param recipient Address to receive funds
-     */
-    function _resolveEscrow(
-        Escrow storage escrow,
-        uint256 escrowId,
-        address recipient
-    ) private {
-        escrow.resolved = true;
-        uint256 amount = escrow.amount;
-        escrow.amount = 0;
-
-        // Decrement totalEscrowed for the escrow principal
-        totalEscrowed[escrow.token] -= amount;
-
-        uint256 recipientAmount = amount;
-
-        // Marketplace fee only charged when releasing to seller (successful transaction)
-        if (recipient == escrow.seller) {
-            recipientAmount = _collectMarketplaceFee(escrowId, escrow.token, amount);
-        }
-
-        // Deduct arbitration fee when escrow was disputed (5% of escrow
-        // amount): 70% to the resolving arbitrator, 30% to ODDAO.
-        if (escrow.disputed) {
-            _collectArbitrationFee(
-                escrowId, escrow, amount, escrow.arbitrator
-            );
-        }
-
-        // M-01: Use pull pattern to prevent DoS via reverting recipients.
-        // Note: totalEscrowed already decremented at line 688 for full amount.
-        // We only need to credit the claimable balance (no double-decrement).
-        claimable[escrow.token][recipient] += recipientAmount;
-        totalClaimable[escrow.token] += recipientAmount;
-        emit FundsClaimable(recipient, escrow.token, recipientAmount);
-
-        // Return remaining dispute stakes to both parties (if any)
-        _returnDisputeStake(escrowId, escrow.buyer);
-        _returnDisputeStake(escrowId, escrow.seller);
-
-        emit EscrowResolved(escrowId, recipient, recipientAmount);
-    }
-
-    /**
-     * @notice Require that an internal-path dispute action is allowed
-     * @dev Once the external judge panel (OmniArbitration) is wired via
-     *      {setArbitrationContract}, PUBLIC escrows are owned by the panel for
-     *      dispute open and resolution. This guard reverts the internal-path
-     *      counterparty-stake action ({postCounterpartyStake}) for a public
-     *      panel escrow so it cannot compete with the panel — critical since
-     *      {markDisputed} sets `disputed` on panel escrows, making that internal
-     *      path otherwise reachable (the panel tracks no escrow-side stakes).
-     *      Note: {claimDisputeTimeout} is intentionally NOT gated by this — it
-     *      is retained as the trustless 30-day last-resort backstop that
-     *      guarantees a public panel escrow can never be frozen if the panel
-     *      cannot be seated (see {claimDisputeTimeout}). Private-coin escrows
-     *      keep the full internal commit-reveal flow (the panel cannot price a
-     *      hidden amount).
-     * @param escrowId Escrow identifier being acted on
-     */
-    function _requireInternalDisputePath(uint256 escrowId) private view {
-        if (
-            arbitrationContract != address(0) &&
-            !isPrivateEscrow[escrowId] &&
-            escrows[escrowId].token == address(OMNI_COIN)
-        ) {
-            revert UseArbitrationContract();
-        }
-    }
-
-    /**
-     * @notice Return dispute stake to a party
-     * @dev Clears stake from mapping and transfers tokens
-     * @param escrowId Escrow identifier
-     * @param party Address to return stake to
-     */
-    function _returnDisputeStake(uint256 escrowId, address party) private {
-        EscrowFeeRouter.returnDisputeStake(
-            disputeStakes,
-            claimable,
-            totalEscrowed,
-            totalClaimable,
-            escrowId,
-            _stakeToken(escrowId),
-            party
-        );
-    }
 
     /**
      * @notice Anti-fee-wash validation of the two referrer slots
@@ -2341,99 +1680,61 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
     }
 
     /**
-     * @notice Deduct and distribute the 5% arbitration fee from dispute
-     *         stakes (charged 50/50 buyer/seller, capped at each stake)
-     * @dev Distribution: 70% (ARBITRATOR_FEE_SHARE_BPS) to
-     *      `arbitratorRecipient` via the pull-pattern claimable balance,
-     *      remainder to ODDAO. Passing `arbitratorRecipient = address(0)`
-     *      routes 100% to ODDAO (used when a judge panel decided, since the
-     *      panel is paid by its own fee on its own chain).
-     * @param escrowId Escrow identifier
-     * @param escrow Escrow data (buyer/seller read for stake deduction)
-     * @param amount Disputed escrow principal the 5% is computed on
-     * @param arbitratorRecipient Resolving arbitrator (zero → all to ODDAO)
+     * @notice The arbitration fee for one disputed escrow, in its own token
+     * @dev Percentage of the disputed amount with a per-token floor. The floor
+     *      exists because a share of a small sale is dust; the ceiling
+     *      (`maxArbitrationFeeBps` of the amount) is enforced at filing.
+     * @param amount Disputed principal
+     * @param token Settlement token (the floor is per token, in its own units)
+     * @return fee The fee, in `token` units
      */
-    function _collectArbitrationFee(
-        uint256 escrowId,
-        Escrow storage escrow,
+    function _arbitrationFee(
         uint256 amount,
-        address arbitratorRecipient
-    ) private {
-        EscrowFeeRouter.collectArbitrationFee(
-            disputeStakes,
-            claimable,
-            totalEscrowed,
-            totalClaimable,
-            escrowId,
-            _stakeToken(escrowId),
-            escrow.buyer,
-            escrow.seller,
-            amount,
-            ARBITRATION_FEE_BPS,
-            ARBITRATOR_FEE_SHARE_BPS,
-            arbitratorRecipient,
-            ODDAO
-        );
+        address token
+    ) private view returns (uint256 fee) {
+        fee = (amount * arbitrationFeeBps) / BASIS_POINTS;
+        uint256 floorFee = minArbitrationFee[token];
+        if (fee < floorFee) fee = floorFee;
     }
 
     /**
-     * @notice Validate vote eligibility
-     * @dev H-03: Requires escrow to be disputed before voting is allowed.
-     *      Non-disputed escrows must use releaseFunds() or refundBuyer().
-     * @param escrow Escrow data
-     * @param escrowId Escrow identifier
-     * @param caller Address of the voter (from _msgSender())
+     * @notice Credit the arbitration fee to the judges, the submitter and ODDAO
+     * @dev The split lives in {EscrowFeeRouter} so the schedule can be tuned
+     *      without growing this contract. `signers` carries EVERY judge the
+     *      bundle named, so a dissenter is paid too.
+     * @param escrowId Escrow identifier (for events)
+     * @param token Fee token
+     * @param fee Fee amount (non-zero)
+     * @param signers Judges whose signatures were presented
      */
-    function _validateVote(
-        Escrow storage escrow,
+    function _payArbitrationFee(
         uint256 escrowId,
-        address caller
-    ) private view {
-        if (escrow.resolved) revert AlreadyResolved();
-        // H-03: Voting only allowed on disputed escrows
-        if (!escrow.disputed) revert NotDisputed();
-        if (hasVoted[escrowId][caller]) revert AlreadyVoted();
-
-        // For disputed escrows, arbitrator can also vote
-        bool isParticipant = caller == escrow.buyer ||
-                           caller == escrow.seller ||
-                           caller == escrow.arbitrator;
-        if (!isParticipant) revert NotParticipant();
+        address token,
+        uint256 fee,
+        address[] memory signers
+    ) private {
+        EscrowFeeRouter.payArbitrationFee(
+            claimable,
+            totalClaimable,
+            escrowId,
+            token,
+            fee,
+            signers,
+            _msgSender(),
+            ODDAO,
+            judgePoolBps2,
+            judgePoolBps3,
+            submitterBps2,
+            submitterBps3
+        );
     }
+
+
 
     // ========================================================================
     // ARBITRATOR MANAGEMENT (Admin Only)
     // ========================================================================
 
-    /**
-     * @notice Set the authorized OmniArbitration contract address
-     * @dev H-01 OmniArbitration Round 6: Only this address may call
-     *      resolveDispute(). Setting to address(0) disables external
-     *      arbitration resolution. Only callable by admin.
-     * @param _arbitrationContract Address of the OmniArbitration contract
-     */
-    function setArbitrationContract(
-        address _arbitrationContract
-    ) external onlyAdmin {
-        // M-01 FIX: Guard against EOAs and zero-code addresses that would break
-        // dispute resolution. The arbitration contract must have deployed code.
-        // address(0) is deliberately allowed — it disables external arbitration
-        // resolution (per the NatSpec above), so a broken/compromised panel can
-        // always be severed.
-        if (
-            _arbitrationContract != address(0) &&
-            _arbitrationContract.code.length == 0
-        ) {
-            revert InvalidAddress();
-        }
-
-        address oldArbitration = arbitrationContract;
-        arbitrationContract = _arbitrationContract;
-
-        emit ArbitrationContractUpdated(
-            oldArbitration, _arbitrationContract
-        );
-    }
 
     /**
      * @notice Add or remove a settlement token on THIS chain's allowlist
@@ -2469,8 +1770,149 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
         if (judge == address(0) || judge == address(this)) {
             revert InvalidAddress();
         }
+        if (verdictJudge[judge] == allowed) return;
+        if (allowed) {
+            // 🛑 The panel is three. More judges divide the fee and turn "2 of
+            // 3" into "any 2 of N", which only lowers the bar for collusion.
+            if (verdictJudgeCount >= MAX_VERDICT_JUDGES) {
+                revert TooManyVerdictJudges();
+            }
+            ++verdictJudgeCount;
+        } else {
+            --verdictJudgeCount;
+        }
         verdictJudge[judge] = allowed;
         emit VerdictJudgeUpdated(judge, allowed);
+    }
+
+    /**
+     * @notice Set the arbitration fee and the ceiling on its share of a sale
+     * @dev Both are policy, not code: tuning them must never need a redeploy.
+     *      The fee is snapshotted per dispute, so a change here can never alter
+     *      what an already-filed case costs.
+     * @param feeBps Fee in basis points of the disputed amount (1..1000)
+     * @param maxFeeOfAmountBps Ceiling as bps of the amount (1..5000)
+     */
+    function setArbitrationFee(
+        uint256 feeBps,
+        uint256 maxFeeOfAmountBps
+    ) external onlyAdmin {
+        if (
+            feeBps == 0 ||
+            feeBps > MAX_ARBITRATION_FEE_BPS ||
+            maxFeeOfAmountBps == 0 ||
+            maxFeeOfAmountBps > MAX_FEE_OF_AMOUNT_BPS
+        ) {
+            revert InvalidFeeConfig();
+        }
+        arbitrationFeeBps = feeBps;
+        maxArbitrationFeeBps = maxFeeOfAmountBps;
+        emit ArbitrationFeeConfigured(feeBps, maxFeeOfAmountBps);
+    }
+
+    /**
+     * @notice Set the smallest arbitration fee for one token
+     * @dev Per token because the contract cannot price tokens; one unit of the
+     *      token's own denomination. Zero disables the floor.
+     * @param token Settlement token
+     * @param amount Minimum fee in that token's units
+     */
+    function setMinArbitrationFee(
+        address token,
+        uint256 amount
+    ) external onlyAdmin {
+        if (token == address(0)) revert InvalidAddress();
+        minArbitrationFee[token] = amount;
+        emit MinArbitrationFeeSet(token, amount);
+    }
+
+    /**
+     * @notice Set the judge/submitter shares of the arbitration fee
+     * @dev Two schedules, by how many judges signed (2, or 3+). ODDAO takes
+     *      whatever is left, which is also where rounding dust lands. Each
+     *      schedule must leave ODDAO at least 5% so the protocol is never
+     *      crowded out of its own fee.
+     * @param pool2 Judge pool when two judges signed (bps)
+     * @param pool3 Judge pool when three signed (bps)
+     * @param sub2 Submitter share when two judges signed (bps)
+     * @param sub3 Submitter share when three signed (bps)
+     */
+    function setArbitrationSplit(
+        uint256 pool2,
+        uint256 pool3,
+        uint256 sub2,
+        uint256 sub3
+    ) external onlyAdmin {
+        if (pool2 > BASIS_POINTS || pool3 > BASIS_POINTS) {
+            revert InvalidFeeConfig();
+        }
+        if (pool2 + sub2 > BASIS_POINTS || pool3 + sub3 > BASIS_POINTS) {
+            revert InvalidFeeConfig();
+        }
+        if (
+            BASIS_POINTS - pool2 - sub2 < 500 ||
+            BASIS_POINTS - pool3 - sub3 < 500
+        ) {
+            revert InvalidFeeConfig();
+        }
+        judgePoolBps2 = pool2;
+        judgePoolBps3 = pool3;
+        submitterBps2 = sub2;
+        submitterBps3 = sub3;
+        emit ArbitrationSplitConfigured(pool2, pool3, sub2, sub3);
+    }
+
+    /**
+     * @notice Propose new fee-recipient addresses
+     * @dev Takes effect only after {BENEFICIARY_DELAY} and an explicit
+     *      {acceptBeneficiaries}, so a compromised admin key cannot redirect
+     *      the protocol's income in one transaction.
+     */
+    function proposeBeneficiaries(
+        address oddao,
+        address stakingPool,
+        address treasury
+    ) external onlyAdmin {
+        if (
+            oddao == address(0) ||
+            stakingPool == address(0) ||
+            treasury == address(0)
+        ) {
+            revert InvalidAddress();
+        }
+        if (
+            oddao == stakingPool ||
+            oddao == treasury ||
+            stakingPool == treasury
+        ) {
+            revert InvalidAddress();
+        }
+        pendingOddao = oddao;
+        pendingStakingPool = stakingPool;
+        pendingTreasury = treasury;
+        // solhint-disable-next-line not-rely-on-time
+        beneficiaryProposedAt = block.timestamp;
+        emit BeneficiariesProposed(oddao, stakingPool, treasury);
+    }
+
+    /**
+     * @notice Install the proposed fee recipients once the delay has passed
+     */
+    function acceptBeneficiaries() external onlyAdmin {
+        uint256 proposedAt = beneficiaryProposedAt;
+        if (proposedAt == 0) revert NoPendingBeneficiaries();
+        // solhint-disable-next-line not-rely-on-time
+        if (block.timestamp < proposedAt + BENEFICIARY_DELAY) {
+            revert BeneficiaryDelayActive();
+        }
+        ODDAO = pendingOddao;
+        STAKING_POOL = pendingStakingPool;
+        PROTOCOL_TREASURY = pendingTreasury;
+        pendingOddao = address(0);
+        pendingStakingPool = address(0);
+        pendingTreasury = address(0);
+        beneficiaryProposedAt = 0;
+        emit BeneficiariesUpdated(ODDAO, STAKING_POOL, PROTOCOL_TREASURY);
     }
 
     /**
@@ -2488,240 +1930,19 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
         return EscrowSignatureLib.attributionTypehash();
     }
 
-    /**
-     * @notice Add an arbitrator to the registry
-     * @dev Only admin can add arbitrators. These addresses can be selected to resolve disputes.
-     * @param arbitrator Address to add as arbitrator
-     */
-    function addArbitrator(address arbitrator) external onlyAdmin {
-        if (arbitrator == address(0)) revert InvalidAddress();
-        if (isRegisteredArbitrator[arbitrator]) revert AlreadyDisputed(); // already registered
-        // solhint-disable-next-line gas-strict-inequalities
-        if (arbitratorList.length >= MAX_ARBITRATORS) revert TooManyArbitrators();
-        isRegisteredArbitrator[arbitrator] = true;
-        arbitratorList.push(arbitrator);
-        emit ArbitratorAdded(arbitrator);
-    }
 
-    /**
-     * @notice Remove an arbitrator from the registry
-     * @dev Swaps with last element and pops for O(1) removal
-     * @param arbitrator Address to remove
-     */
-    function removeArbitrator(address arbitrator) external onlyAdmin {
-        if (!isRegisteredArbitrator[arbitrator]) revert InvalidAddress();
-        isRegisteredArbitrator[arbitrator] = false;
 
-        // Find and swap-remove from array
-        uint256 len = arbitratorList.length;
-        for (uint256 i = 0; i < len; ++i) {
-            if (arbitratorList[i] == arbitrator) {
-                arbitratorList[i] = arbitratorList[len - 1];
-                arbitratorList.pop();
-                break;
-            }
-        }
-        emit ArbitratorRemoved(arbitrator);
-    }
-
-    /**
-     * @notice Get the number of registered arbitrators
-     * @return count Number of arbitrators
-     */
-    function arbitratorCount() external view returns (uint256 count) {
-        return arbitratorList.length;
-    }
 
     // ========================================================================
     // PRIVACY ESCROW FUNCTIONS
     // ========================================================================
 
-    /**
-     * @notice Create a new private escrow with encrypted amount
-     * @dev Buyer creates escrow using pXOM with amount encrypted via MPC
-     * @param seller Seller address
-     * @param encryptedAmount Encrypted amount of pXOM tokens (gtUint64)
-     * @param duration Escrow duration in seconds
-     * @return escrowId Unique escrow identifier
-     */
-    function createPrivateEscrow(
-        address seller,
-        gtUint64 encryptedAmount,
-        uint256 duration
-    ) external nonReentrant whenNotPaused returns (uint256 escrowId) {
-        if (!privacyEnabled) revert PrivacyNotAvailable();
-        address buyer = _msgSender();
-        escrowId = ++escrowCounter;
-        EscrowPrivacyOps.createEscrow(
-            escrows,
-            encryptedEscrowAmounts,
-            privateEscrowAmounts,
-            isPrivateEscrow,
-            totalEscrowed,
-            address(PRIVATE_OMNI_COIN),
-            _minEscrowAmount(),
-            buyer,
-            seller,
-            encryptedAmount,
-            duration,
-            MIN_DURATION,
-            MAX_DURATION,
-            escrowId
-        );
-    }
 
-    /**
-     * @notice Release private escrow funds to seller
-     * @dev Both buyer and seller must agree, amount remains encrypted
-     * @param escrowId Private escrow to release
-     */
-    function releasePrivateFunds(uint256 escrowId) external nonReentrant {
-        if (!isPrivateEscrow[escrowId]) revert CannotMixPrivacyModes();
-        EscrowPrivacyOps.releaseFunds(
-            escrows,
-            privateEscrowAmounts,
-            totalEscrowed,
-            totalMarketplaceFees,
-            claimable,
-            totalClaimable,
-            address(PRIVATE_OMNI_COIN),
-            MARKETPLACE_FEE_BPS,
-            _beneficiaries(),
-            escrowId,
-            _msgSender()
-        );
-    }
 
-    /**
-     * @notice Refund private escrow to buyer
-     * @dev Seller can agree or buyer can claim after expiry
-     * @param escrowId Private escrow to refund
-     */
-    function refundPrivateBuyer(uint256 escrowId) external nonReentrant {
-        if (!isPrivateEscrow[escrowId]) revert CannotMixPrivacyModes();
-        EscrowPrivacyOps.refundBuyer(
-            escrows,
-            privateEscrowAmounts,
-            totalEscrowed,
-            claimable,
-            totalClaimable,
-            address(PRIVATE_OMNI_COIN),
-            ARBITRATOR_DELAY,
-            escrowId,
-            _msgSender()
-        );
-    }
 
-    /**
-     * @notice Vote on disputed private escrow outcome
-     * @dev 2-of-3 multisig voting, amounts remain encrypted
-     * @param escrowId Private escrow to vote on
-     * @param voteForRelease True to release to seller, false to refund buyer
-     */
-    function votePrivate(uint256 escrowId, bool voteForRelease) external nonReentrant {
-        // v2: do NOT defer to the external judge panel here. Private-coin escrows
-        // keep their value hidden in privateEscrowAmounts, which the public judge
-        // panel cannot price, so private disputes always resolve through this
-        // internal 2-of-3 path — even after arbitrationContract is set for public
-        // escrows. (Public escrows use vote(), which still defers when wired.)
-        Escrow storage escrow = escrows[escrowId];
 
-        if (!isPrivateEscrow[escrowId]) revert CannotMixPrivacyModes();
 
-        address caller = _msgSender();
-        _validateVote(escrow, escrowId, caller);
 
-        hasVoted[escrowId][caller] = true;
-
-        if (voteForRelease) {
-            ++escrow.releaseVotes;
-        } else {
-            ++escrow.refundVotes;
-        }
-
-        emit VoteCast(escrowId, caller, voteForRelease);
-
-        // Check if we have a decision (2 votes)
-        if (escrow.releaseVotes > 1) {
-            _resolvePrivateEscrow(escrow, escrowId, escrow.seller);
-        } else if (escrow.refundVotes > 1) {
-            _resolvePrivateEscrow(escrow, escrowId, escrow.buyer);
-        }
-    }
-
-    /**
-     * @notice Resolve private escrow and transfer funds
-     * @dev Internal helper for private escrow resolution. Returns dispute stakes
-     *      (paid in XOM, not pXOM) to both parties when disputed.
-     * @param escrow Escrow data
-     * @param escrowId Escrow identifier
-     * @param recipient Address to receive funds
-     */
-    function _resolvePrivateEscrow(
-        Escrow storage escrow,
-        uint256 escrowId,
-        address recipient
-    ) private {
-        escrow.resolved = true;
-        // PRIV-H03: Read from private mapping instead of escrow.amount
-        uint256 amount = privateEscrowAmounts[escrowId];
-        privateEscrowAmounts[escrowId] = 0;
-
-        totalEscrowed[address(PRIVATE_OMNI_COIN)] -= amount;
-
-        uint256 recipientAmount = amount;
-
-        // Marketplace fee on seller releases (matching public escrow
-        // behavior). V4: the same in-kind split, in pXOM, on this chain.
-        if (recipient == escrow.seller) {
-            recipientAmount = _collectMarketplaceFee(
-                escrowId, address(PRIVATE_OMNI_COIN), amount
-            );
-        }
-
-        // M-02 (Round 6): Use pull pattern for private escrow resolution,
-        // matching the public escrow path. Prevents DoS from reverting recipients.
-        claimable[address(PRIVATE_OMNI_COIN)][recipient] += recipientAmount;
-        totalClaimable[address(PRIVATE_OMNI_COIN)] += recipientAmount;
-        emit FundsClaimable(recipient, address(PRIVATE_OMNI_COIN), recipientAmount);
-
-        // H-01 (Round 6): Deduct arbitration fee from dispute stakes
-        // for private escrows, matching the public escrow path in
-        // _resolveEscrow(). Dispute stakes are always in XOM (not
-        // pXOM), so the same fee logic applies directly: 70% to the
-        // resolving arbitrator, 30% to ODDAO.
-        if (escrow.disputed) {
-            _collectArbitrationFee(
-                escrowId, escrow, amount, escrow.arbitrator
-            );
-        }
-
-        // Return remaining dispute stakes (always in XOM) to both parties
-        _returnDisputeStake(escrowId, escrow.buyer);
-        _returnDisputeStake(escrowId, escrow.seller);
-
-        emit PrivateEscrowResolved(escrowId, recipient);
-    }
-
-    /**
-     * @notice Check if privacy features are available
-     * @dev Returns true on COTI V2 network, false otherwise
-     * @return available Whether privacy features are available
-     */
-    function privacyAvailable() public view returns (bool available) {
-        return privacyEnabled;
-    }
-
-    /**
-     * @notice Get encrypted amount for private escrow
-     * @dev Only returns data for private escrows
-     * @param escrowId Escrow identifier
-     * @return encryptedAmount Encrypted amount (ctUint64)
-     */
-    function getEncryptedAmount(uint256 escrowId) external view returns (ctUint64 encryptedAmount) {
-        if (!isPrivateEscrow[escrowId]) revert CannotMixPrivacyModes();
-        return encryptedEscrowAmounts[escrowId];
-    }
 
     /**
      * @notice Record a seller's first marketplace sale for the first-sale bonus
@@ -2757,24 +1978,6 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
         );
     }
 
-    /**
-     * @notice Detect if privacy features are available on current network
-     * @dev Internal function to check for COTI V2 MPC support
-     * @return enabled Whether privacy is supported
-     */
-    function _detectPrivacyAvailability() private view returns (bool enabled) {
-        // On COTI V2 network, MPC precompiles are available.
-        // COTI mainnet 2632500, COTI testnet 7082400, COTI devnet 13068200 —
-        // the ids the validator's chain config uses. The old testnet value
-        // (7082) matches no network, so a COTI testnet deployment silently
-        // reported privacy unavailable.
-        // For testing in Hardhat/Fuji, return false (MPC not available).
-        return (
-            block.chainid == 2632500 ||
-            block.chainid == 7082400 ||
-            block.chainid == 13068200
-        );
-    }
 
     // ========================================================================
     // ADMIN FUNCTIONS (Pause, Recovery)

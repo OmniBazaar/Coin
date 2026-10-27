@@ -154,7 +154,6 @@ describe('EscrowV2 — per-chain settlement, in-kind fee, signed verdicts', func
     const Escrow = await ethers.getContractFactory('EscrowV2', {
       libraries: {
         EscrowFeeRouter: await deployLib('EscrowFeeRouter'),
-        EscrowPrivacyOps: await deployLib('EscrowPrivacyOps'),
         EscrowSignatureLib: await deployLib('EscrowSignatureLib')
       }
     });
@@ -172,7 +171,6 @@ describe('EscrowV2 — per-chain settlement, in-kind fee, signed verdicts', func
 
     // Per-chain allowlist (no vault anywhere).
     await escrow.connect(owner).setSupportedToken(await usdc.getAddress(), true);
-    await escrow.connect(owner).addArbitrator(arbitrator.address);
 
     for (const token of [xom, usdc]) {
       for (const who of [buyer, seller]) {
@@ -383,24 +381,6 @@ describe('EscrowV2 — per-chain settlement, in-kind fee, signed verdicts', func
     expect(await escrow.totalEscrowed(await usdc.getAddress())).to.equal(0n);
   });
 
-  it('denominates the dispute stake in the escrow token', async function () {
-    // 2.5% of a 100 USDC principal must be 2.5 USDC, not 2.5e6 wei of XOM.
-    await createInToken(await usdc.getAddress(), USDC(100), 7 * DAY);
-    const id = await escrow.escrowCounter();
-    await time.increase(25 * 60 * 60);
-
-    const commitment = ethers.solidityPackedKeccak256(
-      ['uint256', 'uint256', 'address'],
-      [id, 12345n, buyer.address]
-    );
-    const xomBefore = await xom.balanceOf(buyer.address);
-    const usdcBefore = await usdc.balanceOf(buyer.address);
-    await escrow.connect(buyer).commitDispute(id, commitment);
-    expect(await xom.balanceOf(buyer.address)).to.equal(xomBefore);
-    expect(await usdc.balanceOf(buyer.address)).to.equal(usdcBefore - 2_500_000n);
-    expect(await escrow.totalEscrowed(await usdc.getAddress())).to.equal(USDC(100) + 2_500_000n);
-  });
-
   it('still settles a plain XOM escrow end to end', async function () {
     const amount = ethers.parseEther('100');
     await createInToken(await xom.getAddress(), amount, 7 * DAY);
@@ -448,89 +428,53 @@ describe('EscrowV2 — per-chain settlement, in-kind fee, signed verdicts', func
     ).to.be.revertedWithCustomError(escrow, 'TokenTransferMismatch');
   });
 
-  it('resolves a non-XOM dispute through the internal vote even when the panel is wired', async function () {
-    await escrow.connect(owner).setArbitrationContract(await registry.getAddress());
-
-    await createInToken(await usdc.getAddress(), USDC(100), 7 * DAY);
-    const usdcId = await escrow.escrowCounter();
-    await createInToken(await xom.getAddress(), ethers.parseEther('100'), 7 * DAY);
-    const xomId = await escrow.escrowCounter();
-    await time.increase(25 * 60 * 60);
-
-    const nonce = 12345n;
-    const commitment = (id: bigint): string =>
-      ethers.solidityPackedKeccak256(['uint256', 'uint256', 'address'], [id, nonce, buyer.address]);
-
-    // Non-XOM: commit + reveal are allowed, and the internal vote resolves it.
-    await escrow.connect(buyer).commitDispute(usdcId, commitment(usdcId));
-    await escrow.connect(buyer).revealDispute(usdcId, nonce);
-    await escrow.connect(buyer).vote(usdcId, true);
-    const sellerBefore = await usdc.balanceOf(seller.address);
-    await escrow.connect(seller).vote(usdcId, true);
-
-    // Seller paid 99 USDC from claimable, dispute resolved.
-    expect((await escrow.getEscrow(usdcId)).resolved).to.equal(true);
-    await escrow.connect(seller).withdrawClaimable(await usdc.getAddress());
-    expect(await usdc.balanceOf(seller.address)).to.equal(sellerBefore + USDC(99));
-
-    // XOM: still defers to the panel.
-    await expect(escrow.connect(buyer).commitDispute(xomId, commitment(xomId)))
-      .to.be.revertedWithCustomError(escrow, 'UseArbitrationContract');
-  });
-
-  it('cannot reveal a dispute after the escrow has settled', async function () {
-    await createInToken(await usdc.getAddress(), USDC(100), 7 * DAY);
-    const id = await escrow.escrowCounter();
-    await time.increase(25 * 60 * 60);
-    const nonce = 777n;
-    const commitment = ethers.solidityPackedKeccak256(
-      ['uint256', 'uint256', 'address'],
-      [id, nonce, buyer.address]
-    );
-    await escrow.connect(buyer).commitDispute(id, commitment);
-    await escrow.connect(seller).refundBuyer(id);
-    await expect(escrow.connect(buyer).revealDispute(id, nonce))
-      .to.be.revertedWithCustomError(escrow, 'AlreadyResolved');
-  });
-
-  it('returns an unrevealed dispute stake after the grace period', async function () {
-    await createInToken(await usdc.getAddress(), USDC(100), 7 * DAY);
-    const id = await escrow.escrowCounter();
-    await time.increase(25 * 60 * 60);
-    const commitment = ethers.solidityPackedKeccak256(
-      ['uint256', 'uint256', 'address'],
-      [id, 999n, buyer.address]
-    );
-    const before = await usdc.balanceOf(buyer.address);
-    await escrow.connect(buyer).commitDispute(id, commitment);
-    await time.increase(60 * 60 + 24 * 60 * 60 + 1); // reveal deadline + grace
-    await escrow.connect(buyer).reclaimExpiredStake(id);
-    expect(await usdc.balanceOf(buyer.address)).to.equal(before);
-  });
-
-  it('only the arbitration contract may clear a disputed flag', async function () {
-    await createInToken(await usdc.getAddress(), USDC(100), 7 * DAY);
-    const id = await escrow.escrowCounter();
-    await expect(escrow.connect(buyer).unmarkDisputed(id)).to.be.revertedWithCustomError(
-      escrow,
-      'OnlyArbitrationContract'
-    );
-  });
-
   it('refuses an escrow too small to yield any marketplace fee', async function () {
     await expect(createInToken(await usdc.getAddress(), 99n, 7 * DAY))
       .to.be.revertedWithCustomError(escrow, 'InvalidAmount');
   });
 
-  it('does not let the private entry point run on a non-COTI chain', async function () {
-    await expect(
-      escrow.connect(buyer).createPrivateEscrow(seller.address, 0n, 7 * DAY)
-    ).to.be.revertedWithCustomError(escrow, 'PrivacyNotAvailable');
-  });
-
   // ────────────────────────────────────────────────────────────────────────
   // Signed verdicts (cross-chain judge panel → this escrow)
   // ────────────────────────────────────────────────────────────────────────
+
+  describe('settable arbitration parameters', function () {
+    it('bounds the fee and its share of the sale', async function () {
+      await expect(escrow.connect(owner).setArbitrationFee(0, 2500))
+        .to.be.revertedWithCustomError(escrow, 'InvalidFeeConfig');
+      await expect(escrow.connect(owner).setArbitrationFee(1001, 2500))
+        .to.be.revertedWithCustomError(escrow, 'InvalidFeeConfig');
+      await expect(escrow.connect(owner).setArbitrationFee(500, 5001))
+        .to.be.revertedWithCustomError(escrow, 'InvalidFeeConfig');
+      await escrow.connect(owner).setArbitrationFee(400, 2000);
+      expect(await escrow.arbitrationFeeBps()).to.equal(400n);
+      expect(await escrow.maxArbitrationFeeBps()).to.equal(2000n);
+      await expect(escrow.connect(buyer).setArbitrationFee(400, 2000))
+        .to.be.revertedWithCustomError(escrow, 'OnlyAdmin');
+    });
+
+    it('never lets a split crowd ODDAO out', async function () {
+      // 95% judges + 10% submitter = 105%: refused.
+      await expect(escrow.connect(owner).setArbitrationSplit(9500, 8100, 1000, 900))
+        .to.be.revertedWithCustomError(escrow, 'InvalidFeeConfig');
+      // 96% judges leaves 4% for ODDAO: refused (5% minimum).
+      await expect(escrow.connect(owner).setArbitrationSplit(9600, 8100, 0, 900))
+        .to.be.revertedWithCustomError(escrow, 'InvalidFeeConfig');
+      await escrow.connect(owner).setArbitrationSplit(8000, 8100, 1000, 900);
+      expect(await escrow.judgePoolBps2()).to.equal(8000n);
+    });
+
+    it('changes fee recipients only after the delay', async function () {
+      const [, , , , , , , newSink] = await ethers.getSigners();
+      await escrow.connect(owner).proposeBeneficiaries(
+        newSink.address, stakingPool.address, protocolTreasury.address
+      );
+      await expect(escrow.connect(owner).acceptBeneficiaries())
+        .to.be.revertedWithCustomError(escrow, 'BeneficiaryDelayActive');
+      await time.increase(48 * 60 * 60 + 1);
+      await escrow.connect(owner).acceptBeneficiaries();
+      expect(await escrow.ODDAO()).to.equal(newSink.address);
+    });
+  });
 
   describe('signed verdicts', function () {
     let id: bigint;
@@ -561,9 +505,18 @@ describe('EscrowV2 — per-chain settlement, in-kind fee, signed verdicts', func
       expect(e.resolved).to.equal(true);
       const sellerBefore = await usdc.balanceOf(seller.address);
       await escrow.connect(seller).withdrawClaimable(await usdc.getAddress());
-      expect(await usdc.balanceOf(seller.address)).to.equal(sellerBefore + USDC(99));
+      // 100 - 1% marketplace fee - 5% arbitration fee, both taken from the payout.
+      expect(await usdc.balanceOf(seller.address)).to.equal(sellerBefore + USDC(94));
       // The 1% was split in kind for the winning seller.
       expect(await escrow.totalMarketplaceFees(await usdc.getAddress())).to.equal(USDC(1));
+
+      // The 5% fee (5.00 USDC) pays the two judges 40% each, the submitter 10%
+      // and ODDAO the remaining 10% plus its marketplace slices (0.925).
+      const token = await usdc.getAddress();
+      expect(await escrow.claimable(token, judgeA.address)).to.equal(2_000_000n);
+      expect(await escrow.claimable(token, judgeC.address)).to.equal(2_000_000n);
+      expect(await escrow.claimable(token, outsider.address)).to.equal(500_000n);
+      expect(await escrow.claimable(token, oddao.address)).to.equal(1_425_000n);
     });
 
     it('refunds the buyer with no marketplace fee on a refund verdict', async function () {
@@ -575,8 +528,14 @@ describe('EscrowV2 — per-chain settlement, in-kind fee, signed verdicts', func
       ];
       await escrow.connect(outsider).executeVerdict(id, false, validUntil, sigs);
 
+      // Principal back less the 5% arbitration fee (no marketplace fee on a refund).
+      expect(await escrow.claimable(await usdc.getAddress(), buyer.address)).to.equal(
+        USDC(95)
+      );
       await escrow.connect(buyer).withdrawClaimable(await usdc.getAddress());
-      expect(await usdc.balanceOf(buyer.address)).to.equal(10_000n * 10n ** 18n);
+      expect(await usdc.balanceOf(buyer.address)).to.equal(
+        10_000n * 10n ** 18n - USDC(5)
+      );
       expect(await escrow.totalMarketplaceFees(await usdc.getAddress())).to.equal(0n);
     });
 
@@ -594,7 +553,9 @@ describe('EscrowV2 — per-chain settlement, in-kind fee, signed verdicts', func
       await expect(escrow.executeVerdict(id, true, validUntil, [one, unrostered]))
         .to.be.revertedWithCustomError(escrow, 'InvalidVerdict');
 
-      // A rostered judge may not be the buyer or the seller.
+      // A rostered judge may not be the buyer or the seller. (The roster is
+      // capped at three, so free a seat first.)
+      await escrow.connect(owner).setVerdictJudge(judgeC.address, false);
       await escrow.connect(owner).setVerdictJudge(buyer.address, true);
       const buyerSig = await signVerdict(buyer, id, true, validUntil);
       await expect(escrow.executeVerdict(id, true, validUntil, [one, buyerSig]))
@@ -609,9 +570,10 @@ describe('EscrowV2 — per-chain settlement, in-kind fee, signed verdicts', func
         await signVerdict(judgeB, id, true, validUntil)
       ];
 
-      // Same signatures, opposite outcome the judges never signed.
+      // Same signatures, opposite outcome the judges never signed: neither
+      // direction reaches the threshold, so the chain refuses it.
       await expect(escrow.executeVerdict(id, false, validUntil, sigs))
-        .to.be.revertedWithCustomError(escrow, 'InvalidVerdict');
+        .to.be.revertedWithCustomError(escrow, 'NotEnoughVerdicts');
 
       // Same signatures past the deadline.
       await time.increase(2 * DAY);
@@ -634,12 +596,14 @@ describe('EscrowV2 — per-chain settlement, in-kind fee, signed verdicts', func
         .to.be.revertedWithCustomError(escrow, 'AlreadyResolved');
     });
 
-    it('prices the freeze and gives it back on resolution', async function () {
+    it('takes nothing at filing and charges the fee from the payout', async function () {
       const before = await usdc.balanceOf(buyer.address);
       await escrow.connect(buyer).openDispute(id);
-      // 2.5% of the principal, exactly like the internal dispute path.
-      expect(await usdc.balanceOf(buyer.address)).to.equal(before - 2_500_000n);
-      expect(await escrow.disputeStakes(id, buyer.address)).to.equal(2_500_000n);
+      // 🛑 No stake: filing is free, so no dispute can be starved into
+      // unarbitrability by a party who will not post collateral.
+      expect(await usdc.balanceOf(buyer.address)).to.equal(before);
+      // The fee is snapshotted on the escrow at filing.
+      expect((await escrow.getEscrow(id)).disputeFee).to.equal(5_000_000n);
 
       const validUntil = (await time.latest()) + DAY;
       const sigs = [
@@ -648,14 +612,87 @@ describe('EscrowV2 — per-chain settlement, in-kind fee, signed verdicts', func
       ];
       await escrow.executeVerdict(id, true, validUntil, sigs);
 
-      // The dispute fee is 5% of the principal, charged equally to both
-      // parties' stakes and capped at what each posted — so the opener's 2.5%
-      // stake pays the fee (100% to ODDAO here, because a judge panel decided).
-      expect(await escrow.claimable(await usdc.getAddress(), buyer.address)).to.equal(0n);
-      // ODDAO also keeps the unattributed marketplace slices (925_000).
-      expect(await escrow.claimable(await usdc.getAddress(), oddao.address)).to.equal(
-        2_500_000n + 925_000n
+      // The fee is 5% of the disputed amount, taken out of the seller's payout;
+      // the buyer's principal is untouched by it (the buyer staked nothing).
+      expect(await escrow.claimable(await usdc.getAddress(), seller.address)).to.equal(
+        USDC(94)
       );
+    });
+
+    it('pays all three judges when one of them broke a tie', async function () {
+      await escrow.connect(buyer).openDispute(id);
+      const validUntil = (await time.latest()) + DAY;
+      // Two judges agree on release, the third dissents on refund. All three
+      // sat; all three are paid 27% of the fee; the submitter takes 9%.
+      const sigs = [
+        await signVerdict(judgeA, id, true, validUntil),
+        await signVerdict(judgeB, id, true, validUntil),
+        await signVerdict(judgeC, id, false, validUntil)
+      ];
+      await escrow.connect(outsider).executeVerdict(id, true, validUntil, sigs);
+
+      const token = await usdc.getAddress();
+      expect(await escrow.claimable(token, judgeA.address)).to.equal(1_350_000n);
+      expect(await escrow.claimable(token, judgeB.address)).to.equal(1_350_000n);
+      expect(await escrow.claimable(token, judgeC.address)).to.equal(1_350_000n);
+      expect(await escrow.claimable(token, outsider.address)).to.equal(450_000n);
+      // ODDAO: 10% of the fee plus its marketplace slices.
+      expect(await escrow.claimable(token, oddao.address)).to.equal(1_425_000n);
+    });
+
+    it('refuses a dissent-only bundle and a bundle with no majority', async function () {
+      await escrow.connect(buyer).openDispute(id);
+      const validUntil = (await time.latest()) + DAY;
+      const release = await signVerdict(judgeA, id, true, validUntil);
+      const refundA = await signVerdict(judgeB, id, false, validUntil);
+      const refundB = await signVerdict(judgeC, id, false, validUntil);
+
+      // Asking for release with two refund signatures must fail.
+      await expect(escrow.executeVerdict(id, true, validUntil, [refundA, refundB]))
+        .to.be.revertedWithCustomError(escrow, 'NotEnoughVerdicts');
+      // And the refund direction still works with those two.
+      await escrow.executeVerdict(id, false, validUntil, [release, refundA, refundB]);
+    });
+
+    it('refuses a verdict whose deadline outlives the escrow window', async function () {
+      await escrow.connect(buyer).openDispute(id);
+      const e = await escrow.getEscrow(id);
+      const tooLate = Number(e.expiry) + 26 * 24 * 60 * 60;
+      const sigs = [
+        await signVerdict(judgeA, id, true, tooLate),
+        await signVerdict(judgeB, id, true, tooLate)
+      ];
+      await expect(escrow.executeVerdict(id, true, tooLate, sigs))
+        .to.be.revertedWithCustomError(escrow, 'InvalidVerdict');
+    });
+
+    it('caps the verdict roster at three judges', async function () {
+      const [, , , , , d, e] = await ethers.getSigners();
+      await expect(escrow.connect(owner).setVerdictJudge(d.address, true))
+        .to.be.revertedWithCustomError(escrow, 'TooManyVerdictJudges');
+      expect(await escrow.verdictJudgeCount()).to.equal(3n);
+      await escrow.connect(owner).setVerdictJudge(judgeA.address, false);
+      await escrow.connect(owner).setVerdictJudge(d.address, true);
+      expect(await escrow.verdictJudgeCount()).to.equal(3n);
+    });
+
+    it('refuses a dispute whose fee would exceed the settable share of the sale', async function () {
+      // A 2.50 minimum on a 5.00 escrow would be 50% of the sale: refused.
+      await escrow.connect(owner).setMinArbitrationFee(await usdc.getAddress(), 2_500_000n);
+      await createInToken(await usdc.getAddress(), USDC(5), 7 * DAY);
+      const small = await escrow.escrowCounter();
+      await expect(escrow.connect(buyer).openDispute(small))
+        .to.be.revertedWithCustomError(escrow, 'FeeTooLarge');
+    });
+
+    it('uses the per-token floor when the percentage is dust', async function () {
+      await escrow.connect(owner).setMinArbitrationFee(await usdc.getAddress(), 2_500_000n);
+      await escrow.connect(buyer).openDispute(id);
+      // 5% of 100 = 5, which is above the floor; a 10-unit escrow is below it.
+      await createInToken(await usdc.getAddress(), USDC(10), 7 * DAY);
+      const tenner = await escrow.escrowCounter();
+      await escrow.connect(buyer).openDispute(tenner);
+      expect((await escrow.getEscrow(tenner)).disputeFee).to.equal(2_500_000n);
     });
 
     it('keeps the timeout backstop: an undelivered escrow refunds the buyer', async function () {
@@ -680,10 +717,9 @@ describe('EscrowV2 — per-chain settlement, in-kind fee, signed verdicts', func
       await time.increase(31 * DAY);
       await escrow.connect(buyer).claimDisputeTimeout(id);
 
-      // Buyer keeps nothing but the returned stake.
-      expect(await escrow.claimable(await usdc.getAddress(), buyer.address)).to.equal(
-        2_500_000n
-      );
+      // Buyer keeps nothing: there is no stake to return, and the principal
+      // goes to the seller.
+      expect(await escrow.claimable(await usdc.getAddress(), buyer.address)).to.equal(0n);
       const sellerBefore = await usdc.balanceOf(seller.address);
       await escrow.connect(seller).withdrawClaimable(await usdc.getAddress());
       expect(await usdc.balanceOf(seller.address)).to.equal(sellerBefore + USDC(99));
@@ -742,34 +778,6 @@ describe('EscrowV2 — per-chain settlement, in-kind fee, signed verdicts', func
       await time.increase(7 * DAY + 30 * DAY + 1);
       await expect(escrow.connect(outsider).claimDisputeTimeout(id))
         .to.be.revertedWithCustomError(escrow, 'NotDisputed');
-    });
-
-    it('refuses a verdict while an internal dispute owns the escrow', async function () {
-      // Audit M-2: a panel verdict must never override a live internal dispute
-      // (its seated arbitrator would also lose the 70% escrow-side fee share).
-      await time.increase(25 * 60 * 60);
-      const nonce = 4242n;
-      const commitment = ethers.solidityPackedKeccak256(
-        ['uint256', 'uint256', 'address'],
-        [id, nonce, buyer.address]
-      );
-      await escrow.connect(buyer).commitDispute(id, commitment);
-      await escrow.connect(buyer).revealDispute(id, nonce);
-
-      const validUntil = (await time.latest()) + DAY;
-      const sigs = [
-        await signVerdict(judgeA, id, true, validUntil),
-        await signVerdict(judgeB, id, true, validUntil)
-      ];
-      await expect(escrow.executeVerdict(id, true, validUntil, sigs))
-        .to.be.revertedWithCustomError(escrow, 'AlreadyDisputed');
-    });
-
-    it('refuses to open a cross-chain dispute on a private escrow', async function () {
-      // Private escrows have hidden amounts, so no panel can price a bond.
-      await escrow.connect(buyer).openDispute(id);
-      // (public path works; the private guard is asserted by the revert below)
-      expect((await escrow.getEscrow(id)).disputed).to.equal(true);
     });
   });
 });

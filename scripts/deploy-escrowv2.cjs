@@ -55,7 +55,7 @@ const MARKETPLACE_FEE_BPS = 100n;
 const EIP170_LIMIT = 24576;
 
 /** Libraries EscrowV2 links (must match its `import` list). */
-const LIBRARIES = ["EscrowFeeRouter", "EscrowPrivacyOps", "EscrowSignatureLib"];
+const LIBRARIES = ["EscrowFeeRouter", "EscrowSignatureLib"];
 
 /**
  * Manifest file per chain. Names must match the files the rest of the repo

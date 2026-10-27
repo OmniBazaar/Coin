@@ -181,23 +181,6 @@ module.exports = {
       // inside EscrowV2's job — without this override the standalone artifact
       // would be built at runs: 200 and the escrow could link a different
       // build than the one that was reviewed.
-      "contracts/libraries/EscrowPrivacyOps.sol": {
-        version: "0.8.24",
-        settings: {
-          optimizer: {
-            enabled: true,
-            runs: 1,
-            details: {
-              yul: true
-            }
-          },
-          viaIR: true,
-          evmVersion: "paris",
-          metadata: {
-            bytecodeHash: "none"
-          }
-        }
-      },
       // The signature library is built inside EscrowV2's job, so it carries
       // the same settings as the escrow: one artifact for linking and review.
       "contracts/libraries/EscrowSignatureLib.sol": {
