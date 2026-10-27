@@ -121,6 +121,17 @@ const CHAINS = [
 const ESCROW_ABI = [
   "function supportedToken(address) view returns (bool)",
   "function verdictJudge(address) view returns (bool)",
+  // The 2026-10 revision's settable fee schedule. Without these in the ABI the
+  // "judges are paid" assertion below silently reports "no settable fee" and
+  // every chain passes the check by skipping it.
+  "function arbitrationFeeBps() view returns (uint256)",
+  "function maxArbitrationFeeBps() view returns (uint256)",
+  "function judgePoolBps2() view returns (uint256)",
+  "function judgePoolBps3() view returns (uint256)",
+  "function submitterBps2() view returns (uint256)",
+  "function submitterBps3() view returns (uint256)",
+  "function verdictJudgeCount() view returns (uint256)",
+  "function minArbitrationFee(address) view returns (uint256)",
   "function omniCoin() view returns (address)",
   "function ODDAO() view returns (address)",
   "function STAKING_POOL() view returns (address)",
@@ -306,7 +317,17 @@ async function checkChain(chain, recipients) {
   // the fee was paid, and the judges received zero. Fee sinks were checked;
   // fee SHARES were not, so a 100%-to-ODDAO split passed every check. This
   // reads the deployed schedule and fails loudly if a judge share is zero.
-  if (typeof escrow.arbitrationFeeBps === "function") {
+  if (escrow.arbitrationFeeBps !== undefined) {
+    // A pre-2026-10 escrow has none of these; that is inapplicable, not a
+    // failure — but the check must never hide a zero judge share on a new one.
+    const preRevision = await escrow.verdictJudgeCount
+      .staticCall()
+      .then(() => false)
+      .catch(() => true);
+    if (preRevision) {
+      record(chain.name, "arbitration fee split", "skip", "pre-2026-10 escrow (no settable fee)");
+      // fall through to the next chain section
+    } else {
     try {
       const [feeBps, maxOfAmount, pool2, pool3, sub2, sub3, judges] =
         await Promise.all([
@@ -348,8 +369,9 @@ async function checkChain(chain, recipients) {
         floors.push(`${token.symbol}=${String(floor)}`);
       }
       record(chain.name, "per-token fee floors", true, floors.join(" ") || "no tokens");
-    } catch (err) {
-      record(chain.name, "arbitration fee split readable", false, err instanceof Error ? err.message : String(err));
+      } catch (err) {
+        record(chain.name, "arbitration fee split readable", false, err instanceof Error ? err.message : String(err));
+      }
     }
   } else {
     record(chain.name, "arbitration fee split", "skip", "escrow has no settable arbitration fee");

@@ -4,6 +4,14 @@ require("hardhat-contract-sizer");
 require("@typechain/hardhat");
 require("dotenv").config();
 
+// Per-chain gas-price override for deploys, in wei. Some public RPCs return an
+// inflated `eth_gasPrice` that makes a perfectly affordable deploy fail at
+// "insufficient funds"; setting this pins what is actually paid.
+const GAS_PRICE_OVERRIDE =
+  process.env.GAS_PRICE_WEI !== undefined && process.env.GAS_PRICE_WEI !== ""
+    ? Number(process.env.GAS_PRICE_WEI)
+    : undefined;
+
 // Exclude test/deprecated/ from test runs — Hardhat resolves files before
 // passing to Mocha, so mocha.ignore alone does not work.
 const { subtask } = require("hardhat/config");
@@ -555,7 +563,7 @@ module.exports = {
       accounts: process.env.ETH_DEPLOYER_PRIVATE_KEY
         ? [process.env.ETH_DEPLOYER_PRIVATE_KEY]
         : [],
-      gasPrice: "auto",
+      gasPrice: GAS_PRICE_OVERRIDE ?? "auto",
       timeout: 120000
     },
     // Arbitrum One (XOM OFT + permissionless AMM stack)
@@ -565,7 +573,7 @@ module.exports = {
       accounts: process.env.MULTICHAIN_DEPLOYER_PRIVATE_KEY
         ? [process.env.MULTICHAIN_DEPLOYER_PRIVATE_KEY]
         : [],
-      gasPrice: "auto",
+      gasPrice: GAS_PRICE_OVERRIDE ?? "auto",
       timeout: 120000
     },
     // Base (XOM OFT + permissionless AMM stack)
@@ -575,7 +583,7 @@ module.exports = {
       accounts: process.env.MULTICHAIN_DEPLOYER_PRIVATE_KEY
         ? [process.env.MULTICHAIN_DEPLOYER_PRIVATE_KEY]
         : [],
-      gasPrice: "auto",
+      gasPrice: GAS_PRICE_OVERRIDE ?? "auto",
       timeout: 120000
     },
     // Polygon (XOM OFT + permissionless AMM stack)
@@ -585,7 +593,7 @@ module.exports = {
       accounts: process.env.MULTICHAIN_DEPLOYER_PRIVATE_KEY
         ? [process.env.MULTICHAIN_DEPLOYER_PRIVATE_KEY]
         : [],
-      gasPrice: "auto",
+      gasPrice: GAS_PRICE_OVERRIDE ?? "auto",
       timeout: 120000
     },
     // Gnosis Chain (chain 100) — prediction-market fee settlement (WXDAI).
@@ -606,7 +614,7 @@ module.exports = {
       accounts: process.env.MULTICHAIN_DEPLOYER_PRIVATE_KEY
         ? [process.env.MULTICHAIN_DEPLOYER_PRIVATE_KEY]
         : [],
-      gasPrice: "auto",
+      gasPrice: GAS_PRICE_OVERRIDE ?? "auto",
       timeout: 120000
     },
     // Avalanche C-Chain alias for OmniFeeRouter deploy (same as mainnet-c-chain).
@@ -617,7 +625,7 @@ module.exports = {
       accounts: process.env.MULTICHAIN_DEPLOYER_PRIVATE_KEY
         ? [process.env.MULTICHAIN_DEPLOYER_PRIVATE_KEY]
         : [],
-      gasPrice: "auto",
+      gasPrice: GAS_PRICE_OVERRIDE ?? "auto",
       timeout: 120000
     },
     // COTI V2 Mainnet — MPC privacy contracts
