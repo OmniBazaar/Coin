@@ -207,6 +207,13 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
     /// @notice When the pending change was proposed (0 = none)
     uint256 public beneficiaryProposedAt;
 
+    /// @notice Delay before a seated judge can be removed
+    uint256 public constant JUDGE_REMOVAL_DELAY = 48 hours;
+
+    /// @notice Judge awaiting removal (zero = none) and when it may land
+    address public pendingJudgeRemoval;
+    uint256 public judgeRemovalAt;
+
     // Non-immutable state variables
     /// @notice Total marketplace fees collected per token (for transparency)
     mapping(address => uint256) public totalMarketplaceFees;
@@ -401,6 +408,12 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
     );
 
     /// @notice Emitted when a fee-recipient change is proposed
+    /// @notice Emitted when a pending fee-recipient change is withdrawn
+    event BeneficiariesCancelled();
+
+    /// @notice Emitted when a judge removal is proposed
+    event JudgeRemovalProposed(address indexed judge, uint256 effectiveAt);
+
     event BeneficiariesProposed(
         address indexed oddao,
         address indexed stakingPool,
@@ -460,6 +473,12 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
     error InvalidFeeConfig();
     /// @notice Fee would exceed the settable share of the disputed amount
     error FeeTooLarge();
+    /// @notice A dispute filed after the verdict window can never be decided
+    error VerdictWindowClosed();
+    /// @notice No judge removal has been proposed
+    error NoPendingJudgeRemoval();
+    /// @notice A judge removal is pending the delay
+    error JudgeRemovalPending();
     /// @notice The verdict roster already holds {MAX_VERDICT_JUDGES}
     error TooManyVerdictJudges();
     /// @notice No beneficiary change has been proposed
@@ -795,7 +814,9 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
             listingNode: attribution.listingNode,
             sellingNode: attribution.sellingNode,
             disputeOpenedAt: 0,
-            disputeFee: 0
+            disputeFee: 0,
+            arbSplit: 0,
+            arbOddao: address(0)
         });
 
         emit EscrowToken(escrowId, token);
@@ -878,7 +899,7 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
      * @dev Both buyer and seller must agree
      * @param escrowId Escrow to release
      */
-    function releaseFunds(uint256 escrowId) external nonReentrant whenNotPaused {
+    function releaseFunds(uint256 escrowId) external nonReentrant {
         Escrow storage escrow = escrows[escrowId];
 
         if (escrow.buyer == address(0)) revert EscrowNotFound();
@@ -1058,7 +1079,7 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
     function releaseExpiredToSeller(uint256 escrowId)
         external
         nonReentrant
-        whenNotPaused
+       
     {
         Escrow storage escrow = escrows[escrowId];
 
@@ -1331,7 +1352,7 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
      *      freezing funds forever.
      * @param escrowId Escrow to freeze
      */
-    function openDispute(uint256 escrowId) external nonReentrant whenNotPaused {
+    function openDispute(uint256 escrowId) external nonReentrant {
         Escrow storage e = escrows[escrowId];
         if (e.buyer == address(0)) revert EscrowNotFound();
         if (e.resolved) revert AlreadyResolved();
@@ -1345,12 +1366,24 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
         // party posting anything. A stake here only re-created the friction
         // that left real disputes half-funded and unarbitrable.
         //
-        // The fee is SNAPSHOTTED now, so the number the filer was shown is the
-        // number charged even if the parameters are tuned while the case runs.
+        // 🛑 A case filed after the verdict window can never carry an
+        // executable verdict — any `validUntil` it could use is already past
+        // the cap — so it would burn the panel's time and still fall to the
+        // timeout. Refuse it here instead.
+        // solhint-disable-next-line not-rely-on-time
+        if (block.timestamp > e.expiry + VERDICT_WINDOW) {
+            revert VerdictWindowClosed();
+        }
+
+        // The fee is SNAPSHOTTED now — amount, split and sink — so the number
+        // the filer was shown, and who gets paid for the work, cannot be
+        // rewritten by a later parameter change while the case runs.
         uint256 fee = _arbitrationFee(e.amount, e.token);
+        if (fee == 0) revert FeeTooLarge();
         // Refuse a dispute whose fee would eat more than `maxArbitrationFeeBps`
         // of the sale (default a quarter). Below that, arbitration costs more
         // than the amount in dispute.
+        if (fee > type(uint128).max) revert FeeTooLarge();
         if (fee * BASIS_POINTS > e.amount * maxArbitrationFeeBps) {
             revert FeeTooLarge();
         }
@@ -1359,6 +1392,13 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
         // solhint-disable-next-line not-rely-on-time
         e.disputeOpenedAt = uint128(block.timestamp);
         e.disputeFee = uint128(fee);
+        e.arbSplit = uint64(
+            (judgePoolBps2 & 0xffff) |
+                ((judgePoolBps3 & 0xffff) << 16) |
+                ((submitterBps2 & 0xffff) << 32) |
+                ((submitterBps3 & 0xffff) << 48)
+        );
+        e.arbOddao = ODDAO;
 
         emit EscrowDisputeOpened(escrowId, caller, fee);
     }
@@ -1390,7 +1430,7 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
         bool releaseFunds,
         uint256 validUntil,
         bytes[] calldata signatures
-    ) external nonReentrant whenNotPaused {
+    ) external nonReentrant {
         Escrow storage e = escrows[escrowId];
         if (e.buyer == address(0)) revert EscrowNotFound();
         if (e.resolved) revert AlreadyResolved();
@@ -1452,6 +1492,8 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
         e.amount = 0;
         address tokenAddr = e.token;
         uint256 fee = e.disputeFee;
+        uint64 split = e.arbSplit;
+        address arbOddao = e.arbOddao;
         e.disputeFee = 0;
 
         totalEscrowed[tokenAddr] -= amount;
@@ -1469,17 +1511,29 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
             recipientAmount = amount;
         }
 
-        // 🛑 THE FEE COMES OUT OF THE PAYOUT. Guarded so no parameter change
-        // can ever make the fee exceed what is being paid out.
-        if (fee >= recipientAmount) revert InvalidFeeConfig();
+        // 🛑 THE FEE COMES OUT OF THE PAYOUT. CLAMPED, never reverted: a
+        // parameter change must not be able to brick a case whose fee is
+        // already snapshotted — that would strand the principal behind a
+        // permanently unexecutable verdict.
+        if (fee >= recipientAmount) {
+            fee = recipientAmount > 0 ? recipientAmount - 1 : 0;
+        }
         recipientAmount -= fee;
-        _payArbitrationFee(escrowId, tokenAddr, fee, signers);
+        if (fee > 0) {
+            _payArbitrationFee(escrowId, tokenAddr, fee, split, arbOddao, signers);
+        }
 
         // M-01: pull-pattern disbursement — a reverting recipient can never
         // block a resolution.
         claimable[tokenAddr][recipient] += recipientAmount;
         totalClaimable[tokenAddr] += recipientAmount;
         emit FundsClaimable(recipient, tokenAddr, recipientAmount);
+
+        if (releaseFunds) {
+            // The seller's first recorded sale must not be lost because the
+            // buyer froze it: same best-effort bridge as the plain release.
+            _recordFirstSale(e.seller, tokenAddr, amount, e.buyer);
+        }
 
         emit DisputeResolvedByArbitration(
             escrowId, releaseFunds, recipient, recipientAmount
@@ -1711,6 +1765,8 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
         uint256 escrowId,
         address token,
         uint256 fee,
+        uint64 split,
+        address oddao,
         address[] memory signers
     ) private {
         EscrowFeeRouter.payArbitrationFee(
@@ -1721,11 +1777,11 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
             fee,
             signers,
             _msgSender(),
-            ODDAO,
-            judgePoolBps2,
-            judgePoolBps3,
-            submitterBps2,
-            submitterBps3
+            oddao,
+            uint256(split & 0xffff),
+            uint256((split >> 16) & 0xffff),
+            uint256((split >> 32) & 0xffff),
+            uint256((split >> 48) & 0xffff)
         );
     }
 
@@ -1778,11 +1834,33 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
                 revert TooManyVerdictJudges();
             }
             ++verdictJudgeCount;
-        } else {
-            --verdictJudgeCount;
+            verdictJudge[judge] = true;
+            emit VerdictJudgeUpdated(judge, true);
+            return;
         }
-        verdictJudge[judge] = allowed;
-        emit VerdictJudgeUpdated(judge, allowed);
+        // 🛑 Removal is DELAYED. Substitution is the attack: drop the two
+        // honest signers and seat two colluding ones in one batch, and the
+        // roster becomes a wallet-controlled settlement oracle over every
+        // frozen escrow. Two days makes it visible before it lands.
+        pendingJudgeRemoval = judge;
+        // solhint-disable-next-line not-rely-on-time
+        judgeRemovalAt = block.timestamp + JUDGE_REMOVAL_DELAY;
+        emit JudgeRemovalProposed(judge, judgeRemovalAt);
+    }
+
+    /**
+     * @notice Complete a judge removal once its delay has elapsed
+     */
+    function acceptJudgeRemoval() external onlyAdmin {
+        address judge = pendingJudgeRemoval;
+        if (judge == address(0)) revert NoPendingJudgeRemoval();
+        // solhint-disable-next-line not-rely-on-time
+        if (block.timestamp < judgeRemovalAt) revert BeneficiaryDelayActive();
+        verdictJudge[judge] = false;
+        --verdictJudgeCount;
+        pendingJudgeRemoval = address(0);
+        judgeRemovalAt = 0;
+        emit VerdictJudgeUpdated(judge, false);
     }
 
     /**
@@ -1801,7 +1879,11 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
             feeBps == 0 ||
             feeBps > MAX_ARBITRATION_FEE_BPS ||
             maxFeeOfAmountBps == 0 ||
-            maxFeeOfAmountBps > MAX_FEE_OF_AMOUNT_BPS
+            maxFeeOfAmountBps > MAX_FEE_OF_AMOUNT_BPS ||
+            // 🛑 A ceiling below the fee itself would make every filing revert
+            // `FeeTooLarge` — one transaction that turns arbitration off for
+            // the whole chain. Impossible to express.
+            maxFeeOfAmountBps < feeBps
         ) {
             revert InvalidFeeConfig();
         }
@@ -1821,7 +1903,9 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
         address token,
         uint256 amount
     ) external onlyAdmin {
-        if (token == address(0)) revert InvalidAddress();
+        if (token == address(0) || amount > type(uint128).max) {
+            revert InvalidAddress();
+        }
         minArbitrationFee[token] = amount;
         emit MinArbitrationFeeSet(token, amount);
     }
@@ -1883,7 +1967,14 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
         if (
             oddao == stakingPool ||
             oddao == treasury ||
-            stakingPool == treasury
+            stakingPool == treasury ||
+            // 🛑 The constructor rejects the escrow itself as a sink; the setter
+            // must too. A slice credited to address(this) can never be
+            // withdrawn (nothing may call as the escrow) YET it counts in
+            // totalClaimable, so recoverERC20 refuses to rescue it either.
+            oddao == address(this) ||
+            stakingPool == address(this) ||
+            treasury == address(this)
         ) {
             revert InvalidAddress();
         }
@@ -1893,6 +1984,20 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
         // solhint-disable-next-line not-rely-on-time
         beneficiaryProposedAt = block.timestamp;
         emit BeneficiariesProposed(oddao, stakingPool, treasury);
+    }
+
+    /**
+     * @notice Withdraw a pending fee-recipient change
+     * @dev A stale proposal must not survive an admin handover and be accepted
+     *      by the next admin the moment its delay elapses.
+     */
+    function cancelBeneficiaries() external onlyAdmin {
+        if (beneficiaryProposedAt == 0) revert NoPendingBeneficiaries();
+        pendingOddao = address(0);
+        pendingStakingPool = address(0);
+        pendingTreasury = address(0);
+        beneficiaryProposedAt = 0;
+        emit BeneficiariesCancelled();
     }
 
     /**

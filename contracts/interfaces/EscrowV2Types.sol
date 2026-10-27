@@ -62,4 +62,10 @@ struct Escrow {
     // parameter change cannot alter what this case costs.
     uint128 disputeOpenedAt; // slot 10: 16 bytes
     uint128 disputeFee;      // slot 10: 16 bytes
+    // The arbitration split SNAPSHOTTED at filing (pool2 | pool3<<16 |
+    // submitter2<<32 | submitter3<<48), so a later parameter change cannot
+    // rewrite who is paid for work already done.
+    uint64 arbSplit;
+    // The ODDAO address the fee remainder was promised to.
+    address arbOddao;
 }

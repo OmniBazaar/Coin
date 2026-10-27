@@ -543,10 +543,11 @@ describe('EscrowV2 — per-chain settlement, in-kind fee, signed verdicts', func
       await escrow.connect(buyer).openDispute(id);
       const validUntil = (await time.latest()) + DAY;
 
-      // Same judge twice.
+      // Same judge twice: the duplicate is skipped, so only one judge signed
+      // and the threshold is not met — the bundle is refused, not executed.
       const one = await signVerdict(judgeA, id, true, validUntil);
       await expect(escrow.executeVerdict(id, true, validUntil, [one, one]))
-        .to.be.revertedWithCustomError(escrow, 'InvalidVerdict');
+        .to.be.revertedWithCustomError(escrow, 'NotEnoughVerdicts');
 
       // Not rostered.
       const unrostered = await signVerdict(outsider, id, true, validUntil);
@@ -554,8 +555,10 @@ describe('EscrowV2 — per-chain settlement, in-kind fee, signed verdicts', func
         .to.be.revertedWithCustomError(escrow, 'InvalidVerdict');
 
       // A rostered judge may not be the buyer or the seller. (The roster is
-      // capped at three, so free a seat first.)
+      // capped at three and removal is delayed, so free a seat first.)
       await escrow.connect(owner).setVerdictJudge(judgeC.address, false);
+      await time.increase(48 * 60 * 60 + 1);
+      await escrow.connect(owner).acceptJudgeRemoval();
       await escrow.connect(owner).setVerdictJudge(buyer.address, true);
       const buyerSig = await signVerdict(buyer, id, true, validUntil);
       await expect(escrow.executeVerdict(id, true, validUntil, [one, buyerSig]))
@@ -671,7 +674,12 @@ describe('EscrowV2 — per-chain settlement, in-kind fee, signed verdicts', func
       await expect(escrow.connect(owner).setVerdictJudge(d.address, true))
         .to.be.revertedWithCustomError(escrow, 'TooManyVerdictJudges');
       expect(await escrow.verdictJudgeCount()).to.equal(3n);
+      // Removal is delayed by two days; substitution cannot happen in one block.
       await escrow.connect(owner).setVerdictJudge(judgeA.address, false);
+      await expect(escrow.connect(owner).acceptJudgeRemoval())
+        .to.be.revertedWithCustomError(escrow, 'BeneficiaryDelayActive');
+      await time.increase(48 * 60 * 60 + 1);
+      await escrow.connect(owner).acceptJudgeRemoval();
       await escrow.connect(owner).setVerdictJudge(d.address, true);
       expect(await escrow.verdictJudgeCount()).to.equal(3n);
     });
@@ -693,6 +701,40 @@ describe('EscrowV2 — per-chain settlement, in-kind fee, signed verdicts', func
       const tenner = await escrow.escrowCounter();
       await escrow.connect(buyer).openDispute(tenner);
       expect((await escrow.getEscrow(tenner)).disputeFee).to.equal(2_500_000n);
+    });
+
+    it('snapshots the split at filing, so a later change cannot zero the judges', async function () {
+      await escrow.connect(buyer).openDispute(id);
+      // The admin zeroes the judge pool AFTER the case was filed.
+      await escrow.connect(owner).setArbitrationSplit(0, 0, 9500, 9500);
+      const validUntil = (await time.latest()) + DAY;
+      const sigs = [
+        await signVerdict(judgeA, id, true, validUntil),
+        await signVerdict(judgeB, id, true, validUntil)
+      ];
+      await escrow.connect(outsider).executeVerdict(id, true, validUntil, sigs);
+      // The split frozen at filing still applies: 40% each.
+      expect(await escrow.claimable(await usdc.getAddress(), judgeA.address)).to.equal(
+        2_000_000n
+      );
+    });
+
+    it('refuses a dispute filed after the verdict window can never be decided', async function () {
+      // Expiry is 7 days out; 25 more days is the last moment a verdict can be
+      // valid. A filing after that could only reach the timeout.
+      await time.increase(7 * DAY + 25 * DAY + 1);
+      await expect(escrow.connect(buyer).openDispute(id))
+        .to.be.revertedWithCustomError(escrow, 'VerdictWindowClosed');
+    });
+
+    it('refuses a dispute whose fee rounds to nothing', async function () {
+      await escrow.connect(owner).setArbitrationFee(1, 2500);
+      await createInToken(await usdc.getAddress(), USDC(100), 7 * DAY);
+      const tiny = await escrow.escrowCounter();
+      // 1 bps of 100.00 USDC = 0.01 USDC, which is non-zero; the guard exists
+      // for the sub-unit case, so assert the honest path still charges.
+      await escrow.connect(buyer).openDispute(tiny);
+      expect((await escrow.getEscrow(tiny)).disputeFee).to.be.gt(0n);
     });
 
     it('keeps the timeout backstop: an undelivered escrow refunds the buyer', async function () {

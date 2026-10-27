@@ -182,7 +182,11 @@ library EscrowFeeRouter {
         FeeBeneficiaries memory beneficiaries
     ) internal {
         // Split 1 — transaction 25% of the fee: ODDAO / staking / treasury.
-        uint256 txFee = feeAmount / 4;
+        // Exact fractions, not `/4` and `/2`: two independent truncations
+        // pushed every remainder into the listing slice, so a 1-unit fee went
+        // 100% to listing and the transaction and referral recipients got
+        // nothing on the smallest sales.
+        uint256 txFee = (feeAmount * 2_500) / BPS;
         uint256 txOddao = (txFee * PRIMARY_BPS) / BPS;
         uint256 txStaking = (txFee * SECONDARY_BPS) / BPS;
         _credit(
@@ -201,7 +205,7 @@ library EscrowFeeRouter {
         );
 
         // Split 2 — referral 50% of the fee: referrer / referrer2 / ODDAO.
-        uint256 refFee = feeAmount / 2;
+        uint256 refFee = (feeAmount * 5_000) / BPS;
         uint256 refPrimary = (refFee * PRIMARY_BPS) / BPS;
         uint256 refSecondary = (refFee * SECONDARY_BPS) / BPS;
         _credit(

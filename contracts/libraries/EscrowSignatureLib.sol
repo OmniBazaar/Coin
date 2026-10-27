@@ -198,20 +198,20 @@ library EscrowSignatureLib {
         // classified by whether the RECOVERED address is an eligible signer,
         // not by the recovery error code.
         address[MAX_SIGNATURES] memory seen;
+        bool[MAX_SIGNATURES] memory seenWinning;
         signers = new address[](count);
         uint256 onWinning;
+        uint256 kept;
         for (uint256 i = 0; i < count; ++i) {
             (address signer, ECDSA.RecoverError err, ) = ECDSA.tryRecover(
                 winning,
                 signatures[i]
             );
-            bool eligible = err == ECDSA.RecoverError.NoError &&
+            bool onWin = err == ECDSA.RecoverError.NoError &&
                 judges[signer] &&
                 signer != buyer &&
                 signer != seller;
-            if (eligible) {
-                ++onWinning;
-            } else {
+            if (!onWin) {
                 (signer, err, ) = ECDSA.tryRecover(losing, signatures[i]);
                 if (
                     err != ECDSA.RecoverError.NoError ||
@@ -222,13 +222,37 @@ library EscrowSignatureLib {
                     revert InvalidVerdict();
                 }
             }
-            for (uint256 j = 0; j < i; ++j) {
-                if (seen[j] == signer) revert InvalidVerdict();
+            // 🛑 A REPEATED SIGNER IS COUNTED AND PAID ONCE. A judge who signed
+            // BOTH directions during deliberation is a contradictory voter, not
+            // an attacker; reverting would hand the case to the timeout instead
+            // of the judges. The winning direction still counts if either copy
+            // was on it.
+            uint256 existing = type(uint256).max;
+            for (uint256 j = 0; j < kept; ++j) {
+                if (seen[j] == signer) {
+                    existing = j;
+                    break;
+                }
             }
-            seen[i] = signer;
-            signers[i] = signer;
+            if (existing != type(uint256).max) {
+                if (onWin && !seenWinning[existing]) {
+                    seenWinning[existing] = true;
+                    ++onWinning;
+                }
+                continue;
+            }
+            seen[kept] = signer;
+            seenWinning[kept] = onWin;
+            signers[kept] = signer;
+            ++kept;
+            if (onWin) ++onWinning;
         }
         if (onWinning < VERDICT_THRESHOLD) revert NotEnoughVerdicts();
+        // Trim the array to the signers actually kept.
+        // solhint-disable-next-line no-inline-assembly
+        assembly ("memory-safe") {
+            mstore(signers, kept)
+        }
     }
 
     /**
