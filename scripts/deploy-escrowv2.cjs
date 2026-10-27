@@ -362,7 +362,8 @@ async function main() {
   console.log("\n-- follow-ups, one admin call each --");
   console.log(`  escrow.setSupportedToken(<settlement token>, true)`);
   console.log(`  escrow.setVerdictJudge(<seated judge>, true)   × 3 (at least 2)`);
-  console.log(`  escrow.addArbitrator(<internal arbitrator>)    (private/pXOM votes)`);
+  console.log(`  escrow.setMinArbitrationFee(<token>, <floor>)  (per-token fee floor)`);
+  console.log(`  escrow.setArbitrationFee(<bps>, <maxBpsOfAmount>)  (defaults 500 / 2500)`);
   console.log("\nNext: node scripts/sync-contract-addresses.js <chain>");
 }
 

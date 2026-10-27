@@ -130,6 +130,29 @@ async function main() {
     console.log("rostered judge:", judge, "tx:", tx.hash);
   }
 
+  // ── Arbitration fee floor ──────────────────────────────────────────────
+  // 🛑 The fee comes out of the escrow payout, so a percentage of a small sale
+  // is dust and judging is not worth the time. The floor is per token in that
+  // token's own units; unset (0) means "no floor", which is only right on a
+  // chain nobody trades on.
+  const floorUnits = process.env.ESCROW_MIN_FEE ?? "2.5";
+  const decimals = Number(await new ethers.Contract(
+    usdc,
+    ["function decimals() view returns (uint8)"],
+    ethers.provider
+  ).decimals().catch(() => 6));
+  const floorWei = ethers.parseUnits(floorUnits, decimals);
+  const currentFloor = await escrow.minArbitrationFee(usdc);
+  if (currentFloor === floorWei) {
+    console.log("min arbitration fee already set:", floorWei.toString());
+  } else if (dryRun) {
+    console.log("DRY RUN — would set min arbitration fee", floorWei.toString());
+  } else {
+    const tx = await escrow.setMinArbitrationFee(usdc, floorWei);
+    await tx.wait();
+    console.log("min arbitration fee:", floorWei.toString(), "tx:", tx.hash);
+  }
+
   // ── Read back, from the contract ───────────────────────────────────────
   const code = await ethers.provider.getCode(escrowAddress);
   console.log("\n-- verified on chain --");
@@ -137,6 +160,10 @@ async function main() {
   console.log("OMNI_COIN       :", await escrow.OMNI_COIN());
   console.log("MARKETPLACE_FEE :", (await escrow.MARKETPLACE_FEE_BPS()).toString(), "bps");
   console.log("USDC allowed    :", await escrow.supportedToken(usdc));
+  console.log("fee bps         :", (await escrow.arbitrationFeeBps()).toString());
+  console.log("judge pools     :", (await escrow.judgePoolBps2()).toString(), "/", (await escrow.judgePoolBps3()).toString());
+  console.log("min fee (USDC)  :", (await escrow.minArbitrationFee(usdc)).toString());
+  console.log("roster count    :", (await escrow.verdictJudgeCount()).toString());
   for (const judge of judges) {
     console.log("judge           :", judge, await escrow.verdictJudge(judge));
   }
