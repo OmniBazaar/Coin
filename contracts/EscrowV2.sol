@@ -983,7 +983,7 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
         address callerContract,
         uint256 deadline,
         bytes calldata signature
-    ) external nonReentrant whenNotPaused {
+    ) external nonReentrant {
         Escrow storage escrow = escrows[escrowId];
 
         if (escrow.buyer == address(0)) revert EscrowNotFound();
