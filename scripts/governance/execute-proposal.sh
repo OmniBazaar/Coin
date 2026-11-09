@@ -52,6 +52,13 @@ run_finalizer() {  # stdout+stderr of the hardhat script; non-zero on failure
       timeout 900 npx hardhat run "$FINALIZER" --network mainnet 2>&1 )
 }
 
+run_voter() {  # cast a FOR vote once the window opens; non-zero on failure
+    ( cd "$COIN_DIR" && \
+      MAINNET_DEPLOYER_PRIVATE_KEY="$(cat "$KEY_FILE")" PROPOSAL_ID="$ID" VOTE_SUPPORT=1 \
+      timeout 900 npx hardhat run "${GOV_VOTER:-scripts/governance/vote-revision-2026-10.cjs}" \
+      --network mainnet 2>&1 )
+}
+
 st=$(gov_prop_state "$ID")
 name=$(gov_prop_state_name "$st")
 echo "$(date -u '+%Y-%m-%d %H:%M:%S UTC') proposal $ID state: $name"
@@ -71,6 +78,22 @@ case "$st" in
         emit "gov.proposal.${ID}.expired" user.warning \
             "proposal $ID EXPIRED before it was queued — the vote is lost and must be re-proposed"
         disarm
+        exit 1
+        ;;
+    1)
+        # Voting is open. Cast the governance-weight FOR vote once; a repeat
+        # run is harmless (the contract refuses a second vote from the same
+        # account), so the interval can keep coming round until it lands.
+        out=$(run_voter) && {
+            emit "gov.proposal.${ID}.vote-cast" user.info \
+                "proposal $ID: FOR vote cast by the governance-weight account"
+            exit 0
+        }
+        if grep -qiE "already voted|has voted|vote already" <<<"$out"; then
+            exit 0
+        fi
+        emit "gov.proposal.${ID}.vote-failed" user.warning \
+            "proposal $ID is Active but the vote FAILED — $(tail -3 <<<"$out" | tr '\n' ' ' | cut -c1-300)"
         exit 1
         ;;
     3)
