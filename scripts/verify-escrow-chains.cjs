@@ -55,8 +55,9 @@ const CHAINS = [
     deployment: "mainnet.json",
     rpcEnv: "MAINNET_RPC_URL",
     rpcDefault: "https://rpc.omnicoin.net",
-    /** Escrow key in the deployment manifest. */
-    escrowKey: "MinimalEscrow",
+    /** Escrow key in the deployment manifest. L1 cut over on 2026-11-09; the
+     *  record-only 0x4602… build and MinimalEscrow are no longer the route. */
+    escrowKey: "EscrowV2",
     /** L1 router (records its own chain list). */
     routerKey: "OmniFeeRouter",
   },
