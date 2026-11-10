@@ -140,6 +140,8 @@
     "deployTx": "0xd475bb47a8bb4fced437ace1bb48e2c05df9c59ded5d54fc4eeba2a54e109bd9",
     "block": 2967512,
     "deployedBytes": 19977,
+    "privateOmniCoinImmutable": "0xb09F2900f6603Da92DB3D5df52e804CaF9c78f09",
+    "privateOmniCoinNote": "The immutable holds the SUNSET v1 pXOM because the deploy script defaults to the manifest value. It is only read to refuse a PUBLIC escrow denominated in that token; there is no private create path in this build. Pass ESCROW_PRIVATE_OMNI_COIN=0 on the next deploy.",
     "settlementCoin": "0x1eE61487F08F715055358A1F020A86c9E571ED78",
     "protocolRecipients": {
       "oddaoTreasury": "0x664B6347a69A22b35348D42E4640CA92e1609378",

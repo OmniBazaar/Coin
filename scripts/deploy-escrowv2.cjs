@@ -30,7 +30,12 @@
  *   ESCROW_TREASURY                protocol-treasury sink on THIS chain
  *   ESCROW_OMNI_COIN               (optional) settlement coin; defaults to the
  *                                  chain manifest's OmniCoin
- *   ESCROW_PRIVATE_OMNI_COIN       (optional) pXOM; omit on chains without it
+ *   ESCROW_PRIVATE_OMNI_COIN       (optional) pXOM; pass 0 (the sentinel) on a
+ *                                  chain without a LIVE pXOM. Omitting it
+ *                                  inherits the manifest value, which on L1 is
+ *                                  the SUNSET v1 token — harmless (it only
+ *                                  refuses a public escrow in that token) but
+ *                                  a mislabel that the 2026-11-09 deploy made.
  *   ESCROW_REGISTRY                (optional) OmniRegistration; omit if absent
  *   ESCROW_FORWARDER               (optional) ERC-2771 forwarder; omit to
  *                                  disable meta-transactions
