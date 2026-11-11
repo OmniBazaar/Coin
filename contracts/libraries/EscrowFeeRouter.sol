@@ -433,9 +433,22 @@ library EscrowFeeRouter {
 
     /**
      * @notice Validate the fee-attribution nodes against the parties
-     * @dev A node may not be the buyer, the seller, a referrer, or the other
-     *      node (same anti-fee-wash rule as the referrer pair). Zero is
-     *      allowed — the share routes to ODDAO.
+     * @dev A node may not be the buyer, a referrer, or the other node (same
+     *      anti-fee-wash rule as the referrer pair). Zero is allowed — the
+     *      share routes to ODDAO.
+     *
+     *      `listingNode == seller` is ALLOWED, matching UnifiedFeeVault and
+     *      BuyIntentValidator (removed there 2026-05-18 per founder direction).
+     *      The intended flow is a merchant running her own listing node and
+     *      publishing through it: the listing node IS the seller, and earning
+     *      the listing-node share is the correct payout for hosting her own
+     *      listing. Rejecting it here did not prevent fee washing — it made the
+     *      primary "merchant sells through their own market node" flow
+     *      unescrowable, while the same sale settled fine through the vault.
+     *
+     *      `sellingNode == seller` is STILL rejected: that slot pays for
+     *      facilitating the sale, which the seller cannot do for herself
+     *      without the fee becoming a wash. Every other collision is unchanged.
      */
     function validateAttributionNodes(
         address buyer,
@@ -448,7 +461,6 @@ library EscrowFeeRouter {
         if (listingNode != address(0)) {
             if (
                 listingNode == buyer ||
-                listingNode == seller ||
                 listingNode == referrer ||
                 listingNode == referrer2 ||
                 listingNode == sellingNode

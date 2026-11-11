@@ -718,8 +718,11 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
      *      non-zero slot requires `sellerSignature` over exactly these values,
      *      and the recovered signer must be the escrow's seller.
      *
-     *      Anti-fee-wash rules are unchanged: a referrer or node may not be the
-     *      buyer, the seller, or another attribution slot.
+     *      Anti-fee-wash rules: a referrer or node may not be the buyer or
+     *      another attribution slot, and the SELLING node may not be the seller.
+     *      The LISTING node MAY be the seller — a merchant hosting her own
+     *      listing node is paid that share (see
+     *      {EscrowFeeRouter.validateAttributionNodes}).
      * @param seller Seller address (must be the attribution signer)
      * @param token ERC-20 to escrow (must be on this escrow's allowlist)
      * @param amount Amount of `token` in its smallest unit
@@ -1615,8 +1618,11 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
     /**
      * @notice Validate the fee-attribution nodes against the parties
      * @dev Mirrors the anti-fee-wash rule for referrers: a node may not be the
-     *      buyer, the seller, a referrer, or the other node. Zero is allowed
-     *      (the share routes to ODDAO).
+     *      buyer, a referrer, or the other node. Zero is allowed (the share
+     *      routes to ODDAO). `listingNode == seller` is ALLOWED — a merchant
+     *      may host her own listing node and earn that share; see
+     *      {EscrowFeeRouter.validateAttributionNodes}. `sellingNode == seller`
+     *      stays rejected.
      * @param buyer Escrow buyer
      * @param seller Escrow seller
      * @param referrer Primary referrer

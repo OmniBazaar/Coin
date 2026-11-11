@@ -335,6 +335,108 @@ describe('EscrowV2 — per-chain settlement, in-kind fee, signed verdicts', func
     ).to.be.revertedWithCustomError(escrow, 'BadAttribution');
   });
 
+  it('lets a merchant sell through her OWN listing node and pays her that share', async function () {
+    // Founder decision 3 (2026-11-11): `listingNode == seller` is not a bug in
+    // the payout, it is the merchant-hosts-her-own-market flow. The vault has
+    // allowed it since 2026-05-18; the escrow rejecting it made the same sale
+    // unescrowable on the chain that holds the money.
+    const usdcAddr = await usdc.getAddress();
+    const validUntil = (await time.latest()) + DAY;
+    const set = {
+      referrer: ethers.ZeroAddress,
+      referrer2: ethers.ZeroAddress,
+      listingNode: seller.address,
+      sellingNode: ethers.ZeroAddress
+    };
+    const sig = await signAttribution(seller, usdcAddr, set, validUntil);
+
+    await escrow
+      .connect(buyer)
+      .createEscrowSigned(seller.address, usdcAddr, USDC(100), 7 * DAY, set, validUntil, sig);
+    const id = await escrow.escrowCounter();
+    const stored = await escrow.getEscrow(id);
+    expect(stored.listingNode).to.equal(seller.address);
+
+    const balanceBefore = await usdc.balanceOf(seller.address);
+    await escrow.connect(buyer).releaseFunds(id);
+
+    // 99% of the sale leaves as the seller's proceeds…
+    expect(await usdc.balanceOf(seller.address)).to.equal(balanceBefore + USDC(99));
+    // …and the listing-node slice is credited to her as well.
+    expect(await escrow.claimable(usdcAddr, seller.address)).to.equal(175_000n);
+    // The selling-node slice (zero slot) and the 10% remainders still fall to
+    // ODDAO, so nothing is invented and the fee still sums to the 1%.
+    const claim = async (who: string): Promise<bigint> =>
+      await escrow.claimable(usdcAddr, who);
+    expect(await claim(oddao.address)).to.equal(
+      500_000n + 175_000n + 50_000n + 25_000n
+    );
+    expect(await claim(stakingPool.address)).to.equal(50_000n);
+    expect(await claim(protocolTreasury.address)).to.equal(25_000n);
+    expect(
+      (await claim(seller.address)) +
+        (await claim(oddao.address)) +
+        (await claim(stakingPool.address)) +
+        (await claim(protocolTreasury.address))
+    ).to.equal(USDC(1));
+  });
+
+  it('still refuses sellingNode == seller and every other node collision', async function () {
+    const usdcAddr = await usdc.getAddress();
+    const validUntil = (await time.latest()) + DAY;
+    const ref = '0x3333333333333333333333333333333333333333';
+    const ref2 = '0x4444444444444444444444444444444444444444';
+    const node = '0x2222222222222222222222222222222222222222';
+
+    const cases: Array<{ name: string; set: typeof EMPTY_SET }> = [
+      {
+        // The seller cannot be paid for facilitating her own sale: that slice
+        // exists to pay whoever brought the buyer.
+        name: 'sellingNode == seller',
+        set: { ...EMPTY_SET, sellingNode: seller.address }
+      },
+      {
+        name: 'listingNode == buyer',
+        set: { ...EMPTY_SET, listingNode: buyer.address }
+      },
+      {
+        name: 'listingNode == referrer',
+        set: { ...EMPTY_SET, referrer: ref, listingNode: ref }
+      },
+      {
+        name: 'listingNode == referrer2',
+        set: { ...EMPTY_SET, referrer2: ref2, listingNode: ref2 }
+      },
+      {
+        name: 'listingNode == sellingNode',
+        set: { ...EMPTY_SET, listingNode: node, sellingNode: node }
+      },
+      {
+        // Seller as BOTH nodes still collides on the node pair itself.
+        name: 'listingNode == sellingNode == seller',
+        set: { ...EMPTY_SET, listingNode: seller.address, sellingNode: seller.address }
+      }
+    ];
+
+    for (const demo of cases) {
+      const sig = await signAttribution(seller, usdcAddr, demo.set, validUntil);
+      await expect(
+        escrow
+          .connect(buyer)
+          .createEscrowSigned(
+            seller.address,
+            usdcAddr,
+            USDC(100),
+            7 * DAY,
+            demo.set,
+            validUntil,
+            sig
+          ),
+        demo.name
+      ).to.be.revertedWithCustomError(escrow, 'BadAttribution');
+    }
+  });
+
   it('refuses attribution that would credit the escrow itself', async function () {
     // A credit on the escrow address can never be withdrawn (nothing can call
     // withdrawClaimable as the escrow) and recoverERC20 counts it as locked, so
