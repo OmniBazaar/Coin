@@ -123,16 +123,24 @@
     "BridgeDestinationLib": "0x6dDB9Dbc9B005c06a513549c5629985523fd6Af5",
     "NftSellerConsent": "0xF91aC67690B044d87dc95D2d3dAb9893497f5DC1",
     "OmniAgentPermissions": "0x48432398102d3e64cd03b55975A48b905ce97649",
-    "EscrowV2": "0x311E88d98AB1B9F140F28B657A86b78E671C5FC7",
+    "EscrowV2": "0x239d66026A45f5780003b96C44903f773FE3356e",
     "OmniArbitrationImplementationDeployedAt": "2026-10-20T19:13:44.729Z",
     "OmniArbitrationLegacy": "0x1eca4579Ef34c30AA5DD48c6c4475315c1489ECc",
     "OmniArbitrationDeployedAt": "2026-10-20T19:13:50.524661+00:00",
     "OmniArbitrationDeployTx": "0x5f1e65973b05f4cd0dff88f74704add0174d82b62cab13beacb173b410e68bfc",
-    "EscrowFeeRouter": "0xA5dB28fb4934B04dcfb6f501Fd93a8bA0579EE2c",
+    "EscrowFeeRouter": "0x6C9F86e4C6BE41bF2db66F371679654058b18582",
     "EscrowPrivacyOps": "0xbEBFC9E19bBBf7Cdbc4E8bEec2B862cfDc0ae60b",
-    "EscrowSignatureLib": "0xCd18BDa30C3844f72cc553A4Adc8779363Bb40C8",
-    "EscrowV2DeployedAt": "2026-11-09T22:53:05.036Z",
-    "EscrowV2DeployTx": "0xd475bb47a8bb4fced437ace1bb48e2c05df9c59ded5d54fc4eeba2a54e109bd9"
+    "EscrowSignatureLib": "0x66FD34F3024C80fB0F9C177B807decd042f23fb9",
+    "EscrowV2DeployedAt": "2026-11-11T19:22:30.363Z",
+    "EscrowV2DeployTx": "0x15e2dc7bcc79e65b66f6acbd966ee90dc577554de93b03232e71b6c1d14d3547",
+    "escrowV2Superseded": {
+      "EscrowV2": "0x311E88d98AB1B9F140F28B657A86b78E671C5FC7",
+      "EscrowV2DeployedAt": "2026-11-09T22:53:05.036Z",
+      "EscrowV2DeployTx": "0xd475bb47a8bb4fced437ace1bb48e2c05df9c59ded5d54fc4eeba2a54e109bd9",
+      "EscrowFeeRouter": "0xA5dB28fb4934B04dcfb6f501Fd93a8bA0579EE2c",
+      "EscrowSignatureLib": "0xCd18BDa30C3844f72cc553A4Adc8779363Bb40C8",
+      "replacedAt": "2026-11-11T19:22:25.844Z"
+    }
   },
   "escrowV2": {
     "address": "0x311E88d98AB1B9F140F28B657A86b78E671C5FC7",

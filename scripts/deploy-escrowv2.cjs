@@ -167,15 +167,48 @@ async function main() {
   const manifest = loadManifest(network.chainId);
   const c = manifest.json.contracts;
 
+  // Preserve the record of the escrow this deploy SUPERSEDES — including the
+  // two library addresses it is linked against. Those links are baked into the
+  // deployed bytecode and cannot change, so overwriting `EscrowFeeRouter` below
+  // would otherwise leave the manifest naming a router the still-live escrow
+  // does not use, and an auditor reading it would draw the wrong conclusion
+  // about which validation rules are in force on that contract (red-team
+  // finding 4, 2026-11-11). The superseded escrow may still hold funds, so its
+  // record is the one an operator needs when draining it.
+  if (c.EscrowV2 !== undefined) {
+    manifest.json.contracts.escrowV2Superseded = {
+      ...(manifest.json.contracts.escrowV2Superseded ?? {}),
+      EscrowV2: c.EscrowV2,
+      EscrowV2DeployedAt: c.EscrowV2DeployedAt ?? null,
+      EscrowV2DeployTx: c.EscrowV2DeployTx ?? null,
+      EscrowFeeRouter: c.EscrowFeeRouter ?? null,
+      EscrowSignatureLib: c.EscrowSignatureLib ?? null,
+      replacedAt: new Date().toISOString(),
+    };
+    saveManifest(manifest);
+    console.log(
+      `previous escrow ${c.EscrowV2} recorded under contracts.escrowV2Superseded`,
+    );
+  }
+
   const omniCoin = resolveAddress("ESCROW_OMNI_COIN", c.OmniCoin, "ESCROW_OMNI_COIN");
   if (omniCoin === ethers.ZeroAddress) {
     throw new Error("ESCROW_OMNI_COIN is required (no OmniCoin in this chain's manifest)");
   }
-  const privateOmniCoin = resolveAddress(
-    "ESCROW_PRIVATE_OMNI_COIN",
-    c.PrivateOmniCoin,
-    "ESCROW_PRIVATE_OMNI_COIN",
-  );
+  // 🛑 `0` is the documented sentinel for "this chain has no LIVE pXOM", and it
+  // must resolve to the zero address: the 2026-11-09 deploy omitted the variable
+  // instead, inherited the L1 manifest's SUNSET v1 token, and shipped a
+  // mislabelled immutable. Accepting the sentinel here is what makes
+  // `ESCROW_PRIVATE_OMNI_COIN=0` mean what the header says it means.
+  const privateOmniCoinRaw = process.env["ESCROW_PRIVATE_OMNI_COIN"];
+  const privateOmniCoin =
+    privateOmniCoinRaw === "0" || privateOmniCoinRaw === "0x0"
+      ? ethers.ZeroAddress
+      : resolveAddress(
+          "ESCROW_PRIVATE_OMNI_COIN",
+          c.PrivateOmniCoin,
+          "ESCROW_PRIVATE_OMNI_COIN",
+        );
   const registry = resolveAddress("ESCROW_REGISTRY", c.OmniRegistration, "ESCROW_REGISTRY");
   const forwarder = resolveAddress("ESCROW_FORWARDER", c.OmniForwarder, "ESCROW_FORWARDER");
   // The three sinks come from the chain-agnostic recipients file, NOT from each
