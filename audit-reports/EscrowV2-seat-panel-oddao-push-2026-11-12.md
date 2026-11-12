@@ -107,6 +107,12 @@ earlier verdict proof was XOM on L1 where the floor is zero. Seller credited 7.4
 (= 0.1 − 0.005 arbitration), no marketplace fee on a refund, judges 0.002 each, submitter
 0.0005, ODDAO received 0.0005 by transfer. Proves a non-stable, non-XOM token end to end.
 
+**WAVAX on Avalanche, automatic seating — 10/10.** A fresh 0.05 WAVAX dispute was opened and left
+alone: the Validator's own `PanelSeaterService` seated the panel on the next block (log
+`Judge panel seated on chain`, escrowId 2), and the runner then executed a refund verdict from two
+seated judges: buyer +0.0475 (= 0.05 − 0.0025), judges 0.001 each, submitter 0.00025, ODDAO
+received 0.00025 by transfer. This is the runtime proof of the automatic seating path.
+
 **USDC on Arbitrum — settled.** A 10 USDC release verdict executed before the runner's
 assertions were corrected (the assertions, not the settlement, were wrong: seller +7.4, judges
 1.0 each, submitter 0.25, ODDAO +0.3425, floor bound). Recorded for completeness.
