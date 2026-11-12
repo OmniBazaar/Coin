@@ -81,15 +81,23 @@ case "$st" in
         exit 1
         ;;
     1)
-        # Voting is open. Cast the governance-weight FOR vote once; a repeat
-        # run is harmless (the contract refuses a second vote from the same
-        # account), so the interval can keep coming round until it lands.
+        # Voting is open. Cast the governance-weight FOR vote once. Check the
+        # chain FIRST: a repeat run after the vote landed reverts AlreadyVoted
+        # (selector 0x7c9a1cf9) and the node's message is a bare "execution
+        # reverted", so string-matching the error alone pages a false failure
+        # every interval (observed 2026-11-12 on proposal 17).
+        voted=$(gov_has_voted "$ID")
+        if [[ "$voted" == "true" ]]; then
+            echo "vote already cast by $GOV_VOTER; nothing to do"
+            exit 0
+        fi
         out=$(run_voter) && {
             emit "gov.proposal.${ID}.vote-cast" user.info \
                 "proposal $ID: FOR vote cast by the governance-weight account"
             exit 0
         }
-        if grep -qiE "already voted|has voted|vote already" <<<"$out"; then
+        if gov_is_already_voted_error "$out"; then
+            echo "vote already cast by $GOV_VOTER (revert); nothing to do"
             exit 0
         fi
         emit "gov.proposal.${ID}.vote-failed" user.warning \

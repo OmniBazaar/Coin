@@ -17,7 +17,8 @@ TODO 13a7).
 
 | State | Key | Class |
 |---|---|---|
-| Active | `gov.proposal.<id>.voting-open` | **ALERT** (needs votes) |
+| Active, vote NOT yet cast by `$GOV_VOTER` | `gov.proposal.<id>.voting-open` | **ALERT** (needs votes) |
+| Active, vote already cast by `$GOV_VOTER` | — | journald line only (nothing left to do) |
 | Succeeded | `gov.proposal.<id>.queue-due` | **ALERT** (expires 14 days after voting closed) |
 | Queued, timelock elapsed | `gov.proposal.<id>.execute-due` | **ALERT** |
 | Expired | `gov.proposal.<id>.expired` | **ALERT** (the vote is lost) |

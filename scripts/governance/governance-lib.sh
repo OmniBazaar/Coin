@@ -10,6 +10,11 @@ RPC=${GOV_RPC:-https://rpc.omnicoin.net}
 GOV=${GOVERNOR:-0xa812904860c615FeCE377F17F87670EcA0E0899c}
 TIMELOCK=${TIMELOCK_CONTROLLER:-0x4f78386cA05E333639151fe0508b21D893CaD222}
 ZERO32=0x0000000000000000000000000000000000000000000000000000000000000000
+# The governance-weight account (iceberg-omnibazaar.pk). The deployer EOA holds
+# zero voting power, so this is the only address whose vote matters.
+GOV_VOTER=${GOV_VOTER_ADDRESS:-0x0d7a2C153979d095AbB4AE3ed7fCF5429A5cdd71}
+# AlreadyVoted() — the node reports the selector, not the name.
+SEL_ALREADY_VOTED=0x7c9a1cf9
 
 gov_emit() {  # gov_emit <tag> <key> <logger-priority> <message>
     local tag="$1" key="$2" prio="$3" msg="$4"
@@ -38,6 +43,24 @@ gov_prop_state_name() {  # gov_prop_state_name <decimal>
         4) echo Queued ;; 5) echo Executed ;; 6) echo Cancelled ;; 7) echo Expired ;;
         *) echo "Unknown($1)" ;;
     esac
+}
+
+gov_has_voted() {  # gov_has_voted <proposalId> [voter] -> true|false|unknown
+    local id="$1" voter="${2:-$GOV_VOTER}" out
+    if ! out=$("$CAST" call "$GOV" "hasVoted(uint256,address)(bool)" \
+            "$id" "$voter" --rpc-url "$RPC" 2>/dev/null); then
+        echo unknown
+        return
+    fi
+    case "${out%% *}" in
+        true) echo true ;;
+        false) echo false ;;
+        *) echo unknown ;;
+    esac
+}
+
+gov_is_already_voted_error() {  # recognise AlreadyVoted however the tool phrases it
+    grep -qiE "already voted|has voted|AlreadyVoted|${SEL_ALREADY_VOTED}" <<<"$1"
 }
 
 # The unix time at which a Queued proposal may be executed, computed exactly as

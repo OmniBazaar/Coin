@@ -20,11 +20,11 @@ const DRY_RUN = process.env.DRY_RUN === "1";
 const STATE = [
   "Pending",
   "Active",
-  "Cancelled",
+  "Defeated",
   "Succeeded",
   "Queued",
   "Executed",
-  "Defeated",
+  "Cancelled",
   "Expired",
 ];
 

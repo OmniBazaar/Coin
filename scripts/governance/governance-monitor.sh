@@ -97,8 +97,17 @@ for (( id = 1; id <= MAX_PROPOSALS; id++ )); do
     fi
 
     case "$st" in
-        1) want "gov.proposal.${id}.voting-open" user.warning \
-               "proposal $id is OPEN FOR VOTING — cast a vote before it closes" ;;
+        1) # Active. Only page if the governance-weight account has NOT voted:
+           # once the vote is in and quorum is met there is no human action
+           # left, so an ALERT would be a false instruction (proposal 17 on
+           # 2026-11-12 paged "cast a vote" for 14 hours after the vote landed).
+           if [[ "$(gov_has_voted "$id")" == "true" ]]; then
+               echo "$(date -u '+%Y-%m-%d %H:%M:%S UTC') proposal $id open for voting; vote already cast by $GOV_VOTER — no action needed"
+           else
+               want "gov.proposal.${id}.voting-open" user.warning \
+                   "proposal $id is OPEN FOR VOTING — cast a vote before it closes"
+           fi
+           ;;
         3) want "gov.proposal.${id}.queue-due" user.warning \
                "proposal $id has PASSED and is waiting to be QUEUED — it expires 14 days after voting closed" ;;
         4) eta=$(gov_timelock_ready_at "$id")

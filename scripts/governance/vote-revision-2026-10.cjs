@@ -43,6 +43,7 @@ async function main() {
       // selector the contract does not implement, so the call reverts with no
       // useful reason. Verified 2026-10-23 by simulating castVote(16,1).
       "function castVote(uint256 proposalId, uint8 support)",
+      "function hasVoted(uint256 proposalId, address voter) view returns (bool)",
       "function state(uint256 proposalId) view returns (uint8)",
       "function getVotingPower(address account) view returns (uint256)",
       "function proposals(uint256) view returns (address proposer,uint8 proposalType,bool executed,bool cancelled,bool queued,bytes32 descriptionHash,uint256 snapshotBlock,uint256 snapshotTotalSupply,uint256 voteStart,uint256 voteEnd,uint256 forVotes,uint256 againstVotes,uint256 abstainVotes,uint256 snapshotQuorumBps)",
@@ -66,6 +67,20 @@ async function main() {
     throw new Error(
       `proposal ${PROPOSAL_ID} is not Active (state ${before}) — voting has not opened or has closed`,
     );
+  }
+
+  // Idempotent: a second castVote from the same account reverts AlreadyVoted
+  // (0x7c9a1cf9) and the node reports only "execution reverted", which reads
+  // like a real failure. Exit 0 with the tally instead.
+  if (await gov.hasVoted(PROPOSAL_ID, signer.address)) {
+    const p2 = await gov.proposals(PROPOSAL_ID);
+    console.log(
+      "already voted — nothing to do; tally for:",
+      p2.forVotes.toString(),
+      "against:",
+      p2.againstVotes.toString(),
+    );
+    return;
   }
 
   const tx = await gov.castVote(PROPOSAL_ID, SUPPORT);
