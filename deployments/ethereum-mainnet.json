@@ -5,32 +5,41 @@
     "CrossChainNFTMarketplaceEscrow": "0x10F816Dfc0a2B7Cf7dd6940fE5525e0a028CcFcA",
     "OmniConduit": "0x44942a17299E11d9362dA437B16144bF050D8Ee3",
     "NFTExchange": "0xCB9695361ea70E8F478a88B33919d2693A63B311",
-    "EscrowFeeRouter": "0xdBe9101F6C8f33dfF37C4df8041B64f89D9ab12f",
+    "EscrowFeeRouter": "0x1F57034C41B330014C6560056833B2F9c9cDce51",
     "EscrowPrivacyOps": "0xaDEcaF3Fab2950ef93c13BFAEC7e578c10B27066",
-    "EscrowSignatureLib": "0xE0b02D0bd42F1cFF64f5E44b7D9fC59558f1F9DF",
-    "EscrowV2": "0x3CCFd81f8c12Eacaeb42D12BE745B7503a95D4Fe",
-    "EscrowV2DeployedAt": "2026-11-11T20:36:13.779Z",
-    "EscrowV2DeployTx": "0x385bc49694b9ee6ef90323ccf1b35c6d93ae8c5911a2ab540848485b8a060f3c",
+    "EscrowSignatureLib": "0x8968a41ee5208eAF6E9fe290558BcCD1D0A482c3",
+    "EscrowV2": "0x10eAB8AB3dF628eDb6bF3B3B0Fff4B3e17e2CdF6",
+    "EscrowV2DeployedAt": "2026-11-12T01:05:37.359Z",
+    "EscrowV2DeployTx": "0xbaa7f1a411c7b7815cdf1e51140293555ac4937557c30712805e798211138c4a",
     "escrowV2Superseded": {
-      "EscrowV2": "0x71A765c59C3cdE31b6F0b5d501a9500b0FF667A0",
-      "EscrowV2DeployedAt": "2026-10-27T15:30:38.688Z",
-      "EscrowV2DeployTx": "0xec02af573ca11153137356ca9badfd477bd9a94e2004a78cac04a7335c173e4e",
-      "EscrowFeeRouter": "0x006B3b87f8340B76576261003Dd716495d401679",
-      "EscrowSignatureLib": "0x91dF354F5FD98f8d81EF1d2d660F7D7A93c986C4",
-      "replacedAt": "2026-11-11T20:35:35.511Z"
+      "EscrowV2": "0x3CCFd81f8c12Eacaeb42D12BE745B7503a95D4Fe",
+      "EscrowV2DeployedAt": "2026-11-11T20:36:13.779Z",
+      "EscrowV2DeployTx": "0x385bc49694b9ee6ef90323ccf1b35c6d93ae8c5911a2ab540848485b8a060f3c",
+      "EscrowFeeRouter": "0xdBe9101F6C8f33dfF37C4df8041B64f89D9ab12f",
+      "EscrowSignatureLib": "0xE0b02D0bd42F1cFF64f5E44b7D9fC59558f1F9DF",
+      "replacedAt": "2026-11-12T01:04:35.481Z"
     }
   },
   "OmniBazaarResolverPrevious": "0x5d1F5F81e96071c784eE1A6D684b0333eFA865BE",
   "escrowV2": {
     "settlementCoin": "0x2E37f5a6D09D575e287A742062DAfEeb1A0721a2",
     "supportedTokens": [
-      "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
-      "0x2E37f5a6D09D575e287A742062DAfEeb1A0721a2"
+      "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
     ],
     "verdictJudges": [
       "0x213490a7C0E1681ad4239FBbE829994aeEecd193",
       "0xB475206e51E99a4D4905751a02A12eA5E052B94d",
       "0x824b6b38E7ab95d3Cb6B132481985BAc9BD52683"
-    ]
+    ],
+    "address": "0x10eAB8AB3dF628eDb6bF3B3B0Fff4B3e17e2CdF6",
+    "deployedAt": "2026-11-12T01:05:37.359Z",
+    "deployTx": "0xbaa7f1a411c7b7815cdf1e51140293555ac4937557c30712805e798211138c4a",
+    "deployedBytes": 22018,
+    "revision": "2026-11-12 seat-aware panel + ODDAO push",
+    "rosterNote": "Candidate pool only. Three seats are drawn per disputed escrow.",
+    "libraries": {
+      "EscrowFeeRouter": "0x1F57034C41B330014C6560056833B2F9c9cDce51",
+      "EscrowSignatureLib": "0x8968a41ee5208eAF6E9fe290558BcCD1D0A482c3"
+    }
   }
 }

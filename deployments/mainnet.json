@@ -123,31 +123,31 @@
     "BridgeDestinationLib": "0x6dDB9Dbc9B005c06a513549c5629985523fd6Af5",
     "NftSellerConsent": "0xF91aC67690B044d87dc95D2d3dAb9893497f5DC1",
     "OmniAgentPermissions": "0x48432398102d3e64cd03b55975A48b905ce97649",
-    "EscrowV2": "0x239d66026A45f5780003b96C44903f773FE3356e",
+    "EscrowV2": "0x7144B011ce241eecA38CD0c4948777B761985864",
     "OmniArbitrationImplementationDeployedAt": "2026-10-20T19:13:44.729Z",
     "OmniArbitrationLegacy": "0x1eca4579Ef34c30AA5DD48c6c4475315c1489ECc",
     "OmniArbitrationDeployedAt": "2026-10-20T19:13:50.524661+00:00",
     "OmniArbitrationDeployTx": "0x5f1e65973b05f4cd0dff88f74704add0174d82b62cab13beacb173b410e68bfc",
-    "EscrowFeeRouter": "0x6C9F86e4C6BE41bF2db66F371679654058b18582",
+    "EscrowFeeRouter": "0xFaE33745b49DE706d95f239E3EAb68633444f5E4",
     "EscrowPrivacyOps": "0xbEBFC9E19bBBf7Cdbc4E8bEec2B862cfDc0ae60b",
-    "EscrowSignatureLib": "0x66FD34F3024C80fB0F9C177B807decd042f23fb9",
-    "EscrowV2DeployedAt": "2026-11-11T19:22:30.363Z",
-    "EscrowV2DeployTx": "0x15e2dc7bcc79e65b66f6acbd966ee90dc577554de93b03232e71b6c1d14d3547",
+    "EscrowSignatureLib": "0x63a65507208a16e3983264D5E669cC0Df301F19D",
+    "EscrowV2DeployedAt": "2026-11-12T01:04:11.753Z",
+    "EscrowV2DeployTx": "0x486317826546ffc1f8c4f25382893b4c949fdf74d9906dbcca11973e4db962c2",
     "escrowV2Superseded": {
-      "EscrowV2": "0x311E88d98AB1B9F140F28B657A86b78E671C5FC7",
-      "EscrowV2DeployedAt": "2026-11-09T22:53:05.036Z",
-      "EscrowV2DeployTx": "0xd475bb47a8bb4fced437ace1bb48e2c05df9c59ded5d54fc4eeba2a54e109bd9",
-      "EscrowFeeRouter": "0xA5dB28fb4934B04dcfb6f501Fd93a8bA0579EE2c",
-      "EscrowSignatureLib": "0xCd18BDa30C3844f72cc553A4Adc8779363Bb40C8",
-      "replacedAt": "2026-11-11T19:22:25.844Z"
+      "EscrowV2": "0x239d66026A45f5780003b96C44903f773FE3356e",
+      "EscrowV2DeployedAt": "2026-11-11T19:22:30.363Z",
+      "EscrowV2DeployTx": "0x15e2dc7bcc79e65b66f6acbd966ee90dc577554de93b03232e71b6c1d14d3547",
+      "EscrowFeeRouter": "0x6C9F86e4C6BE41bF2db66F371679654058b18582",
+      "EscrowSignatureLib": "0x66FD34F3024C80fB0F9C177B807decd042f23fb9",
+      "replacedAt": "2026-11-12T01:04:07.145Z"
     }
   },
   "escrowV2": {
-    "address": "0x311E88d98AB1B9F140F28B657A86b78E671C5FC7",
-    "deployedAt": "2026-11-09T22:53:05.036Z",
-    "deployTx": "0xd475bb47a8bb4fced437ace1bb48e2c05df9c59ded5d54fc4eeba2a54e109bd9",
+    "address": "0x7144B011ce241eecA38CD0c4948777B761985864",
+    "deployedAt": "2026-11-12T01:04:11.753Z",
+    "deployTx": "0x486317826546ffc1f8c4f25382893b4c949fdf74d9906dbcca11973e4db962c2",
     "block": 2967512,
-    "deployedBytes": 19977,
+    "deployedBytes": 22018,
     "privateOmniCoinImmutable": "0xb09F2900f6603Da92DB3D5df52e804CaF9c78f09",
     "privateOmniCoinNote": "The immutable holds the SUNSET v1 pXOM because the deploy script defaults to the manifest value. It is only read to refuse a PUBLIC escrow denominated in that token; there is no private create path in this build. Pass ESCROW_PRIVATE_OMNI_COIN=0 on the next deploy.",
     "settlementCoin": "0x1eE61487F08F715055358A1F020A86c9E571ED78",
@@ -157,7 +157,6 @@
       "stakingReserve": "0x5cDeEd30431b7eF3b92260c666C49Eab85E21B27"
     },
     "supportedTokens": [
-      "0x1eE61487F08F715055358A1F020A86c9E571ED78",
       "0x81f4072fCca24d373FFCB34c248995DFC6c1219C"
     ],
     "verdictJudges": [
@@ -166,8 +165,8 @@
       "0x824b6b38E7ab95d3Cb6B132481985BAc9BD52683"
     ],
     "libraries": {
-      "EscrowFeeRouter": "0xA5dB28fb4934B04dcfb6f501Fd93a8bA0579EE2c",
-      "EscrowSignatureLib": "0xCd18BDa30C3844f72cc553A4Adc8779363Bb40C8"
+      "EscrowFeeRouter": "0xFaE33745b49DE706d95f239E3EAb68633444f5E4",
+      "EscrowSignatureLib": "0x63a65507208a16e3983264D5E669cC0Df301F19D"
     },
     "arbitrationFeeBps": 500,
     "minArbitrationFee": {
@@ -175,10 +174,13 @@
       "0x81f4072fCca24d373FFCB34c248995DFC6c1219C": "2500000"
     },
     "superseded": {
-      "address": "0x4602eFbd8cE41c12AAacf2fE69cF5D7e634fa84D",
-      "deployedAt": "2026-10-21T23:01:20.603Z",
-      "deployTx": "0x913e3d73a0aad96dfbc11ec43e8dc5075c660ca35c25b2b99a2ef78be88dfbe0",
-      "note": "2026-10-21 build; predates the 2026-10-27 audit remediation (24,120 bytes). Never the live escrow; kept as a record."
+      "address": "0x311E88d98AB1B9F140F28B657A86b78E671C5FC7",
+      "deployedAt": "2026-11-09T22:53:05.036Z",
+      "deployTx": "0xd475bb47a8bb4fced437ace1bb48e2c05df9c59ded5d54fc4eeba2a54e109bd9",
+      "libraries": {
+        "EscrowFeeRouter": "0xA5dB28fb4934B04dcfb6f501Fd93a8bA0579EE2c",
+        "EscrowSignatureLib": "0xCd18BDa30C3844f72cc553A4Adc8779363Bb40C8"
+      }
     },
     "previousSuperseded": {
       "address": "0x07aE62cFfe705e004bAbdECE2a336b0F548f230b",
@@ -186,6 +188,8 @@
       "deployTx": "0x3a0feb1fe28831551b91b112af08f0f111df02f5e510423b8855556dd413aeb1",
       "note": "Older build with a vault dependency and a cross-chain arbitration read. Never the live escrow; kept only as a record."
     },
-    "liveSettlementPath": "MinimalEscrow 0xf53c1875097dFc95F9C3EDe389e5b8484e4E16D0 until the client cutover (TODO 13a0a); EscrowV2 0x311E88d98AB1B9F140F28B657A86b78E671C5FC7 is deployed and configured."
+    "liveSettlementPath": "MinimalEscrow 0xf53c1875097dFc95F9C3EDe389e5b8484e4E16D0 until the client cutover (TODO 13a0a); EscrowV2 0x311E88d98AB1B9F140F28B657A86b78E671C5FC7 is deployed and configured.",
+    "revision": "2026-11-12 seat-aware panel + ODDAO push",
+    "rosterNote": "Candidate pool only. Three seats are drawn per disputed escrow."
   }
 }
