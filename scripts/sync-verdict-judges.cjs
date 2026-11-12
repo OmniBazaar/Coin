@@ -7,9 +7,12 @@
  *
  *   - the **OmniArbitration** pool on OmniCoin (chain 88008) — what the webapp's
  *     "Become a Dispute Judge" action joins, by staking XOM;
- *   - each **EscrowV2**'s own `verdictJudge` mapping — what decides whether a
- *     signed verdict on a frozen escrow counts. It is an admin-only mapping with
- *     no enumerator and no webapp surface.
+ *   - each **EscrowV2**'s own judge roster (`verdictJudge` membership plus the
+ *     drawable `getVerdictJudges` array) — the candidate pool a disputed
+ *     escrow's three seats are drawn from. Admin-only, and until 2026-11-12 it
+ *     was capped at exactly three addresses, so a pool member beyond the third
+ *     could never be seated. The roster is now unbounded: this script keeps it
+ *     equal to the pool and the per-dispute draw picks three.
  *
  * So a judge could register, pay the stake, be told they are a judge — and be
  * unable to sign a single verdict. That happened on 2026-10-24 with

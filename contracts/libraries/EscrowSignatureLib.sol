@@ -22,9 +22,11 @@ import {MessageHashUtils} from "@openzeppelin/contracts/utils/cryptography/Messa
  *      VERDICT — the L1 panel produces a final verdict only (release to seller
  *      or refund to buyer); it never reverses a settled escrow, and the verdict
  *      is bound to one escrow id and a `validUntil` deadline. Two distinct
- *      rostered judges must sign. Signers may never be the buyer or the seller
- *      (defence in depth: the panel already excludes parties from its seats,
- *      and the escrow enforces it locally).
+ *      SEATED judges must sign. Seats are drawn per dispute from the escrow's
+ *      whole roster, so a large roster never becomes "any two of many": only
+ *      the three judges assigned to this case can land a verdict. Signers may
+ *      never be the buyer or the seller (defence in depth: the draw already
+ *      excludes them, and the escrow enforces it locally).
 
  *      ATTRIBUTION — the seller, not the buyer, decides who receives the 1%
  *      fee slices (primary/secondary referrer, listing node, selling node).
@@ -40,6 +42,8 @@ library EscrowSignatureLib {
     error InvalidVerdict();
     /// @notice Fewer than two distinct rostered judge signatures
     error NotEnoughVerdicts();
+    /// @notice The escrow has no seated panel yet, so no verdict is possible
+    error PanelNotSeatedYet();
     /// @notice The seller's attribution signature is missing, stale or wrong
     error InvalidSellerSignature();
 
@@ -47,7 +51,18 @@ library EscrowSignatureLib {
     uint256 internal constant VERDICT_THRESHOLD = 2;
 
     /// @notice Upper bound on supplied signature bytes (bounded gas)
-    uint256 internal constant MAX_SIGNATURES = 16;
+    /// @dev Exactly three judges are seated per case, so a fourth signature can
+    ///      never be eligible and is never paid.
+    uint256 internal constant MAX_SIGNATURES = 3;
+
+    /// @notice How many judges one panel seats
+    uint256 internal constant SEATS = 3;
+
+    /// @notice Most roster entries the seat draw will inspect before giving up
+    /// @dev A roster of tens of thousands would otherwise make seating gas
+    ///      unbounded. Rejection sampling normally lands three distinct seats
+    ///      in a handful of attempts; the bound fails closed.
+    uint256 internal constant MAX_SEAT_ATTEMPTS = 200;
 
     /// @dev keccak256("Verdict(uint256 escrowId,bool releaseFunds,uint256 validUntil)")
     bytes32 internal constant VERDICT_TYPEHASH = keccak256(
@@ -164,7 +179,8 @@ library EscrowSignatureLib {
      * @param releaseFunds The direction being executed
      * @param validUntil Bundle deadline (both directions share it)
      * @param signatures Judge signatures (65 bytes each)
-     * @param judges Judge roster (escrow storage slot)
+     * @param seats The three judges seated for THIS escrow at dispute time
+     * @param seatCount Number of seats recorded (must be three)
      * @param buyer Escrow buyer (may never sign)
      * @param seller Escrow seller (may never sign)
      * @return signers Every distinct judge whose signature was accepted
@@ -175,12 +191,16 @@ library EscrowSignatureLib {
         bool releaseFunds,
         uint256 validUntil,
         bytes[] calldata signatures,
-        mapping(address => bool) storage judges,
+        address[3] memory seats,
+        uint8 seatCount,
         address buyer,
         address seller
     ) external view returns (address[] memory signers) {
         // solhint-disable-next-line not-rely-on-time
         if (block.timestamp > validUntil) revert InvalidVerdict();
+        // No seats means nobody can judge this case; it belongs to the timeout
+        // backstop, never to a signature bundle.
+        if (seatCount != SEATS) revert PanelNotSeatedYet();
         uint256 count = signatures.length;
         if (count < VERDICT_THRESHOLD || count > MAX_SIGNATURES) {
             revert NotEnoughVerdicts();
@@ -208,14 +228,14 @@ library EscrowSignatureLib {
                 signatures[i]
             );
             bool onWin = err == ECDSA.RecoverError.NoError &&
-                judges[signer] &&
+                _isSeated(signer, seats) &&
                 signer != buyer &&
                 signer != seller;
             if (!onWin) {
                 (signer, err, ) = ECDSA.tryRecover(losing, signatures[i]);
                 if (
                     err != ECDSA.RecoverError.NoError ||
-                    !judges[signer] ||
+                    !_isSeated(signer, seats) ||
                     signer == buyer ||
                     signer == seller
                 ) {
@@ -253,6 +273,101 @@ library EscrowSignatureLib {
         assembly ("memory-safe") {
             mstore(signers, kept)
         }
+    }
+
+    /**
+     * @notice Draw the three judges who will hear one disputed escrow
+     * @dev Founder direction 2026-11-12: the panel is three OF N, not a fixed
+     *      three. The escrow holds the whole roster and this draw picks three
+     *      of it per case, so a large roster never degrades into "any two of
+     *      many can sign".
+     *
+     *      The entropy is the block hash of the block the dispute was opened
+     *      in — unknown when the disputing party signed the transaction, so
+     *      neither party can grind for a favourable panel. It must be spent
+     *      inside the 256-block window in which that hash is available; the
+     *      Validator seats the panel on the next block. If nobody seats it, the
+     *      case falls to the trustless timeout refund, which is the safe
+     *      direction.
+     *
+     *      Rejection sampling is exact modulo a negligible bias (a 256-bit hash
+     *      against a roster size), excludes both parties and the escrow
+     *      itself, and is bounded so gas cannot grow with the roster.
+     * @param roster The escrow's judge roster (storage)
+     * @param escrowId Escrow identifier (mixed into the seed)
+     * @param entropy Block hash of the dispute's opening block
+     * @param excluded Addresses that may never be seated: both parties and the
+     *        escrow itself. Zero entries are ignored. 🛑 NOT the fee-attribution
+     *        slots: the seller chooses those, so excluding them would let a
+     *        party shrink or empty the panel pool.
+     * @return seats The three drawn judges, zero-padded if fewer were found
+     * @return found How many distinct seats the draw produced
+     */
+    function selectSeats(
+        address[] storage roster,
+        uint256 escrowId,
+        bytes32 entropy,
+        address[3] memory excluded
+    ) external view returns (address[3] memory seats, uint256 found) {
+        uint256 rosterSize = roster.length;
+        if (rosterSize < SEATS) {
+            return (seats, 0);
+        }
+        uint256 nonce = 0;
+        while (found < SEATS && nonce < MAX_SEAT_ATTEMPTS) {
+            bytes32 h = keccak256(
+                abi.encodePacked(escrowId, entropy, nonce, rosterSize)
+            );
+            address candidate = roster[uint256(h) % rosterSize];
+            ++nonce;
+
+            if (candidate == address(0) || _isExcluded(candidate, excluded)) {
+                continue;
+            }
+            bool duplicate = false;
+            for (uint256 j = 0; j < found; ++j) {
+                if (seats[j] == candidate) {
+                    duplicate = true;
+                    break;
+                }
+            }
+            if (duplicate) {
+                continue;
+            }
+            seats[found] = candidate;
+            ++found;
+        }
+    }
+
+    /**
+     * @notice Whether an address may never be seated for one escrow
+     * @param candidate Roster entry under test
+     * @param excluded Buyer, seller and the escrow itself
+     * @return True when the entry must be skipped
+     */
+    function _isExcluded(
+        address candidate,
+        address[3] memory excluded
+    ) private pure returns (bool) {
+        for (uint256 i = 0; i < 3; ++i) {
+            if (excluded[i] != address(0) && candidate == excluded[i]) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * @notice Whether an address is one of the three seated judges
+     */
+    function _isSeated(
+        address signer,
+        address[3] memory seats
+    ) private pure returns (bool) {
+        if (signer == address(0)) {
+            return false;
+        }
+        return signer == seats[0] || signer == seats[1] || signer == seats[2];
     }
 
     /**

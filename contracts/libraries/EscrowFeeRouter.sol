@@ -2,6 +2,7 @@
 pragma solidity 0.8.24;
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {FeeAttribution, FeeBeneficiaries} from "../interfaces/EscrowV2Types.sol";
 
 /**
@@ -36,14 +37,23 @@ interface IFirstSaleRegistry {
  *      DECOUPLED FROM THE FEE VAULT (2026-10-20, founder decision 3): the
  *      escrow now pays the whole 1% IN KIND, ON ITS OWN CHAIN, in the token it
  *      holds. There is no cross-chain `UnifiedFeeVault` call and no vault
- *      allowlist read; the nine slices land in the escrow's own pull-pattern
- *      `claimable` ledger (referrer, referrer2, listing node, selling node,
- *      ODDAO, staking pool, treasury). Every payment is a credit, never a
- *      transfer, so a token that blacklists or refuses a recipient can never
- *      block a release. Any change in this file is a money-path change and
- *      needs a full audit.
+ *      allowlist read; the nine slices are paid on this chain (referrer,
+ *      referrer2, listing node, selling node, ODDAO, staking pool, treasury).
+ *
+ *      ODDAO IS PAID BY TRANSFER, EVERYONE ELSE BY CREDIT (founder ruling
+ *      2026-11-11): the holder of the DAO treasury key IS the DAO, so a
+ *      "claim" would need a governance vote every time. Every ODDAO slice —
+ *      including all four zero-address fallbacks and the arbitration
+ *      remainder — is aggregated and pushed with one `safeTransfer` per
+ *      settlement. Referrers and nodes keep the pull-pattern credit ledger, so
+ *      a token that blacklists an ordinary user can never block a release.
+ *      The push is measured: a token that delivers less than the scheduled
+ *      amount reverts the settlement instead of leaving the books short.
+ *      Any change in this file is a money-path change and needs a full audit.
  */
 library EscrowFeeRouter {
+    using SafeERC20 for IERC20;
+
     /// @dev Mirrored from EscrowV2 — identical signatures, identical selectors,
     ///      so client-side error decoding is unchanged.
     error InvalidAddress();
@@ -51,6 +61,32 @@ library EscrowFeeRouter {
     error CannotMixPrivacyModes();
     error BadAttribution();
     error BadReferrer();
+    /// @notice Emitted when the ODDAO push delivered less (or more) than scheduled
+    /// @dev A token that charges a transfer fee, or a rebasing balance, lands
+    ///      here. The settlement still succeeded; this is an ops signal that the
+    ///      token is taking a cut of protocol fees.
+    /// @param escrowId Escrow identifier
+    /// @param token Fee token
+    /// @param scheduled Amount the escrow sent
+    /// @param received Amount the sink's balance actually rose by
+    event OddaoPushShortfall(
+        uint256 indexed escrowId,
+        address indexed token,
+        uint256 scheduled,
+        uint256 received
+    );
+
+    /// @notice Emitted when the ODDAO slices are pushed on settlement
+    /// @param escrowId Escrow identifier
+    /// @param token Token the fee was taken in
+    /// @param recipient ODDAO sink that received the transfer
+    /// @param amount Amount actually received (measured, not scheduled)
+    event OddaoPaid(
+        uint256 indexed escrowId,
+        address indexed token,
+        address indexed recipient,
+        uint256 amount
+    );
 
     /// @notice Emitted when the marketplace fee is split in kind on release
     /// @param escrowId Escrow identifier
@@ -186,12 +222,11 @@ library EscrowFeeRouter {
         // pushed every remainder into the listing slice, so a 1-unit fee went
         // 100% to listing and the transaction and referral recipients got
         // nothing on the smallest sales.
+        uint256 oddaoTotal;
         uint256 txFee = (feeAmount * 2_500) / BPS;
         uint256 txOddao = (txFee * PRIMARY_BPS) / BPS;
         uint256 txStaking = (txFee * SECONDARY_BPS) / BPS;
-        _credit(
-            claimable, totalClaimable, token, beneficiaries.oddao, txOddao
-        );
+        oddaoTotal += txOddao;
         _credit(
             claimable, totalClaimable, token, beneficiaries.stakingPool, txStaking
         );
@@ -208,56 +243,37 @@ library EscrowFeeRouter {
         uint256 refFee = (feeAmount * 5_000) / BPS;
         uint256 refPrimary = (refFee * PRIMARY_BPS) / BPS;
         uint256 refSecondary = (refFee * SECONDARY_BPS) / BPS;
-        _credit(
-            claimable,
-            totalClaimable,
-            token,
-            _or(attribution.referrer, beneficiaries.oddao),
-            refPrimary
+        oddaoTotal += _creditOrOddao(
+            claimable, totalClaimable, token, attribution.referrer, refPrimary
         );
-        _credit(
-            claimable,
-            totalClaimable,
-            token,
-            _or(attribution.referrer2, beneficiaries.oddao),
-            refSecondary
+        oddaoTotal += _creditOrOddao(
+            claimable, totalClaimable, token, attribution.referrer2, refSecondary
         );
-        _credit(
-            claimable,
-            totalClaimable,
-            token,
-            beneficiaries.oddao,
-            refFee - refPrimary - refSecondary
-        );
+        oddaoTotal += refFee - refPrimary - refSecondary;
 
         // Split 3 — listing 25% of the fee (remainder): node / node / ODDAO.
         uint256 listFee = feeAmount - txFee - refFee;
         uint256 listNode = (listFee * PRIMARY_BPS) / BPS;
         uint256 sellNode = (listFee * SECONDARY_BPS) / BPS;
-        _credit(
-            claimable,
-            totalClaimable,
-            token,
-            _or(attribution.listingNode, beneficiaries.oddao),
-            listNode
+        oddaoTotal += _creditOrOddao(
+            claimable, totalClaimable, token, attribution.listingNode, listNode
         );
-        _credit(
-            claimable,
-            totalClaimable,
-            token,
-            _or(attribution.sellingNode, beneficiaries.oddao),
-            sellNode
+        oddaoTotal += _creditOrOddao(
+            claimable, totalClaimable, token, attribution.sellingNode, sellNode
         );
-        _credit(
-            claimable,
-            totalClaimable,
-            token,
-            beneficiaries.oddao,
-            listFee - listNode - sellNode
-        );
+        oddaoTotal += listFee - listNode - sellNode;
 
         totalMarketplaceFees[token] += feeAmount;
         emit MarketplaceFeeSplit(escrowId, token, feeAmount);
+
+        // 🛑 ODDAO IS PAID IN THE SAME TRANSACTION (founder ruling 2026-11-11).
+        // One transfer for every slice it owns — the four zero-address
+        // fallbacks included — pushed only after the accounting above is
+        // written (CEI). The escrow's own bookkeeping is untouched by the
+        // transfer: the money was never entered in `claimable`.
+        if (oddaoTotal > 0) {
+            _pushOddao(escrowId, token, beneficiaries.oddao, oddaoTotal);
+        }
     }
 
     /**
@@ -394,7 +410,9 @@ library EscrowFeeRouter {
 
         uint256 rest = fee - paid - tip;
         if (rest > 0) {
-            _credit(claimable, totalClaimable, token, oddao, rest);
+            // ODDAO is the only remainder recipient, and it is paid by
+            // transfer (founder ruling 2026-11-11) — never credited.
+            _pushOddao(escrowId, token, oddao, rest);
         }
 
         emit ArbitrationFeeCollected(escrowId, fee, paid);
@@ -530,9 +548,76 @@ library EscrowFeeRouter {
     }
 
     /**
-     * @notice Resolve a zero attribution slot to the protocol sink
+     * @notice Credit a named recipient, or return the slice for ODDAO to own
+     * @dev A zero attribution slot routes its slice to the protocol sink, and
+     *      that sink is paid by transfer, not credit. Returning the amount
+     *      keeps the ODDAO total exact — including dust — without a second
+     *      division.
+     * @param claimable Escrow's claimable ledger
+     * @param totalClaimable Escrow's claimable total per token
+     * @param token Fee token
+     * @param recipient Attribution slot (zero means ODDAO)
+     * @param amount Slice amount
+     * @return oddaoAmount Amount that belongs to ODDAO instead of `recipient`
      */
-    function _or(address recipient, address fallback_) private pure returns (address) {
-        return recipient == address(0) ? fallback_ : recipient;
+    function _creditOrOddao(
+        mapping(address => mapping(address => uint256)) storage claimable,
+        mapping(address => uint256) storage totalClaimable,
+        address token,
+        address recipient,
+        uint256 amount
+    ) private returns (uint256 oddaoAmount) {
+        if (amount == 0) {
+            return 0;
+        }
+        if (recipient == address(0)) {
+            return amount;
+        }
+        _credit(claimable, totalClaimable, token, recipient, amount);
+        return 0;
+    }
+
+    /**
+     * @notice Pay the ODDAO sink by transfer, measuring what actually arrived
+     * @dev Founder ruling 2026-11-11: the holder of the DAO treasury key IS the
+     *      DAO, so no ODDAO slice may wait in a claimable balance.
+     *
+     *      🛑 THE PUSH NEVER REVERTS ON A SHORT DELIVERY. A token that starts
+     *      charging a transfer fee after the escrow was funded would otherwise
+     *      make every fee-bearing settlement revert forever — including the
+     *      delivered timeout backstop — with no `recoverERC20` escape, because
+     *      the funds are committed to a live escrow. Liveness beats exactness
+     *      here: the scheduled amount leaves the escrow, the token takes its
+     *      cut, and the shortfall is logged. The escrow's own accounting is
+     *      untouched by either, because the money was never entered in
+     *      `claimable`.
+     *
+     *      A blacklisting or paused token DOES revert the settlement (the
+     *      transfer itself fails); the recovery path is the 48-hour
+     *      beneficiary change on the escrow.
+     * @param escrowId Escrow identifier (for the event)
+     * @param token Fee token
+     * @param recipient ODDAO sink on this chain
+     * @param amount Scheduled amount
+     */
+    function _pushOddao(
+        uint256 escrowId,
+        address token,
+        address recipient,
+        uint256 amount
+    ) private {
+        IERC20 erc20 = IERC20(token);
+        uint256 before = erc20.balanceOf(recipient);
+        erc20.safeTransfer(recipient, amount);
+        uint256 afterBalance = erc20.balanceOf(recipient);
+        // 🛑 Guarded subtraction: a rebasing token can report a LOWER balance
+        // after the transfer, and an unchecked `after - before` would panic and
+        // brick the settlement — the exact liveness failure this push must not
+        // re-introduce.
+        uint256 received = afterBalance > before ? afterBalance - before : 0;
+        emit OddaoPaid(escrowId, token, recipient, received);
+        if (received != amount) {
+            emit OddaoPushShortfall(escrowId, token, amount, received);
+        }
     }
 }

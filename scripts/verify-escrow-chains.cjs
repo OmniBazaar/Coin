@@ -132,6 +132,13 @@ const ESCROW_ABI = [
   "function submitterBps2() view returns (uint256)",
   "function submitterBps3() view returns (uint256)",
   "function verdictJudgeCount() view returns (uint256)",
+  // 2026-11-12 panel revision: an unbounded roster and three seats drawn per
+  // dispute. The presence of these getters is how the check knows the deployed
+  // escrow is the seat-aware build rather than the fixed-three one.
+  "function getVerdictJudges(uint256,uint256) view returns (address[])",
+  "function getPanel(uint256) view returns (address[3],uint8,uint64)",
+  "function PANEL_SEATS() view returns (uint256)",
+  "function SEAT_WINDOW_BLOCKS() view returns (uint256)",
   "function minArbitrationFee(address) view returns (uint256)",
   "function omniCoin() view returns (address)",
   "function ODDAO() view returns (address)",
@@ -360,10 +367,36 @@ async function checkChain(chain, recipients) {
       );
       record(
         chain.name,
-        "verdict roster capped",
-        Number(judges) <= 3,
-        `${String(judges)} rostered (max 3)`
+        "verdict roster can seat a panel",
+        Number(judges) >= 3,
+        `${String(judges)} rostered (at least 3 to seat a panel of 3)`
       );
+      // 🛑 The seat-aware build must be the one deployed. A fixed-three escrow
+      // passes every other check in this file and still cannot expand the
+      // panel, so the absence of these getters is a FAILURE, never a skip.
+      try {
+        const [panelSeats, seatWindow, roster] = await Promise.all([
+          escrow.PANEL_SEATS.staticCall(),
+          escrow.SEAT_WINDOW_BLOCKS.staticCall(),
+          escrow.getVerdictJudges.staticCall(0, 100),
+        ]);
+        record(
+          chain.name,
+          "seat-aware panel revision",
+          Number(panelSeats) === 3 &&
+            Number(seatWindow) === 256 &&
+            Array.isArray(roster) &&
+            roster.length === Number(judges),
+          `seats ${String(panelSeats)} · window ${String(seatWindow)} blocks · roster enumerates ${String(Array.isArray(roster) ? roster.length : 0)}`
+        );
+      } catch (err) {
+        record(
+          chain.name,
+          "seat-aware panel revision",
+          false,
+          `not the 2026-11-12 build: ${err instanceof Error ? err.message : String(err)}`
+        );
+      }
       const floors = [];
       for (const token of tokens) {
         const floor = await escrow.minArbitrationFee.staticCall(token.address).catch(() => 0n);

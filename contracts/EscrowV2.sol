@@ -106,6 +106,21 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
         address referrer2;  // slot 1: second-level referrer
     }
 
+    /// @notice The three judges seated to hear one disputed escrow
+    /// @dev Kept OUT of the {Escrow} struct on purpose: `getEscrow` is decoded
+    ///      by ABI generation on the Validator, and adding a field there would
+    ///      force a third generation for every reader. A separate mapping keyed
+    ///      by escrow id costs one extra SLOAD per verdict and changes no
+    ///      existing return shape.
+    /// @param seats The drawn judges (zero-padded before seating)
+    /// @param openBlock Block the dispute was opened in (0 = never disputed)
+    /// @param seatCount Number of seats recorded (3 = seated)
+    struct Panel {
+        address[3] seats;
+        uint64 openBlock;
+        uint8 seatCount;
+    }
+
     // Constants
     /// @notice Maximum escrow duration (30 days)
     uint256 public constant MAX_DURATION = 30 days;
@@ -146,8 +161,20 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
     /// @notice Hard ceiling on the settable fee-to-amount ratio (50%)
     uint256 public constant MAX_FEE_OF_AMOUNT_BPS = 5000;
 
-    /// @notice Most addresses the verdict roster may hold
-    uint256 public constant MAX_VERDICT_JUDGES = 3;
+    /// @notice How many judges hear one disputed escrow
+    uint256 public constant PANEL_SEATS = 3;
+
+    /// @notice How long after the dispute opens a panel may be seated
+    /// @dev The seats are drawn from the opening block's hash, which the EVM
+    ///      only exposes for the last 256 blocks. The Validator seats on the
+    ///      next block; a panel nobody seats in the window falls to the
+    ///      trustless timeout refund, which is the safe direction.
+    uint256 public constant SEAT_WINDOW_BLOCKS = 256;
+
+    /// @notice Most roster entries the pre-flight seatability check inspects
+    /// @dev Cosmetic gate only (it turns an obviously unseat-able dispute away
+    ///      before it freezes an escrow); the real draw is bounded separately.
+    uint256 public constant SEAT_SCAN_LIMIT = 64;
 
     /// @notice How long after expiry a verdict is still executable
     /// @dev MUST stay shorter than {DISPUTE_TIMEOUT}: the trustless timeout
@@ -246,16 +273,28 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
     mapping(address => bool) public supportedToken;
 
     /// @notice Judge addresses whose verdict signatures this escrow accepts
-    /// @dev A verdict needs two DISTINCT rostered judges (see
-    ///      {executeVerdict}). The admin points this at the arbitration
-    ///      panel's seated judges — the same EOAs that sit on the L1 panel.
+    /// @dev Membership of the whole panel roster (3 of n). Membership alone
+    ///      never settles a case: a verdict must come from two of the three
+    ///      judges SEATED for that escrow (see {_panels} and {executeVerdict}).
+    ///      Kept as a mapping for O(1) membership checks and for the Validator's
+    ///      generation probe, which has read this getter since the first deploy.
     mapping(address => bool) public verdictJudge;
 
     /// @notice How many addresses are on the verdict roster
-    /// @dev CAPPED AT {MAX_VERDICT_JUDGES}: the threshold is 2 of N, so a
-    ///      growing roster silently lowers the bar to "any two of many" and
-    ///      divides the fee further. The panel is fixed at three.
+    /// @dev Unbounded, and kept in sync with {_verdictJudges}. The roster can be
+    ///      any size: the two-of-three threshold applies to the SEATS drawn per
+    ///      dispute, never to the roster itself, so growing it does not lower
+    ///      the bar for collusion.
     uint256 public verdictJudgeCount;
+
+    /// @notice The roster in drawable order (index 1-based in the map below)
+    address[] private _verdictJudges;
+
+    /// @notice Roster position of a judge, 1-based (0 = not on the roster)
+    mapping(address => uint256) private _verdictJudgeIndex;
+
+    /// @notice The three judges seated per disputed escrow
+    mapping(uint256 => Panel) private _panels;
 
     /// @notice Arbitration fee charged on a disputed resolution (bps of amount)
     /// @dev Settable so the fee never needs a redeploy. 500 = 5%.
@@ -377,7 +416,7 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
         uint256 arbitrationFee
     );
 
-    /// @notice Emitted when a signed 2-of-N judge verdict is executed
+    /// @notice Emitted when a signed 2-of-3 seated-judge verdict is executed
     /// @param escrowId Escrow identifier
     /// @param releaseFunds True = paid the seller, false = refunded the buyer
     /// @param validUntil Deadline the judges signed
@@ -385,6 +424,31 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
         uint256 indexed escrowId,
         bool releaseFunds,
         uint256 validUntil
+    );
+
+    /// @notice Emitted when the three judges for a disputed escrow are drawn
+    /// @dev The seat set is the ONLY signature set this escrow will accept for
+    ///      the case, and it is drawn from the whole roster. The Validator
+    ///      listens for this event to notify exactly the seated judges.
+    /// @param escrowId Escrow identifier
+    /// @param judges The three seated judges
+    event PanelSeated(
+        uint256 indexed escrowId,
+        address[3] judges
+    );
+
+    /// @notice Emitted when the ODDAO slices are pushed on settlement
+    /// @dev Mirrored from {EscrowFeeRouter} so the escrow ABI can decode it. The
+    ///      event is emitted BY the library, at this contract's address.
+    /// @param escrowId Escrow identifier
+    /// @param token Fee token
+    /// @param recipient ODDAO sink that received the transfer
+    /// @param amount Amount actually received (measured, not scheduled)
+    event OddaoPaid(
+        uint256 indexed escrowId,
+        address indexed token,
+        address indexed recipient,
+        uint256 amount
     );
 
     /// @notice Emitted when the admin adds/removes a settlement token
@@ -484,8 +548,18 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
     error JudgeRemovalDelayActive();
     /// @notice A judge removal is pending the delay
     error JudgeRemovalPending();
-    /// @notice The verdict roster already holds {MAX_VERDICT_JUDGES}
-    error TooManyVerdictJudges();
+    /// @notice This escrow has no seated panel yet (or the roster cannot fill one)
+    /// @param eligible Roster entries that could actually be seated
+    error PanelNotSeated(uint256 eligible);
+    /// @notice A panel is already seated for this escrow
+    error PanelAlreadySeated();
+    /// @notice No panel is seated yet, so no verdict can execute
+    /// @dev Declared here as well as in {EscrowSignatureLib} so a client decoding
+    ///      a revert with only the escrow ABI names the real cause instead of
+    ///      showing raw bytes. Never raised from this contract directly.
+    error PanelNotSeatedYet();
+    /// @notice The dispute's opening block hash is no longer available
+    error PanelSeatWindowClosed();
     /// @notice No beneficiary change has been proposed
     error NoPendingBeneficiaries();
     /// @notice The beneficiary change delay has not elapsed
@@ -1401,6 +1475,12 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
             revert FeeTooLarge();
         }
 
+        // 🛑 Refuse a freeze that no panel could ever hear. The draw itself is
+        // bounded; this pre-flight turns an empty (or party-only) roster into
+        // an actionable error instead of a frozen escrow with no judge path.
+        uint256 seatable = _seatableJudges(e.buyer, e.seller);
+        if (seatable < PANEL_SEATS) revert PanelNotSeated(seatable);
+
         e.disputed = true;
         // solhint-disable-next-line not-rely-on-time
         e.disputeOpenedAt = uint128(block.timestamp);
@@ -1413,7 +1493,108 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
         );
         e.arbOddao = ODDAO;
 
+        // The seats are drawn from THIS block's hash: unknowable to whoever
+        // signed the dispute transaction, so neither party can grind for a
+        // favourable panel. {seatPanel} must spend it inside the window.
+        _panels[escrowId].openBlock = uint64(block.number);
+
         emit EscrowDisputeOpened(escrowId, caller, fee);
+    }
+
+    /**
+     * @notice Seat the three judges who will hear one disputed escrow
+     * @dev Permissionless: the draw is deterministic from the dispute's opening
+     *      block hash, so whoever submits it cannot choose the panel. The
+     *      Validator calls this on the block after a dispute is opened; anyone
+     *      else may call it if the Validator is down.
+     *
+     *      The seat set is STORED, and it is the only signature set this escrow
+     *      will accept afterwards. A later roster change therefore cannot
+     *      invalidate a case that is already seated — otherwise removing a judge
+     *      would brick every live dispute she sits on.
+     *
+     *      If nobody seats the panel inside the 256-block hash window, the escrow
+     *      stays frozen and falls to the trustless timeout refund: no verdict is
+     *      possible, and nobody's money is trapped permanently.
+     * @param escrowId Disputed escrow to seat a panel for
+     */
+    function seatPanel(uint256 escrowId) external {
+        Escrow storage e = escrows[escrowId];
+        if (e.buyer == address(0)) revert EscrowNotFound();
+        if (!e.disputed) revert NotDisputed();
+        if (e.resolved) revert AlreadyResolved();
+
+        Panel storage panel = _panels[escrowId];
+        if (panel.seatCount == PANEL_SEATS) revert PanelAlreadySeated();
+        uint256 openBlock = uint256(panel.openBlock);
+        if (openBlock == 0) revert PanelNotSeated(0);
+        // solhint-disable-next-line not-rely-on-time
+        if (block.number <= openBlock) revert PanelNotSeated(0);
+        if (block.number > openBlock + SEAT_WINDOW_BLOCKS) {
+            revert PanelSeatWindowClosed();
+        }
+
+        // solhint-disable-next-line not-rely-on-time
+        bytes32 entropy = blockhash(openBlock);
+        // Outside the 256-block window `blockhash` returns zero, which would
+        // hand every case the same seed. Refuse rather than seat a panel whose
+        // draw anyone could have predicted.
+        if (entropy == bytes32(0)) revert PanelSeatWindowClosed();
+        (address[3] memory seats, uint256 found) = EscrowSignatureLib
+            .selectSeats(
+                _verdictJudges,
+                escrowId,
+                entropy,
+                _panelExclusions(e)
+            );
+        if (found < PANEL_SEATS) revert PanelNotSeated(found);
+
+        panel.seats = seats;
+        panel.seatCount = uint8(PANEL_SEATS);
+        emit PanelSeated(escrowId, seats);
+    }
+
+    /**
+     * @notice The addresses the seat draw must never pick for this escrow
+     * @dev ONLY the two parties and the escrow itself.
+     *
+     *      🛑 THE FOUR FEE-ATTRIBUTION SLOTS ARE DELIBERATELY NOT EXCLUDED.
+     *      The seller chooses those slots when she creates the escrow, so
+     *      excluding them would hand a party a lever over the panel: name four
+     *      roster judges as referrers and nodes and none of them can ever hear
+     *      the case — on a six-judge roster that makes seating impossible and
+     *      sends a disputed escrow to the timeout, and on a large roster it
+     *      reweights the draw in the seller's favour. A judge who is also a
+     *      referrer is a market participant, not an outlawed one; the roster is
+     *      admin-curated, and the arbitration fee she is paid for the case is
+     *      the same fee she would receive from any case.
+     * @param e The escrow record
+     * @return excluded Buyer, seller and the escrow address
+     */
+    function _panelExclusions(
+        Escrow storage e
+    ) private view returns (address[3] memory excluded) {
+        excluded[0] = e.buyer;
+        excluded[1] = e.seller;
+        excluded[2] = address(this);
+    }
+
+    /**
+     * @notice The three judges seated for an escrow (zero-filled before seating)
+     * @param escrowId Escrow identifier
+     * @return seats Seated judges
+     * @return seatCount Number of seats recorded
+     * @return openBlock Block the dispute was opened in (0 = never disputed)
+     */
+    function getPanel(
+        uint256 escrowId
+    )
+        external
+        view
+        returns (address[3] memory seats, uint8 seatCount, uint64 openBlock)
+    {
+        Panel storage panel = _panels[escrowId];
+        return (panel.seats, panel.seatCount, panel.openBlock);
     }
 
     /**
@@ -1430,13 +1611,13 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
      *      {openDispute} or {markDisputed}. `resolved` makes it single-use.
      *
      *      Signature checks (see {EscrowSignatureLib.verifyVerdict}): every
-     *      supplied signature must be valid, from a rostered judge, distinct,
-     *      and not the buyer or the seller; the bundle must still be inside
-     *      `validUntil`.
+     *      supplied signature must be valid, from one of the THREE JUDGES SEATED
+     *      FOR THIS ESCROW, distinct, and not the buyer or the seller; the
+     *      bundle must still be inside `validUntil`.
      * @param escrowId Escrow the verdict applies to
      * @param releaseFunds True = pay the seller, false = refund the buyer
      * @param validUntil Unix time the judges signed as the bundle deadline
-     * @param signatures Two or more judge signatures (65 bytes each)
+     * @param signatures Two or three judge signatures (65 bytes each)
      */
     function executeVerdict(
         uint256 escrowId,
@@ -1456,8 +1637,14 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
         // solhint-disable-next-line not-rely-on-time
         if (validUntil > e.expiry + VERDICT_WINDOW) revert InvalidVerdict();
 
+        // 🛑 The seats, not the roster. With a roster of n, accepting "any two
+        // rostered signatures" would lower the collusion bar as n grows; only
+        // the three judges drawn for THIS escrow can settle it. A panel that
+        // was never seated has no verdict path — the timeout backstop applies.
+        Panel storage panel = _panels[escrowId];
+
         // Recovers EVERY signer presented, on either direction, so a judge who
-        // dissented is still paid. Reverts unless two distinct rostered
+        // dissented is still paid. Reverts unless two distinct seated
         // non-party judges signed the requested direction.
         address[] memory signers = EscrowSignatureLib.verifyVerdict(
             _domainSeparatorV4(),
@@ -1465,7 +1652,8 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
             releaseFunds,
             validUntil,
             signatures,
-            verdictJudge,
+            panel.seats,
+            panel.seatCount,
             e.buyer,
             e.seller
         );
@@ -1738,18 +1926,6 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
     }
 
     /**
-     * @notice The three protocol fee sinks on this chain
-     */
-    function _beneficiaries() private view returns (FeeBeneficiaries memory) {
-        return
-            FeeBeneficiaries({
-                oddao: ODDAO,
-                stakingPool: STAKING_POOL,
-                treasury: PROTOCOL_TREASURY
-            });
-    }
-
-    /**
      * @notice The arbitration fee for one disputed escrow, in its own token
      * @dev Percentage of the disputed amount with a per-token floor. The floor
      *      exists because a share of a small sale is dust; the ceiling
@@ -1842,18 +2018,30 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
         if (judge == address(0) || judge == address(this)) {
             revert InvalidAddress();
         }
-        if (verdictJudge[judge] == allowed) return;
         if (allowed) {
-            // 🛑 The panel is three. More judges divide the fee and turn "2 of
-            // 3" into "any 2 of N", which only lowers the bar for collusion.
-            if (verdictJudgeCount >= MAX_VERDICT_JUDGES) {
-                revert TooManyVerdictJudges();
+            // 🛑 A re-add is the natural way to undo a proposed removal. Without
+            // this, the add would be a silent no-op (already a member), the
+            // proposal would stay live, and the judge would be dropped 48 hours
+            // later — which can leave the roster below three and stop every new
+            // dispute chain-wide.
+            if (pendingJudgeRemoval == judge) {
+                pendingJudgeRemoval = address(0);
+                judgeRemovalAt = 0;
+                emit JudgeRemovalCancelled();
             }
-            ++verdictJudgeCount;
+            if (verdictJudge[judge]) return;
+            // 🛑 The roster is UNBOUNDED, and that is safe only because the
+            // threshold is applied to the three seats drawn per dispute, never
+            // to the roster. Adding a judge adds a candidate; it never gives
+            // anyone a second route to settle a case.
             verdictJudge[judge] = true;
+            _verdictJudges.push(judge);
+            _verdictJudgeIndex[judge] = _verdictJudges.length;
+            ++verdictJudgeCount;
             emit VerdictJudgeUpdated(judge, true);
             return;
         }
+        if (!verdictJudge[judge]) return;
         // 🛑 Removal is DELAYED. Substitution is the attack: drop the two
         // honest signers and seat two colluding ones in one batch, and the
         // roster becomes a wallet-controlled settlement oracle over every
@@ -1862,6 +2050,30 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
         // solhint-disable-next-line not-rely-on-time
         judgeRemovalAt = block.timestamp + JUDGE_REMOVAL_DELAY;
         emit JudgeRemovalProposed(judge, judgeRemovalAt);
+    }
+
+    /**
+     * @notice The judge roster, page by page
+     * @dev The roster is unbounded, so a whole-array getter would be unbounded
+     *      in gas and unusable once it grows. Page it.
+     * @param offset First index to return
+     * @param limit Maximum entries to return
+     * @return judges Roster slice (fewer than `limit` at the end)
+     */
+    function getVerdictJudges(
+        uint256 offset,
+        uint256 limit
+    ) external view returns (address[] memory judges) {
+        uint256 total = _verdictJudges.length;
+        if (offset >= total || limit == 0) {
+            return new address[](0);
+        }
+        uint256 end = offset + limit;
+        if (end > total) end = total;
+        judges = new address[](end - offset);
+        for (uint256 i = offset; i < end; ++i) {
+            judges[i - offset] = _verdictJudges[i];
+        }
     }
 
     /**
@@ -1884,11 +2096,49 @@ contract EscrowV2 is ReentrancyGuard, Pausable, ERC2771Context, EIP712 {
         if (judge == address(0)) revert NoPendingJudgeRemoval();
         // solhint-disable-next-line not-rely-on-time
         if (block.timestamp < judgeRemovalAt) revert JudgeRemovalDelayActive();
+        // Swap-and-pop keeps the drawable array dense. 🛑 This reorders the
+        // array, which is harmless: seats are drawn per dispute and STORED, so
+        // a case already seated keeps its panel no matter what the roster does
+        // afterwards.
+        uint256 index = _verdictJudgeIndex[judge];
+        if (index != 0) {
+            uint256 lastIndex = _verdictJudges.length;
+            if (index != lastIndex) {
+                address lastJudge = _verdictJudges[lastIndex - 1];
+                _verdictJudges[index - 1] = lastJudge;
+                _verdictJudgeIndex[lastJudge] = index;
+            }
+            _verdictJudges.pop();
+            delete _verdictJudgeIndex[judge];
+        }
         verdictJudge[judge] = false;
         --verdictJudgeCount;
         pendingJudgeRemoval = address(0);
         judgeRemovalAt = 0;
         emit VerdictJudgeUpdated(judge, false);
+    }
+
+    /**
+     * @notice How many roster entries could actually be seated for an escrow
+     * @dev Cheap pre-flight only: bounded by {SEAT_SCAN_LIMIT}, so a huge roster
+     *      cannot make opening a dispute expensive. The authoritative draw is
+     *      {seatPanel}, which samples the whole roster.
+     * @param buyer Escrow buyer (never seated)
+     * @param seller Escrow seller (never seated)
+     * @return eligible Seats found, capped at {PANEL_SEATS}
+     */
+    function _seatableJudges(
+        address buyer,
+        address seller
+    ) private view returns (uint256 eligible) {
+        uint256 total = _verdictJudges.length;
+        uint256 scan = total < SEAT_SCAN_LIMIT ? total : SEAT_SCAN_LIMIT;
+        for (uint256 i = 0; i < scan; ++i) {
+            address candidate = _verdictJudges[i];
+            if (candidate == buyer || candidate == seller) continue;
+            ++eligible;
+            if (eligible >= PANEL_SEATS) return eligible;
+        }
     }
 
     /**

@@ -99,7 +99,7 @@ async function main() {
   for (const judge of judges) {
     if (!ethers.isAddress(judge)) throw new Error(`not an address: ${judge}`);
   }
-  if (judges.length < 2) throw new Error("at least two judges are required");
+  if (judges.length < 3) throw new Error("at least three judges are required to seat a panel");
   const dryRun = process.env.ESCROW_DRY_RUN === "1";
 
   // ── Settlement token ───────────────────────────────────────────────────
@@ -163,7 +163,7 @@ async function main() {
   console.log("fee bps         :", (await escrow.arbitrationFeeBps()).toString());
   console.log("judge pools     :", (await escrow.judgePoolBps2()).toString(), "/", (await escrow.judgePoolBps3()).toString());
   console.log("min fee (USDC)  :", (await escrow.minArbitrationFee(usdc)).toString());
-  console.log("roster count    :", (await escrow.verdictJudgeCount()).toString());
+  console.log("roster count    :", (await escrow.verdictJudgeCount()).toString(), "(unbounded; 3 seats drawn per dispute)");
   for (const judge of judges) {
     console.log("judge           :", judge, await escrow.verdictJudge(judge));
   }
