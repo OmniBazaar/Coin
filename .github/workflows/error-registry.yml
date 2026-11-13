@@ -2,11 +2,27 @@ name: Contract error registry
 
 # Fails a pull request that changes a contract error (or adds a contract) without
 # regenerating WebApp/src/utils/contractErrorRegistry.ts. The registry lives in
-# the WebApp repo and the generator lives here, so the job checks out both.
+# the WebApp repo and the generator lives here, so the job needs both trees.
 #
-# Set a repository secret WEBAPP_READ_TOKEN (a fine-grained PAT with read access
-# to the WebApp repo) if WebApp is private. For public repos the default
-# GITHUB_TOKEN is enough.
+# Access: WebApp is private and this repo is public, so `github.token` (scoped to
+# Coin) cannot read it — a bare `actions/checkout` of WebApp returns 404. The job
+# authenticates with a read-only SSH deploy key on OmniBazaar/WebApp, held here as
+# the repository secret WEBAPP_DEPLOY_KEY. Rotate it by adding a new read-only
+# deploy key on WebApp and updating this secret; nothing else changes.
+#
+# Fork pull requests never receive secrets, so the cross-repo comparison cannot
+# run for them: the job emits a warning annotation and skips those two steps
+# rather than failing every outside contribution for a credential it can't have.
+# Merges to main and same-repo branches are fully gated.
+#
+# Install notes (learned the hard way — do not "simplify" these away):
+#   * `npm ci` cannot be used: package-lock.json is deliberately gitignored, so
+#     the repo carries no lockfile and `npm ci` aborts with EUSAGE. For the same
+#     reason `actions/setup-node` must not be asked for `cache: npm`.
+#   * `--legacy-peer-deps` is required: @layerzerolabs/* peer-depends on
+#     hardhat-deploy/@eth-optimism (ethers ^5) while the hardhat toolbox needs
+#     ethers ^6. The two halves cannot both resolve, so peers are not installed —
+#     which is also how the dev monorepo tree is built.
 
 on:
   push:
@@ -14,16 +30,20 @@ on:
     paths:
       - "contracts/**"
       - "hardhat.config.js"
+      - "package.json"
       - "scripts/generate-error-registry.ts"
       - "scripts/check-error-registry.cjs"
       - "scripts/error-registry-legacy.json"
+      - ".github/workflows/error-registry.yml"
   pull_request:
     paths:
       - "contracts/**"
       - "hardhat.config.js"
+      - "package.json"
       - "scripts/generate-error-registry.ts"
       - "scripts/check-error-registry.cjs"
       - "scripts/error-registry-legacy.json"
+      - ".github/workflows/error-registry.yml"
   workflow_dispatch:
 
 permissions:
@@ -33,32 +53,44 @@ jobs:
   registry:
     name: registry in sync with artifacts
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     steps:
       - name: Checkout Coin
-        uses: actions/checkout@v4
-
-      - name: Checkout WebApp (committed registry)
-        uses: actions/checkout@v4
-        with:
-          repository: OmniBazaar/WebApp
-          token: ${{ secrets.WEBAPP_READ_TOKEN || github.token }}
-          path: webapp
+        uses: actions/checkout@v5
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: "22"
-          cache: npm
 
       - name: Install dependencies
-        run: npm ci
+        # No lockfile in this repo (see header) — `npm install`, not `npm ci`.
+        run: npm install --no-audit --no-fund --legacy-peer-deps
 
       - name: Compile contracts
         # Artifacts are the input to the registry generator.
         run: npx hardhat compile
 
-      - name: Install the TypeScript runner
-        run: npm install --no-save tsx
+      - name: Check for the WebApp deploy key
+        id: access
+        env:
+          KEY: ${{ secrets.WEBAPP_DEPLOY_KEY }}
+        run: |
+          if [ -n "$KEY" ]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::WEBAPP_DEPLOY_KEY is not available to this run (fork pull request?) — the cross-repo registry comparison was skipped, so this run does not prove the registry is in sync."
+          fi
+
+      - name: Checkout WebApp (committed registry)
+        if: steps.access.outputs.available == 'true'
+        uses: actions/checkout@v5
+        with:
+          repository: OmniBazaar/WebApp
+          ssh-key: ${{ secrets.WEBAPP_DEPLOY_KEY }}
+          path: webapp
 
       - name: Check the committed registry is up to date
+        if: steps.access.outputs.available == 'true'
         run: node scripts/check-error-registry.cjs --committed webapp/src/utils/contractErrorRegistry.ts

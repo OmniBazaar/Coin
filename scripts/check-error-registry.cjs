@@ -135,8 +135,9 @@ function main() {
   );
 
   console.error("error registry is STALE — regenerate and commit:");
+  console.error("  cd Coin && npx tsx scripts/generate-error-registry.ts");
   console.error(
-    "  cd Coin && NODE_PATH=../node_modules npx tsx scripts/generate-error-registry.ts",
+    "(in the dev monorepo, tsx lives in the root node_modules — use `npx tsx` from Coin or set NODE_PATH=../node_modules)",
   );
   console.error(
     `\ncommitted ${committed.size} selectors, artifacts produce ${generated.size}`,
