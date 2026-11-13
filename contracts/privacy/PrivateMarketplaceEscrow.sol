@@ -172,8 +172,17 @@ contract PrivateMarketplaceEscrow is
     /// @notice Maximum escrow fee (5 %, mirrors `MinimalEscrow`).
     uint64 public constant MAX_ESCROW_FEE_BPS = 500;
 
-    /// @notice Default escrow fee (0.25 %, per CLAUDE.md tokenomics).
-    uint64 public constant DEFAULT_ESCROW_FEE_BPS = 25;
+    /// @notice Default escrow fee in basis points.
+    /// @dev `0` — founder decision 2026-11-13: a private (pXOM) purchase pays
+    ///      no private-escrow fee. The privacy surface is monetised by private
+    ///      trading, not by charging a buyer twice for the same sale, and the
+    ///      buyer SIGNS this value into the create intent, so it must match the
+    ///      contract's live `escrowFeeBps` exactly.
+    ///      The live COTI proxy at 0x43d2…a670 was set to 0 through the admin
+    ///      setter (`requestEscrowFeeUpdate` + `confirmEscrowFeeUpdate`, no
+    ///      upgrade — `TIMELOCK_DELAY` is 0); this constant is what a FUTURE
+    ///      deployment initialises with, so the two agree.
+    uint64 public constant DEFAULT_ESCROW_FEE_BPS = 0;
 
     /// @notice Arbitration fee in basis points (2.5 %; per CLAUDE.md the
     ///         total cost of arbitration is 5 % split 50/50 buyer/seller —

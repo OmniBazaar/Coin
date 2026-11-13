@@ -32,7 +32,9 @@ async function getFactory() {
 }
 
 describe("PrivateMarketplaceEscrow (non-MPC logic)", function () {
-    const DEFAULT_FEE_BPS = 25n;
+    // `DEFAULT_ESCROW_FEE_BPS` is 0 since the 2026-11-13 founder decision: a
+    // private (pXOM) purchase pays no private-escrow fee.
+    const DEFAULT_FEE_BPS = 0n;
     // ctUint256 ABI shape: { ciphertextHigh: uint256, ciphertextLow: uint256 }.
     const ZERO_ENC = { ciphertextHigh: 0n, ciphertextLow: 0n };
     // COTI chain ids — initialize() hard-reverts UnsupportedChain on any
