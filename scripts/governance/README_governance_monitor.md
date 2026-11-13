@@ -17,7 +17,8 @@ TODO 13a7).
 
 | State | Key | Class |
 |---|---|---|
-| Active, vote NOT yet cast by `$GOV_VOTER` | `gov.proposal.<id>.voting-open` | **ALERT** (needs votes) |
+| Active, vote NOT yet cast by `$GOV_VOTER`, past the 45-minute grace window | `gov.proposal.<id>.voting-open` | **ALERT** (needs votes) |
+| Active, vote NOT yet cast, still inside the grace window | — | journald line only (the auto-voter ticks every 15 min) |
 | Active, vote already cast by `$GOV_VOTER` | — | journald line only (nothing left to do) |
 | Succeeded | `gov.proposal.<id>.queue-due` | **ALERT** (expires 14 days after voting closed) |
 | Queued, timelock elapsed | `gov.proposal.<id>.execute-due` | **ALERT** |
@@ -36,6 +37,15 @@ Standing conditions re-emit at most once an hour while they persist. `executed`
 fires once, and only for a proposal the monitor previously saw awaiting action —
 otherwise the first run pages once per historical execution (it did, 2026-10-31:
 six issues for proposals 10–15, all ignored afterwards).
+
+🛑 **The hourly hysteresis only works if the ledger advances its own timestamp.**
+`want()` must write `now` for the key it just emitted; keeping the old timestamp
+inverts the guard an hour later, after which every run re-emits. That defect
+turned proposal 17's `voting-open` into 78 pages in 14 hours (2026-11-12, one per
+10-minute tick). The executor's failure paths have the same rule
+(`emit_failure` in `execute-proposal.sh`): page on a changed error, otherwise at
+most hourly — the un-deduplicated vote path produced 54 pages from a single,
+already-successful vote.
 
 ## The timelock is read, never assumed
 

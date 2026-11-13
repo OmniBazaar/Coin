@@ -40,6 +40,11 @@ source "$HERE/governance-lib.sh"
 LOG_TAG="omnibazaar-gov-monitor"
 STATE_FILE=${GOV_STATE_FILE:-/home/omnirick/OmniBazaar/Validator/backups/.gov_state}
 REEMIT_SECONDS=${GOV_REEMIT_SECONDS:-3600}
+# Voting must be open this long before a missing vote is worth a human's
+# attention — the auto-voter ticks every 15 minutes, so 45 minutes is three
+# missed attempts. Proposal 17 paged 12 seconds after voting opened and 12
+# seconds after our own vote landed (2026-11-11T23:59:33Z).
+VOTE_GRACE_SECONDS=${GOV_VOTE_GRACE_SECONDS:-2700}
 MAX_PROPOSALS=${GOV_MAX_PROPOSALS:-200}
 
 state_keys=()
@@ -79,6 +84,12 @@ want() {  # want <key> <priority> <message> <once|repeat>
     fi
     emit "$key" "$prio" "$msg"
     (( alerts++ ))
+    # Record THIS emission's time. Without it the ledger keeps the original
+    # timestamp forever and the hourly guard inverts: once `now - ts` first
+    # exceeds REEMIT_SECONDS every later run re-emits (2026-11-12 — proposal
+    # 17's voting-open paged every 10 minutes for 13 hours because the ledger
+    # still held 23:59).
+    if [[ "$mode" != "once" ]]; then emit_at["$key"]="$now"; fi
     return 0
 }
 
@@ -97,15 +108,21 @@ for (( id = 1; id <= MAX_PROPOSALS; id++ )); do
     fi
 
     case "$st" in
-        1) # Active. Only page if the governance-weight account has NOT voted:
-           # once the vote is in and quorum is met there is no human action
-           # left, so an ALERT would be a false instruction (proposal 17 on
-           # 2026-11-12 paged "cast a vote" for 14 hours after the vote landed).
+        1) # Active. Only page when a human can still change the outcome:
+           # once the governance-weight account has voted there is no human
+           # action left, and the auto-voter deserves a grace window before a
+           # still-missing vote is called a problem. Proposal 17 on 2026-11-12
+           # paged "cast a vote" for 14 hours AFTER the vote landed.
            if [[ "$(gov_has_voted "$id")" == "true" ]]; then
                echo "$(date -u '+%Y-%m-%d %H:%M:%S UTC') proposal $id open for voting; vote already cast by $GOV_VOTER — no action needed"
            else
-               want "gov.proposal.${id}.voting-open" user.warning \
-                   "proposal $id is OPEN FOR VOTING — cast a vote before it closes"
+               started=$(gov_vote_start "$id")
+               if [[ -n "$started" ]] && (( now - started < VOTE_GRACE_SECONDS )); then
+                   echo "$(date -u '+%Y-%m-%d %H:%M:%S UTC') proposal $id open for voting, no vote yet — inside the $(date -u -d "@$(( started + VOTE_GRACE_SECONDS ))" '+%Y-%m-%dT%H:%MZ') grace window, leaving it to the auto-voter"
+               else
+                   want "gov.proposal.${id}.voting-open" user.warning \
+                       "proposal $id is OPEN FOR VOTING and still has no vote from $GOV_VOTER — cast a vote before it closes"
+               fi
            fi
            ;;
         3) want "gov.proposal.${id}.queue-due" user.warning \

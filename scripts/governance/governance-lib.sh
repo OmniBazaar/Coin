@@ -63,6 +63,22 @@ gov_is_already_voted_error() {  # recognise AlreadyVoted however the tool phrase
     grep -qiE "already voted|has voted|AlreadyVoted|${SEL_ALREADY_VOTED}" <<<"$1"
 }
 
+gov_vote_start() {  # gov_vote_start <id> -> unix seconds voting opened, or ""
+    local id="$1" out line start
+    out=$("$CAST" call "$GOV" \
+        "proposals(uint256)(address,uint8,bool,bool,bool,bytes32,uint256,uint256,uint256,uint256,uint256,uint256,uint256,uint256)" \
+        "$id" --rpc-url "$RPC" 2>/dev/null) || {
+        echo ""
+        return
+    }
+    # cast prints one tuple field per line; voteStart is the 9th. A uint256 may
+    # carry a human-readable suffix ("1794441331 [1.794e9]") — take the first
+    # token, and refuse anything that is not plain digits.
+    line=$(sed -n '9p' <<<"$out")
+    start="${line%% *}"
+    [[ "$start" =~ ^[0-9]+$ ]] && echo "$start"
+}
+
 # The unix time at which a Queued proposal may be executed, computed exactly as
 # OmniGovernance._getTimelockId does:
 #   salt = keccak256(abi.encodePacked("OmniGov", proposalId))

@@ -36,6 +36,21 @@ now=$(date +%s)
 
 emit() { gov_emit "$LOG_TAG" "$@"; }
 
+emit_failure() {  # emit_failure <key> <message-body>
+    # One page per DISTINCT failure, then at most hourly while it persists, so a
+    # fault that the next tick cannot fix does not become a drumbeat. The timer
+    # ticks every 15 minutes; on 2026-11-12 the un-deduplicated vote path paged
+    # 54 times in 13 hours.
+    local key="$1" body="$2" last
+    last=$(cat "$ERR_STATE" 2>/dev/null || true)
+    if [[ "$key|$body" != "${last#*|}" ]] || (( now - ${last%%|*} > 3600 )); then
+        printf '%s|%s|%s\n' "$now" "$key" "$body" >"$ERR_STATE"
+        emit "$key" user.warning "$body"
+    else
+        echo "$(date -u '+%Y-%m-%d %H:%M:%S UTC') $key unchanged and already paged within the hour; not paging again"
+    fi
+}
+
 disarm() {
     local unit="${GOV_EXEC_DISARM_UNIT:-}"
     [[ -n "$unit" ]] || return 0
@@ -100,7 +115,7 @@ case "$st" in
             echo "vote already cast by $GOV_VOTER (revert); nothing to do"
             exit 0
         fi
-        emit "gov.proposal.${ID}.vote-failed" user.warning \
+        emit_failure "gov.proposal.${ID}.vote-failed" \
             "proposal $ID is Active but the vote FAILED — $(tail -3 <<<"$out" | tr '\n' ' ' | cut -c1-300)"
         exit 1
         ;;
@@ -138,16 +153,10 @@ case "$st" in
             disarm
             exit 0
         fi
-        # Failed while legally ready. De-duplicate: page when the error changes,
-        # and at most once an hour otherwise, so a persistent fault does not
-        # become a 15-minute drumbeat.
-        sig=$(tail -3 <<<"$out" | tr '\n' ' ' | cut -c1-300)
-        last=$(cat "$ERR_STATE" 2>/dev/null || true)
-        if [[ "$sig" != "${last#*|}" ]] || (( now - ${last%%|*} > 3600 )); then
-            echo "${now}|${sig}" >"$ERR_STATE"
-            emit "gov.proposal.${ID}.execute-failed" user.warning \
-                "proposal $ID is legally ready but execute FAILED (rc=$rc) — $sig"
-        fi
+        # Failed while legally ready. De-duplicate (emit_failure): page when the
+        # error changes, and at most once an hour otherwise.
+        emit_failure "gov.proposal.${ID}.execute-failed" \
+            "proposal $ID is legally ready but execute FAILED (rc=$rc) — $(tail -3 <<<"$out" | tr '\n' ' ' | cut -c1-300)"
         exit 1
         ;;
     *)
