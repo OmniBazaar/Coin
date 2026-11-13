@@ -60,8 +60,10 @@ import {
  *        to 5 % through the queue/confirm pair; the release fee is
  *        snapshotted per escrow at create. The live COTI proxy was set to
  *        0 through that pair, not by an upgrade.
- *      - 5 % arbitration fee on dispute resolution (split 50/50 buyer/
- *        seller — same as MinimalEscrow), accrued to the vault.
+ *      - 5 % arbitration fee on dispute resolution — the whole fee is
+ *        deducted from the disputed amount at settlement, exactly as
+ *        `EscrowV2` does (`DEFAULT_ARBITRATION_FEE_BPS = 500`), and paid
+ *        to the vault. A normal release pays NO arbitration fee.
  *      - 48-hour timelock on every privileged setter (fee bps, fee
  *        recipient, arbitrator, trusted forwarder).
  *      - UUPS upgradeable with 7-day two-step ossification (re-request
@@ -186,14 +188,20 @@ contract PrivateMarketplaceEscrow is
     ///      deployment initialises with, so the two agree.
     uint64 public constant DEFAULT_ESCROW_FEE_BPS = 0;
 
-    /// @notice Arbitration fee in basis points (2.5 %; per CLAUDE.md the
-    ///         total cost of arbitration is 5 % split 50/50 buyer/seller —
-    ///         in v1 we lack a bond mechanism so the loser cannot post
-    ///         their share, and the contract collects only the winner's
-    ///         half from the principal payout. The remaining 2.5 % is a
-    ///         documented v1 shortfall pending the v2 bond mechanism
-    ///         (audit H-01 + I-01). See `arbitrate`.
-    uint64 public constant ARBITRATION_FEE_BPS = 250;
+    /// @notice Arbitration fee in basis points (5 % of the disputed amount).
+    /// @dev Founder decision 2026-11-13: the FULL fee comes out of the payout
+    ///      at settlement — `_settleArbitration` pays
+    ///      `price * ARBITRATION_FEE_BPS / BASIS_POINTS_DIVISOR` to the fee
+    ///      vault and the remainder to the winner — matching the published fee
+    ///      schedule and `EscrowV2.DEFAULT_ARBITRATION_FEE_BPS` (500). The
+    ///      earlier 250 bps value tried to model a 5 % cost "split 50/50
+    ///      buyer/seller" and collected only the winner's half; that v1
+    ///      shortfall is retired (audit H-01 + I-01).
+    ///      A normal {release} pays NO arbitration fee — only the escrow fee
+    ///      snapshot from create time.
+    ///      Read at settlement time, not snapshotted per escrow: a dispute
+    ///      resolved after this upgrade pays 5 %.
+    uint64 public constant ARBITRATION_FEE_BPS = 500;
 
     /// @notice Minimum seconds before a dispute can be raised after create
     ///         (24 hours, matching `MinimalEscrow` for parity — audit M-01).
@@ -1028,9 +1036,9 @@ contract PrivateMarketplaceEscrow is
      *      so admin pause cannot trap DISPUTED escrows.
      *
      *      Splits the encrypted price:
-     *        - 2.5 % arbitration fee → fee vault (winner's half of the
-     *          50/50 cost; loser's half deferred to v2 bond mechanism).
-     *        - winner receives `price * (1 − 2.5 %)`; loser receives 0.
+     *        - 5 % arbitration fee → fee vault, deducted from the disputed
+     *          amount (same rule as `EscrowV2`).
+     *        - winner receives `price * (1 − 5 %)`; loser receives 0.
      *      Single-arbitrator decisions accepted in v1; panel rotation
      *      deferred to v2.
      * @param escrowId Escrow identifier.
@@ -1074,7 +1082,7 @@ contract PrivateMarketplaceEscrow is
      *      `memory/decision_privacy_roles_random_committee_2026-05-27.md`.
      *      The committee decides the OUTCOME (which party won); the contract
      *      enforces the identical payout split as {arbitrate}
-     *      (2.5 % arbitration fee → vault, remainder → winner) via the
+     *      (5 % arbitration fee → vault, remainder → winner) via the
      *      shared {_settleArbitration}. This removes the manual
      *      deployer-key arbitration step so dispute resolution survives the
      *      post-launch retirement of the deployer key.
@@ -1730,11 +1738,12 @@ contract PrivateMarketplaceEscrow is
      *         the arbitration fee. Shared by {arbitrate} (single-role path)
      *         and {resolveDisputeWithCommittee} (committee path) so both
      *         apply the identical split.
-     * @dev Splits the encrypted price: 2.5 % arbitration fee → fee vault
-     *      (winner's half of the 50/50 cost; loser's half deferred to the v2
-     *      bond mechanism — audit H-01), remainder → winner. `arbFeeG +
-     *      winnerAmountG == priceG`, so the two transfers drain exactly the
-     *      custody pulled at create.
+     * @dev Splits the encrypted price: 5 % arbitration fee → fee vault,
+     *      deducted from the disputed amount (same rule as `EscrowV2`);
+     *      remainder → winner. `arbFeeG + winnerAmountG == priceG`, so the two
+     *      transfers drain exactly the custody pulled at create.
+     *      Reads the live `ARBITRATION_FEE_BPS` constant at settlement, so a
+     *      dispute resolved after a fee change pays the NEW rate.
      * @param entry Escrow record (storage pointer). Caller MUST have already
      *        set `entry.status` to the terminal ARBITRATED_* value.
      * @param winner The party receiving the payout (buyer or seller).
@@ -1743,7 +1752,7 @@ contract PrivateMarketplaceEscrow is
         private
     {
         gtUint256 priceG = MpcCore.onBoard(entry.encPrice);
-        // 2.5 % arbitration fee → vault (audit H-01).
+        // 5 % arbitration fee → vault, taken out of the disputed payout.
         gtUint256 arbFeeG = MpcCore.div(
             MpcCore.checkedMul(
                 priceG, MpcCore.setPublic256(uint256(ARBITRATION_FEE_BPS))

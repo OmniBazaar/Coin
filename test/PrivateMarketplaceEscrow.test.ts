@@ -294,6 +294,86 @@ describe("PrivateMarketplaceEscrow (non-MPC logic)", function () {
         });
     });
 
+    describe("arbitration fee — 5 % of the disputed amount (founder decision 2026-11-13)", function () {
+        // The COTI MPC precompile does not exist under Hardhat, so the transfer
+        // calls inside `_settleArbitration` (MpcCore.onBoard / checkedMul / div
+        // / transferGT) cannot execute here — see test/TEST_GUIDE.md
+        // §"MPC not available" and the module header. What IS verifiable
+        // off-chain is (i) the fee constant the settlement branch reads and
+        // (ii) that the settlement branch performs exactly `price * fee /
+        // 10_000` out of the payout. Both are asserted below; the encrypted
+        // custody drain itself stays a COTI-testnet proof.
+        const BASIS_POINTS = 10_000n;
+
+        it("ARBITRATION_FEE_BPS is 500 (5 %), matching EscrowV2's default", async function () {
+            const { escrow } = await deployFixture();
+            expect(await escrow.ARBITRATION_FEE_BPS()).to.equal(500n);
+            expect(await escrow.BASIS_POINTS_DIVISOR()).to.equal(BASIS_POINTS);
+        });
+
+        it("takes 5 % of the disputed amount out of the winner's payout", async function () {
+            const { escrow } = await deployFixture();
+            const feeBps = await escrow.ARBITRATION_FEE_BPS();
+            const divisor = await escrow.BASIS_POINTS_DIVISOR();
+            // Same integer arithmetic the contract runs in the MPC:
+            //   arbFee      = price * feeBps / divisor
+            //   winnerAmount = price - arbFee
+            for (const price of [10_000n, 1_000_000n, 19_999_999n, 123_456_789n]) {
+                const arbFee = (price * feeBps) / divisor;
+                const winnerAmount = price - arbFee;
+                expect(arbFee * 20n).to.equal(price - (price % 20n)); // exactly 5 %
+                expect(arbFee + winnerAmount).to.equal(price); // drains custody
+                expect(arbFee * divisor).to.be.lessThanOrEqual(price * feeBps);
+            }
+            // A 1000-unit dispute pays a 50-unit fee, 950 to the winner.
+            expect((1_000n * feeBps) / divisor).to.equal(50n);
+        });
+
+        it("reads the constant in _settleArbitration and charges nothing on a normal release", function () {
+            const fs = require("fs");
+            const path = require("path");
+            const source = fs.readFileSync(
+                path.join(
+                    __dirname,
+                    "..",
+                    "contracts",
+                    "privacy",
+                    "PrivateMarketplaceEscrow.sol",
+                ),
+                "utf8",
+            );
+            /** Body of a named private function, brace-matched. */
+            function bodyOf(name: string): string {
+                const start = source.indexOf(`function ${name}(`);
+                expect(start, `${name} present in source`).to.be.greaterThan(-1);
+                const open = source.indexOf("{", start);
+                let depth = 0;
+                for (let i = open; i < source.length; i += 1) {
+                    if (source[i] === "{") depth += 1;
+                    else if (source[i] === "}") {
+                        depth -= 1;
+                        if (depth === 0) return source.slice(open, i + 1);
+                    }
+                }
+                throw new Error(`unbalanced braces in ${name}`);
+            }
+
+            const settlement = bodyOf("_settleArbitration");
+            // The disputed-payout math: price * ARBITRATION_FEE_BPS / divisor.
+            expect(settlement).to.include("MpcCore.setPublic256(uint256(ARBITRATION_FEE_BPS))");
+            expect(settlement).to.include("MpcCore.setPublic256(BASIS_POINTS_DIVISOR)");
+            expect(settlement).to.include("privateToken.transferGT(feeVault, arbFeeG)");
+            expect(settlement).to.include("privateToken.transferGT(winner, winnerAmountG)");
+
+            // A normal release charges the escrow fee snapshotted at create —
+            // never the arbitration fee.
+            const release = bodyOf("_settle");
+            expect(release).to.include("entry.escrowFeeBpsAtCreate");
+            expect(release).to.not.include("ARBITRATION_FEE_BPS");
+            expect(release).to.include("privateToken.transferGT(entry.seller, sellerG)");
+        });
+    });
+
     describe("lifecycle status guards", function () {
         it("release reverts on a non-existent (EMPTY) escrow", async function () {
             const { escrow, buyer } = await deployFixture();
