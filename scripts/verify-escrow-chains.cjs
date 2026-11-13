@@ -19,7 +19,9 @@
  *   4. the three protocol fee recipients are distinct accounts (immutable, so a
  *      wrong one is unfixable without a redeploy);
  *   5. the chain's `OmniFeeRouter.feeCollector` (when the chain has one) is not
- *      the deployer account.
+ *      the deployer account;
+ *   6. every settlement token's arbitration floor equals its committed
+ *      expectation in {@link FEE_FLOOR_EXPECTATIONS}, and is not zero.
  *
  * Usage:
  *   node scripts/verify-escrow-chains.cjs              # every configured chain
@@ -39,6 +41,73 @@ const DEPLOYER = "0x021868f2E3D49C059EF52B539AAa933B437e0321";
 
 /** EIP-170 ceiling. */
 const EIP170_LIMIT = 24576;
+
+/**
+ * Committed arbitration floors, per chain and per settlement token.
+ *
+ * SET 2026-11-13 (deployer-direct `setMinArbitrationFee`, no delay). The floors
+ * are a FLOOR on the arbitration payout in token units, so each one is worth
+ * the same few dollars across chains:
+ *
+ *   - stablecoins (USDC, USDT): 2.5 units of a US-dollar stable;
+ *   - XOM: 600 XOM ≈ $2.40 at the reference price used for the policy (XOM
+ *     $0.004) — the five XOM-settling chains all use this number;
+ *   - WAVAX / WBNB: $2.50 of the wrapped native, computed from a live price
+ *     when the floors were set (AVAX ≈ $8.06 → 0.31 WAVAX; BNB ≈ $625 → 0.004
+ *     WBNB). Avalanche and BSC have no XOM token, so their primary coin is the
+ *     wrapped native. A floor is a MINIMUM, so native appreciation only makes
+ *     these stricter; re-derive if AVAX or BNB falls far below those prices.
+ *
+ * Why this table exists: the previous check reported "per-token fee floors" as
+ * PASS unconditionally while iterating only the chain config's token list —
+ * WAVAX/WBNB are allowlisted on their escrows without appearing in
+ * `escrowV2.supportedTokens`, so a missing floor there was invisible. The
+ * check now compares every configured token AND every token listed here against
+ * the live `minArbitrationFee`, and fails on zero or on any drift.
+ *
+ * Keys are lower-case addresses (that is how they compare); the values are the
+ * decimal string of the expected floor, in the token's own base units.
+ */
+const FEE_FLOOR_EXPECTATIONS = {
+  // OmniCoin L1 — XOM settles, USDC is the allowlisted stable.
+  88008: {
+    "0x1ee61487f08f715055358a1f020a86c9e571ed78": { symbol: "XOM", floor: "600000000000000000000" },
+    "0x81f4072fcca24d373ffcb34c248995dfc6c1219c": { symbol: "USDC", floor: "2500000" },
+  },
+  // Avalanche — BridgedXOM is the settlement coin, WAVAX the wrapped native.
+  43114: {
+    "0xaf72f6caf76775daeabaf5c82ce05d97359c8fa1": { symbol: "XOM", floor: "600000000000000000000" },
+    "0xb31f66aa3c1e785363f0875a1b74e27b85fd66c7": { symbol: "WAVAX", floor: "310000000000000000" },
+    "0xb97ef9ef8734c71904d8002f8b6bc66dd9c48a6e": { symbol: "USDC", floor: "2500000" },
+  },
+  // Ethereum — XOM + USDC.
+  1: {
+    "0x2e37f5a6d09d575e287a742062dafeeb1a0721a2": { symbol: "XOM", floor: "600000000000000000000" },
+    "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48": { symbol: "USDC", floor: "2500000" },
+  },
+  // Arbitrum One — XOM + USDC.
+  42161: {
+    "0x79b7480feeb8fd4509993c78ef8dde9786fc9ded": { symbol: "XOM", floor: "600000000000000000000" },
+    "0xaf88d065e77c8cc2239327c5edb3a432268e5831": { symbol: "USDC", floor: "2500000" },
+  },
+  // Base — XOM + USDC.
+  8453: {
+    "0x79b7480feeb8fd4509993c78ef8dde9786fc9ded": { symbol: "XOM", floor: "600000000000000000000" },
+    "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913": { symbol: "USDC", floor: "2500000" },
+  },
+  // Polygon — XOM + USDC.
+  137: {
+    "0x4aa156f02bd5edd0c1ed2719e525998b4ba8fa17": { symbol: "XOM", floor: "600000000000000000000" },
+    "0x3c499c542cef5e3811e1192ce70d8cc03d5c3359": { symbol: "USDC", floor: "2500000" },
+  },
+  // BNB Smart Chain — WBNB is the primary coin (no XOM token on BSC); USDC and
+  // USDT both carry 18 decimals there, so both floors are 2.5e18.
+  56: {
+    "0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c": { symbol: "WBNB", floor: "4000000000000000" },
+    "0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d": { symbol: "USDC", floor: "2500000000000000000" },
+    "0x55d398326f99059ff775485246999027b3197955": { symbol: "USDT", floor: "2500000000000000000" },
+  },
+};
 
 /**
  * Escrow chains the apps and validator know about.
@@ -397,12 +466,6 @@ async function checkChain(chain, recipients) {
           `not the 2026-11-12 build: ${err instanceof Error ? err.message : String(err)}`
         );
       }
-      const floors = [];
-      for (const token of tokens) {
-        const floor = await escrow.minArbitrationFee.staticCall(token.address).catch(() => 0n);
-        floors.push(`${token.symbol}=${String(floor)}`);
-      }
-      record(chain.name, "per-token fee floors", true, floors.join(" ") || "no tokens");
       } catch (err) {
         record(chain.name, "arbitration fee split readable", false, err instanceof Error ? err.message : String(err));
       }
@@ -410,6 +473,15 @@ async function checkChain(chain, recipients) {
   } else {
     record(chain.name, "arbitration fee split", "skip", "escrow has no settable arbitration fee");
   }
+
+  // 7. 🛑 THE PER-TOKEN ARBITRATION FLOORS ARE THE COMMITTED ONES.
+  // This check used to record PASS unconditionally while iterating only the
+  // chain config's token list — so a settlement token the allowlist accepts but
+  // the config does not list (WAVAX on Avalanche, WBNB on BSC) could sit at a
+  // floor of 0 forever, and a new token could be allowlisted with no floor, and
+  // both would read as green. Now it compares against FEE_FLOOR_EXPECTATIONS and
+  // fails on a zero floor as well as on drift.
+  await checkFeeFloors(chain, escrow, tokens);
 
   // 5. The chain's fee router must not pay the deployer.
   const routerAddress = manifest.contracts?.[chain.routerKey];
@@ -426,6 +498,88 @@ async function checkChain(chain, recipients) {
     } catch (err) {
       record(chain.name, "router feeCollector readable", false, err instanceof Error ? err.message : String(err));
     }
+  }
+}
+
+/**
+ * Assert the committed per-token arbitration floor on one escrow.
+ *
+ * Checks the union of the tokens the chain config lists and the tokens
+ * {@link FEE_FLOOR_EXPECTATIONS} holds a floor for — the second set matters
+ * because WAVAX and WBNB are allowlisted settlement coins that never appear in
+ * `escrowV2.supportedTokens` (they sit in the primary-coin slot). An allowlisted
+ * token with no committed floor is a FAILURE: it would settle arbitration at
+ * whatever the chain drifted to, including zero.
+ *
+ * @param {object} chain - Chain definition from {@link CHAINS}.
+ * @param {ethers.Contract} escrow - Escrow contract bound to a provider.
+ * @param {Array<{address: string, symbol: string}>} tokens - Config token list.
+ * @returns {Promise<void>}
+ */
+async function checkFeeFloors(chain, escrow, tokens) {
+  const expected = FEE_FLOOR_EXPECTATIONS[chain.chainId];
+  if (expected === undefined) {
+    record(
+      chain.name,
+      "per-token fee floors",
+      false,
+      `no committed expectations for chain ${String(chain.chainId)} — add them to FEE_FLOOR_EXPECTATIONS`
+    );
+    return;
+  }
+
+  // Union, keyed lower-case: config tokens first (their manifest symbol is only
+  // an address prefix), then any expectation token the config did not list.
+  const wanted = new Map();
+  for (const token of tokens) {
+    wanted.set(lower(token.address), { address: token.address, symbol: null });
+  }
+  for (const [address, exp] of Object.entries(expected)) {
+    if (!wanted.has(address)) wanted.set(address, { address, symbol: exp.symbol });
+  }
+
+  for (const [address, entry] of wanted) {
+    const exp = expected[address];
+    const label = exp !== undefined ? exp.symbol : entry.symbol ?? address.slice(0, 10);
+
+    let supported;
+    try {
+      supported = await escrow.supportedToken.staticCall(entry.address);
+    } catch {
+      supported = undefined;
+    }
+
+    if (exp === undefined) {
+      record(
+        chain.name,
+        `fee floor ${label}`,
+        supported === true ? false : "skip",
+        supported === true
+          ? `${entry.address} is allowlisted but has NO committed floor — add it to FEE_FLOOR_EXPECTATIONS`
+          : `${entry.address} not allowlisted and no committed floor — nothing to assert`
+      );
+      continue;
+    }
+
+    const want = BigInt(exp.floor);
+    let actual;
+    try {
+      actual = await escrow.minArbitrationFee.staticCall(entry.address);
+    } catch (err) {
+      record(
+        chain.name,
+        `fee floor ${label}`,
+        false,
+        `expected ${exp.floor} · actual UNREADABLE (${err instanceof Error ? err.message : String(err)})`
+      );
+      continue;
+    }
+    record(
+      chain.name,
+      `fee floor ${label}`,
+      supported === true && actual === want && actual > 0n,
+      `expected ${exp.floor} · actual ${String(actual)}${supported === true ? "" : " (NOT allowlisted)"}`
+    );
   }
 }
 
