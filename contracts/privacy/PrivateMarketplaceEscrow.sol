@@ -55,9 +55,11 @@ import {
  *      - Atomic flow: `create → release | refund | dispute → arbitrate`.
  *      - EIP-712 typed-data buyer signature binds the encrypted-price
  *        commitment + seller + listing ref + deadline.
- *      - 0.25 % escrow fee on release, off-boarded to a configurable
- *        UnifiedFeeVault recipient (vault routes ODDAO / Staking /
- *        Treasury internally).
+ *      - 0 % escrow fee on release (founder decision 2026-11-13: a
+ *        private purchase pays no private-escrow fee). Admin-settable up
+ *        to 5 % through the queue/confirm pair; the release fee is
+ *        snapshotted per escrow at create. The live COTI proxy was set to
+ *        0 through that pair, not by an upgrade.
  *      - 5 % arbitration fee on dispute resolution (split 50/50 buyer/
  *        seller — same as MinimalEscrow), accrued to the vault.
  *      - 48-hour timelock on every privileged setter (fee bps, fee

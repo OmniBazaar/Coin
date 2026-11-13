@@ -95,7 +95,7 @@
       "PrivateOmniCoin V2 0x958b07d5C302338C8302c6b5a1Bff49bbF9aa934 (pXOM)",
       "OmniPrivacyShield 0x7208B56f3B6aF20FA1817f460D5eFcaA217f09a6",
       "PrivateDEXSettlement / PrivateLimitDEXSettlement / PrivateMarketplaceEscrow / PrivateYieldVault / PrivateRWAAMM / PrivatePredictionMarket (current; contract kept)",
-      "Private marketplace escrow fee (0.25% seller-side, pXOM-based) — reachable"
+      "Private marketplace escrow fee (0% since 2026-11-13, seller-side, pXOM-based; set via requestEscrowFeeUpdate(0)+confirmEscrowFeeUpdate on proxy 0x43d216073D3c7B494FA3626C0607FfF14758A670, no upgrade) — reachable"
     ],
     "privateDexLaunchSurface": "GATED OFF 2026-09-21 (VITE_ENABLE_PRIVATE_DEX_ORDERS=false in WebApp/Wallet; PRIVATE_DEX_ORDERS_ENABLED=false in Mobile). Unreachable: only pXOM is backed and same-token swaps are rejected. Contract kept. The XOM<->pXOM shield is a separate live flow."
   },
