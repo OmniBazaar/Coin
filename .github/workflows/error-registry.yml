@@ -1,0 +1,64 @@
+name: Contract error registry
+
+# Fails a pull request that changes a contract error (or adds a contract) without
+# regenerating WebApp/src/utils/contractErrorRegistry.ts. The registry lives in
+# the WebApp repo and the generator lives here, so the job checks out both.
+#
+# Set a repository secret WEBAPP_READ_TOKEN (a fine-grained PAT with read access
+# to the WebApp repo) if WebApp is private. For public repos the default
+# GITHUB_TOKEN is enough.
+
+on:
+  push:
+    branches: ["**"]
+    paths:
+      - "contracts/**"
+      - "hardhat.config.js"
+      - "scripts/generate-error-registry.ts"
+      - "scripts/check-error-registry.cjs"
+      - "scripts/error-registry-legacy.json"
+  pull_request:
+    paths:
+      - "contracts/**"
+      - "hardhat.config.js"
+      - "scripts/generate-error-registry.ts"
+      - "scripts/check-error-registry.cjs"
+      - "scripts/error-registry-legacy.json"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  registry:
+    name: registry in sync with artifacts
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Coin
+        uses: actions/checkout@v4
+
+      - name: Checkout WebApp (committed registry)
+        uses: actions/checkout@v4
+        with:
+          repository: OmniBazaar/WebApp
+          token: ${{ secrets.WEBAPP_READ_TOKEN || github.token }}
+          path: webapp
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Compile contracts
+        # Artifacts are the input to the registry generator.
+        run: npx hardhat compile
+
+      - name: Install the TypeScript runner
+        run: npm install --no-save tsx
+
+      - name: Check the committed registry is up to date
+        run: node scripts/check-error-registry.cjs --committed webapp/src/utils/contractErrorRegistry.ts

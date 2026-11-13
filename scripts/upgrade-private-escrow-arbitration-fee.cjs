@@ -76,8 +76,12 @@ const PROXY_ABI = [
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 function parseArgs(argv) {
-  const broadcast = argv.includes("--broadcast");
-  const dryRun = argv.includes("--dry-run");
+  // `hardhat run` rejects unknown CLI flags, so --broadcast can also arrive
+  // as PRIVATE_ESCROW_UPGRADE_BROADCAST=1. Either one enables the broadcast.
+  const broadcast =
+    argv.includes("--broadcast") ||
+    process.env.PRIVATE_ESCROW_UPGRADE_BROADCAST === "1";
+  const dryRun = argv.includes("--dry-run") && !broadcast;
   if (broadcast && dryRun) {
     throw new Error("pass either --dry-run or --broadcast, not both");
   }

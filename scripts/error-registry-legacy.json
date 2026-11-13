@@ -1,0 +1,879 @@
+{
+  "note": "Selectors registered in the pre-2026-11-13 WebApp registry whose declaring contract is no longer compiled in Coin/artifacts. Merged by scripts/generate-error-registry.ts so a live deployment that still reverts with one of these stays decodable in the WebApp. Verify before deleting an entry that no deployed contract on any supported chain can emit it.",
+  "entries": [
+    {
+      "name": "AccountAlreadyFlagged",
+      "signature": "AccountAlreadyFlagged()",
+      "selector": "0x2b1ad357",
+      "parameters": [],
+      "contracts": [
+        "OmniSybilGuard"
+      ]
+    },
+    {
+      "name": "AccountIsFlagged",
+      "signature": "AccountIsFlagged()",
+      "selector": "0x800b6d09",
+      "parameters": [],
+      "contracts": [
+        "IOmniSybilGuard",
+        "OmniSybilGuard"
+      ]
+    },
+    {
+      "name": "AccountIsFrozen",
+      "signature": "AccountIsFrozen(address)",
+      "selector": "0xcf8eb597",
+      "parameters": [
+        {
+          "name": "account",
+          "type": "address"
+        }
+      ],
+      "contracts": [
+        "OddaoToken"
+      ]
+    },
+    {
+      "name": "AccountNotFrozen",
+      "signature": "AccountNotFrozen(address)",
+      "selector": "0xfc782479",
+      "parameters": [
+        {
+          "name": "account",
+          "type": "address"
+        }
+      ],
+      "contracts": [
+        "OddaoToken"
+      ]
+    },
+    {
+      "name": "AlreadyQualified",
+      "signature": "AlreadyQualified(address)",
+      "selector": "0x8e51499f",
+      "parameters": [
+        {
+          "name": "user",
+          "type": "address"
+        }
+      ],
+      "contracts": [
+        "QualificationOracle"
+      ]
+    },
+    {
+      "name": "BelowMinimum",
+      "signature": "BelowMinimum()",
+      "selector": "0x860b82a9",
+      "parameters": [],
+      "contracts": [
+        "OmniPrivacyBridge"
+      ]
+    },
+    {
+      "name": "CannotReportSelf",
+      "signature": "CannotReportSelf()",
+      "selector": "0xd3991a0e",
+      "parameters": [],
+      "contracts": [
+        "IOmniSybilGuard",
+        "OmniSybilGuard"
+      ]
+    },
+    {
+      "name": "CannotRescueXOM",
+      "signature": "CannotRescueXOM()",
+      "selector": "0x1ae89437",
+      "parameters": [],
+      "contracts": [
+        "RWAFeeCollector"
+      ]
+    },
+    {
+      "name": "ChallengePeriodActive",
+      "signature": "ChallengePeriodActive()",
+      "selector": "0xc9703632",
+      "parameters": [],
+      "contracts": [
+        "IOmniSybilGuard",
+        "OmniSybilGuard"
+      ]
+    },
+    {
+      "name": "CommitmentExpired",
+      "signature": "CommitmentExpired()",
+      "selector": "0x53adc965",
+      "parameters": [],
+      "contracts": [
+        "OmniENS"
+      ]
+    },
+    {
+      "name": "CommitmentStillValid",
+      "signature": "CommitmentStillValid()",
+      "selector": "0x1c13f616",
+      "parameters": [],
+      "contracts": [
+        "OmniENS"
+      ]
+    },
+    {
+      "name": "CommitmentTooNew",
+      "signature": "CommitmentTooNew()",
+      "selector": "0xcba3a53b",
+      "parameters": [],
+      "contracts": [
+        "OmniENS"
+      ]
+    },
+    {
+      "name": "DeviceLimitExceeded",
+      "signature": "DeviceLimitExceeded()",
+      "selector": "0x4b95c16b",
+      "parameters": [],
+      "contracts": [
+        "IOmniSybilGuard",
+        "OmniSybilGuard"
+      ]
+    },
+    {
+      "name": "DistributionNotDue",
+      "signature": "DistributionNotDue(uint256)",
+      "selector": "0xe14b55f7",
+      "parameters": [
+        {
+          "name": "nextDistribution",
+          "type": "uint256"
+        }
+      ],
+      "contracts": [
+        "RWAFeeCollector"
+      ]
+    },
+    {
+      "name": "DurationTooLong",
+      "signature": "DurationTooLong(uint256,uint256)",
+      "selector": "0x11e11b66",
+      "parameters": [
+        {
+          "name": "provided",
+          "type": "uint256"
+        },
+        {
+          "name": "maximum",
+          "type": "uint256"
+        }
+      ],
+      "contracts": [
+        "OmniENS"
+      ]
+    },
+    {
+      "name": "EmptyHolderArray",
+      "signature": "EmptyHolderArray()",
+      "selector": "0xee2ea033",
+      "parameters": [],
+      "contracts": [
+        "OddaoToken"
+      ]
+    },
+    {
+      "name": "ExceedsConversionLimit",
+      "signature": "ExceedsConversionLimit()",
+      "selector": "0xda8d14f7",
+      "parameters": [],
+      "contracts": [
+        "OmniPrivacyBridge"
+      ]
+    },
+    {
+      "name": "FillBelowMinimum",
+      "signature": "FillBelowMinimum()",
+      "selector": "0xa20d1280",
+      "parameters": [],
+      "contracts": [
+        "PrivateDEX"
+      ]
+    },
+    {
+      "name": "IndexOutOfBounds",
+      "signature": "IndexOutOfBounds(uint256,uint256)",
+      "selector": "0x63a056dd",
+      "parameters": [
+        {
+          "name": "index",
+          "type": "uint256"
+        },
+        {
+          "name": "length",
+          "type": "uint256"
+        }
+      ],
+      "contracts": [
+        "RWAFeeCollector"
+      ]
+    },
+    {
+      "name": "InsufficientCollateral",
+      "signature": "InsufficientCollateral()",
+      "selector": "0x3a23d825",
+      "parameters": [],
+      "contracts": [
+        "PrivateDEXSettlement"
+      ]
+    },
+    {
+      "name": "InsufficientJudgeVotes",
+      "signature": "InsufficientJudgeVotes()",
+      "selector": "0x01f9000f",
+      "parameters": [],
+      "contracts": [
+        "OmniSybilGuard"
+      ]
+    },
+    {
+      "name": "InsufficientLockedFunds",
+      "signature": "InsufficientLockedFunds()",
+      "selector": "0xae0bb491",
+      "parameters": [],
+      "contracts": [
+        "OmniPrivacyBridge"
+      ]
+    },
+    {
+      "name": "InsufficientPrivateBalance",
+      "signature": "InsufficientPrivateBalance()",
+      "selector": "0xf228df8d",
+      "parameters": [],
+      "contracts": [
+        "PrivateOmniCoin",
+        "PrivateUSDC",
+        "PrivateWBTC",
+        "PrivateWETH"
+      ]
+    },
+    {
+      "name": "InsufficientPublicBalance",
+      "signature": "InsufficientPublicBalance()",
+      "selector": "0x6efd0bb1",
+      "parameters": [],
+      "contracts": [
+        "PrivateUSDC",
+        "PrivateWBTC",
+        "PrivateWETH"
+      ]
+    },
+    {
+      "name": "InsufficientRewardPool",
+      "signature": "InsufficientRewardPool()",
+      "selector": "0x3270436b",
+      "parameters": [],
+      "contracts": [
+        "IOmniSybilGuard"
+      ]
+    },
+    {
+      "name": "InvalidBLSKey",
+      "signature": "InvalidBLSKey()",
+      "selector": "0x88a808ec",
+      "parameters": [],
+      "contracts": [
+        "OmniValidatorManager",
+        "OmniValidatorManagerV3Upgradeable"
+      ]
+    },
+    {
+      "name": "InvalidBLSPublicKey",
+      "signature": "InvalidBLSPublicKey()",
+      "selector": "0x180ffa0d",
+      "parameters": [],
+      "contracts": [
+        "ValidatorMessages"
+      ]
+    },
+    {
+      "name": "InvalidClawbackDestination",
+      "signature": "InvalidClawbackDestination()",
+      "selector": "0x658df4f3",
+      "parameters": [],
+      "contracts": [
+        "OddaoToken"
+      ]
+    },
+    {
+      "name": "InvalidCodecID",
+      "signature": "InvalidCodecID(uint32)",
+      "selector": "0x407b5873",
+      "parameters": [
+        {
+          "name": "id",
+          "type": "uint32"
+        }
+      ],
+      "contracts": [
+        "ValidatorMessages"
+      ]
+    },
+    {
+      "name": "InvalidGovernance",
+      "signature": "InvalidGovernance()",
+      "selector": "0x0063186c",
+      "parameters": [],
+      "contracts": [
+        "OddaoToken"
+      ]
+    },
+    {
+      "name": "InvalidMessageLength",
+      "signature": "InvalidMessageLength(uint32,uint32)",
+      "selector": "0xcc92daa1",
+      "parameters": [
+        {
+          "name": "actual",
+          "type": "uint32"
+        },
+        {
+          "name": "expected",
+          "type": "uint32"
+        }
+      ],
+      "contracts": [
+        "ValidatorMessages"
+      ]
+    },
+    {
+      "name": "InvalidMessageType",
+      "signature": "InvalidMessageType()",
+      "selector": "0x5b60892f",
+      "parameters": [],
+      "contracts": [
+        "ValidatorMessages"
+      ]
+    },
+    {
+      "name": "InvalidNodeID",
+      "signature": "InvalidNodeID()",
+      "selector": "0x6490ffd3",
+      "parameters": [],
+      "contracts": [
+        "OmniValidatorManager",
+        "OmniValidatorManagerV3Upgradeable"
+      ]
+    },
+    {
+      "name": "InvalidOrderSides",
+      "signature": "InvalidOrderSides()",
+      "selector": "0xb067fda1",
+      "parameters": [],
+      "contracts": [
+        "PrivateDEX"
+      ]
+    },
+    {
+      "name": "InvalidOrderStatus",
+      "signature": "InvalidOrderStatus()",
+      "selector": "0x2916ae33",
+      "parameters": [],
+      "contracts": [
+        "PrivateDEX"
+      ]
+    },
+    {
+      "name": "InvalidPair",
+      "signature": "InvalidPair()",
+      "selector": "0x1e4f7d8c",
+      "parameters": [],
+      "contracts": [
+        "PrivateDEX"
+      ]
+    },
+    {
+      "name": "InvalidSigner",
+      "signature": "InvalidSigner()",
+      "selector": "0x815e1d64",
+      "parameters": [],
+      "contracts": [
+        "RWAAMM"
+      ]
+    },
+    {
+      "name": "InvalidVerifierSignature",
+      "signature": "InvalidVerifierSignature()",
+      "selector": "0x0574e985",
+      "parameters": [],
+      "contracts": [
+        "OmniRegistration"
+      ]
+    },
+    {
+      "name": "InvalidWarpResponse",
+      "signature": "InvalidWarpResponse()",
+      "selector": "0x7cd7180c",
+      "parameters": [],
+      "contracts": [
+        "OmniValidatorManager",
+        "OmniValidatorManagerV3Upgradeable"
+      ]
+    },
+    {
+      "name": "InvalidXomToken",
+      "signature": "InvalidXomToken()",
+      "selector": "0x78c95b42",
+      "parameters": [],
+      "contracts": [
+        "OmniSybilGuard"
+      ]
+    },
+    {
+      "name": "JudgeAlreadyVoted",
+      "signature": "JudgeAlreadyVoted()",
+      "selector": "0x31d93035",
+      "parameters": [],
+      "contracts": [
+        "OmniSybilGuard"
+      ]
+    },
+    {
+      "name": "KYCTier2Required",
+      "signature": "KYCTier2Required()",
+      "selector": "0x7c156716",
+      "parameters": [],
+      "contracts": [
+        "OmniRegistration"
+      ]
+    },
+    {
+      "name": "MaxFeeTokensReached",
+      "signature": "MaxFeeTokensReached()",
+      "selector": "0xbe4efa46",
+      "parameters": [],
+      "contracts": [
+        "RWAFeeCollector"
+      ]
+    },
+    {
+      "name": "MaxValidatorsReached",
+      "signature": "MaxValidatorsReached()",
+      "selector": "0xed7948d6",
+      "parameters": [],
+      "contracts": [
+        "OmniValidatorManager",
+        "OmniValidatorManagerV3Upgradeable"
+      ]
+    },
+    {
+      "name": "MessageAlreadyProcessed",
+      "signature": "MessageAlreadyProcessed()",
+      "selector": "0x7b042609",
+      "parameters": [],
+      "contracts": [
+        "OmniValidatorManager",
+        "OmniValidatorManagerV3Upgradeable"
+      ]
+    },
+    {
+      "name": "NoBalanceToRecover",
+      "signature": "NoBalanceToRecover()",
+      "selector": "0x3a170864",
+      "parameters": [],
+      "contracts": [
+        "PrivateOmniCoin",
+        "PrivateUSDC",
+        "PrivateWBTC",
+        "PrivateWETH"
+      ]
+    },
+    {
+      "name": "NoCommitment",
+      "signature": "NoCommitment()",
+      "selector": "0x5b07c989",
+      "parameters": [],
+      "contracts": [
+        "OmniENS"
+      ]
+    },
+    {
+      "name": "NoDeferredRewards",
+      "signature": "NoDeferredRewards()",
+      "selector": "0x0b60371d",
+      "parameters": [],
+      "contracts": [
+        "OmniSybilGuard"
+      ]
+    },
+    {
+      "name": "NoDustToClaim",
+      "signature": "NoDustToClaim()",
+      "selector": "0xc8f9f60e",
+      "parameters": [],
+      "contracts": [
+        "PrivateWBTC",
+        "PrivateWETH"
+      ]
+    },
+    {
+      "name": "NoUpgradePending",
+      "signature": "NoUpgradePending()",
+      "selector": "0x52c650f9",
+      "parameters": [],
+      "contracts": [
+        "OmniArbitration"
+      ]
+    },
+    {
+      "name": "NotAMM",
+      "signature": "NotAMM()",
+      "selector": "0x06da2ed3",
+      "parameters": [],
+      "contracts": [
+        "RWAFeeCollector"
+      ]
+    },
+    {
+      "name": "NotQualified",
+      "signature": "NotQualified()",
+      "selector": "0xbcfcdc11",
+      "parameters": [],
+      "contracts": [
+        "OmniValidatorManager",
+        "OmniValidatorManagerV3Upgradeable"
+      ]
+    },
+    {
+      "name": "NotQualified",
+      "signature": "NotQualified(address)",
+      "selector": "0xb932053a",
+      "parameters": [
+        {
+          "name": "user",
+          "type": "address"
+        }
+      ],
+      "contracts": [
+        "QualificationOracle"
+      ]
+    },
+    {
+      "name": "NotValidatorOwner",
+      "signature": "NotValidatorOwner()",
+      "selector": "0xebacc9b6",
+      "parameters": [],
+      "contracts": [
+        "OmniValidatorManager",
+        "OmniValidatorManagerV3Upgradeable"
+      ]
+    },
+    {
+      "name": "NothingToWithdraw",
+      "signature": "NothingToWithdraw()",
+      "selector": "0xd0d04f60",
+      "parameters": [],
+      "contracts": [
+        "OmniSybilGuard"
+      ]
+    },
+    {
+      "name": "OnlyAccountOwner",
+      "signature": "OnlyAccountOwner()",
+      "selector": "0x244e5fa6",
+      "parameters": [],
+      "contracts": [
+        "PrivateOmniCoin"
+      ]
+    },
+    {
+      "name": "OnlyGovernance",
+      "signature": "OnlyGovernance()",
+      "selector": "0x54348f03",
+      "parameters": [],
+      "contracts": [
+        "OddaoToken"
+      ]
+    },
+    {
+      "name": "OnlyVerifier",
+      "signature": "OnlyVerifier()",
+      "selector": "0x7a241b02",
+      "parameters": [],
+      "contracts": [
+        "QualificationOracle"
+      ]
+    },
+    {
+      "name": "OrderNotFound",
+      "signature": "OrderNotFound()",
+      "selector": "0xd36d8965",
+      "parameters": [],
+      "contracts": [
+        "PrivateDEX"
+      ]
+    },
+    {
+      "name": "OverfillDetected",
+      "signature": "OverfillDetected()",
+      "selector": "0x3bb83e4e",
+      "parameters": [],
+      "contracts": [
+        "PrivateDEX"
+      ]
+    },
+    {
+      "name": "PairMismatch",
+      "signature": "PairMismatch()",
+      "selector": "0x1af50573",
+      "parameters": [],
+      "contracts": [
+        "PrivateDEX"
+      ]
+    },
+    {
+      "name": "PriceIncompatible",
+      "signature": "PriceIncompatible()",
+      "selector": "0xefdc3309",
+      "parameters": [],
+      "contracts": [
+        "PrivateDEX"
+      ]
+    },
+    {
+      "name": "PrivacyMustBeDisabled",
+      "signature": "PrivacyMustBeDisabled()",
+      "selector": "0x9be37ce7",
+      "parameters": [],
+      "contracts": [
+        "PrivateOmniCoin",
+        "PrivateUSDC",
+        "PrivateWBTC",
+        "PrivateWETH"
+      ]
+    },
+    {
+      "name": "ProposalAlreadyExecuted",
+      "signature": "ProposalAlreadyExecuted()",
+      "selector": "0x51618d53",
+      "parameters": [],
+      "contracts": [
+        "OmniGovernanceV1"
+      ]
+    },
+    {
+      "name": "ProposalNotActive",
+      "signature": "ProposalNotActive()",
+      "selector": "0x7becc13f",
+      "parameters": [],
+      "contracts": [
+        "OmniGovernanceV1"
+      ]
+    },
+    {
+      "name": "ProposalNotPassed",
+      "signature": "ProposalNotPassed()",
+      "selector": "0xc8c93ba3",
+      "parameters": [],
+      "contracts": [
+        "OmniGovernanceV1"
+      ]
+    },
+    {
+      "name": "QuorumNotReached",
+      "signature": "QuorumNotReached()",
+      "selector": "0xaa26a693",
+      "parameters": [],
+      "contracts": [
+        "OmniGovernanceV1"
+      ]
+    },
+    {
+      "name": "RegistrationsDisabled",
+      "signature": "RegistrationsDisabled()",
+      "selector": "0x34c5ddf0",
+      "parameters": [],
+      "contracts": [
+        "OmniValidatorManager",
+        "OmniValidatorManagerV3Upgradeable"
+      ]
+    },
+    {
+      "name": "ReportAlreadyPending",
+      "signature": "ReportAlreadyPending()",
+      "selector": "0x54e34e15",
+      "parameters": [],
+      "contracts": [
+        "OmniSybilGuard"
+      ]
+    },
+    {
+      "name": "ReportNotFound",
+      "signature": "ReportNotFound()",
+      "selector": "0x98b54f9f",
+      "parameters": [],
+      "contracts": [
+        "IOmniSybilGuard",
+        "OmniSybilGuard"
+      ]
+    },
+    {
+      "name": "ResolutionAlreadyFinalized",
+      "signature": "ResolutionAlreadyFinalized(uint256)",
+      "selector": "0x411979c4",
+      "parameters": [
+        {
+          "name": "disputeId",
+          "type": "uint256"
+        }
+      ],
+      "contracts": [
+        "OmniArbitration"
+      ]
+    },
+    {
+      "name": "SelfTransfer",
+      "signature": "SelfTransfer()",
+      "selector": "0x4d9ecd91",
+      "parameters": [],
+      "contracts": [
+        "PrivateOmniCoin",
+        "PrivateUSDC",
+        "PrivateWBTC",
+        "PrivateWETH"
+      ]
+    },
+    {
+      "name": "SystemReservedName",
+      "signature": "SystemReservedName(string)",
+      "selector": "0x96183dd0",
+      "parameters": [
+        {
+          "name": "name",
+          "type": "string"
+        }
+      ],
+      "contracts": [
+        "OmniENS"
+      ]
+    },
+    {
+      "name": "TimelockActive",
+      "signature": "TimelockActive()",
+      "selector": "0x7d857b67",
+      "parameters": [],
+      "contracts": [
+        "PrivateOmniCoin",
+        "PrivateUSDC",
+        "PrivateWBTC",
+        "PrivateWETH"
+      ]
+    },
+    {
+      "name": "TooManyHolders",
+      "signature": "TooManyHolders()",
+      "selector": "0x50d64ac2",
+      "parameters": [],
+      "contracts": [
+        "OddaoToken"
+      ]
+    },
+    {
+      "name": "TooManyOrders",
+      "signature": "TooManyOrders()",
+      "selector": "0x39439003",
+      "parameters": [],
+      "contracts": [
+        "PrivateDEX"
+      ]
+    },
+    {
+      "name": "TransactionLimitExceeded",
+      "signature": "TransactionLimitExceeded(address,string)",
+      "selector": "0x02052584",
+      "parameters": [
+        {
+          "name": "user",
+          "type": "address"
+        },
+        {
+          "name": "limitType",
+          "type": "string"
+        }
+      ],
+      "contracts": [
+        "OmniRegistration"
+      ]
+    },
+    {
+      "name": "UnflagCooldownActive",
+      "signature": "UnflagCooldownActive()",
+      "selector": "0xdd486472",
+      "parameters": [],
+      "contracts": [
+        "OmniSybilGuard"
+      ]
+    },
+    {
+      "name": "UpgradeTimelockActive",
+      "signature": "UpgradeTimelockActive(uint256,uint256)",
+      "selector": "0x02ba1717",
+      "parameters": [
+        {
+          "name": "scheduledAt",
+          "type": "uint256"
+        },
+        {
+          "name": "availableAt",
+          "type": "uint256"
+        }
+      ],
+      "contracts": [
+        "OmniArbitration"
+      ]
+    },
+    {
+      "name": "ValidatorNotFound",
+      "signature": "ValidatorNotFound()",
+      "selector": "0x580e542f",
+      "parameters": [],
+      "contracts": [
+        "OmniValidatorManager",
+        "OmniValidatorManagerV3Upgradeable"
+      ]
+    },
+    {
+      "name": "VotingNotEnded",
+      "signature": "VotingNotEnded()",
+      "selector": "0x7f8617a2",
+      "parameters": [],
+      "contracts": [
+        "OmniGovernanceV1"
+      ]
+    },
+    {
+      "name": "WarpMessageFailed",
+      "signature": "WarpMessageFailed()",
+      "selector": "0xf6f4b652",
+      "parameters": [],
+      "contracts": [
+        "OmniValidatorManager",
+        "OmniValidatorManagerV3Upgradeable"
+      ]
+    },
+    {
+      "name": "ZeroAddressHolder",
+      "signature": "ZeroAddressHolder()",
+      "selector": "0x31c3b7dc",
+      "parameters": [],
+      "contracts": [
+        "OddaoToken"
+      ]
+    },
+    {
+      "name": "ZeroBaseFee",
+      "signature": "ZeroBaseFee()",
+      "selector": "0xbb93a319",
+      "parameters": [],
+      "contracts": [
+        "OmniChatFee"
+      ]
+    }
+  ]
+}

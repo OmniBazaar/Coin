@@ -164,17 +164,17 @@
     },
     "PrivateMarketplaceEscrow": {
       "proxy": "0x43d216073D3c7B494FA3626C0607FfF14758A670",
-      "implementation": "0xB55e9DAc3BE928b492f6BFe1Fc481ee15d1E28a9",
+      "implementation": "0xb15d3A3dEFCEd202BAd7912C99FeE4617aDFd5Dc",
       "previousProxy": "0xf26a5828b2D9c2a23E9b03eD6322991ef3C22c0D",
-      "deployedAt": "2026-05-28T02:13:24.930Z",
+      "deployedAt": "2026-11-13T17:02:48.546Z",
       "deployer": "0x021868f2E3D49C059EF52B539AAa933B437e0321",
       "replacementReason": "Privacy V1.2 + V1.2.1 fresh deploy — CommitteeAttestor inheritance + TIMELOCK_DELAY=0 per Pioneer-Phase rule; prior proxy had zero state",
-      "previousImplementation": "0xEa0373159d40b9DCE3E341ECfBeA9be98205EF84",
+      "previousImplementation": "0xB55e9DAc3BE928b492f6BFe1Fc481ee15d1E28a9",
       "upgradedAt": "2026-07-04T17:28:25.363Z",
-      "upgradeReason": "VT-27 dispute-equivocation hardening: CommitteeAttestor.recordDisputeEquivocation + PrivateMarketplaceEscrow.expireCommitteeDispute; full CommitteeAttestorLib base extraction (EIP-170 size fix)",
-      "upgradeTxRequest": "0x5c7eeb26f3aad2d84befd70c170d6e59a9770e97c9c4b47ce0fa0d8554598746",
-      "upgradeTxApply": "0x77279ef70504e16104fec369d9cc5b70d840c8efcf90a60cc480fe1607390e24",
-      "implDeployTx": "0x02b80108145ee0fe71662daf085e16c6636006e5c42ee59e6f5e4e036068ef8b",
+      "upgradeReason": "Arbitration fee 250 -> 500 bps (5 %, founder decision 2026-11-13): the whole fee is deducted from the disputed amount at settlement, matching EscrowV2 DEFAULT_ARBITRATION_FEE_BPS; DEFAULT_ESCROW_FEE_BPS also 25 -> 0 so a future fresh deploy initialises at 0",
+      "upgradeTxRequest": "0xe5dbd0346a789d67d7188009008e4fc6d5ca41012acc6a0e5eadf478b6bb3252",
+      "upgradeTxApply": "0xafcd8a017132e23ad75016b6abd3480531e77a085e493660fb4383ee3c247133",
+      "implDeployTx": "0xf0d4be1c115bc9378b99ad8f9f03e22ac8e22736c5573192030f84a854f61c18",
       "upgrades": [
         {
           "from": "0x9b28115D42AACEc27054470C290B9b521588A420",
@@ -207,6 +207,15 @@
           "upgradedAt": "2026-08-26T18:54:18.598Z",
           "requestUpgradeTx": "0x3947b41b6029e2b9194a94155c452a727c8ec598b02292c404307799820e2cc6",
           "upgradeToAndCallTx": "0x72e50ee42c13100c2575c255a7c335ab4192ffb107b2c062d420ad25bb51828b"
+        },
+        {
+          "from": "0xB55e9DAc3BE928b492f6BFe1Fc481ee15d1E28a9",
+          "to": "0xb15d3A3dEFCEd202BAd7912C99FeE4617aDFd5Dc",
+          "reason": "Arbitration fee 250 -> 500 bps (founder decision 2026-11-13)",
+          "upgradedAt": "2026-11-13T17:02:48.546Z",
+          "requestUpgradeTx": "0xe5dbd0346a789d67d7188009008e4fc6d5ca41012acc6a0e5eadf478b6bb3252",
+          "upgradeToAndCallTx": "0xafcd8a017132e23ad75016b6abd3480531e77a085e493660fb4383ee3c247133",
+          "implDeployTx": "0xf0d4be1c115bc9378b99ad8f9f03e22ac8e22736c5573192030f84a854f61c18"
         }
       ]
     },
