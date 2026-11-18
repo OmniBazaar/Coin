@@ -10,9 +10,12 @@ RPC=${GOV_RPC:-https://rpc.omnicoin.net}
 GOV=${GOVERNOR:-0xa812904860c615FeCE377F17F87670EcA0E0899c}
 TIMELOCK=${TIMELOCK_CONTROLLER:-0x4f78386cA05E333639151fe0508b21D893CaD222}
 ZERO32=0x0000000000000000000000000000000000000000000000000000000000000000
-# The governance-weight account (iceberg-omnibazaar.pk). The deployer EOA holds
-# zero voting power, so this is the only address whose vote matters.
-GOV_VOTER=${GOV_VOTER_ADDRESS:-0x0d7a2C153979d095AbB4AE3ed7fCF5429A5cdd71}
+# The governance-weight account. Repointed 2026-11-18: the old treasury
+# 0x0d7a2C15 had its private key copied by the intruder on 2026-11-15, and its
+# 628.8M XOM moved to the treasury successor 0x5169ce02 on 2026-11-18, which is
+# the address that now carries the (7%-capped) voting power. The deployer EOA
+# holds zero votes. Set GOV_VOTER_ADDRESS to override.
+GOV_VOTER=${GOV_VOTER_ADDRESS:-0x5169ce023c76f516710395BDad053d935C054aa2}
 # AlreadyVoted() — the node reports the selector, not the name.
 SEL_ALREADY_VOTED=0x7c9a1cf9
 

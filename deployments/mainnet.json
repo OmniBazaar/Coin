@@ -6,7 +6,10 @@
   "deployer": "0x021868f2E3D49C059EF52B539AAa933B437e0321",
   "oddaoTreasury": "0x664B6347a69A22b35348D42E4640CA92e1609378",
   "deployedAt": "2026-08-17T18:53:56.694Z",
-  "lastUpdated": "2026-09-05",
+  "lastUpdated": "2026-11-18",
+  "notes": {
+    "OmniVotingPowerCap": "Corrected 2026-11-18. OmniGovernance.votingPowerCap() returns 0x5E5ad7D97E9b3283883d6d62C797f9F57773e7e2 and capBps(treasury) reads 700 there. The previously recorded 0xDe100e9830271B3c53F218bb3edD2cbd8e73E874 is an older deployment that still has bytecode but caps nobody (capBps reads 0 for every address measured); believing it was live is what made two remediation sessions conclude no address was capped."
+  },
   "contracts": {
     "Multicall3": "0x36B7d688Ba216049c1ed5d349F9c4282920Ddd99",
     "OmniForwarder": "0xaF8c638b69A61e28617e0C71178D4910aB4e83E5",
@@ -110,7 +113,7 @@
     "OmniRegistrationKYCTiersImplementation": "0x1405db2335e93435DA0C0165D3b0D30cf9356B46",
     "OmniRegistrationKYCTiers": "0x78851a03D8A8D72661C119E32Fad32874c5F1c0B",
     "UnifiedFeeVault_Impl_M05": "0xc637314117f055d011f05049a139531d97767e00",
-    "OmniVotingPowerCap": "0xDe100e9830271B3c53F218bb3edD2cbd8e73E874",
+    "OmniVotingPowerCap": "0x5E5ad7D97E9b3283883d6d62C797f9F57773e7e2",
     "OmniLegacyVest": "0x4dfbAFdD3Ac86119B6243E421e13E83001c1ec5d",
     "MarketplaceRootRegistry": "0x85d9D4Df11aD55FAF2DA7c4bd8D2B74625520d5A",
     "OmniConduit": "0xEb887943613a83Ec76fDA6C7ceb908ec9b4ebBc9",

@@ -30,7 +30,11 @@ ID=${1:?usage: execute-proposal.sh <proposalId>}
 LOG_TAG="omnibazaar-gov-executor"
 COIN_DIR=${COIN_DIR:-/home/omnirick/OmniBazaar/Coin}
 FINALIZER=${GOV_FINALIZER:-scripts/governance/finalize-revision-2026-10.cjs}
-KEY_FILE=${GOV_KEY_FILE:-/home/omnirick/.avalanche-cli/key/iceberg-omnibazaar.pk}
+# 🛑 Repointed 2026-11-18. The old default was iceberg-omnibazaar.pk, the retired
+# treasury key that the intruder copied on 2026-11-15. The treasury successor key
+# never touches this host (it is cold), so there is deliberately no default path:
+# set GOV_KEY_FILE to the successor key's location on the machine that runs this.
+KEY_FILE=${GOV_KEY_FILE:?set GOV_KEY_FILE to the treasury successor key file (0x5169ce02) — the old iceberg-omnibazaar.pk is retired}
 ERR_STATE=${GOV_EXEC_ERR_STATE:-/tmp/.gov-exec-last-error}
 now=$(date +%s)
 
