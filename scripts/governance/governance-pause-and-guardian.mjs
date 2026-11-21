@@ -44,6 +44,7 @@ const REWARD_MANAGER = "0x3138855f8EdAA2D41f1a2Ae5Cc0C0052b61e9de3";
 
 const NEW_DELAY_SECONDS = 43_200;
 const PROPOSAL_TYPE_ROUTINE = 0;
+const PROPOSAL_TYPE_CRITICAL = 1;
 const SUPPORT_FOR = 1;
 
 const DESCRIPTION =
@@ -102,41 +103,48 @@ function loadGuardian() {
   return state;
 }
 
-function buildActions(guardian) {
+function buildCritical(guardian) {
   const targets = [];
   const values = [];
   const calldatas = [];
   const labels = [];
   const roles = new ethers.Interface(ROLE_ABI);
-
   const push = (label, target, data) => {
-    targets.push(target);
-    values.push(0n);
-    calldatas.push(data);
-    labels.push(label);
+    targets.push(target); values.push(0n); calldatas.push(data); labels.push(label);
   };
 
-  push("timelock.updateDelay(12h)", TIMELOCK, roles.encodeFunctionData("updateDelay", [NEW_DELAY_SECONDS]));
-
-  for (const [name, address] of Object.entries(TREASURIES)) {
-    push(`${name}: grant guardian role to new guardian`, address, roles.encodeFunctionData("grantRole", [GUARDIAN_ROLE, guardian]));
-  }
+  // grantRole and revokeRole are CRITICAL selectors on the timelock, so these
+  // cannot travel in a routine proposal (OmniGovernance treats updateDelay,
+  // grantRole and revokeRole as critical; only registerPausable is routine).
+  push("treasury V2: grant guardian role to new guardian", TREASURIES["treasury V2"], roles.encodeFunctionData("grantRole", [GUARDIAN_ROLE, guardian]));
+  push("POL manager: grant guardian role to new guardian", TREASURIES["POL manager"], roles.encodeFunctionData("grantRole", [GUARDIAN_ROLE, guardian]));
   push("reward manager: grant pauser role to new guardian", REWARD_MANAGER, roles.encodeFunctionData("grantRole", [PAUSER_ROLE, guardian]));
+  push("treasury V2: revoke guardian role from old guardian", TREASURIES["treasury V2"], roles.encodeFunctionData("revokeRole", [GUARDIAN_ROLE, OLD_GUARDIAN]));
+  push("POL manager: revoke guardian role from old guardian", TREASURIES["POL manager"], roles.encodeFunctionData("revokeRole", [GUARDIAN_ROLE, OLD_GUARDIAN]));
 
-  for (const [name, address] of Object.entries(TREASURIES)) {
-    push(`${name}: revoke guardian role from old guardian`, address, roles.encodeFunctionData("revokeRole", [GUARDIAN_ROLE, OLD_GUARDIAN]));
-  }
+  return { targets, values, calldatas, labels };
+}
 
-  for (const [name, address] of Object.entries(TREASURIES)) {
-    push(`new guardian: registerPausable(${name})`, guardian, roles.encodeFunctionData("registerPausable", [address]));
-  }
+function buildRoutine(guardian) {
+  const targets = [];
+  const values = [];
+  const calldatas = [];
+  const labels = [];
+  const roles = new ethers.Interface(ROLE_ABI);
+  const push = (label, target, data) => {
+    targets.push(target); values.push(0n); calldatas.push(data); labels.push(label);
+  };
+
+  push("new guardian: registerPausable(treasury V2)", guardian, roles.encodeFunctionData("registerPausable", [TREASURIES["treasury V2"]]));
+  push("new guardian: registerPausable(POL manager)", guardian, roles.encodeFunctionData("registerPausable", [TREASURIES["POL manager"]]));
   push("new guardian: registerPausable(reward manager)", guardian, roles.encodeFunctionData("registerPausable", [REWARD_MANAGER]));
 
   return { targets, values, calldatas, labels };
 }
 
-async function preflight(provider, guardian, actions) {
+async function preflight(provider, guardian, actions, label) {
   const roles = new ethers.Interface(ROLE_ABI);
+  log(`--- ${label} ---`);
   log(`replacement guardian ${guardian}`);
   log(`old guardian ${OLD_GUARDIAN}`);
 
@@ -189,36 +197,52 @@ async function main() {
   if (command === "build") {
     const guardianOverride = process.argv.indexOf("--guardian") !== -1 ? process.argv[process.argv.indexOf("--guardian") + 1] : null;
     const guardianAddress = guardianOverride ? ethers.getAddress(guardianOverride) : loadGuardian().guardian;
-    const built = buildActions(guardianAddress);
-    log(`${built.targets.length} actions for guardian ${guardianAddress}:`);
-    built.labels.forEach((label, index) => log(`  ${index + 1}. ${label}\n     to ${built.targets[index]}\n     data ${built.calldatas[index].slice(0, 10)}`));
+    for (const [tier, built] of [["CRITICAL", buildCritical(guardianAddress)], ["ROUTINE", buildRoutine(guardianAddress)]]) {
+      log(`${tier}: ${built.targets.length} actions`);
+      built.labels.forEach((label, index) => log(`  ${index + 1}. ${label} -> ${built.targets[index]} ${built.calldatas[index].slice(0, 10)}`));
+    }
     return;
   }
   const provider = new ethers.JsonRpcProvider(RPC_URL, CHAIN_ID, { staticNetwork: true });
   const state = loadGuardian();
-  const actions = buildActions(state.guardian);
+  const guardian = state.guardian;
+  const critical = buildCritical(guardian);
+  const routine = buildRoutine(guardian);
 
   const governor = new ethers.Contract(GOVERNOR, GOVERNOR_ABI, provider);
   const timelock = new ethers.Contract(TIMELOCK, TIMELOCK_ABI, provider);
   const count = Number(await governor.proposalCount());
 
   log(`chain ${CHAIN_ID}, block ${await provider.getBlockNumber()}, proposalCount ${count}`);
-  log(`timelock min delay ${await timelock.getMinDelay()} seconds`);
+  log(`timelock min delay ${await timelock.getMinDelay()} seconds (governance ignores this: OmniGovernance.queue hardcodes 48h routine / 7d critical)`);
 
   if (command === "status") {
     if (count > 0) {
       const latest = await governor.proposals(count);
       log(`proposal ${count}: state ${await governor.state(count)}, vote ${new Date(Number(latest.voteStart) * 1000).toISOString()} -> ${new Date(Number(latest.voteEnd) * 1000).toISOString()}`);
     }
-    log(`${actions.targets.length} actions prepared for the next proposal:`);
-    actions.labels.forEach((label, index) => log(`  ${index + 1}. ${label}`));
+    log(`CRITICAL actions (${critical.targets.length}):`);
+    critical.labels.forEach((label, index) => log(`  ${index + 1}. ${label}`));
+    log(`ROUTINE actions (${routine.targets.length}):`);
+    routine.labels.forEach((label, index) => log(`  ${index + 1}. ${label}`));
     return;
   }
 
-  await preflight(provider, state.guardian, actions);
+  await preflight(provider, guardian, critical, "CRITICAL proposal");
+  await preflight(provider, guardian, routine, "ROUTINE proposal");
 
   if (command === "simulate") {
     log("SIMULATION ONLY — nothing sent");
+    return;
+  }
+
+  if (command === "drypropose") {
+    const iface = new ethers.Interface(GOVERNOR_ABI);
+    for (const [type, set, name] of [[PROPOSAL_TYPE_CRITICAL, critical, "critical"], [PROPOSAL_TYPE_ROUTINE, routine, "routine"]]) {
+      const data = iface.encodeFunctionData("propose", [type, set.targets, set.values, set.calldatas, `${DESCRIPTION} (${name})`]);
+      await provider.call({ from: TREASURY, to: GOVERNOR, data });
+      log(`drypropose passed: governor accepts the ${name} batch from the recovery treasury`);
+    }
     return;
   }
 
@@ -226,48 +250,53 @@ async function main() {
   log(`signing as recovery treasury ${await signer.getAddress()}`);
   const asSigner = new ethers.Contract(GOVERNOR, GOVERNOR_ABI, signer);
 
+  const which = process.argv.includes("--routine") ? "routine" : "critical";
+  const set = which === "routine" ? routine : critical;
+  const type = which === "routine" ? PROPOSAL_TYPE_ROUTINE : PROPOSAL_TYPE_CRITICAL;
+
   if (command === "propose") {
-    const votes = await asSigner.proposalThreshold();
-    log(`proposal threshold ${votes}`);
-    const tx = await asSigner.propose(PROPOSAL_TYPE_ROUTINE, actions.targets, actions.values, actions.calldatas, DESCRIPTION, {
+    const tx = await asSigner.propose(type, set.targets, set.values, set.calldatas, `${DESCRIPTION} (${which})`, {
       gasLimit: 3_000_000n,
       gasPrice: GAS_PRICE,
     });
-    log(`propose sent ${tx.hash}`);
+    log(`propose (${which}) sent ${tx.hash}`);
     const receipt = await tx.wait();
     if (!receipt || receipt.status !== 1) throw new Error(`propose reverted in ${tx.hash}`);
     const id = await asSigner.proposalCount();
-    log(`proposal ${id} created in block ${receipt.blockNumber}`);
     const readBack = await asSigner.getActions(id);
-    if (readBack.targets.length !== actions.targets.length) throw new Error("action count mismatch after propose");
-    log(`actions read back: ${readBack.targets.length}, first target ${readBack.targets[0]}`);
+    if (readBack.targets.length !== set.targets.length) throw new Error("action count mismatch after propose");
+    log(`proposal ${id} created in block ${receipt.blockNumber}, ${readBack.targets.length} actions read back`);
+    const stateFile = path.join(__dirname, "..", "..", "deployments", "pause-batch.json");
+    fs.mkdirSync(path.dirname(stateFile), { recursive: true });
+    const previous = fs.existsSync(stateFile) ? JSON.parse(fs.readFileSync(stateFile, "utf8")) : {};
+    fs.writeFileSync(stateFile, JSON.stringify({ ...previous, [which]: { id: id.toString(), txHash: tx.hash, type: which, createdAt: new Date().toISOString() } }, null, 2));
+    log(`recorded ${which} proposal ${id} in ${stateFile}`);
     return;
   }
 
-  const id = BigInt(process.env.PROPOSAL_ID || count);
-  log(`using proposal ${id}`);
+  const stateFile = path.join(__dirname, "..", "..", "deployments", "pause-batch.json");
+  const recorded = fs.existsSync(stateFile) ? JSON.parse(fs.readFileSync(stateFile, "utf8")) : {};
+  const id = BigInt(process.env.PROPOSAL_ID || (recorded[which] && recorded[which].id) || count);
+  log(`using ${which} proposal ${id}`);
 
   if (command === "vote") {
     if (await asSigner.hasVoted(id, await signer.getAddress())) throw new Error("already voted");
     const tx = await asSigner.castVote(id, SUPPORT_FOR, { gasLimit: 500_000n, gasPrice: GAS_PRICE });
     log(`vote sent ${tx.hash}`);
     await tx.wait();
-    log("voted in favour");
+    log(`voted in favour on ${id}`);
     return;
   }
 
   if (command === "queue" || command === "execute") {
-    const tx = await asSigner[command](id, { gasLimit: 5_000_000n, gasPrice: GAS_PRICE });
+    const tx = await asSigner[command](id, { gasLimit: 6_000_000n, gasPrice: GAS_PRICE });
     log(`${command} sent ${tx.hash}`);
     const receipt = await tx.wait();
     if (!receipt || receipt.status !== 1) throw new Error(`${command} reverted in ${tx.hash}`);
     log(`${command} landed in block ${receipt.blockNumber}`);
     if (command === "execute") {
-      const roles = new ethers.Interface(ROLE_ABI);
-      void roles;
-      const guardian = new ethers.Contract(state.guardian, ["function pausableCount() view returns (uint256)"], provider);
-      log(`new guardian pausableCount ${await guardian.pausableCount()}`);
-      log(`timelock min delay now ${await timelock.getMinDelay()} seconds`);
+      const guardianContract = new ethers.Contract(guardian, ["function pausableCount() view returns (uint256)"], provider);
+      log(`new guardian pausableCount now ${await guardianContract.pausableCount()}`);
     }
     return;
   }
