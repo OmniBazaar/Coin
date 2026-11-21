@@ -34,7 +34,16 @@ FINALIZER=${GOV_FINALIZER:-scripts/governance/finalize-revision-2026-10.cjs}
 # treasury key that the intruder copied on 2026-11-15. The treasury successor key
 # never touches this host (it is cold), so there is deliberately no default path:
 # set GOV_KEY_FILE to the successor key's location on the machine that runs this.
-KEY_FILE=${GOV_KEY_FILE:?set GOV_KEY_FILE to the treasury successor key file (0x5169ce02) — the old iceberg-omnibazaar.pk is retired}
+#
+# 🛑 2026-11-21 — this was an unconditional `${GOV_KEY_FILE:?}` expansion, which
+# killed the script on EVERY tick before it had read the proposal state. Once
+# proposal 17 reached Succeeded (2026-11-18T23:55Z) that turned
+# omnibazaar-gov-advance-17.service into a permanent silent failure: 253 failed
+# runs, no page, no reason, and `systemctl status` showed only a bare shell error
+# while the monitor separately paged `queue-due` with no hint that the executor
+# could never act. A key is now required only by the branches that broadcast, and
+# a missing key pages through emit_failure with the step that is stuck.
+KEY_FILE="${GOV_KEY_FILE:-}"
 ERR_STATE=${GOV_EXEC_ERR_STATE:-/tmp/.gov-exec-last-error}
 now=$(date +%s)
 
@@ -53,6 +62,19 @@ emit_failure() {  # emit_failure <key> <message-body>
     else
         echo "$(date -u '+%Y-%m-%d %H:%M:%S UTC') $key unchanged and already paged within the hour; not paging again"
     fi
+}
+
+need_key() {  # need_key <step> — stop, and page, when no signing key is configured
+    # The treasury successor key is cold and deliberately absent from this host,
+    # so "no key here" is a possible STEADY state, not a crash. Say so loudly and
+    # once (emit_failure pages on a changed message, then hourly) instead of dying
+    # with a bare shell error nobody sees.
+    if [[ -n "$KEY_FILE" && -r "$KEY_FILE" ]]; then
+        return 0
+    fi
+    emit_failure "gov.proposal.${ID}.key-missing" \
+        "proposal $ID is $1 and needs a signature, but GOV_KEY_FILE is unset or unreadable — the treasury successor key 0x5169ce02 is cold and deliberately absent from this host; run this step from the machine that holds it: GOV_KEY_FILE=<path to successor key> $0 $ID"
+    exit 1
 }
 
 disarm() {
@@ -110,6 +132,7 @@ case "$st" in
             echo "vote already cast by $GOV_VOTER; nothing to do"
             exit 0
         fi
+        need_key "Active, no vote from $GOV_VOTER"
         out=$(run_voter) && {
             emit "gov.proposal.${ID}.vote-cast" user.info \
                 "proposal $ID: FOR vote cast by the governance-weight account"
@@ -124,6 +147,7 @@ case "$st" in
         exit 1
         ;;
     3)
+        need_key "Succeeded, waiting to be queued"
         out=$(run_finalizer) || {
             emit "gov.proposal.${ID}.queue-failed" user.warning \
                 "queueing proposal $ID FAILED — $(tail -3 <<<"$out" | tr '\n' ' ' | cut -c1-300)"
@@ -146,6 +170,7 @@ case "$st" in
             exit 0
         fi
         echo "timelock expired at $(date -u -d "@$eta" '+%Y-%m-%dT%H:%MZ') — executing"
+        need_key "Queued, past its timelock ETA"
         out=$(run_finalizer)
         rc=$?
         st2=$(gov_prop_state "$ID")
