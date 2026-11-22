@@ -4,10 +4,10 @@ pragma solidity 0.8.24;
 // Foundry test, dependency-free (no forge-std): run it standalone with
 //   forge test --match-path test/security/PauseController.t.sol
 // It is kept out of the Hardhat suite so the two runners stay independent.
-// Ten cases: one-of-five pause, stranger refused, threshold enforced, three
-// approvals unpause, revoke, double approval, governance override in both
-// directions, non-timelock refused, clear-approvals invalidation, removed
-// guardian.
+// Seventeen cases. The six added after the audit cover the two high findings
+// (banked approvals surviving a pause, a removed guardian still counting) plus
+// the challenge window, the duplicate-approval path, a codeless target, a target
+// whose pause() silently does nothing, and a codeless guardian set.
 
 import {PauseController} from "../../contracts/PauseController.sol";
 
@@ -15,6 +15,8 @@ interface Vm {
     function prank(address) external;
     function expectRevert(bytes4) external;
     function expectRevert(bytes calldata) external;
+    function expectRevert() external;
+    function warp(uint256) external;
 }
 
 contract MockTarget {
@@ -25,9 +27,22 @@ contract MockTarget {
     function unpause() external { require(paused, "not paused"); paused = false; unpauseCalls++; }
 }
 
+contract NoOpTarget {
+    bool public paused;
+    function pause() external { /* silently does nothing */ }
+    function unpause() external { /* silently does nothing */ }
+}
+
 contract MockGuardians {
     mapping(address => bool) public isGuardian;
     function set(address a, bool v) external { isGuardian[a] = v; }
+}
+
+contract MockTimelock {
+    function call(address target, bytes calldata data) external {
+        (bool ok, ) = target.call(data);
+        require(ok, "call failed");
+    }
 }
 
 contract PauseControllerTest {
@@ -36,18 +51,19 @@ contract PauseControllerTest {
     PauseController controller;
     MockTarget target;
     MockGuardians guardians;
-    address timelock = address(0xA11CE);
+    MockTimelock timelock;
     address g1 = address(0x1001);
     address g2 = address(0x1002);
     address g3 = address(0x1003);
     address stranger = address(0xBAD);
 
     function setUp() public {
+        timelock = new MockTimelock();
         guardians = new MockGuardians();
         guardians.set(g1, true);
         guardians.set(g2, true);
         guardians.set(g3, true);
-        controller = new PauseController(timelock, address(guardians));
+        controller = new PauseController(address(timelock), address(guardians));
         target = new MockTarget();
     }
 
@@ -78,6 +94,7 @@ contract PauseControllerTest {
         vm.prank(g1); controller.approveUnpause(address(target));
         vm.prank(g2); controller.approveUnpause(address(target));
         vm.prank(g3); controller.approveUnpause(address(target));
+        vm.warp(block.timestamp + 1 hours);
         controller.executeUnpause(address(target));
         require(!target.paused(), "not unpaused");
         require(controller.approvalCount(address(target)) == 0, "approvals not cleared");
@@ -103,9 +120,9 @@ contract PauseControllerTest {
 
     function testGovernanceOverrides() public {
         vm.prank(g1); controller.pause(address(target));
-        vm.prank(timelock); controller.forceUnpause(address(target));
+        vm.prank(address(timelock)); controller.forceUnpause(address(target));
         require(!target.paused(), "governance unpause failed");
-        vm.prank(timelock); controller.forcePause(address(target));
+        vm.prank(address(timelock)); controller.forcePause(address(target));
         require(target.paused(), "governance pause failed");
     }
 
@@ -120,19 +137,88 @@ contract PauseControllerTest {
         vm.prank(g1); controller.approveUnpause(address(target));
         vm.prank(g2); controller.approveUnpause(address(target));
         vm.prank(g3); controller.approveUnpause(address(target));
-        vm.prank(timelock); controller.clearApprovals(address(target));
+        vm.prank(address(timelock)); controller.clearApprovals(address(target));
         vm.expectRevert(abi.encodeWithSelector(PauseController.BelowThreshold.selector, 0, 3));
         controller.executeUnpause(address(target));
         require(!controller.hasApproved(address(target), g1), "stale approval visible");
     }
 
-    function testRemovedGuardianStillNeedsThreshold() public {
+    function testRemovedGuardianCannotContribute() public {
         vm.prank(g1); controller.pause(address(target));
         vm.prank(g1); controller.approveUnpause(address(target));
-        guardians.set(g1, false);
         vm.prank(g2); controller.approveUnpause(address(target));
         vm.prank(g3); controller.approveUnpause(address(target));
+        guardians.set(g1, false);
+        vm.warp(block.timestamp + 1 hours);
+        vm.expectRevert(abi.encodeWithSelector(PauseController.BelowThreshold.selector, 2, 3));
         controller.executeUnpause(address(target));
-        require(!target.paused(), "unpause failed");
+        require(target.paused(), "must stay paused without three current guardians");
+    }
+
+    function testStaleApprovalsDoNotSurvivePause() public {
+        // Bank three approvals while the target is running.
+        vm.prank(g1); controller.approveUnpause(address(target));
+        vm.prank(g2); controller.approveUnpause(address(target));
+        vm.prank(g3); controller.approveUnpause(address(target));
+        // Now pause it for a real incident.
+        vm.prank(g1); controller.pause(address(target));
+        require(controller.approvalsFor(address(target)) == 0, "banked approvals survived pause");
+        vm.warp(block.timestamp + 2 hours);
+        vm.expectRevert(abi.encodeWithSelector(PauseController.BelowThreshold.selector, 0, 3));
+        controller.executeUnpause(address(target));
+    }
+
+    function testStaleApprovalsDoNotSurviveForceUnpause() public {
+        vm.prank(g1); controller.approveUnpause(address(target));
+        vm.prank(g2); controller.approveUnpause(address(target));
+        vm.prank(g3); controller.approveUnpause(address(target));
+        vm.prank(address(timelock)); controller.forcePause(address(target));
+        require(controller.approvalsFor(address(target)) == 0, "approvals survived governance pause");
+        vm.prank(address(timelock)); controller.forceUnpause(address(target));
+        require(!target.paused(), "governance unpause failed");
+        vm.expectRevert(abi.encodeWithSelector(PauseController.BelowThreshold.selector, 0, 3));
+        controller.executeUnpause(address(target));
+    }
+
+    function testChallengeWindowEnforced() public {
+        vm.prank(g1); controller.pause(address(target));
+        vm.prank(g1); controller.approveUnpause(address(target));
+        vm.prank(g2); controller.approveUnpause(address(target));
+        vm.prank(g3); controller.approveUnpause(address(target));
+        vm.expectRevert();
+        controller.executeUnpause(address(target));
+        vm.warp(block.timestamp + 1 hours);
+        controller.executeUnpause(address(target));
+        require(!target.paused(), "not unpaused after the window");
+    }
+
+    function testRevokeThenReapproveDoesNotDoubleCount() public {
+        vm.prank(g1); controller.pause(address(target));
+        vm.prank(g1); controller.approveUnpause(address(target));
+        vm.prank(g1); controller.revokeUnpause(address(target));
+        vm.prank(g1); controller.approveUnpause(address(target));
+        vm.prank(g2); controller.approveUnpause(address(target));
+        require(controller.validApprovalsFor(address(target)) == 2, "one guardian counted twice");
+        vm.warp(block.timestamp + 1 hours);
+        vm.expectRevert();
+        controller.executeUnpause(address(target));
+    }
+
+    function testCodelessTargetRejected() public {
+        vm.prank(g1);
+        vm.expectRevert(abi.encodeWithSelector(PauseController.NotAContract.selector, stranger));
+        controller.pause(stranger);
+    }
+
+    function testSilentNoOpTargetRejected() public {
+        NoOpTarget noop = new NoOpTarget();
+        vm.prank(g1);
+        vm.expectRevert(abi.encodeWithSelector(PauseController.TargetStateMismatch.selector, address(noop), false));
+        controller.pause(address(noop));
+    }
+
+    function testConstructorRejectsCodelessGuardianSet() public {
+        vm.expectRevert(abi.encodeWithSelector(PauseController.NotAContract.selector, stranger));
+        new PauseController(address(timelock), stranger);
     }
 }
