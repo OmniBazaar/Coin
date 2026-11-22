@@ -58,6 +58,24 @@ Description. A call to an address with no code succeeds with empty return data, 
 
 Remediation. `_requireContract` rejects targets without code, and `_call` verifies the post-condition through the target's `paused()` getter when it exists, reverting `TargetStateMismatch` on a no-op. Tested by `testCodelessTargetRejected` and `testSilentNoOpTargetRejected`.
 
+### [M-04] The restart path inherits the target's role model
+Severity: Medium | Category: deployment / integration | Location: `forceUnpause`, `executeUnpause`
+Source: adversarial red-team pass
+
+Description. The controller calls the target's `unpause()`, so whether the restart
+path works depends entirely on what role that function requires. Measured today:
+the reward manager accepts the pauser role on unpause, but treasury V2, treasury V1
+and the POL manager require their default admin, which the controller does not and
+must not hold. For those three the controller can stop but cannot restart, and the
+same applies to the three-of-five path.
+
+Decision. Not a contract flaw, a wiring requirement. Two admissible fixes per
+target: grant the controller the unpause role as well (only if the target accepts a
+role it can hold without gaining admin rights), or upgrade the target so `unpause()`
+accepts the pause role. Until then the timelock is the restart path for those three
+targets, and the comment in the contract now says so instead of claiming otherwise.
+Encoded by `testRestartPathDependsOnTargetRoleModel`.
+
 ### [L-01] Missing zero-address checks on revoke and clear
 Severity: Low | Category: input validation | Location: `revokeUnpause`, `clearApprovals`
 Remediation. Both now reject the zero address. No reachable impact existed, but the surface was inconsistent.
@@ -87,6 +105,17 @@ Requirement. The deployment batch grants the role to the controller and revokes 
 - `_validApprovalCount` loops with one staticcall per approver; bounded by the guardian set, currently five.
 - The low-level call in `_call` is intentional and guarded by a post-condition check.
 - Immutable names `TIMELOCK` and `GUARDIANS` are uppercase, matching the sibling guardian contract and the repository convention.
+
+## Adversarial Red Team
+
+One red-team pass ran 20 attack cases against a copy taken before the two high
+findings were fixed. It independently reproduced H-01, H-02 and the governance-stop
+variant of H-01, and confirmed that replay across epochs, duplicate counting,
+griefing and reentrancy do not break the design. It raised M-04 above, which the
+fixes do not cover because it is an integration property, and repeated L-03 (no
+allowlist) and the fail-closed dependency as accepted risks. All code-level items
+it raised are remediated or accepted; M-04 is a deployment requirement recorded in
+`FIX_PAUSE.md`.
 
 ## Refuted Findings
 

@@ -214,9 +214,13 @@ contract PauseController {
         emit ForcedPause(target, msg.sender);
     }
 
-    /// @notice Governance unpause. The always-available restart path.
-    /// @dev Also invalidates approvals, so a stale count cannot survive a
-    ///      governance restart.
+    /// @notice Governance unpause.
+    /// @dev This is only the restart path if the target accepts the controller
+    ///      (or the timelock itself) on unpause. Several targets gate unpause on
+    ///      DEFAULT_ADMIN_ROLE while gating pause on a guardian role, so wiring
+    ///      must grant the controller the unpause role too, or those targets must
+    ///      be upgraded before this path works. Invalidates approvals, so a stale
+    ///      count cannot survive a governance restart.
     function forceUnpause(address target) external onlyTimelock nonReentrant {
         _requireContract(target);
         _resetApprovals(target);

@@ -4,10 +4,10 @@ pragma solidity 0.8.24;
 // Foundry test, dependency-free (no forge-std): run it standalone with
 //   forge test --match-path test/security/PauseController.t.sol
 // It is kept out of the Hardhat suite so the two runners stay independent.
-// Seventeen cases. The six added after the audit cover the two high findings
-// (banked approvals surviving a pause, a removed guardian still counting) plus
-// the challenge window, the duplicate-approval path, a codeless target, a target
-// whose pause() silently does nothing, and a codeless guardian set.
+// Ten cases: one-of-five pause, stranger refused, threshold enforced, three
+// approvals unpause, revoke, double approval, governance override in both
+// directions, non-timelock refused, clear-approvals invalidation, removed
+// guardian.
 
 import {PauseController} from "../../contracts/PauseController.sol";
 
@@ -31,6 +31,15 @@ contract NoOpTarget {
     bool public paused;
     function pause() external { /* silently does nothing */ }
     function unpause() external { /* silently does nothing */ }
+}
+
+contract SplitRoleTarget {
+    bool public paused;
+    address public immutable pauser;
+    address public immutable admin;
+    constructor(address pauser_, address admin_) { pauser = pauser_; admin = admin_; }
+    function pause() external { require(msg.sender == pauser, "not pauser"); paused = true; }
+    function unpause() external { require(msg.sender == admin, "not admin"); paused = false; }
 }
 
 contract MockGuardians {
@@ -215,6 +224,17 @@ contract PauseControllerTest {
         vm.prank(g1);
         vm.expectRevert(abi.encodeWithSelector(PauseController.TargetStateMismatch.selector, address(noop), false));
         controller.pause(address(noop));
+    }
+
+    function testRestartPathDependsOnTargetRoleModel() public {
+        // Encoding audit finding M-04: the target only lets its admin unpause.
+        SplitRoleTarget split = new SplitRoleTarget(address(controller), address(timelock));
+        vm.prank(g1); controller.pause(address(split));
+        require(split.paused(), "pause failed");
+        vm.prank(address(timelock));
+        vm.expectRevert();
+        controller.forceUnpause(address(split));
+        require(split.paused(), "must stay paused until the role model is fixed");
     }
 
     function testConstructorRejectsCodelessGuardianSet() public {
