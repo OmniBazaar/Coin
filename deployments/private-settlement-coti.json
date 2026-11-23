@@ -1,0 +1,18 @@
+{
+  "chainId": 2632500,
+  "rehearsal": false,
+  "proxy": "0xf8b980dd9C4ea1d60304b1d842Fce74d5dBaEc86",
+  "implementation": "0x213c99CB8b4Ec2d527fBCe38d9e362d520f635A9",
+  "admin": "0x68d002Bb315E8310c1344EeA707f9C36DdC33e1e",
+  "settlers": [
+    "0x88f67429e159725B455340dd7b8c5b793E634f63"
+  ],
+  "liquidityPool": "0x68d002Bb315E8310c1344EeA707f9C36DdC33e1e",
+  "feeVault": "0x68d002Bb315E8310c1344EeA707f9C36DdC33e1e",
+  "trustedForwarder": "0x0000000000000000000000000000000000000000",
+  "replaces": "0x1CF276D04257785062A6C7A99897F4913386E486",
+  "deployedAt": "2026-11-23T18:42:15.770Z",
+  "implTx": "0x68377ab6621b6d0fa1af6cd0e3eb49d01e46ca606084adb30b2055f81e65d519",
+  "proxyTx": "0x9d9477fbd48236fc345f6a0abf28038ea5d092e633a605b33594200938b6f042",
+  "block": 10555252
+}
