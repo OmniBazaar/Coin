@@ -11,32 +11,34 @@
       "legacyProxy": "0x9338B9eF1291b0266D28E520797eD57020A84D3B",
       "legacyImplementation": "0x9CB1124388Bd749887dd89cA47E5E82c5E95416e",
       "legacyPreviousImplementation": "0xb3E389014B2A2cDB18EB8AfB9353129c24559b76",
-      "note": "CANONICAL = pXOM V2 (`proxy` field above), a non-pausable PrivateERC20 256-bit token — NON-proxy direct deploy, so EIP-1967 impl slot is empty; the `proxy` field simply carries the canonical token address that sync-contract-addresses reads. Matches privacyV2.PrivateOmniCoin. The LEGACY OZ-Pausable token (legacyProxy, paused 2026-05-09) blocked shield mints (EnforcedPause) and was superseded 2026-06-02 — kept here for history only; do NOT wire it. OmniPrivacyShield re-deployed 2026-06-17 at 0x7208B56f3B6aF20FA1817f460D5eFcaA217f09a6 (push-model unshield via pXOM.transferAndCall->onTokenReceived; deferred burnPending; audited clean; funded COTI round-trip proven, unshield tx 0x004525df) — it holds MINTER_ROLE on V2 pXOM. Prior shields 0x184E4BA49986Be4dF1aA2831c790013c83576106 and 0x8968a41ee5208eAF6E9fe290558BcCD1D0A482c3 were MINTER-revoked + retired. (Was previously a STALE Phase-1 entry pointing at legacyProxy, which made `sync coti-mainnet` overwrite the correct TS pXOM address with the paused contract — fixed 2026-06-18.)"
+      "note": "CANONICAL = pXOM V2 (`proxy` field above), a non-pausable PrivateERC20 256-bit token \u2014 NON-proxy direct deploy, so EIP-1967 impl slot is empty; the `proxy` field simply carries the canonical token address that sync-contract-addresses reads. Matches privacyV2.PrivateOmniCoin. The LEGACY OZ-Pausable token (legacyProxy, paused 2026-05-09) blocked shield mints (EnforcedPause) and was superseded 2026-06-02 \u2014 kept here for history only; do NOT wire it. OmniPrivacyShield re-deployed 2026-06-17 at 0x7208B56f3B6aF20FA1817f460D5eFcaA217f09a6 (push-model unshield via pXOM.transferAndCall->onTokenReceived; deferred burnPending; audited clean; funded COTI round-trip proven, unshield tx 0x004525df) \u2014 it holds MINTER_ROLE on V2 pXOM. Prior shields 0x184E4BA49986Be4dF1aA2831c790013c83576106 and 0x8968a41ee5208eAF6E9fe290558BcCD1D0A482c3 were MINTER-revoked + retired. (Was previously a STALE Phase-1 entry pointing at legacyProxy, which made `sync coti-mainnet` overwrite the correct TS pXOM address with the paused contract \u2014 fixed 2026-06-18.)"
     },
     "OmniPrivacyBridge": {
       "status": "RETIRED",
       "legacyProxy": "0x0D6bD1C10EDae3DEC57F426760686130759c84AB",
       "legacyImplementation": "0xfF92309d8C06B4A09F1EacECB280E5e011D5ba1e",
-      "note": "RETIRED — bespoke COTI privacy bridge, superseded by Hyperlane (decision_privacy_bridge_hyperlane_2026-05-30); the OmniPrivacyBridge_L1/COTI contracts were removed in Coin 391d7cf. legacyProxy kept for forensic history only; not wired in any TS config (sync intentionally does not manage it)."
+      "note": "RETIRED \u2014 bespoke COTI privacy bridge, superseded by Hyperlane (decision_privacy_bridge_hyperlane_2026-05-30); the OmniPrivacyBridge_L1/COTI contracts were removed in Coin 391d7cf. legacyProxy kept for forensic history only; not wired in any TS config (sync intentionally does not manage it)."
     },
     "PrivateDEX": {
       "status": "RETIRED",
       "legacyProxy": "0xf20765a9Eb38a4753c5774c86677251cfbEcc690",
       "legacyImplementation": "0x8d7fAf49544308B231182A1cD452F52D8B21E222",
-      "note": "RETIRED — PrivateDEXSimple, superseded by PrivateDEXSettlement (canonical 0x1CF276D04257785062A6C7A99897F4913386E486). legacyProxy kept for history only; not wired in any TS config."
+      "note": "RETIRED \u2014 PrivateDEXSimple, superseded by PrivateDEXSettlement (canonical 0x1CF276D04257785062A6C7A99897F4913386E486). legacyProxy kept for history only; not wired in any TS config."
     },
     "PrivateDEXSettlement": {
-      "proxy": "0x1CF276D04257785062A6C7A99897F4913386E486",
-      "implementation": "0x4F4a9DB86E998e7BA736e8867d20d69f009dd306",
-      "legacyProxy": "0xc2468BA2F42b5ea9095B43E68F39c366730B84B4",
+      "proxy": "0xf8b980dd9C4ea1d60304b1d842Fce74d5dBaEc86",
+      "implementation": "0x213c99CB8b4Ec2d527fBCe38d9e362d520f635A9",
+      "legacyProxy": "0x1CF276D04257785062A6C7A99897F4913386E486",
       "legacyImplementation": "0x4804Aad1469aEC8cf4C1DBeD84e8075d135079E8",
-      "note": "CANONICAL = escrow/swap/refund (impl 0xFBdaE37196EC2E2b1da53da5539B2FCa47ca936A, upgrade tx 0x5eb929e72d9bf4afff8b3a9499571501676b6a665fb991752f204a4920dc9a22 block 8069961; requestUpgrade tx 0x5e3e7d5831863c8d01b941a3c71eeaf19e44cad4d8b78d4190ba279de07c6743). 2026-07-02: lockPrivateCollateralWithCommittee now escrows tokenIn via transferFromGT; _settleOne pays net→counterparty + lpFee/vaultFee→recipients via transferGT (conservation exact); cancelPrivateIntent refunds; 3 SETTLER_ROLE fund paths revert DeprecatedUseCommitteePath. Storage byte-identical to prior impl 0x2546534823da329Ba678b81832420D69D57E5508 (verified). Audited 0 C/H/M (PrivateDEXSettlement-escrow-upgrade-audit-2026-07-02.md). F1 solvency gate PASSED (0 open LOCKED). Prior impl 0x2546534823da329Ba678b81832420D69D57E5508 = V1.3 itUint256 (2026-06-19). 🛑 CLIENTS MUST broadcast lock/settle DIRECTLY with fixed gasLimit (validateCiphertext false-negatives under staticCall). Funded balance-movement E2E deferred (backed-shield funding — TODO DEX-D13-FUNDED-E2E)."
+      "note": "CANONICAL as of 2026-11-23 = the fresh instance deployed after the incident. The prior instance 0x1CF276D04257785062A6C7A99897F4913386E486 had the compromised deployer as its only admin and settler, and paid both fee recipients to that EOA; it is retained as previousProxy for history. New admin is the cold successor, fee recipients are the successor, settler is the escrow-relayer successor, trusted forwarder zero. Committee bound at size 5 / quorum 4 with five fresh ceremony keys (sequence 1); rotate back to the validator pool via pushEligibleSetUpdate once the staking keys are rotated. Client configs repointed in the same change.",
+      "previousProxy": "0x1CF276D04257785062A6C7A99897F4913386E486",
+      "previousImplementation": "0x4F4a9DB86E998e7BA736e8867d20d69f009dd306"
     },
     "PrivateUSDC": {
       "proxy": "0x4F1CbE46d42e2F880aE1aE8c091c9BA365bC0B33",
       "legacyProxy": "0x031f1761e2163b7f0eD47EdD17D7E110D4411b37",
       "legacyImplementation": "0x1cc9FF243A3e76A6c122aa708bB3Fd375a97c7d6",
-      "note": "CANONICAL = V2 (non-proxy PrivateERC20; impl slot empty — `proxy` carries the token address sync reads). Matches privacyV2.PrivateUSDC. legacyProxy = retired Phase-1."
+      "note": "CANONICAL = V2 (non-proxy PrivateERC20; impl slot empty \u2014 `proxy` carries the token address sync reads). Matches privacyV2.PrivateUSDC. legacyProxy = retired Phase-1."
     },
     "PrivateWBTC": {
       "proxy": "0xF701F221Cbc7601e9AEdD822DA44217b0E53E8eE",
@@ -75,7 +77,7 @@
     "6 privacy contracts deployed on COTI V2 mainnet (direct deploy, no OZ Upgrades). ERC1967Proxy + implementation pattern. Admin: deployer (Pioneer Phase). Date: 2026-03-21T21:05:28.279Z",
     "PrivateLimitDEXSettlement deployed at 2026-08-08T16:01:38.984Z",
     "VT-27 broadcast 2026-08-26: 6 privacy contracts upgraded (recordDisputeEquivocation + expireCommitteeDispute); CommitteeAttestorLib 0x782fB33b895B229AcCB34970E73840DcF07f4108 linked; PrivatePredictionMath relinked 0xA4A5a06e82F2fD3f2C76456AfAfB46aeCec2669f; PrivateLimitDEXSettlement stale upgradeRequested cleared via cancelUpgrade tx 0xa63bd2e2f575e6215be5e7d1ffe802958b15ca46ff8caefeed4f28b6aa73a8a4.",
-    "🛑 DEPRECATED 2026-09-21 — the bespoke privacy crossing (OmniPrivacyBridge_L1/COTI + Ecdsa5of5AttestationVerifier) and the non-XOM private tokens (pUSDC/pWBTC/pWETH) are RETIRED. The crossing is Hyperlane; only XOM is shielded (pXOM V2). Do NOT build a bridge/shield/mint path or re-point a minter for any non-XOM private token; do NOT revive OmniPrivacyBridge*. See memory 'deprecated_coti_privacy_contracts_2026-09-21'. The 5 privacy contracts + pXOM V2 + OmniPrivacyShield remain CURRENT."
+    "\ud83d\uded1 DEPRECATED 2026-09-21 \u2014 the bespoke privacy crossing (OmniPrivacyBridge_L1/COTI + Ecdsa5of5AttestationVerifier) and the non-XOM private tokens (pUSDC/pWBTC/pWETH) are RETIRED. The crossing is Hyperlane; only XOM is shielded (pXOM V2). Do NOT build a bridge/shield/mint path or re-point a minter for any non-XOM private token; do NOT revive OmniPrivacyBridge*. See memory 'deprecated_coti_privacy_contracts_2026-09-21'. The 5 privacy contracts + pXOM V2 + OmniPrivacyShield remain CURRENT."
   ],
   "deprecations": {
     "asOf": "2026-09-21",
@@ -95,7 +97,7 @@
       "PrivateOmniCoin V2 0x958b07d5C302338C8302c6b5a1Bff49bbF9aa934 (pXOM)",
       "OmniPrivacyShield 0x7208B56f3B6aF20FA1817f460D5eFcaA217f09a6",
       "PrivateDEXSettlement / PrivateLimitDEXSettlement / PrivateMarketplaceEscrow / PrivateYieldVault / PrivateRWAAMM / PrivatePredictionMarket (current; contract kept)",
-      "Private marketplace escrow fee (0% since 2026-11-13, seller-side, pXOM-based; set via requestEscrowFeeUpdate(0)+confirmEscrowFeeUpdate on proxy 0x43d216073D3c7B494FA3626C0607FfF14758A670, no upgrade) — reachable"
+      "Private marketplace escrow fee (0% since 2026-11-13, seller-side, pXOM-based; set via requestEscrowFeeUpdate(0)+confirmEscrowFeeUpdate on proxy 0x43d216073D3c7B494FA3626C0607FfF14758A670, no upgrade) \u2014 reachable"
     ],
     "privateDexLaunchSurface": "GATED OFF 2026-09-21 (VITE_ENABLE_PRIVATE_DEX_ORDERS=false in WebApp/Wallet; PRIVATE_DEX_ORDERS_ENABLED=false in Mobile). Unreachable: only pXOM is backed and same-token swaps are rejected. Contract kept. The XOM<->pXOM shield is a separate live flow."
   },
@@ -113,7 +115,7 @@
       "0xde1292e1d0dA189B97E5dcBfa030A5E402748C3A",
       "0xE7CDD15C675594C0B21f9E50C73E6D33288A90d1"
     ],
-    "validatorsNote": "Corrected 2026-06-01 to the canonical live set (matches L1 RandomCommitteeVerifier @398944 + live PrivateYieldVault seq 2 + .env.validator ATTESTER keys). Prior values (0x11A6…) were a stale bootstrap set never updated after the live snapshot advanced; they had leaked into committee-ism-config.yaml and the Action-3 ISM deploy, which were corrected via adminBootstrapSnapshot.",
+    "validatorsNote": "Corrected 2026-06-01 to the canonical live set (matches L1 RandomCommitteeVerifier @398944 + live PrivateYieldVault seq 2 + .env.validator ATTESTER keys). Prior values (0x11A6\u2026) were a stale bootstrap set never updated after the live snapshot advanced; they had leaked into committee-ism-config.yaml and the Action-3 ISM deploy, which were corrected via adminBootstrapSnapshot.",
     "bridge_COTI": "0x43401C7BF0D397D206F3B5Df894A719116d58e2e",
     "l1Bridge": "0x56b44EB5CB56128ce1F26Aa964e98eE03D2DCB55",
     "PrivateOmniCoin": "0x958b07d5C302338C8302c6b5a1Bff49bbF9aa934",
@@ -128,19 +130,19 @@
     },
     "notes": "Phase 1 mainnet COTI side. Deployed 2026-05-09. Mid-deploy nonce-bump moved bridge from predicted nonce 13 to actual nonce 14, but l1Bridge immutable was set to the original predicted L1 addr (0x56b4...). L1 deploy must use nonce 174 (verifier) + 175 (bridge) so L1 bridge addr matches.",
     "PrivateDEXSettlement": {
-      "proxy": "0x1CF276D04257785062A6C7A99897F4913386E486",
-      "implementation": "0x4F4a9DB86E998e7BA736e8867d20d69f009dd306",
-      "previousImplementation": "0xB90F80cf19797F7b30760A237b406B6715047B0f",
-      "previousProxy": "0xC82D5E339fc4357c139F93b53f313A095b6234D2",
-      "deployedAt": "2026-05-28T02:13:05.918Z",
+      "proxy": "0xf8b980dd9C4ea1d60304b1d842Fce74d5dBaEc86",
+      "implementation": "0x213c99CB8b4Ec2d527fBCe38d9e362d520f635A9",
+      "previousImplementation": "0x4F4a9DB86E998e7BA736e8867d20d69f009dd306",
+      "previousProxy": "0x1CF276D04257785062A6C7A99897F4913386E486",
+      "deployedAt": "2026-11-23T18:42:15.770Z",
       "deployer": "0x021868f2E3D49C059EF52B539AAa933B437e0321",
-      "replacementReason": "Privacy V1.2 + V1.2.1 fresh deploy — CommitteeAttestor inheritance + TIMELOCK_DELAY=0 per Pioneer-Phase rule; prior proxy had zero state",
+      "replacementReason": "Privacy V1.2 + V1.2.1 fresh deploy \u2014 CommitteeAttestor inheritance + TIMELOCK_DELAY=0 per Pioneer-Phase rule; prior proxy had zero state",
       "upgradeReason": "VT-27 dispute-equivocation hardening: CommitteeAttestor.recordDisputeEquivocation + PrivateMarketplaceEscrow.expireCommitteeDispute; full CommitteeAttestorLib base extraction (EIP-170 size fix)",
       "upgrades": [
         {
           "from": "0xFBdaE37196EC2E2b1da53da5539B2FCa47ca936A",
           "to": "0x8aA439b38027A8b4661aD21942113c0c36982036",
-          "reason": "COMMITTEE-GRINDING fix: CommitteeSeedPinningLib + requireCommitteeSeedPinning() setter (Coin 471f81b + follow-on) — latch left OFF",
+          "reason": "COMMITTEE-GRINDING fix: CommitteeSeedPinningLib + requireCommitteeSeedPinning() setter (Coin 471f81b + follow-on) \u2014 latch left OFF",
           "upgradedAt": "2026-08-10T18:31:08.731Z",
           "requestUpgradeTx": "0xb6735c535eab8612242ef953b678f1101849f38760d37a27e1f530996e6ed88c",
           "upgradeTx": "0x65747ad9231f6d04d24c4166f7754baf8360aafdb28f130295240362cee11778",
@@ -160,7 +162,8 @@
           "requestUpgradeTx": "0xe4a632e43e3b0c29a1760496dd0cd2ae0133f6ec0faa97d74b02ed40a7a5455f",
           "upgradeToAndCallTx": "0xc4a6d0ea336816d79314e440b4301b14c6a5b07aba1a045ac204d0435261765d"
         }
-      ]
+      ],
+      "deploymentNote": "Replaced 2026-11-23 after the key-compromise incident: prior instance had the compromised deployer as sole admin/settler and as both fee recipients. Committee bound size 5 quorum 4."
     },
     "PrivateMarketplaceEscrow": {
       "proxy": "0x43d216073D3c7B494FA3626C0607FfF14758A670",
@@ -168,7 +171,7 @@
       "previousProxy": "0xf26a5828b2D9c2a23E9b03eD6322991ef3C22c0D",
       "deployedAt": "2026-11-13T17:02:48.546Z",
       "deployer": "0x021868f2E3D49C059EF52B539AAa933B437e0321",
-      "replacementReason": "Privacy V1.2 + V1.2.1 fresh deploy — CommitteeAttestor inheritance + TIMELOCK_DELAY=0 per Pioneer-Phase rule; prior proxy had zero state",
+      "replacementReason": "Privacy V1.2 + V1.2.1 fresh deploy \u2014 CommitteeAttestor inheritance + TIMELOCK_DELAY=0 per Pioneer-Phase rule; prior proxy had zero state",
       "previousImplementation": "0xB55e9DAc3BE928b492f6BFe1Fc481ee15d1E28a9",
       "upgradedAt": "2026-07-04T17:28:25.363Z",
       "upgradeReason": "Arbitration fee 250 -> 500 bps (5 %, founder decision 2026-11-13): the whole fee is deducted from the disputed amount at settlement, matching EscrowV2 DEFAULT_ARBITRATION_FEE_BPS; DEFAULT_ESCROW_FEE_BPS also 25 -> 0 so a future fresh deploy initialises at 0",
@@ -179,7 +182,7 @@
         {
           "from": "0x9b28115D42AACEc27054470C290B9b521588A420",
           "to": "0x07579B8e28CD1f5faf5c8b5744654a3f667ff2C5",
-          "reason": "COMMITTEE-GRINDING fix: CommitteeSeedPinningLib + requireCommitteeSeedPinning() setter — latch left OFF",
+          "reason": "COMMITTEE-GRINDING fix: CommitteeSeedPinningLib + requireCommitteeSeedPinning() setter \u2014 latch left OFF",
           "upgradedAt": "2026-08-10T18:50:54.409Z",
           "requestUpgradeTx": "0x42db2e6578d82eef406fa4dc3f65e50db33af734ddba927bed0513fae42f2f51",
           "upgradeTx": "0x4845bddc42b5e1fcb5d7d054915b53f0733bc27ab4cab55403932725c1d3617b",
@@ -226,13 +229,13 @@
       "previousProxy": "0x98E41345f3dEcA076711cfc30Cc53e1b466514be",
       "deployedAt": "2026-05-28T02:12:20.369Z",
       "deployer": "0x021868f2E3D49C059EF52B539AAa933B437e0321",
-      "replacementReason": "Privacy V1.2 + V1.2.1 fresh deploy — CommitteeAttestor inheritance + TIMELOCK_DELAY=0 per Pioneer-Phase rule; prior proxy had zero state",
+      "replacementReason": "Privacy V1.2 + V1.2.1 fresh deploy \u2014 CommitteeAttestor inheritance + TIMELOCK_DELAY=0 per Pioneer-Phase rule; prior proxy had zero state",
       "note": "2026-06-30 FOLLOWON-2 settlement-direct pXOM escrow upgrade (G6): impl 0x258Fc94d (upgrade tx 0xea757a0f, block 8035626; prior live impl was 0x37BDA564, deployments record had a stale 0x9B0aaD07). initializeV3 bound privateToken=pXOM V2 0x958b07d5 atomically. _executeStake now pulls principal via IPrivateERC20.transferFromGT; unstake releases via transferGT; legacy pre-V3 stakes carry escrowed=false (verified on-chain) and keep the accumulator path. Audited (0 Crit/High; 2 Lows fixed); 16 Hardhat tests. Clients MUST approveGT(vault, amount) before stake (approvePxomForStake).",
       "upgrades": [
         {
           "from": "0x258Fc94d69Cd21c049B93e21650987aE39052Ed3",
           "to": "0x4f660D6e837e8A616aF871d9A5157fc02e04C48c",
-          "reason": "COMMITTEE-GRINDING fix: CommitteeSeedPinningLib + requireCommitteeSeedPinning() setter (Coin 471f81b + follow-on) — latch left OFF, no behavior change until a separate deliberate call enables it",
+          "reason": "COMMITTEE-GRINDING fix: CommitteeSeedPinningLib + requireCommitteeSeedPinning() setter (Coin 471f81b + follow-on) \u2014 latch left OFF, no behavior change until a separate deliberate call enables it",
           "upgradedAt": "2026-08-10T01:23:04.659Z",
           "requestUpgradeTx": "0xa62cf1d21b34332369845ebe0e133ca91e27338c8b0b7df6eed42749317707fb",
           "upgradeTx": "0x26828be00e41374270b9838b4476016a26032f6a0f2157848128720e97b8caa9",
@@ -270,13 +273,13 @@
       "previousProxy": "0x45D0D34097E7D4c7017a82887a50b8e8C0fD4Ddd",
       "deployedAt": "2026-05-28T02:12:35.631Z",
       "deployer": "0x021868f2E3D49C059EF52B539AAa933B437e0321",
-      "replacementReason": "Privacy V1.2 + V1.2.1 fresh deploy — CommitteeAttestor inheritance + TIMELOCK_DELAY=0 per Pioneer-Phase rule; prior proxy had zero state",
+      "replacementReason": "Privacy V1.2 + V1.2.1 fresh deploy \u2014 CommitteeAttestor inheritance + TIMELOCK_DELAY=0 per Pioneer-Phase rule; prior proxy had zero state",
       "previousImplementation": "0x266747f8b617fdAE4aad1A494508ab02BE5E8e0c",
       "upgrades": [
         {
           "from": "0x13033eD9261e391599b23255afFB1efDcfDCbF87",
           "to": "0x52E1cbAF69DFC9b433077B69D009282eE71e79B7",
-          "reason": "COMMITTEE-GRINDING fix: seed-pinning — latch OFF",
+          "reason": "COMMITTEE-GRINDING fix: seed-pinning \u2014 latch OFF",
           "upgradedAt": "2026-08-10T19:06:14.271Z",
           "requestUpgradeTx": "0xe6cf398d0c3b9eb7e8c71eb01fceba45f37d3410b1fdada8947da6ea4a570664",
           "upgradeTx": "0xf3e4039979fa175bd29cb99ed7acd4d3ca394dc1c49058db2105ba45343d6319",
@@ -314,13 +317,13 @@
       "previousProxy": "0xf671221EeA4bBf7c72b16E9328594040f7f4F628",
       "deployedAt": "2026-05-28T02:12:50.051Z",
       "deployer": "0x021868f2E3D49C059EF52B539AAa933B437e0321",
-      "replacementReason": "Privacy V1.2 + V1.2.1 fresh deploy — CommitteeAttestor inheritance + TIMELOCK_DELAY=0 per Pioneer-Phase rule; prior proxy had zero state",
+      "replacementReason": "Privacy V1.2 + V1.2.1 fresh deploy \u2014 CommitteeAttestor inheritance + TIMELOCK_DELAY=0 per Pioneer-Phase rule; prior proxy had zero state",
       "previousImplementation": "0x373B51041496e219b0999f3B2e01c4077f12d85b",
       "upgrades": [
         {
           "from": "0xF144F7329284b35c0fA80815ff8b97672d896c17",
           "to": "0x6D320D7DD53Cd0D1CBB4dd330E13f5552ef2dd87",
-          "reason": "COMMITTEE-GRINDING fix: seed-pinning — latch OFF",
+          "reason": "COMMITTEE-GRINDING fix: seed-pinning \u2014 latch OFF",
           "upgradedAt": "2026-08-10T19:05:58.980Z",
           "requestUpgradeTx": "0x3205bd0d72879f128b365818716a79a432863278c5e5b2c4bc1476d8a20db0dc",
           "upgradeTx": "0xe17c3f15e13bef4231463ef599572e8dfb83f65bf4ad791ef23c738ca93e90fa",
