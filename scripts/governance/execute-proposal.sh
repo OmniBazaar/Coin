@@ -45,6 +45,23 @@ FINALIZER=${GOV_FINALIZER:-scripts/governance/finalize-revision-2026-10.cjs}
 # a missing key pages through emit_failure with the step that is stuck.
 KEY_FILE="${GOV_KEY_FILE:-}"
 ERR_STATE=${GOV_EXEC_ERR_STATE:-/tmp/.gov-exec-last-error}
+# Which key signs the EXECUTE step.
+#
+# 🛑 execute(uint256) is PERMISSIONLESS — Coin/contracts/OmniGovernance.sol:700
+# checks only that the state is Queued — so the signer of an execute carries no
+# authority whatsoever; it pays gas and nothing else. Vote and queue are the
+# opposite: they need the treasury's weight and admin role respectively, so they
+# stay on GOV_KEY_FILE.
+#
+# Founder decision 2026-11-23, after proposal 17 sat past its timelock for four
+# hours paging key-missing while a permissionless execute had nothing to wait
+# for: the execute step signs with a local gas key so a queued proposal can never
+# stall on a cold key again. Verified that day by executing proposal 17 with this
+# key (tx 0xb4a26e98…b55c, block 3311430) — the recorder authorization landed.
+#
+# The default is the node gas faucet: it is dedicated, always funded, and already
+# holds no special privilege anywhere.
+GAS_KEY_FILE=${GOV_EXEC_GAS_KEY_FILE:-/home/omnirick/.omnibazaar-keys/node-gas-faucet.pk}
 now=$(date +%s)
 
 emit() { gov_emit "$LOG_TAG" "$@"; }
@@ -77,6 +94,15 @@ need_key() {  # need_key <step> — stop, and page, when no signing key is confi
     exit 1
 }
 
+exec_signer() {  # print the path of the key that signs EXECUTE; non-zero if none
+    # Prefer the treasury key when it happens to be on this host (same outcome,
+    # one fewer key in play); otherwise the local gas key, which is all that is
+    # needed. Both are optional — a missing key is never fatal here.
+    if [[ -n "$KEY_FILE" && -r "$KEY_FILE" ]]; then printf '%s' "$KEY_FILE"; return 0; fi
+    if [[ -n "$GAS_KEY_FILE" && -r "$GAS_KEY_FILE" ]]; then printf '%s' "$GAS_KEY_FILE"; return 0; fi
+    return 1
+}
+
 disarm() {
     local unit="${GOV_EXEC_DISARM_UNIT:-}"
     [[ -n "$unit" ]] || return 0
@@ -87,9 +113,10 @@ disarm() {
     sudo -n systemctl disable --now "$unit" 2>/dev/null || true
 }
 
-run_finalizer() {  # stdout+stderr of the hardhat script; non-zero on failure
+run_finalizer() {  # run_finalizer [key-file] — stdout+stderr of the hardhat script
+    local keyfile="${1:-$KEY_FILE}"
     ( cd "$COIN_DIR" && \
-      MAINNET_DEPLOYER_PRIVATE_KEY="$(cat "$KEY_FILE")" PROPOSAL_ID="$ID" \
+      MAINNET_DEPLOYER_PRIVATE_KEY="$(cat "$keyfile")" PROPOSAL_ID="$ID" \
       timeout 900 npx hardhat run "$FINALIZER" --network mainnet 2>&1 )
 }
 
@@ -170,8 +197,15 @@ case "$st" in
             exit 0
         fi
         echo "timelock expired at $(date -u -d "@$eta" '+%Y-%m-%dT%H:%MZ') — executing"
-        need_key "Queued, past its timelock ETA"
-        out=$(run_finalizer)
+        EXEC_KEY=$(exec_signer) || {
+            emit_failure "gov.proposal.${ID}.key-missing" \
+                "proposal $ID is Queued and past its timelock ETA, but neither GOV_KEY_FILE nor the local gas key ($GAS_KEY_FILE) is readable — execute is permissionless, so any funded key works; set GOV_EXEC_GAS_KEY_FILE"
+            exit 1
+        }
+        if [[ "$EXEC_KEY" != "$KEY_FILE" ]]; then
+            echo "signing execute with the local gas key $EXEC_KEY (execute is permissionless; the signer holds no authority, it only pays gas)"
+        fi
+        out=$(run_finalizer "$EXEC_KEY")
         rc=$?
         st2=$(gov_prop_state "$ID")
         if [[ "$st2" == "5" ]]; then
