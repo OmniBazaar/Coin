@@ -49,6 +49,10 @@ MAX_PROPOSALS=${GOV_MAX_PROPOSALS:-200}
 
 state_keys=()
 alerts=0
+# Conditions that are still true but whose page went out inside the re-emit
+# window. Reported separately so "no action outstanding" stays a true statement.
+suppressed=0
+already_done=0
 # GOV_CLOCK_SKEW exists so the alerting path can be verified without waiting for
 # a real timelock; it never affects a production run (defaults to 0).
 now=$(( $(date +%s) + ${GOV_CLOCK_SKEW:-0} ))
@@ -77,10 +81,18 @@ want() {  # want <key> <priority> <message> <once|repeat>
     local key="$1" prio="$2" msg="$3" mode="${4:-repeat}" ts
     state_keys+=("$key|$mode")
     if [[ "$mode" == "once" ]]; then
-        [[ -n "${once_done[$key]:-}" ]] && return 0
+        [[ -n "${once_done[$key]:-}" ]] && { (( already_done++ )); return 0; }
     else
         ts=${emit_at[$key]:-0}
-        (( now - ts < REEMIT_SECONDS )) && return 0
+        if (( now - ts < REEMIT_SECONDS )); then
+            # The condition is LIVE; only the page is being throttled. Count it,
+            # otherwise the run ends with "OK — no governance action outstanding"
+            # while proposal 17 sits past its timelock (2026-11-23: that line cost
+            # a real investigation — the unit also stayed green because alerts
+            # was still 0).
+            (( suppressed++ ))
+            return 0
+        fi
     fi
     emit "$key" "$prio" "$msg"
     (( alerts++ ))
@@ -178,6 +190,10 @@ done
 if (( alerts > 0 )); then
     echo "$(date -u '+%Y-%m-%d %H:%M:%S UTC') GOVERNANCE ALERT (${alerts} key(s) emitted)"
     exit 1
+fi
+if (( suppressed > 0 )); then
+    echo "$(date -u '+%Y-%m-%d %H:%M:%S UTC') ${suppressed} condition(s) OUTSTANDING, already paged within the $((REEMIT_SECONDS / 60)) min re-emit window — no new page"
+    exit 0
 fi
 echo "$(date -u '+%Y-%m-%d %H:%M:%S UTC') OK — no governance action outstanding"
 exit 0
