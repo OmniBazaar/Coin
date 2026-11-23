@@ -6,9 +6,9 @@
  *   1. Move all but 1 COTI from the old deployer to the successor.
  *   2. Bind the settlement committee as the successor.
  *
- * Files, in the folder you run this from:
- *   deployer.pk   the OLD deployer key  (0x021868f2…)
- *   successor.pk  the successor key     (0x68d002…)
+ * Files, in the folder you run this from, using the founder's naming:
+ *   .deployer-temp.pk  the OLD deployer key  (0x021868f2…)   override: OLD_KEY_FILE
+ *   deployer.pk        the successor key     (0x68d002…)     override: NEW_KEY_FILE
  *
  *   node .\finish-coti.mjs check   # read-only, needs no keys
  *   node .\finish-coti.mjs run     # does both steps, skipping anything done
@@ -96,7 +96,7 @@ async function main() {
 
   // Step 1: sweep, keeping 1 COTI plus a gas reserve.
   if (oldBalance > KEEP) {
-    const deployer = load("deployer.pk", OLD_DEPLOYER).connect(provider);
+    const deployer = load(process.env.OLD_KEY_FILE || ".deployer-temp.pk", OLD_DEPLOYER).connect(provider);
     const gasLimit = 21_000n;
     const reserve = (gasPrice ?? 20_000_000_000n) * gasLimit;
     const value = oldBalance - KEEP - reserve;
@@ -115,7 +115,7 @@ async function main() {
   if ((await settlement.committeeSize()) > 0n) {
     log("committee already bound; skipping");
   } else {
-    const successor = load("successor.pk", SUCCESSOR).connect(provider);
+    const successor = load(process.env.NEW_KEY_FILE || "deployer.pk", SUCCESSOR).connect(provider);
     const signer = new ethers.Contract(PROXY, ABI, successor);
     const l1Block = await provider.getBlockNumber();
     log(`binding committee of ${SET.length} at quorum ${QUORUM_M}, l1 block ${l1Block}`);
