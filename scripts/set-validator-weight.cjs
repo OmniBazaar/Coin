@@ -20,6 +20,9 @@ const os = require('os');
 const { pvm, utils, secp256k1, addTxSignatures, Context } = require('@avalabs/avalanchejs');
 
 const URI = process.env.AVALANCHE_RPC_URL ?? 'http://65.108.205.116:9650';
+// The issuing node decides which P-Chain height the warp message is graded
+// against, and nodes disagree (measured: .116 two hours stale, .101 current).
+const ISSUE_URI = process.env.ISSUE_RPC_URL ?? URI;
 const KEY_PATH = process.env.OWNER_KEY_FILE ?? '/home/omnirick/.avalanche-cli/key/deployer-nopfx.pk';
 const EXPECTED_ADDR = 'P-avax10ksugn55xn5ctfpfvf4mpf896dvvcxvfhu8v80';
 const REMOVAL = argValue('--validation', process.env.VALIDATION_ID || 'zDGaneyChMythZuK8GUTTTopYs9kMAw1jfQKxuFAWuUSesBEN');
@@ -75,6 +78,7 @@ async function main() {
   }
 
   const pvmApi = new pvm.PVMApi(URI);
+  const issueApi = ISSUE_URI === URI ? pvmApi : new pvm.PVMApi(ISSUE_URI);
   const context = await Context.getContextFromURI(URI);
   const feeState = await pvmApi.getFeeState();
   const { utxos } = await pvmApi.getUTXOs({ addresses: [EXPECTED_ADDR] });
@@ -105,12 +109,12 @@ async function main() {
     return;
   }
 
-  const resp = await pvmApi.issueSignedTx(signedTx);
+  const resp = await issueApi.issueSignedTx(signedTx);
   console.log(`\nissued ${resp.txID}`);
   if (resp.txID !== localID) console.log(`note: node reported a different txID than computed (${localID})`);
 
   for (let i = 0; i < 45; i++) {
-    const st = await pvmApi.getTxStatus({ txID: resp.txID });
+    const st = await issueApi.getTxStatus({ txID: resp.txID });
     if (st.status === 'Committed') {
       console.log('committed');
       break;
