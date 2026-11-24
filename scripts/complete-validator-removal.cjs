@@ -37,12 +37,20 @@ function argValue(name, fallback) {
   return i === -1 ? fallback : process.argv[i + 1];
 }
 
+// subnet-evm frames a predicate as 32-byte words, followed by a 0xff delimiter
+// byte immediately after the last message byte, then zero padding. Without that
+// byte the node rejects the transaction with "cannot unpack predicate bytes:
+// wrong delimiter" (graft/evm/predicate/predicate.go).
 function toWords(hex) {
   const body = hex.replace(/^0x/, '');
+  const bytes = body.length / 2;
+  const full = Math.floor(bytes / 32);
   const words = [];
-  for (let i = 0; i < body.length; i += 64) {
-    words.push('0x' + body.slice(i, i + 64).padEnd(64, '0'));
-  }
+  for (let i = 0; i < full; i++) words.push('0x' + body.slice(i * 64, i * 64 + 64));
+  const remainder = body.slice(full * 64);
+  const remainderBytes = remainder.length / 2;
+  if (remainderBytes > 31) throw new Error('internal: remainder does not fit one word');
+  words.push('0x' + remainder + 'ff' + '0'.repeat((31 - remainderBytes) * 2));
   return words;
 }
 
@@ -72,7 +80,7 @@ async function main() {
   const quoted = fee.maxFeePerGas ?? fee.gasPrice ?? 0n;
   const gasPrice = quoted > MAX_FEE_WEI ? MAX_FEE_WEI : quoted < 10n ? 10n : quoted;
 
-  console.log(`# message        ${hex.length / 2} bytes -> ${storageKeys.length} predicate words, last one zero-padded`);
+  console.log(`# message        ${hex.length / 2} bytes -> ${storageKeys.length} predicate words, 0xff delimiter + zero padding`);
   console.log(`# predicate      ${WARP}`);
   console.log(`# to             ${PROXY}`);
   console.log(`# implementation ${impl}  ${impl.toLowerCase() === FORWARDER.toLowerCase() ? '(forwarder - OK)' : '(NOT the forwarder - STOP)'}`);
