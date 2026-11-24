@@ -27,6 +27,7 @@ const WARP = '0x0200000000000000000000000000000000000005';
 const IMPL_SLOT = '0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc';
 const MAX_FEE_WEI = 100n;
 const GAS_BUFFER = 100000n;
+const FALLBACK_GAS = 400000n;
 
 // completeValidatorRemoval(uint32) — the same selector the base manager exposes.
 const SELECTOR = '0x9681d940';
@@ -47,13 +48,17 @@ function toWords(hex) {
 
 async function main() {
   const send = process.argv.includes('--send');
-  const messagePath = (argValue('--message', '') || '').replace(/^~/, os.homedir());
+  const messageArg = argValue('--message', '') || '';
   const keyFileArg = argValue('--key-file', process.env.OPERATOR_KEY_FILE);
   const index = Number(argValue('--index', '0'));
-  if (!messagePath) throw new Error('give --message <signed message hex file>');
+  const ignoreSim = process.argv.includes('--ignore-simulation-failure');
+  if (!messageArg) throw new Error('give --message <hex string, or a file containing it>');
   if (!Number.isInteger(index) || index < 0) throw new Error('--index must be a small integer');
 
-  const hex = fs.readFileSync(messagePath, 'utf8').trim().replace(/^0x/, '');
+  // Accept the signed message inline as hex, or as a path to a file holding it.
+  const hex = /^0x[0-9a-fA-F]+$/.test(messageArg.trim())
+    ? messageArg.trim().replace(/^0x/, '')
+    : fs.readFileSync(messageArg.replace(/^~/, os.homedir()), 'utf8').trim().replace(/^0x/, '');
   if (!/^[0-9a-fA-F]+$/.test(hex)) throw new Error('the message file is not clean hex');
   const storageKeys = toWords(hex);
   const data = SELECTOR + index.toString(16).padStart(64, '0');
@@ -87,15 +92,34 @@ async function main() {
     console.log('simulate       SUCCESS - the predicate is accepted by the Warp precompile');
   } catch (error) {
     console.log(`simulate       REVERTED: ${(error.shortMessage || error.message).slice(0, 140)}`);
-    throw new Error('the completion would fail; not sending');
+    if (!ignoreSim) {
+      throw new Error(
+        'the completion would fail; not sending. Note: eth_call cannot evaluate Warp ' +
+          'predicates on this chain, so this check is inconclusive for this call; pass ' +
+          '--ignore-simulation-failure to send anyway.'
+      );
+    }
+    console.log('               continuing because --ignore-simulation-failure was given:');
+    console.log('               eth_call cannot verify Warp predicates on this chain, so this');
+    console.log('               result says nothing about the transaction.');
   }
 
-  const gas = await provider.estimateGas(tx);
-  console.log(`gas estimate   ${gas}`);
+  // estimateGas executes the call, so it fails for the same reason the
+  // simulation does: eth_call cannot evaluate Warp predicates here. Fall back to
+  // a fixed limit that comfortably covers the call.
+  let gas;
+  try {
+    gas = await provider.estimateGas(tx);
+    console.log(`gas estimate   ${gas}`);
+  } catch (error) {
+    if (!ignoreSim) throw new Error(`could not estimate gas: ${error.shortMessage || error.message}`);
+    gas = FALLBACK_GAS;
+    console.log(`gas estimate   unavailable (predicate not evaluable), using ${gas}`);
+  }
 
   if (!send) {
     console.log('\nDry run only. Sign it with the successor key:');
-    console.log(`  node ${path.basename(__filename)} --message ${messagePath} --send --key-file <successor key file>\n`);
+    console.log(`  node ${path.basename(__filename)} --message <same value> --send --key-file <successor key file>\n`);
     return;
   }
 
