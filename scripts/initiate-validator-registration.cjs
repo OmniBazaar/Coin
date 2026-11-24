@@ -22,7 +22,48 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { ethers } = require('ethers');
-const { utils } = require('@avalabs/avalanchejs');
+
+// Minimal bech32 decode, so this script needs nothing but ethers. Verified in the
+// self-test below against two addresses whose 20-byte payloads are already known.
+const CHARSET = 'qpzry9x8gf2tvdw0s3jn54khce6mua7l';
+
+function _polymod(values) {
+  const gen = [0x3b6a57b2, 0x26508e6d, 0x1ea119fa, 0x3d4233dd, 0x2a1462b3];
+  let chk = 1;
+  for (const v of values) {
+    const b = chk >> 25;
+    chk = ((chk & 0x1ffffff) << 5) ^ v;
+    for (let i = 0; i < 5; i++) if ((b >> i) & 1) chk ^= gen[i];
+  }
+  return chk;
+}
+
+function bech32ToBytes(address) {
+  const s = address.toLowerCase().replace(/^[a-z]+-/, ''); // drop the chain prefix, e.g. "P-"
+  const pos = s.lastIndexOf('1');
+  if (pos < 1) throw new Error('not a bech32 address');
+  const hrp = s.slice(0, pos);
+  const data = [...s.slice(pos + 1)].map((c) => {
+    const i = CHARSET.indexOf(c);
+    if (i < 0) throw new Error(`bad bech32 character ${c}`);
+    return i;
+  });
+  const expanded = [...[...hrp].map((c) => c.charCodeAt(0) >> 5), 0, ...[...hrp].map((c) => c.charCodeAt(0) & 31)];
+  if (_polymod([...expanded, ...data]) !== 1) throw new Error('bad bech32 checksum');
+  const payload = data.slice(0, -6);
+  const out = [];
+  let acc = 0;
+  let bits = 0;
+  for (const v of payload) {
+    acc = (acc << 5) | v;
+    bits += 5;
+    while (bits >= 8) {
+      bits -= 8;
+      out.push((acc >> bits) & 0xff);
+    }
+  }
+  return Buffer.from(out);
+}
 
 const RPC = process.env.RPC_URL || 'https://rpc.omnicoin.net';
 const NODE_INFO = process.env.V5_NODE_INFO || 'http://65.108.205.101:9650/ext/info';
@@ -65,7 +106,7 @@ async function main() {
   const liveKey = info.result.nodePOP.publicKey;
   const keyMatches = liveKey.toLowerCase() === BLS_PUBLIC_KEY.toLowerCase();
 
-  const ownerBytes = utils.bech32ToBytes(SUCCESSOR_P);
+  const ownerBytes = bech32ToBytes(SUCCESSOR_P);
   const iface = new ethers.Interface(ABI);
   const data = iface.encodeFunctionData('initiateValidatorRegistration', [
     NODE_ID,
