@@ -13,9 +13,11 @@
  * `--add` fixed amount per validator, used when there is no target in mind.
  * Without `--validation` every current validator of the subnet is visited.
  *
- * Requires @avalabs/avalanchejs (`npm install @avalabs/avalanchejs`). The fee is
- * ~0.001 AVAX per transaction, so the paying address needs a little more than the
- * amounts it is adding.
+ * Requires @avalabs/avalanchejs@5.1.0 (`npm install @avalabs/avalanchejs@5.1.0`).
+ * 6.x changed the client API and this file will fail on it with
+ * "api.getBalance is not a function". Save this file as `.cjs`, not `.mjs`: it uses
+ * CommonJS `require`. The fee is ~0.001 AVAX per transaction, so the paying address
+ * needs a little more than the amounts it is adding.
  */
 const fs = require('fs');
 const os = require('os');
@@ -83,7 +85,15 @@ async function main() {
 
   for (const { validationID, increase } of work) {
     const feeState = await api.getFeeState();
-    const { utxos } = await api.getUTXOs({ addresses: [payer] });
+    // The change output of the previous transaction can take a moment to appear in
+    // the address index; without this wait the second of five top-ups dies with
+    // "no UTXOs left".
+    let utxos = [];
+    for (let attempt = 0; attempt < 20; attempt++) {
+      ({ utxos } = await api.getUTXOs({ addresses: [payer] }));
+      if (utxos.length > 0) break;
+      await new Promise((r) => setTimeout(r, 2000));
+    }
     if (utxos.length === 0) throw new Error(`no UTXOs left on ${payer}`);
     const unsignedTx = pvm.e.newIncreaseL1ValidatorBalanceTx(
       { balance: increase, validationId: validationID, feeState, fromAddressesBytes: [addrBytes], utxos },
