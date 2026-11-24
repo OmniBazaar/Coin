@@ -61,8 +61,26 @@ function argValue(name, fallback) {
 
 async function main() {
   const send = process.argv.includes('--send');
+  const checkOnly = process.argv.includes('--check-key');
+  const keyFileArg = argValue('--key-file', process.env.OPERATOR_KEY_FILE);
   const validationID = argValue('--validation', cb58ToHex(V5_CB58));
   if (!/^0x[0-9a-fA-F]{64}$/.test(validationID)) throw new Error(`bad validationID ${validationID}`);
+
+  // --check-key: say which address a key file derives, and nothing else.
+  if (checkOnly) {
+    if (!keyFileArg) throw new Error('--check-key needs --key-file <path>');
+    const rawKey = fs.readFileSync(keyFileArg.replace(/^~/, os.homedir()), 'utf8').trim().replace(/^0x/, '');
+    const address = new ethers.Wallet(rawKey).address;
+    console.log(`key file   ${keyFileArg}`);
+    console.log(`derives    ${address}`);
+    console.log(`operator   ${OPERATOR}`);
+    console.log(
+      address.toLowerCase() === OPERATOR.toLowerCase()
+        ? '\nThis is the successor: it can call the forwarder.'
+        : '\nNOT the operator. This key cannot call the forwarder; use the successor key file.'
+    );
+    return;
+  }
 
   const provider = new ethers.JsonRpcProvider(RPC, undefined, { staticNetwork: true });
   const net = await provider.getNetwork();
@@ -107,13 +125,14 @@ async function main() {
   console.log(`gas estimate   ${gas}`);
 
   if (!send) {
-    console.log('\nDry run only. Sign it with the successor key:');
-    console.log(`  OPERATOR_KEY_FILE=/path/to/successor.pk node ${path.basename(__filename)} --send\n`);
+    console.log('\nDry run only. To sign it with the successor key:');
+    console.log(`  node ${path.basename(__filename)} --check-key --key-file <successor key file>`);
+    console.log(`  node ${path.basename(__filename)} --send --key-file <successor key file>\n`);
     return;
   }
 
-  const keyFile = process.env.OPERATOR_KEY_FILE;
-  if (!keyFile) throw new Error('set OPERATOR_KEY_FILE to the successor key file for --send');
+  const keyFile = keyFileArg;
+  if (!keyFile) throw new Error('give the key file: --send --key-file <path>');
   const raw = fs.readFileSync(keyFile.replace(/^~/, os.homedir()), 'utf8').trim().replace(/^0x/, '');
   const wallet = new ethers.Wallet(raw, provider);
   if (wallet.address.toLowerCase() !== OPERATOR.toLowerCase()) {
