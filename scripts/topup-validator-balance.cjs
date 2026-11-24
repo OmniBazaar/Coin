@@ -1,25 +1,29 @@
 #!/usr/bin/env node
 /**
- * Top up ONE L1 validator's continuous-fee balance by a fixed amount
- * (ACP-77 IncreaseL1ValidatorBalanceTx). Used by the owner rotation: each
- * removal refunds ~10 AVAX to P-avax10ksugn…, and that refund must put the
- * already-rotated validators back above 2 AVAX before the next removal starts.
+ * Bring L1 validators' continuous-fee balances up to a target (ACP-77
+ * IncreaseL1ValidatorBalanceTx). Pays from whichever P-Chain key you give it.
  *
- *   node scripts/topup-validator-balance.cjs --validation <cb58> --add 5          # dry run
- *   node scripts/topup-validator-balance.cjs --validation <cb58> --add 5 --send
+ *   node scripts/topup-validator-balance.cjs --key-file deployer.pk --to 10          # dry run, all five
+ *   node scripts/topup-validator-balance.cjs --key-file deployer.pk --to 10 --send
+ *   node scripts/topup-validator-balance.cjs --key-file k.pk --add 2 --validation <cb58> --send
  *
- * Paid and signed by the P-Chain owner key (deployer-nopfx.pk). The tx fee is
- * 0.001 AVAX, so a small float on that address covers it.
+ * `--to`  target balance per validator; the increase is computed from the chain, so
+ *         running it twice is harmless and a validator already at or above target
+ *         is skipped.
+ * `--add` fixed amount per validator, used when there is no target in mind.
+ * Without `--validation` every current validator of the subnet is visited.
  *
- * `--add` is the AMOUNT ADDED, not the resulting balance. Read the current
- * balance from platform.getCurrentValidators and compute the difference.
+ * Requires @avalabs/avalanchejs (`npm install @avalabs/avalanchejs`). The fee is
+ * ~0.001 AVAX per transaction, so the paying address needs a little more than the
+ * amounts it is adding.
  */
 const fs = require('fs');
+const os = require('os');
 const { pvm, utils, secp256k1, addTxSignatures, Context } = require('@avalabs/avalanchejs');
 
 const URI = process.env.AVALANCHE_RPC_URL ?? 'http://65.108.205.116:9650';
-const KEY_PATH = process.env.OWNER_KEY_FILE ?? '/home/omnirick/.avalanche-cli/key/deployer-nopfx.pk';
-const EXPECTED_ADDR = 'P-avax10ksugn55xn5ctfpfvf4mpf896dvvcxvfhu8v80';
+const SUBNET_ID = process.env.SUBNET_ID || '27dmQbsGrm4xo9VfrxNSewccy3kZ6N49MuSNJhsdhKkMaTZcYv';
+const FEE_AVAX = 0.001;
 
 function argValue(name, fallback) {
   const i = process.argv.indexOf(name);
@@ -28,50 +32,72 @@ function argValue(name, fallback) {
 
 async function main() {
   const send = process.argv.includes('--send');
-  const validationId = argValue('--validation');
-  const addAvax = Number(argValue('--add'));
-  if (!validationId) throw new Error('give --validation <cb58 validationID>');
-  if (!Number.isFinite(addAvax) || addAvax <= 0) throw new Error('give --add <avax amount>');
+  const keyFile = (argValue('--key-file', process.env.OWNER_KEY_FILE) || '').replace(/^~/, os.homedir());
+  const to = argValue('--to', '');
+  const add = argValue('--add', '');
+  const only = argValue('--validation', '');
+  const expectP = argValue('--expect-p', '');
 
-  const pkHex = fs.readFileSync(KEY_PATH, 'utf8').trim().replace(/^0x/, '');
+  if (!keyFile) throw new Error('give --key-file <path to the P-Chain private key, 64 hex>');
+  if (!to && !add) throw new Error('give either --to <target AVAX> or --add <AVAX>');
+  if (to && add) throw new Error('give --to or --add, not both');
+
+  const pkHex = fs.readFileSync(keyFile, 'utf8').trim().replace(/^0x/, '');
+  if (!/^[0-9a-fA-F]{64}$/.test(pkHex)) throw new Error(`${keyFile} is not a 64-character hex key`);
   const privKey = utils.hexToBuffer(pkHex);
   const addrBytes = secp256k1.publicKeyBytesToAddress(secp256k1.getPublicKey(privKey));
-  const derived = 'P-' + utils.formatBech32('avax', addrBytes);
-  if (derived !== EXPECTED_ADDR) throw new Error(`key derives ${derived}, expected ${EXPECTED_ADDR} — ABORTING`);
+  const payer = 'P-' + utils.formatBech32('avax', addrBytes);
+  if (expectP && payer !== expectP) throw new Error(`key derives ${payer}, expected ${expectP} — ABORTING`);
 
-  const pvmApi = new pvm.PVMApi(URI);
+  const api = new pvm.PVMApi(URI);
   const context = await Context.getContextFromURI(URI);
-  const feeState = await pvmApi.getFeeState();
-  const { utxos } = await pvmApi.getUTXOs({ addresses: [EXPECTED_ADDR] });
-  if (utxos.length === 0) throw new Error('no UTXOs on ' + EXPECTED_ADDR);
 
-  const balanceNavax = BigInt(Math.round(addAvax * 1e9));
-  const unsignedTx = pvm.e.newIncreaseL1ValidatorBalanceTx(
-    { balance: balanceNavax, validationId, feeState, fromAddressesBytes: [addrBytes], utxos },
-    context,
-  );
-  await addTxSignatures({ unsignedTx, privateKeys: [privKey] });
+  const { validators } = await api.getCurrentValidators({ subnetID: SUBNET_ID });
+  const targets = only ? validators.filter((v) => v.validationID === only) : validators;
+  if (targets.length === 0) throw new Error('no matching validator');
 
-  console.log(`# from           ${EXPECTED_ADDR}`);
-  console.log(`# validationID   ${validationId}`);
-  console.log(`# add            ${addAvax} AVAX`);
-  console.log(`# fee state      price ${feeState.price}  capacity ${feeState.capacity}`);
-  console.log(`# mode           ${send ? 'SEND' : 'DRY RUN (built and signed, not issued)'}`);
+  const { balance: payerBalance } = await api.getBalance({ addresses: [payer] });
+  console.log(`# payer           ${payer}`);
+  console.log(`# payer balance   ${Number(payerBalance) / 1e9} AVAX`);
+  console.log(`# validators      ${targets.length}`);
 
-  if (!send) {
-    console.log('\nDry run. Re-run with --send to issue it.');
-    return;
+  let planned = 0n;
+  const work = [];
+  for (const v of targets) {
+    const current = BigInt(v.balance);
+    const increase = to ? BigInt(Math.round(Number(to) * 1e9)) - current : BigInt(Math.round(Number(add) * 1e9));
+    const label = `${v.nodeID} (${Number(current) / 1e9} AVAX)`;
+    if (increase <= 0n) { console.log(`# skip            ${label} — already at or above target`); continue; }
+    console.log(`# top up          ${label} +${Number(increase) / 1e9} AVAX`);
+    planned += increase;
+    work.push({ validationID: v.validationID, increase });
   }
 
-  const resp = await pvmApi.issueSignedTx(unsignedTx.getSignedTx());
-  console.log(`\nissued ${resp.txID}`);
-  for (let i = 0; i < 30; i++) {
-    const st = await pvmApi.getTxStatus({ txID: resp.txID });
-    if (st.status === 'Committed') { console.log('committed'); return; }
-    if (st.status === 'Dropped') throw new Error(`tx ${resp.txID} DROPPED: ${JSON.stringify(st)}`);
-    await new Promise((r) => setTimeout(r, 2000));
+  const needed = planned + BigInt(Math.round(FEE_AVAX * 1e9 * work.length));
+  console.log(`# total needed    ${Number(planned) / 1e9} AVAX + ~${FEE_AVAX} per tx`);
+  if (payerBalance < needed) {
+    console.log(`# WARNING         payer holds ${Number(payerBalance) / 1e9} AVAX, needs ~${Number(needed) / 1e9}`);
   }
-  throw new Error('tx did not commit within 60 s');
+  if (!send) { console.log('\nDry run. Re-run with --send to issue.'); return; }
+  if (work.length === 0) return;
+
+  for (const { validationID, increase } of work) {
+    const feeState = await api.getFeeState();
+    const { utxos } = await api.getUTXOs({ addresses: [payer] });
+    if (utxos.length === 0) throw new Error(`no UTXOs left on ${payer}`);
+    const unsignedTx = pvm.e.newIncreaseL1ValidatorBalanceTx(
+      { balance: increase, validationId: validationID, feeState, fromAddressesBytes: [addrBytes], utxos },
+      context,
+    );
+    await addTxSignatures({ unsignedTx, privateKeys: [privKey] });
+    const resp = await api.issueSignedTx(unsignedTx.getSignedTx());
+    for (let i = 0; i < 30; i++) {
+      const st = await api.getTxStatus({ txID: resp.txID });
+      if (st.status === 'Committed') { console.log(`issued ${resp.txID}  +${Number(increase) / 1e9} AVAX  committed`); break; }
+      if (st.status === 'Dropped') throw new Error(`tx ${resp.txID} DROPPED`);
+      await new Promise((r) => setTimeout(r, 2000));
+    }
+  }
 }
 
 main().catch((e) => { console.error('ERROR:', e.message ?? e); process.exit(1); });
