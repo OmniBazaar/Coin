@@ -26,6 +26,7 @@ const RPC = process.env.RPC_URL || 'https://rpc.omnicoin.net';
 const KEY_FILE =
   process.env.OWNER_KEY_FILE || path.join(process.env.HOME, '.avalanche-cli/key/deployer-nopfx.pk');
 const OWNER = '0xaDAD7751DcDd2E30015C173F2c35a56e467CD9ba';
+const MANAGER = '0x0Feedc0de0000000000000000000000000000000';
 const OPERATOR = process.env.SUCCESSOR || '0x68d002Bb315E8310c1344EeA707f9C36DdC33e1e';
 const MAX_FEE_WEI = 100n;
 
@@ -78,19 +79,62 @@ async function main() {
 
   if (balance < cost) throw new Error('insufficient balance for gas');
 
+  const already = await provider.getCode(predicted);
+  if (already !== '0x') {
+    const existing = new ethers.Contract(
+      predicted,
+      ['function OPERATOR() view returns (address)'],
+      provider
+    );
+    throw new Error(
+      `code already exists at ${predicted} (OPERATOR ${await existing.OPERATOR()}); refusing to deploy a second time`
+    );
+  }
+
+  // A previous run of this script may already have deployed one; the predicted
+  // address moves with the nonce, so look back before deploying another copy.
+  const probeAbi = [
+    'function OPERATOR() view returns (address)',
+    'function MANAGER() view returns (address)',
+  ];
+  for (let back = 1; back <= 5 && nonce - back >= 0; back++) {
+    const prev = ethers.getCreateAddress({ from: wallet.address, nonce: nonce - back });
+    if ((await provider.getCode(prev)) === '0x') continue;
+    try {
+      const prevCt = new ethers.Contract(prev, probeAbi, provider);
+      const [prevManager, prevOperator] = await Promise.all([prevCt.MANAGER(), prevCt.OPERATOR()]);
+      if (prevManager.toLowerCase() === MANAGER.toLowerCase()) {
+        throw new Error(
+          `a forwarder already exists at ${prev} (nonce ${nonce - back}, OPERATOR ${prevOperator}); refusing to deploy another`
+        );
+      }
+    } catch (probeError) {
+      if (/^a forwarder already exists/.test(probeError.message)) throw probeError;
+      // not one of ours; ignore
+    }
+  }
+
   if (!send) {
     console.log('Dry run only. Re-run with --send to broadcast.');
     return;
   }
 
   console.log('broadcasting...');
-  const tx = await factory.deploy(OPERATOR, { gasLimit: gas, maxFeePerGas: gasPrice, maxPriorityFeePerGas: 0n });
+  // ethers v6: deploy() resolves to the contract, not to the transaction.
+  const deployed = await factory.deploy(OPERATOR, {
+    gasLimit: gas,
+    maxFeePerGas: gasPrice,
+    maxPriorityFeePerGas: 0n,
+  });
+  const tx = deployed.deploymentTransaction();
+  if (!tx) throw new Error('deploy produced no transaction');
   console.log(`sent   ${tx.hash}`);
   const receipt = await tx.wait();
   if (!receipt || receipt.status !== 1) throw new Error(`deploy failed: status ${receipt && receipt.status}`);
   console.log(`mined  block ${receipt.blockNumber}  gasUsed ${receipt.gasUsed}`);
 
-  const address = await tx.getAddress();
+  await deployed.waitForDeployment();
+  const address = await deployed.getAddress();
   const code = await provider.getCode(address);
   const ct = new ethers.Contract(
     address,
