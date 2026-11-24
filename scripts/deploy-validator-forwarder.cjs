@@ -103,13 +103,24 @@ async function main() {
     try {
       const prevCt = new ethers.Contract(prev, probeAbi, provider);
       const [prevManager, prevOperator] = await Promise.all([prevCt.MANAGER(), prevCt.OPERATOR()]);
-      if (prevManager.toLowerCase() === MANAGER.toLowerCase()) {
-        throw new Error(
-          `a forwarder already exists at ${prev} (nonce ${nonce - back}, OPERATOR ${prevOperator}); refusing to deploy another`
+      const sameManager = prevManager.toLowerCase() === MANAGER.toLowerCase();
+      if (sameManager && prevOperator.toLowerCase() === OPERATOR.toLowerCase()) {
+        const duplicate = new Error(
+          `an identical forwarder already exists at ${prev} (nonce ${nonce - back}, OPERATOR ${prevOperator}); refusing to deploy a duplicate`
+        );
+        duplicate.duplicate = true;
+        throw duplicate;
+      }
+      if (sameManager) {
+        // The rotation deploys a second forwarder on purpose: the old one's
+        // OPERATOR is a key that must stop acting, so it cannot be reused.
+        console.log(
+          `# note           forwarder ${prev} (nonce ${nonce - back}) has OPERATOR ${prevOperator};` +
+            ` deploying a new one for OPERATOR ${OPERATOR}`
         );
       }
     } catch (probeError) {
-      if (/^a forwarder already exists/.test(probeError.message)) throw probeError;
+      if (probeError.duplicate) throw probeError;
       // not one of ours; ignore
     }
   }

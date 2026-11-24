@@ -72,6 +72,9 @@ const PROXY = '0x100c0De1C0FFEe00000000000000000000000000';
 const FORWARDER = '0x99080Bb402949ef3D69f6773e2Cc252655Abd43f';
 const STAKING_MANAGER = '0x9338b9ef1291b0266d28e520797ed57020a84d3b';
 const OPERATOR = process.env.OPERATOR || '0x68d002Bb315E8310c1344EeA707f9C36DdC33e1e';
+// Where the staking rewards go. Defaults to the payer, but the rotation window
+// pays from a throwaway hot key, so that key must not be the reward recipient.
+const REWARD_RECIPIENT = process.env.REWARD_RECIPIENT || OPERATOR;
 const SUCCESSOR_P = process.env.SUCCESSOR_P || 'P-avax1lxdavlr45u5zph972cn66euvay90xz3smnwyer';
 const IMPL_SLOT = '0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc';
 const MAX_FEE_WEI = 100n;
@@ -116,7 +119,7 @@ async function main() {
     [1, ['0x' + Buffer.from(ownerBytes).toString('hex')]],
     DELEGATION_FEE_BIPS,
     MIN_STAKE_DURATION,
-    OPERATOR,
+    REWARD_RECIPIENT,
   ]);
 
   const provider = new ethers.JsonRpcProvider(RPC, undefined, { staticNetwork: true });
@@ -136,7 +139,7 @@ async function main() {
   console.log(`#              0x${Buffer.from(ownerBytes).toString('hex')}`);
   console.log(`# stake          ${ethers.formatEther(STAKE)} XOM  -> weight 20`);
   console.log(`# minStakeDuration ${MIN_STAKE_DURATION} s   delegationFeeBips ${DELEGATION_FEE_BIPS}`);
-  console.log(`# rewardRecipient ${OPERATOR}`);
+  console.log(`# rewardRecipient ${REWARD_RECIPIENT}`);
   console.log(`# from           ${OPERATOR}`);
   console.log(`# to             ${PROXY}`);
   console.log(`# maxFeePerGas   ${gasPrice} wei`);

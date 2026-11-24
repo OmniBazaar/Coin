@@ -20,6 +20,10 @@ const os = require('os');
 const { pvm, utils, secp256k1, addTxSignatures, Context } = require('@avalabs/avalanchejs');
 
 const URI = process.env.AVALANCHE_RPC_URL ?? 'http://65.108.205.116:9650';
+// The index API (which getUTXOs needs) is only enabled on some nodes, but the
+// issuing node decides which validator set the warp message is graded against,
+// so they can be different hosts.
+const ISSUE_URI = process.env.ISSUE_RPC_URL ?? URI;
 const NODE_URL = process.env.NODE_URL || 'http://65.108.205.101:9650';
 const NODE_INFO = NODE_URL.replace(/\/$/, '') + '/ext/info';
 const KEY_PATH = process.env.OWNER_KEY_FILE ?? '/home/omnirick/.avalanche-cli/key/deployer-nopfx.pk';
@@ -59,6 +63,7 @@ async function main() {
   if (derived !== EXPECTED_ADDR) throw new Error(`key derives ${derived}, expected ${EXPECTED_ADDR}`);
 
   const api = new pvm.PVMApi(URI);
+  const issueApi = ISSUE_URI === URI ? api : new pvm.PVMApi(ISSUE_URI);
   const context = await Context.getContextFromURI(URI);
   const feeState = await api.getFeeState();
   const { utxos } = await api.getUTXOs({ addresses: [EXPECTED_ADDR] });
@@ -91,10 +96,10 @@ async function main() {
     console.log('Dry run. Re-run with --send to issue it.');
     return;
   }
-  const resp = await api.issueSignedTx(signedTx);
+  const resp = await issueApi.issueSignedTx(signedTx);
   console.log(`issued ${resp.txID}`);
   for (let i = 0; i < 45; i++) {
-    const st = await api.getTxStatus({ txID: resp.txID });
+    const st = await issueApi.getTxStatus({ txID: resp.txID });
     if (st.status === 'Committed') { console.log('committed'); break; }
     if (st.status === 'Dropped') throw new Error(`DROPPED: ${JSON.stringify(st)}`);
     await new Promise((r) => setTimeout(r, 2000));
