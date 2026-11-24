@@ -20,11 +20,11 @@ const os = require('os');
 const { pvm, utils, secp256k1, addTxSignatures, Context } = require('@avalabs/avalanchejs');
 
 const URI = process.env.AVALANCHE_RPC_URL ?? 'http://65.108.205.116:9650';
-const NODE_INFO = process.env.V5_NODE_INFO ?? 'http://65.108.205.101:9650/ext/info';
+const NODE_URL = process.env.NODE_URL || 'http://65.108.205.101:9650';
+const NODE_INFO = NODE_URL.replace(/\/$/, '') + '/ext/info';
 const KEY_PATH = process.env.OWNER_KEY_FILE ?? '/home/omnirick/.avalanche-cli/key/deployer-nopfx.pk';
 const EXPECTED_ADDR = 'P-avax10ksugn55xn5ctfpfvf4mpf896dvvcxvfhu8v80';
-const BLS_PUBLIC_KEY =
-  '0x84470018ba04e7673def87191879d5e45c2805cab130000b73c8608a1e7e4505d862b3d4da2c869f14ed9de6b0c4d699';
+const BLS_PUBLIC_KEY = process.env.BLS_PUBLIC_KEY || '';
 
 function argValue(name, fallback) {
   const i = process.argv.indexOf(name);
@@ -65,15 +65,16 @@ async function main() {
   const bal = await api.getBalance({ addresses: [EXPECTED_ADDR] });
 
   console.log(`# node            ${info.result.nodeID}`);
-  console.log(`# BLS key live    ${liveKey}  ${liveKey === BLS_PUBLIC_KEY.toLowerCase() ? '(matches the registered key)' : '(DIFFERENT - stop)'}`);
+  console.log(`# BLS key live    ${liveKey}`);
   console.log(`# POP bytes       ${pop.length}`);
-  console.log(`# message bytes   ${message.length}  contains v5 key: ${hex.includes(BLS_PUBLIC_KEY.slice(2))}`);
+  console.log(`# message bytes   ${message.length}  contains node key: ${hex.includes(liveKey.slice(2))}`);
   console.log(`# payer           ${derived}  balance ${Number(bal.balance) / 1e9} AVAX in ${utxos.length} UTXOs`);
   console.log(`# validator bal   ${balanceAvax} AVAX (~${(Number(balanceAvax) / 0.0396).toFixed(0)} days of continuous fee)`);
   console.log(`# fee state       price ${feeState.price}`);
 
-  if (liveKey !== BLS_PUBLIC_KEY.toLowerCase()) throw new Error('the node key is not the one being registered; refusing');
-  if (!hex.includes(BLS_PUBLIC_KEY.slice(2))) {
+  const expectedKey = (BLS_PUBLIC_KEY || liveKey).toLowerCase();
+  if (liveKey !== expectedKey) throw new Error('the node key is not the one being registered; refusing');
+  if (!hex.includes(expectedKey.slice(2))) {
     throw new Error('the signed message does not contain the expected BLS key; refusing');
   }
 

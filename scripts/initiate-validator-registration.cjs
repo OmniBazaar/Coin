@@ -66,7 +66,8 @@ function bech32ToBytes(address) {
 }
 
 const RPC = process.env.RPC_URL || 'https://rpc.omnicoin.net';
-const NODE_INFO = process.env.V5_NODE_INFO || 'http://65.108.205.101:9650/ext/info';
+const NODE_URL = process.env.NODE_URL || argValue('--node', 'http://65.108.205.101:9650');
+const NODE_INFO = NODE_URL.replace(/\/$/, '') + '/ext/info';
 const PROXY = '0x100c0De1C0FFEe00000000000000000000000000';
 const FORWARDER = '0x99080Bb402949ef3D69f6773e2Cc252655Abd43f';
 const STAKING_MANAGER = '0x9338b9ef1291b0266d28e520797ed57020a84d3b';
@@ -76,9 +77,9 @@ const IMPL_SLOT = '0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d3
 const MAX_FEE_WEI = 100n;
 
 // From v5's March registration, block 32.
-const NODE_ID = '0xdbadfd8744a07374c6805f529ba2986099657186';
+const NODE_ID = argValue('--node-id', process.env.NODE_ID_HEX || '0xdbadfd8744a07374c6805f529ba2986099657186');
 const BLS_PUBLIC_KEY =
-  '0x84470018ba04e7673def87191879d5e45c2805cab130000b73c8608a1e7e4505d862b3d4da2c869f14ed9de6b0c4d699';
+  process.env.BLS_PUBLIC_KEY || argValue('--bls-key', '0x84470018ba04e7673def87191879d5e45c2805cab130000b73c8608a1e7e4505d862b3d4da2c869f14ed9de6b0c4d699');
 const DELEGATION_FEE_BIPS = 200;
 const MIN_STAKE_DURATION = 100; // the contract minimum; the 365-day value is what blocked us
 const STAKE = ethers.parseEther('20'); // 20 XOM -> weight 20

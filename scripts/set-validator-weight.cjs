@@ -22,7 +22,7 @@ const { pvm, utils, secp256k1, addTxSignatures, Context } = require('@avalabs/av
 const URI = process.env.AVALANCHE_RPC_URL ?? 'http://65.108.205.116:9650';
 const KEY_PATH = process.env.OWNER_KEY_FILE ?? '/home/omnirick/.avalanche-cli/key/deployer-nopfx.pk';
 const EXPECTED_ADDR = 'P-avax10ksugn55xn5ctfpfvf4mpf896dvvcxvfhu8v80';
-const REMOVAL = 'zDGaneyChMythZuK8GUTTTopYs9kMAw1jfQKxuFAWuUSesBEN'; // v5
+const REMOVAL = argValue('--validation', process.env.VALIDATION_ID || 'zDGaneyChMythZuK8GUTTTopYs9kMAw1jfQKxuFAWuUSesBEN');
 
 const ALPHABET = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
 
