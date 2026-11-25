@@ -174,8 +174,23 @@ case "$st" in
         exit 1
         ;;
     3)
-        need_key "Succeeded, waiting to be queued"
-        out=$(run_finalizer) || {
+        # 🛑 `queue(uint256)` is PERMISSIONLESS, exactly like execute:
+        # Coin/contracts/OmniGovernance.sol:639 checks only that the state is
+        # Succeeded and that the QUEUE_DEADLINE has not passed — no role, no
+        # caller check. 2026-11-25: this branch used to require the cold treasury
+        # key (need_key), which meant a Succeeded proposal could only be queued
+        # from the machine that holds 0x5169ce02. That is wrong — the signer
+        # carries no authority, it only pays gas. Same treatment as the execute
+        # step (founder decision 2026-11-23).
+        QUEUE_KEY=$(exec_signer) || {
+            emit_failure "gov.proposal.${ID}.key-missing" \
+                "proposal $ID is Succeeded, but neither GOV_KEY_FILE nor the local gas key ($GAS_KEY_FILE) is readable — queue is permissionless, so any funded key works; set GOV_EXEC_GAS_KEY_FILE"
+            exit 1
+        }
+        if [[ "$QUEUE_KEY" != "$KEY_FILE" ]]; then
+            echo "signing queue with the local gas key $QUEUE_KEY (queue is permissionless; the signer holds no authority, it only pays gas)"
+        fi
+        out=$(run_finalizer "$QUEUE_KEY") || {
             emit "gov.proposal.${ID}.queue-failed" user.warning \
                 "queueing proposal $ID FAILED — $(tail -3 <<<"$out" | tr '\n' ' ' | cut -c1-300)"
             exit 1
