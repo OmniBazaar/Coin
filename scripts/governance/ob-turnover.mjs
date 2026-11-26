@@ -2,13 +2,19 @@
 /**
  * ob-turnover.mjs — finish the 2026-11 deployer retirement.
  *
- * Windows PowerShell usage (Node 18+ required):
- *   npm init -y ; npm install ethers@6
+ * Windows PowerShell usage (Node 18+ and ethers already installed in the same
+ * folder — the founder's C:\Users\rickc\ob-keys):
+ *   Set-Location C:\Users\rickc\ob-keys
+ *   node ob-turnover.mjs identify           --key-dir .
  *   node ob-turnover.mjs audit
- *   node ob-turnover.mjs judge-accept  --key-file C:\keys\successor.txt --execute
- *   node ob-turnover.mjs coti-handover --key-file C:\keys\deployer.txt --execute
+ *   node ob-turnover.mjs judge-accept       --key-dir . --execute
+ *   node ob-turnover.mjs coti-handover      --key-dir . --execute
+ *   node ob-turnover.mjs coti-accept-ownership --key-dir . --execute
  *
  * Subcommands
+ *   identify       which key file is which, by DERIVED ADDRESS. File names are
+ *                  not trusted: the folder's names are inverted relative to the
+ *                  ledger, so the address decides.
  *   audit          read-only. What the retired deployer still controls, and the
  *                  exact plan coti-handover would run.
  *   judge-accept   EscrowV2.acceptJudgeRemoval(). Needs the SUCCESSOR key
@@ -16,6 +22,11 @@
  *                  cannot do this.
  *   coti-handover  Moves COTI admin/ownership to the successor. Needs the
  *                  RETIRED DEPLOYER key. Dry run unless --execute.
+ *   coti-accept-ownership  Successor completes a pending Ownable2Step transfer.
+ *
+ * Key selection: --key-file <path> pinpoints one file; --key-dir <path> scans
+ * the folder and picks the file whose address matches the role. Both print the
+ * address and file name, never the key.
  *
  * Design rules
  *   - The key is read from a file and never printed, logged or echoed.
@@ -28,7 +39,8 @@
  *     destroyed key holding them is inert.
  */
 import { ethers } from "ethers";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync, statSync } from "node:fs";
+import { join } from "node:path";
 
 const L1_RPC = process.env.OB_L1_RPC ?? "https://rpc.omnicoin.net";
 const L1_CHAIN_ID = 88008n;
@@ -81,14 +93,63 @@ const flag = (n) => process.argv.includes(`--${n}`);
 const same = (a, b) => a.toLowerCase() === b.toLowerCase();
 const roleHash = (n) => (n === "DEFAULT_ADMIN_ROLE" ? DEFAULT_ADMIN : ethers.id(n));
 
-function readKey() {
+function parseKeyText(raw) {
+  let s = String(raw).trim();
+  if (s.startsWith('"') && s.endsWith('"')) s = s.slice(1, -1).trim();
+  if (!s.startsWith("0x")) s = "0x" + s;
+  return /^0x[0-9a-fA-F]{64}$/.test(s) ? s : null;
+}
+
+/** Every key-looking file in a folder, with its derived address. Keys stay in
+ *  memory; only the address and the path are ever printed. */
+function scanDir(dir) {
+  const found = [];
+  for (const entry of readdirSync(dir)) {
+    const path = join(dir, entry);
+    let st;
+    try { st = statSync(path); } catch { continue; }
+    if (!st.isFile() || st.size > 4096) continue;
+    let raw;
+    try { raw = readFileSync(path, "utf8"); } catch { continue; }
+    const key = parseKeyText(raw);
+    if (!key) continue;
+    let address;
+    try { address = new ethers.Wallet(key).address; } catch { continue; }
+    found.push({ path, key, address });
+  }
+  return found;
+}
+
+const KNOWN_ADDRESSES = {
+  [DEPLOYER.toLowerCase()]: "RETIRED DEPLOYER — compromised 2026-11-15, shredded on the server",
+  [SUCCESSOR.toLowerCase()]: "SUCCESSOR — EscrowV2 admin, COTI settlement admin",
+  "0x7f9dab90dd756863d9b4abef1b10f363e08d3fa8": "node gas faucet (server; not a turnover key)",
+};
+
+/** Pick the key for a specific address. File names are never trusted — the
+ *  derived address decides, and the choice is printed. */
+function resolveKey(wantAddress, label) {
   const file = arg("key-file");
-  if (!file) throw new Error("--key-file <path> is required");
-  let raw = readFileSync(file, "utf8").trim();
-  if (raw.startsWith('"') && raw.endsWith('"')) raw = raw.slice(1, -1);
-  if (!raw.startsWith("0x")) raw = "0x" + raw;
-  if (!/^0x[0-9a-fA-F]{64}$/.test(raw)) throw new Error("key file does not contain a 32-byte hex private key");
-  return raw;
+  let entries;
+  if (file) {
+    const key = parseKeyText(readFileSync(file, "utf8"));
+    if (!key) throw new Error(`${file} does not contain a 32-byte hex private key`);
+    entries = [{ path: file, key, address: new ethers.Wallet(key).address }];
+  } else {
+    const dir = arg("key-dir");
+    if (!dir) throw new Error("pass --key-dir <folder> (your key folder) or --key-file <path>");
+    entries = scanDir(dir);
+  }
+  if (entries.length === 1 && !same(entries[0].address, wantAddress) && file) {
+    throw new Error(`this key is ${entries[0].address}, not ${wantAddress}${label ? ` (${label})` : ""}`);
+  }
+  const match = entries.find((e) => same(e.address, wantAddress));
+  if (!match) {
+    const seen = entries.map((e) => `\n   ${e.address}  ${e.path}`).join("");
+    throw new Error(`no key here derives ${wantAddress}${label ? ` (${label})` : ""}; keys found:${seen || " none"}`);
+  }
+  console.log(`key:     ${match.address}  (${match.path})`);
+  return match;
 }
 
 async function connect(url, chainId) {
@@ -128,6 +189,24 @@ async function buildCotiPlan(provider) {
     plan.push({ t, call: "renounceRole", args: [DEFAULT_ADMIN, DEPLOYER], why: "renounce DEFAULT_ADMIN from deployer" });
   }
   return { plan, inert };
+}
+
+async function identify() {
+  const dir = arg("key-dir");
+  if (!dir) throw new Error("pass --key-dir <folder>");
+  const entries = scanDir(dir);
+  if (!entries.length) throw new Error(`no private key files found in ${dir}`);
+  console.log(`keys in ${dir}\n`);
+  for (const e of entries) {
+    const label = KNOWN_ADDRESSES[e.address.toLowerCase()] ?? "unrecognised";
+    console.log(`  ${e.address}  ${e.path}`);
+    console.log(`     ${label}`);
+  }
+  const have = (a) => entries.some((e) => same(e.address, a));
+  console.log(`\ndeployer key present:  ${have(DEPLOYER)}`);
+  console.log(`successor key present: ${have(SUCCESSOR)}`);
+  if (!have(SUCCESSOR)) console.log("→ judge-accept and coti-accept-ownership cannot run from this folder");
+  if (!have(DEPLOYER)) console.log("→ coti-handover cannot run from this folder");
 }
 
 async function audit() {
@@ -170,10 +249,11 @@ async function audit() {
 
 async function judgeAccept() {
   const provider = await connect(L1_RPC, L1_CHAIN_ID);
-  const wallet = new ethers.Wallet(readKey(), provider);
+  const escRead = new ethers.Contract(ESCROW_V2, ABI, provider);
+  const [admin, pending, at] = await Promise.all([escRead.admin(), escRead.pendingJudgeRemoval(), escRead.judgeRemovalAt()]);
+  const chosen = resolveKey(admin, "EscrowV2 admin — the successor");
+  const wallet = new ethers.Wallet(chosen.key, provider);
   const esc = new ethers.Contract(ESCROW_V2, ABI, wallet);
-  const [admin, pending, at] = await Promise.all([esc.admin(), esc.pendingJudgeRemoval(), esc.judgeRemovalAt()]);
-  console.log(`signer:  ${wallet.address}`);
   console.log(`admin:   ${admin}`);
   console.log(`pending: ${pending || "(none)"}  mature at ${at ? new Date(Number(at) * 1000).toISOString() : "-"}`);
   if (!same(wallet.address, admin)) throw new Error(`this key is NOT the EscrowV2 admin — nothing it signs will be accepted (admin is ${admin})`);
@@ -197,10 +277,8 @@ async function judgeAccept() {
 
 async function cotiHandover() {
   const provider = await connect(COTI_RPC, COTI_CHAIN_ID);
-  const wallet = new ethers.Wallet(readKey(), provider);
-  if (!same(wallet.address, DEPLOYER)) {
-    throw new Error(`this key is ${wallet.address}, not the retired deployer ${DEPLOYER} — coti-handover needs the deployer key`);
-  }
+  const chosen = resolveKey(DEPLOYER, "the retired deployer");
+  const wallet = new ethers.Wallet(chosen.key, provider);
   console.log(`deployer:  ${wallet.address}`);
   console.log(`successor: ${SUCCESSOR}`);
   console.log(`native balance: ${ethers.formatEther(await provider.getBalance(wallet.address))} COTI\n`);
@@ -238,7 +316,8 @@ async function cotiHandover() {
 
 async function cotiAcceptOwnership() {
   const provider = await connect(COTI_RPC, COTI_CHAIN_ID);
-  const wallet = new ethers.Wallet(readKey(), provider);
+  const chosen = resolveKey(SUCCESSOR, "the successor");
+  const wallet = new ethers.Wallet(chosen.key, provider);
   const steps = [];
   for (const t of COTI_TARGETS) {
     if (t.kind !== "ownable2step") continue;
@@ -265,11 +344,12 @@ async function cotiAcceptOwnership() {
 
 const cmd = process.argv[2];
 try {
-  if (cmd === "audit") await audit();
+  if (cmd === "identify") await identify();
+  else if (cmd === "audit") await audit();
   else if (cmd === "judge-accept") await judgeAccept();
   else if (cmd === "coti-handover") await cotiHandover();
   else if (cmd === "coti-accept-ownership") await cotiAcceptOwnership();
-  else { console.log("usage: node ob-turnover.mjs <audit|judge-accept|coti-handover|coti-accept-ownership> [--key-file <path>] [--execute]"); process.exit(2); }
+  else { console.log("usage: node ob-turnover.mjs <identify|audit|judge-accept|coti-handover|coti-accept-ownership> --key-dir <folder> [--execute]   (or --key-file <path>)"); process.exit(2); }
 } catch (err) {
   console.error(`ERROR: ${err.message}`);
   process.exit(1);
