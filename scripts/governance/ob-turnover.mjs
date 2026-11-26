@@ -50,6 +50,8 @@ const COTI_CHAIN_ID = 2632500n;
 const ESCROW_V2 = "0x7144B011ce241eecA38CD0c4948777B761985864";
 const DEPLOYER = "0x021868f2E3D49C059EF52B539AAa933B437e0321";
 const SUCCESSOR = "0x68d002Bb315E8310c1344EeA707f9C36DdC33e1e";
+/** The one COTI signing key that exists on the server (~/.avalanche-cli/key/escrow-relayer.pk). */
+const OPERATOR = "0x04D0EB8BE06b8461E15761bD4897EB05a75096eb";
 
 const DEFAULT_ADMIN = "0x" + "00".repeat(32);
 
@@ -72,6 +74,18 @@ const COTI_TARGETS = [
 
 /** Roles the successor is meant to hold. */
 const SUCCESSOR_ROLES = new Set(["DEFAULT_ADMIN_ROLE", "ARBITRATOR_ROLE"]);
+
+/** Operational roles that must belong to a key the SERVER can actually use.
+ *  After the deployer was retired these were held by nobody but the deployer, so
+ *  private escrow creation and COTI settlement had no signing path at all. */
+const COTI_OPS = [
+  { name: "PrivateDEXSettlement (replacement)", address: "0xf8b980dd9C4ea1d60304b1d842Fce74d5dBaEc86", roles: ["SETTLER_ROLE"] },
+  { name: "PrivateMarketplaceEscrow", address: "0x43d216073D3c7B494FA3626C0607FfF14758A670", roles: ["RELAYER_ROLE"] },
+  { name: "PrivateYieldVault", address: "0x95e461f65157D7B1504B6c7901aEb01f34f29DCf", roles: ["RELAYER_ROLE"] },
+  { name: "PrivateRWAAMM", address: "0xe6380a2A3e548150c37505237Fe1203eC6905fa2", roles: ["RELAYER_ROLE"] },
+  { name: "PrivatePredictionMarket", address: "0xFcC6Cda5784D1532704ACBc0ec555b10Cb96BD28", roles: ["RELAYER_ROLE", "ESCROW_ORACLE_ROLE"] },
+  { name: "PrivateLimitDEXSettlement", address: "0xCCe8f6b93d2aDa98eA0a66C8230BCf1B6FFa8A5C", roles: ["SETTLER_ROLE", "FEE_MANAGER_ROLE"] },
+];
 
 const ABI = [
   "function hasRole(bytes32 role, address account) view returns (bool)",
@@ -241,6 +255,11 @@ async function audit() {
     for (const line of inert) console.log(`   ${line}`);
   }
 
+  const opsSteps = await buildOpsPlan(coti, OPERATOR);
+  console.log(`\nPLAN for coti-ops (operator ${OPERATOR})`);
+  if (!opsSteps.length) console.log("   (nothing to do)");
+  for (const s of opsSteps) console.log(`   ${s.t.name.padEnd(36)} ${s.call.padEnd(16)} ${s.why}`);
+
   const l1 = await connect(L1_RPC, L1_CHAIN_ID);
   const esc = new ethers.Contract(ESCROW_V2, ABI, l1);
   const [admin, pending, at, roster] = await Promise.all([
@@ -350,6 +369,75 @@ async function cotiAcceptOwnership() {
   }
 }
 
+/** Build the operational-role plan from live state. Pure read; no signing. */
+async function buildOpsPlan(provider, operator) {
+  const steps = [];
+  for (const t of COTI_OPS) {
+    const c = new ethers.Contract(t.address, ABI, provider);
+    for (const role of t.roles) {
+      const h = roleHash(role);
+      const [d, o] = await Promise.all([c.hasRole(h, DEPLOYER), c.hasRole(h, operator)]);
+      if (!o) steps.push({ t, call: "grantRole", args: [h, operator], why: `grant ${role} → operator` });
+      if (d) steps.push({ t, call: "revokeRole", args: [h, DEPLOYER], why: `revoke ${role} from deployer` });
+    }
+  }
+  // The arbitrator role already moved to the successor; the deployer's copy still works.
+  const escrow = new ethers.Contract("0x43d216073D3c7B494FA3626C0607FfF14758A670", ABI, provider);
+  if (await escrow.hasRole(roleHash("ARBITRATOR_ROLE"), DEPLOYER)) {
+    steps.push({ t: { name: "PrivateMarketplaceEscrow", address: escrow.target }, call: "revokeRole",
+      args: [roleHash("ARBITRATOR_ROLE"), DEPLOYER], why: "revoke ARBITRATOR_ROLE from deployer (successor already holds it)" });
+  }
+  const bal = await provider.getBalance(operator);
+  const fund = bal < ethers.parseEther("0.5");
+  if (fund) steps.push({ t: { name: "OPERATOR GAS", address: operator }, call: "send", args: [ethers.parseEther("1")], why: "fund operator with 1 COTI from the successor" });
+  return steps;
+}
+
+async function cotiOps() {
+  const provider = await connect(COTI_RPC, COTI_CHAIN_ID);
+  const chosen = resolveKey(SUCCESSOR, "the successor (holds the admin role)");
+  const wallet = new ethers.Wallet(chosen.key, provider);
+  const operator = (arg("operator") ?? OPERATOR);
+  console.log(`successor: ${wallet.address}`);
+  console.log(`operator:  ${operator}  (the server's COTI signing key)`);
+  console.log(`operator COTI balance: ${ethers.formatEther(await provider.getBalance(operator))}\n`);
+  const steps = await buildOpsPlan(provider, operator);
+  if (!steps.length) { console.log("nothing to do"); return; }
+  console.log("PLAN");
+  for (const s of steps) console.log(`  ${s.t.name.padEnd(36)} ${s.call.padEnd(16)} ${s.why}`);
+
+  const execute = flag("execute");
+  for (const s of steps) {
+    if (s.call === "send") {
+      if (!execute) continue;
+      const tx = await wallet.sendTransaction({ to: s.t.address, value: s.args[0] });
+      const rc = await tx.wait();
+      console.log(`  fund operator: block ${rc.blockNumber} status ${rc.status} ${tx.hash}`);
+      if (rc.status !== 1) throw new Error("funding transfer FAILED");
+      continue;
+    }
+    const c = new ethers.Contract(s.t.address, ABI, wallet);
+    await wallet.call({ to: s.t.address, data: c.interface.encodeFunctionData(s.call, s.args) });
+    if (!execute) continue;
+    const tx = await c[s.call](...s.args);
+    const rc = await tx.wait();
+    console.log(`  ${s.call} on ${s.t.name}: block ${rc.blockNumber} status ${rc.status} ${tx.hash}`);
+    if (rc.status !== 1) throw new Error(`${s.call} on ${s.t.name} FAILED`);
+  }
+  if (!execute) { console.log("\nDRY RUN — every call simulated; re-run with --execute to broadcast."); return; }
+
+  console.log("\npost-check (live)");
+  for (const t of COTI_OPS) {
+    const c = new ethers.Contract(t.address, ABI, provider);
+    for (const role of t.roles) {
+      const [d, o] = await Promise.all([c.hasRole(roleHash(role), DEPLOYER), c.hasRole(roleHash(role), operator)]);
+      console.log(`  ${t.name.padEnd(36)} ${role.padEnd(20)} operator=${o} deployer=${d}`);
+      if (!o || d) throw new Error(`${t.name}: ${role} not in the expected state`);
+    }
+  }
+  console.log(`  operator balance now ${ethers.formatEther(await provider.getBalance(operator))} COTI`);
+}
+
 const cmd = process.argv[2];
 try {
   if (cmd === "identify") await identify();
@@ -357,7 +445,8 @@ try {
   else if (cmd === "judge-accept") await judgeAccept();
   else if (cmd === "coti-handover") await cotiHandover();
   else if (cmd === "coti-accept-ownership") await cotiAcceptOwnership();
-  else { console.log("usage: node ob-turnover.mjs <identify|audit|judge-accept|coti-handover|coti-accept-ownership> --key-dir <folder> [--execute]   (or --key-file <path>)"); process.exit(2); }
+  else if (cmd === "coti-ops") await cotiOps();
+  else { console.log("usage: node ob-turnover.mjs <identify|audit|judge-accept|coti-handover|coti-accept-ownership|coti-ops> --key-dir <folder> [--execute]"); process.exit(2); }
 } catch (err) {
   console.error(`ERROR: ${err.message}`);
   process.exit(1);
