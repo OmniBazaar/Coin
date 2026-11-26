@@ -1,35 +1,48 @@
 #!/usr/bin/env bash
 # advance-registry-repair.sh — queue and execute the registry-repair proposal
-# once it is legal, with the local gas key. Both steps are permissionless
-# (OmniGovernance.queue checks only the state and the queue deadline;
-# execute checks only that the state is Queued), so this never needs a cold key.
+# once it is legal, with the local gas key.
 #
-# Deliberately does NOT vote or propose: those need the treasury's weight and
-# admin rights, they happen on the founder's machine, and a wrong signature here
-# would page forever.
+# Both steps are permissionless: OmniGovernance.queue checks only that the state
+# is Succeeded and inside the queue deadline, and execute checks only that the
+# state is Queued. So this never needs the cold treasury key, and it deliberately
+# cannot vote or propose — those need the treasury's weight and happen on the
+# founder's machine.
+#
+# The proposal is found by DESCRIPTION HASH, not by a local state file: the
+# founder proposes from Windows, this box never sees his state file, and a
+# hardcoded id would break the first time anything else is proposed.
 set -uo pipefail
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-STATE=${GOV_STATE_FILE:-$HERE/registry-repair.state.json}
 CAST=${CAST_BIN:-/home/omnirick/.foundry/bin/cast}
 RPC=${GOV_RPC:-https://rpc.omnicoin.net}
 GOV=${GOVERNOR:-0xa812904860c615FeCE377F17F87670EcA0E0899c}
+# keccak256 of the DESCRIPTION constant in registry-repair.mjs
+DESC_HASH=${REGISTRY_REPAIR_DESC_HASH:-0x23a1ee03427b4b73250155b9a8f118177e6300aa8c9f2c2db275e2073971db9a}
+# Proposals below this id predate the repair.
+SCAN_FROM=${REGISTRY_REPAIR_SCAN_FROM:-20}
 
-[ -r "$STATE" ] || { echo "no state file at $STATE — the proposal has not been created yet"; exit 0; }
+COUNT=$("$CAST" call "$GOV" "proposalCount()(uint256)" --rpc-url "$RPC" 2>/dev/null | head -1) || {
+  echo "could not read proposalCount"; exit 2; }
+COUNT=${COUNT%% *}
 
-ID=$(sed -n 's/.*"proposalId": *"\([0-9]*\)".*/\1/p' "$STATE" | head -1)
-[ -n "${ID:-}" ] || { echo "state file has no proposalId"; exit 0; }
+FOUND=""
+for id in $(seq "$SCAN_FROM" "$COUNT"); do
+  # proposals(id) → proposer, proposalType, executed, cancelled, queued,
+  #                 descriptionHash, snapshotBlock, ...
+  H=$("$CAST" call "$GOV" \
+      "proposals(uint256)(address,uint8,bool,bool,bool,bytes32,uint256,uint256,uint256,uint256,uint256,uint256,uint256,uint256)" \
+      "$id" --rpc-url "$RPC" 2>/dev/null | sed -n 6p) || continue
+  if [ "${H,,}" = "${DESC_HASH,,}" ]; then FOUND=$id; break; fi
+done
 
-ST=$("$CAST" call "$GOV" "state(uint256)(uint8)" "$ID" --rpc-url "$RPC" 2>/dev/null | head -1) || {
-  echo "could not read the state of proposal $ID"; exit 2; }
+if [ -z "$FOUND" ]; then
+  echo "registry-repair proposal not proposed yet (scanned $SCAN_FROM..$COUNT) — nothing to do"
+  exit 0
+fi
 
+ST=$("$CAST" call "$GOV" "state(uint256)(uint8)" "$FOUND" --rpc-url "$RPC" 2>/dev/null | head -1)
 case "$ST" in
-  3|4)
-    exec "$HERE/execute-proposal.sh" "$ID"
-    ;;
-  5)
-    echo "proposal $ID already executed; nothing to do"
-    ;;
-  *)
-    echo "proposal $ID state $ST needs no permissionless action from this script"
-    ;;
+  3|4) exec "$HERE/execute-proposal.sh" "$FOUND" ;;
+  5)   echo "proposal $FOUND already executed" ;;
+  *)   echo "proposal $FOUND state $ST — no permissionless action needed yet" ;;
 esac
