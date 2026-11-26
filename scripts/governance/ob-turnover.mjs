@@ -77,6 +77,7 @@ const ABI = [
   "function hasRole(bytes32 role, address account) view returns (bool)",
   "function grantRole(bytes32 role, address account)",
   "function renounceRole(bytes32 role, address account)",
+  "function revokeRole(bytes32 role, address account)",
   "function admin() view returns (address)",
   "function pendingJudgeRemoval() view returns (address)",
   "function judgeRemovalAt() view returns (uint256)",
@@ -181,12 +182,19 @@ async function buildCotiPlan(provider) {
       if (d && !SUCCESSOR_ROLES.has(role)) inert.push(`${t.name}: ${role} (left in place — operational role)`);
     }
     for (const role of grants) plan.push({ t, call: "grantRole", args: [roleHash(role), SUCCESSOR], why: `grant ${role} → successor` });
+    // 🛑 revokeRole, not renounceRole. Five of the six COTI contracts override
+    // renounceRole to revert CannotRenounceAdmin() (0x8e3b14a6) so an admin
+    // cannot brick them by accident — documented in PrivateMarketplaceEscrow.sol
+    // line 71. revokeRole is not overridden anywhere, and it removes the role
+    // from the deployer exactly the same way. Discovered 2026-11-26 when the
+    // renounce on the marketplace escrow reverted during simulation.
+    const revoke = { t, call: "revokeRole", args: [DEFAULT_ADMIN, DEPLOYER], why: "revoke DEFAULT_ADMIN from deployer" };
     if (!grants.includes("DEFAULT_ADMIN_ROLE")) {
       const [d, s] = await Promise.all([c.hasRole(DEFAULT_ADMIN, DEPLOYER), c.hasRole(DEFAULT_ADMIN, SUCCESSOR)]);
-      if (d && s) plan.push({ t, call: "renounceRole", args: [DEFAULT_ADMIN, DEPLOYER], why: "renounce DEFAULT_ADMIN from deployer" });
+      if (d && s) plan.push(revoke);
       continue;
     }
-    plan.push({ t, call: "renounceRole", args: [DEFAULT_ADMIN, DEPLOYER], why: "renounce DEFAULT_ADMIN from deployer" });
+    plan.push(revoke);
   }
   return { plan, inert };
 }
